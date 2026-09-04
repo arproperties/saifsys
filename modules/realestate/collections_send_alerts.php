@@ -12,6 +12,7 @@ require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/csrf.php';
 require_once __DIR__ . '/includes/collections_helper.php';
+require_once __DIR__ . '/includes/installment_outstanding.php';
 
 require_login();
 require_module_access($conn, MODULE_REALESTATE);
@@ -31,7 +32,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'send_overdue_alerts') {
         // Get all overdue installments
         $overdue = $conn->prepare("
-            SELECT 
+            SELECT
+                li.id,
                 li.id as installment_id,
                 li.lease_id,
                 li.installment_date as due_date,
@@ -39,7 +41,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 DATEDIFF(CURDATE(), li.installment_date) as days_overdue
             FROM re_lease_installments li
             JOIN re_leases l ON l.id = li.lease_id
-            WHERE l.company_id = ? 
+            WHERE l.company_id = ?
+            AND l.status <> 'draft'
             AND li.status = 'pending'
             AND li.installment_date < CURDATE()
             AND NOT EXISTS (
@@ -51,8 +54,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             )
         ");
         $overdue->execute([$currentCompanyId]);
-        $overdueItems = $overdue->fetchAll(PDO::FETCH_ASSOC);
-        
+        // Resolve what is really still owed (the schedule row stays 'pending' at face
+        // value in Invoice Mode) and drop settled rows before emailing anyone.
+        $overdueItems = re_apply_installment_outstanding($conn, (int)$currentCompanyId, $overdue->fetchAll(PDO::FETCH_ASSOC));
+
         $sent = 0;
         $skipped = 0;
         foreach ($overdueItems as $item) {
@@ -64,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 null,
                 null,
                 $item['due_date'],
-                (float)$item['amount'],
+                (float)$item['outstanding_balance'],
                 (int)$item['days_overdue']
             );
             
@@ -93,7 +98,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 bi.total_amount as amount,
                 DATEDIFF(CURDATE(), bi.due_date) as days_overdue
             FROM re_billing_items bi
-            WHERE bi.company_id = ? 
+            JOIN re_leases l ON l.id = bi.lease_id
+            WHERE bi.company_id = ?
+            AND l.status <> 'draft'
             AND bi.is_paid = 0
             AND COALESCE(bi.is_waived, 0) = 0
             AND bi.status != 'waived'
@@ -142,7 +149,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 i.outstanding_amount as amount,
                 DATEDIFF(CURDATE(), i.due_date) as days_overdue
             FROM re_invoices i
-            WHERE i.company_id = ? 
+            JOIN re_leases l ON l.id = i.lease_id
+            WHERE i.company_id = ?
+            AND l.status <> 'draft'
             AND i.status IN ('sent', 'partial')
             AND i.due_date < CURDATE()
         ");
@@ -181,31 +190,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Get statistics
-$stats = $conn->prepare("
-    SELECT 
-        (SELECT COUNT(*) FROM re_lease_installments li
-         JOIN re_leases l ON l.id = li.lease_id
-         WHERE l.company_id = ?
-           AND li.status = 'pending'
-           AND li.installment_date < CURDATE()
-           AND NOT EXISTS (
-               SELECT 1
-               FROM re_post_dated_cheques c
-               WHERE c.installment_id = li.id
-                 AND c.lease_id = li.lease_id
-                 AND c.status IN ('cleared', 'returned', 'cancelled')
-           )) as overdue_installments,
-        (SELECT COUNT(*) FROM re_billing_items 
-         WHERE company_id = ?
-           AND is_paid = 0
-           AND COALESCE(is_waived, 0) = 0
-           AND status != 'waived'
-           AND due_date < CURDATE()) as overdue_billing_items,
-        (SELECT COUNT(*) FROM re_invoices 
-         WHERE company_id = ? AND status IN ('sent', 'partial') AND due_date < CURDATE()) as overdue_invoices
+// The installment count cannot be a COUNT(*): a row that is already fully collected still
+// reads status = 'pending', so it has to go through the same resolver the send path uses,
+// otherwise this header disagrees with the number of alerts actually sent.
+$statInstallments = $conn->prepare("
+    SELECT li.id, li.lease_id, li.amount
+    FROM re_lease_installments li
+    JOIN re_leases l ON l.id = li.lease_id
+    WHERE l.company_id = ?
+      AND l.status <> 'draft'
+      AND li.status = 'pending'
+      AND li.installment_date < CURDATE()
+      AND NOT EXISTS (
+          SELECT 1
+          FROM re_post_dated_cheques c
+          WHERE c.installment_id = li.id
+            AND c.lease_id = li.lease_id
+            AND c.status IN ('cleared', 'returned', 'cancelled')
+      )
 ");
-$stats->execute([$currentCompanyId, $currentCompanyId, $currentCompanyId]);
+$statInstallments->execute([$currentCompanyId]);
+$statInstallments = re_apply_installment_outstanding($conn, (int)$currentCompanyId, $statInstallments->fetchAll(PDO::FETCH_ASSOC));
+
+$stats = $conn->prepare("
+    SELECT
+        (SELECT COUNT(*) FROM re_billing_items bi
+         JOIN re_leases l ON l.id = bi.lease_id
+         WHERE bi.company_id = ?
+           AND l.status <> 'draft'
+           AND bi.is_paid = 0
+           AND COALESCE(bi.is_waived, 0) = 0
+           AND bi.status != 'waived'
+           AND bi.due_date < CURDATE()) as overdue_billing_items,
+        (SELECT COUNT(*) FROM re_invoices i
+         JOIN re_leases l ON l.id = i.lease_id
+         WHERE i.company_id = ?
+           AND l.status <> 'draft'
+           AND i.status IN ('sent', 'partial')
+           AND i.due_date < CURDATE()) as overdue_invoices
+");
+$stats->execute([$currentCompanyId, $currentCompanyId]);
 $stats = $stats->fetch(PDO::FETCH_ASSOC);
+$stats['overdue_installments'] = count($statInstallments);
 
 function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 

@@ -20,6 +20,7 @@ require_once __DIR__ . '/includes/re_cron_helpers.php';
 re_cron_guard();
 
 require_once __DIR__ . '/includes/collections_helper.php';
+require_once __DIR__ . '/includes/installment_outstanding.php';
 require_once __DIR__ . '/../../includes/tenant_notifications.php';
 
 /** @var PDO $conn */
@@ -33,11 +34,12 @@ foreach ($companies as $currentCompanyId) {
 
     // --- Overdue installments ---
     $overdue = $conn->prepare("
-        SELECT li.id AS installment_id, li.lease_id, li.installment_date AS due_date, li.amount,
+        SELECT li.id, li.id AS installment_id, li.lease_id, li.installment_date AS due_date, li.amount,
                DATEDIFF(CURDATE(), li.installment_date) AS days_overdue
         FROM re_lease_installments li
         JOIN re_leases l ON l.id = li.lease_id
         WHERE l.company_id = ?
+          AND l.status <> 'draft'
           AND li.status = 'pending'
           AND li.installment_date < CURDATE()
           AND NOT EXISTS (
@@ -49,7 +51,11 @@ foreach ($companies as $currentCompanyId) {
           )
     ");
     $overdue->execute([$currentCompanyId]);
-    foreach ($overdue->fetchAll(PDO::FETCH_ASSOC) as $item) {
+    // Never chase a tenant for money already collected: the schedule row stays 'pending'
+    // at face value in Invoice Mode even after the receipt settled it. Resolve what is
+    // really still owed and drop the settled rows before any email goes out.
+    $overdueRows = re_apply_installment_outstanding($conn, (int)$currentCompanyId, $overdue->fetchAll(PDO::FETCH_ASSOC));
+    foreach ($overdueRows as $item) {
         $r = send_overdue_rent_alert(
             $conn,
             $currentCompanyId,
@@ -58,7 +64,7 @@ foreach ($companies as $currentCompanyId) {
             null,
             null,
             $item['due_date'],
-            (float)$item['amount'],
+            (float)$item['outstanding_balance'],
             (int)$item['days_overdue']
         );
         if (!empty($r['success'])) {
@@ -73,7 +79,9 @@ foreach ($companies as $currentCompanyId) {
         SELECT bi.id AS billing_item_id, bi.lease_id, bi.due_date, bi.total_amount AS amount,
                DATEDIFF(CURDATE(), bi.due_date) AS days_overdue
         FROM re_billing_items bi
+        JOIN re_leases l ON l.id = bi.lease_id
         WHERE bi.company_id = ?
+          AND l.status <> 'draft'
           AND bi.is_paid = 0
           AND COALESCE(bi.is_waived, 0) = 0
           AND bi.status != 'waived'
@@ -104,7 +112,9 @@ foreach ($companies as $currentCompanyId) {
         SELECT i.id AS invoice_id, i.lease_id, i.due_date, i.outstanding_amount AS amount,
                DATEDIFF(CURDATE(), i.due_date) AS days_overdue
         FROM re_invoices i
+        JOIN re_leases l ON l.id = i.lease_id
         WHERE i.company_id = ?
+          AND l.status <> 'draft'
           AND i.status IN ('sent', 'partial')
           AND i.due_date < CURDATE()
     ");

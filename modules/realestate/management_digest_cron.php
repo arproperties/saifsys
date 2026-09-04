@@ -21,6 +21,7 @@ require_once __DIR__ . '/includes/re_cron_helpers.php';
 re_cron_guard();
 
 require_once __DIR__ . '/includes/re_email_helper.php';
+require_once __DIR__ . '/includes/installment_outstanding.php';
 
 /** @var PDO $conn */
 
@@ -61,11 +62,15 @@ foreach ($companies as $companyId) {
     $leases90->execute([$companyId]);
     $nLeases90 = (int)$leases90->fetchColumn();
 
+    // Not an aggregate: a fully collected installment still reads status = 'pending' at
+    // face value in Invoice Mode, so COUNT/SUM here would overstate arrears to management.
+    // Resolve each row's real outstanding balance, then total what is left.
     $qInst = $conn->prepare("
-        SELECT COUNT(*), COALESCE(SUM(li.amount), 0)
+        SELECT li.id, li.lease_id, li.amount
         FROM re_lease_installments li
         JOIN re_leases l ON l.id = li.lease_id
         WHERE l.company_id = ?
+          AND l.status <> 'draft'
           AND li.status = 'pending'
           AND li.installment_date < CURDATE()
           AND NOT EXISTS (
@@ -77,14 +82,19 @@ foreach ($companies as $companyId) {
           )
     ");
     $qInst->execute([$companyId]);
-    $rowInst = $qInst->fetch(PDO::FETCH_NUM);
-    $nOverdueInst = (int)($rowInst[0] ?? 0);
-    $sumOverdueInst = (float)($rowInst[1] ?? 0);
+    $rowsInst = re_apply_installment_outstanding($conn, (int)$companyId, $qInst->fetchAll(PDO::FETCH_ASSOC));
+    $nOverdueInst = count($rowsInst);
+    $sumOverdueInst = 0.0;
+    foreach ($rowsInst as $rowInst) {
+        $sumOverdueInst += (float)$rowInst['outstanding_balance'];
+    }
 
     $qBill = $conn->prepare("
         SELECT COUNT(*), COALESCE(SUM(bi.total_amount), 0)
         FROM re_billing_items bi
+        JOIN re_leases l ON l.id = bi.lease_id
         WHERE bi.company_id = ?
+          AND l.status <> 'draft'
           AND bi.is_paid = 0
           AND COALESCE(bi.is_waived, 0) = 0
           AND bi.status != 'waived'
@@ -98,7 +108,9 @@ foreach ($companies as $companyId) {
     $qInv = $conn->prepare("
         SELECT COUNT(*), COALESCE(SUM(i.outstanding_amount), 0)
         FROM re_invoices i
+        JOIN re_leases l ON l.id = i.lease_id
         WHERE i.company_id = ?
+          AND l.status <> 'draft'
           AND i.status IN ('sent', 'partial')
           AND i.due_date < CURDATE()
     ");
