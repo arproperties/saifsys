@@ -11,6 +11,7 @@ require_once __DIR__ . '/includes/ars_helpers.php';
 require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
 require_once __DIR__ . '/includes/ars_guest_delete.php';
+require_once __DIR__ . '/includes/ars_guest_attachments.php';
 
 $arsCompanyId = arsPageAuth($conn);
 $brand = getBrandSettings($conn);
@@ -51,7 +52,7 @@ $section = (string)($_GET['section'] ?? 'overview');
 if ($section === 'flats') {
     $section = 'overview'; // legacy URL; flat tenancy is not shown on guest profile
 }
-if (!in_array($section, ['overview', 'profile', 'stays'], true)) {
+if (!in_array($section, ['overview', 'profile', 'stays', 'documents'], true)) {
     $section = 'overview';
 }
 
@@ -111,6 +112,20 @@ try {
 } catch (PDOException $e) {
 }
 
+$docCategories = ars_guest_doc_categories();
+$guestDocs = [];
+$guestDocsError = '';
+try {
+    $guestDocs = ars_guest_attachments_list($conn, $arsCompanyId, $guestId);
+} catch (Throwable $e) {
+    $guestDocsError = $e->getMessage();
+}
+$guestDocCount = count($guestDocs);
+// Documents whose expiry has passed, or lands inside the next 30 days, get flagged
+// on the profile so staff renew ID paperwork before the next check-in.
+$docExpiryToday = date('Y-m-d');
+$docExpirySoon = date('Y-m-d', strtotime('+30 days'));
+
 $guestName = trim(($guest['first_name'] ?? '') . ' ' . ($guest['last_name'] ?? ''));
 $liveStays = 0;
 $nightsTotal = 0;
@@ -164,6 +179,7 @@ ars_shell_begin([
         ['id' => 'overview', 'label' => 'Overview', 'icon' => 'layout-dashboard', 'href' => 'guest_view.php?id=' . $guestId . '&section=overview', 'active' => $section === 'overview'],
         ['id' => 'profile', 'label' => 'Edit profile', 'icon' => 'user', 'href' => 'guest_view.php?id=' . $guestId . '&section=profile', 'active' => $section === 'profile'],
         ['id' => 'stays', 'label' => 'Stays', 'icon' => 'calendar', 'href' => 'guest_view.php?id=' . $guestId . '&section=stays', 'active' => $section === 'stays'],
+        ['id' => 'documents', 'label' => 'Documents' . ($guestDocCount > 0 ? ' (' . $guestDocCount . ')' : ''), 'icon' => 'file-text', 'href' => 'guest_view.php?id=' . $guestId . '&section=documents', 'active' => $section === 'documents'],
     ]),
     'legacy_bootstrap' => true,
 ]);
@@ -244,6 +260,12 @@ ars_shell_begin([
                         <?php else: ?>—<?php endif; ?>
                     </dd>
                     <dt class="col-5 text-muted">Address</dt><dd class="col-7"><?= h($guest['address'] ?: '—') ?></dd>
+                    <dt class="col-5 text-muted">Documents</dt>
+                    <dd class="col-7">
+                        <a class="text-decoration-none" href="guest_view.php?id=<?= $guestId ?>&amp;section=documents">
+                            <?= $guestDocCount > 0 ? (int)$guestDocCount . ' on file' : 'Add ID / passport' ?>
+                        </a>
+                    </dd>
                 </dl>
             </div>
         </div>
@@ -351,6 +373,148 @@ ars_shell_begin([
         </table>
     </div>
 </div>
+
+<?php elseif ($section === 'documents'): ?>
+<?php
+$docsByCategory = [];
+foreach ($docCategories as $catKey => $catMeta) {
+    $docsByCategory[$catKey] = 0;
+}
+$expiringDocs = [];
+foreach ($guestDocs as $gd) {
+    $catKey = ars_guest_doc_category_normalize($gd['doc_category'] ?? 'other');
+    $docsByCategory[$catKey]++;
+    $exp = (string)($gd['expiry_date'] ?? '');
+    if ($exp !== '' && $exp <= $docExpirySoon) {
+        $expiringDocs[] = $gd + ['_category' => $catKey];
+    }
+}
+?>
+<div class="row g-3 mb-4">
+    <?php foreach ($docCategories as $catKey => $catMeta): ?>
+    <div class="col-6 col-lg">
+        <div class="ars-card h-100">
+            <div class="card-body py-3">
+                <div class="d-flex align-items-center justify-content-between gap-2">
+                    <span class="small text-muted"><i class="bi <?= h($catMeta['icon']) ?> me-1"></i><?= h($catMeta['label']) ?></span>
+                    <span class="badge <?= $docsByCategory[$catKey] > 0 ? 'bg-success' : 'bg-light text-muted border' ?>"><?= (int)$docsByCategory[$catKey] ?></span>
+                </div>
+                <button type="button" class="btn btn-sm btn-ars-outline w-100 mt-2"
+                        data-bs-toggle="modal" data-bs-target="#guestDocModal"
+                        data-ars-doc-category="<?= h($catKey) ?>">
+                    <i class="bi bi-upload me-1"></i>Upload
+                </button>
+            </div>
+        </div>
+    </div>
+    <?php endforeach; ?>
+</div>
+
+<?php if (!empty($expiringDocs)): ?>
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    <strong><?= count($expiringDocs) ?></strong> document<?= count($expiringDocs) !== 1 ? 's' : '' ?> expired or expiring within 30 days:
+    <?php
+    $expLabels = [];
+    foreach ($expiringDocs as $ed) {
+        $expLabels[] = h(ars_guest_doc_category_label($ed['_category'])) . ' (' . h((string)$ed['expiry_date']) . ')';
+    }
+    echo implode(', ', $expLabels);
+    ?>
+</div>
+<?php endif; ?>
+
+<div class="ars-card" id="guest-docs">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <span><i class="bi bi-folder2-open me-2"></i>Guest documents
+            <span class="badge bg-secondary ms-1"><?= (int)$guestDocCount ?></span>
+        </span>
+        <button type="button" class="btn btn-ars btn-sm" data-bs-toggle="modal" data-bs-target="#guestDocModal">
+            <i class="bi bi-upload me-1"></i>Upload document
+        </button>
+    </div>
+    <div class="card-body pb-3">
+        <?php if ($guestDocsError !== ''): ?>
+        <div class="alert alert-danger"><i class="bi bi-exclamation-triangle me-2"></i>Could not load documents: <?= h($guestDocsError) ?></div>
+        <?php endif; ?>
+        <?php if (empty($guestDocs)): ?>
+        <div class="border rounded text-center text-muted py-4 px-2 bg-light">
+            <i class="bi bi-folder2-open fs-4 d-block mb-2"></i>
+            No documents on this guest yet.<br>
+            <small>Upload the Emirates ID, passport or visa copy — they stay on the profile across every stay.</small>
+        </div>
+        <?php else: ?>
+        <div class="table-responsive border rounded">
+            <table class="table ars-table ars-mobile-cards mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Document</th>
+                        <th style="min-width:170px">Type</th>
+                        <th>Number</th>
+                        <th>Expiry</th>
+                        <th>Uploaded</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php foreach ($guestDocs as $gd):
+                    $gdId = (int)$gd['id'];
+                    $gdCat = ars_guest_doc_category_normalize($gd['doc_category'] ?? 'other');
+                    $gdExp = (string)($gd['expiry_date'] ?? '');
+                    $gdSize = (int)($gd['file_size'] ?? 0);
+                    $viewUrl = 'guest_document_view.php?guest_id=' . $guestId . '&attachment_id=' . $gdId;
+                ?>
+                    <tr>
+                        <td data-label="Document">
+                            <div class="fw-semibold text-break"><?= h($gd['original_name'] ?? 'file') ?></div>
+                            <div class="small text-muted"><?= $gdSize > 0 ? h(number_format($gdSize / 1024, 0)) . ' KB' : '' ?></div>
+                        </td>
+                        <td data-label="Type">
+                            <select class="form-select form-select-sm ars-guest-doc-refile"
+                                    data-ars-attachment-id="<?= $gdId ?>"
+                                    aria-label="Change document type">
+                                <?php foreach ($docCategories as $optKey => $optMeta): ?>
+                                <option value="<?= h($optKey) ?>" <?= $optKey === $gdCat ? 'selected' : '' ?>><?= h($optMeta['label']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                        <td data-label="Number"><?= $gd['doc_number'] ? h((string)$gd['doc_number']) : '—' ?></td>
+                        <td data-label="Expiry">
+                            <?php if ($gdExp === ''): ?>—
+                            <?php elseif ($gdExp < $docExpiryToday): ?>
+                                <span class="badge bg-danger">Expired <?= h($gdExp) ?></span>
+                            <?php elseif ($gdExp <= $docExpirySoon): ?>
+                                <span class="badge bg-warning text-dark">Expires <?= h($gdExp) ?></span>
+                            <?php else: ?>
+                                <?= h($gdExp) ?>
+                            <?php endif; ?>
+                        </td>
+                        <td data-label="Uploaded" class="small text-muted">
+                            <?= h(substr((string)($gd['created_at'] ?? ''), 0, 16)) ?>
+                            <?php if (!empty($gd['uploaded_by_name'])): ?><br><?= h((string)$gd['uploaded_by_name']) ?><?php endif; ?>
+                        </td>
+                        <td data-label="Actions" class="text-end">
+                            <div class="d-inline-flex gap-1 flex-wrap justify-content-end">
+                                <a class="btn btn-sm btn-ars-outline" href="<?= h($viewUrl) ?>" target="_blank" rel="noopener">View</a>
+                                <a class="btn btn-sm btn-ars-outline" href="<?= h($viewUrl) ?>&amp;disposition=attachment">Download</a>
+                                <button type="button" class="btn btn-sm btn-outline-danger ars-guest-doc-delete"
+                                        data-ars-attachment-id="<?= $gdId ?>"
+                                        data-ars-doc-name="<?= h($gd['original_name'] ?? 'file') ?>">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif; ?>
+        <p class="small text-muted mt-3 mb-0">
+            <i class="bi bi-info-circle me-1"></i>Max 10 MB per file. PDF, images, Office or text. Files are stored company-scoped and served only to signed-in staff.
+        </p>
+    </div>
+</div>
 <?php endif; ?>
 
 <?php if ($canDeleteGuests && empty($deleteBlockers)): ?>
@@ -374,6 +538,182 @@ ars_shell_begin([
         </form>
     </div>
 </div>
+<?php endif; ?>
+
+
+<?php if ($section === 'documents'): ?>
+<!-- Upload a guest document -->
+<div class="modal fade" id="guestDocModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header" style="background:var(--ars-primary);color:#fff">
+                <h5 class="modal-title"><i class="bi bi-upload me-2"></i>Upload guest document</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="guestDocAlert" class="d-none"></div>
+                <div class="mb-3">
+                    <label class="form-label fw-semibold" for="guestDocCategory">Document type</label>
+                    <select id="guestDocCategory" class="form-select">
+                        <?php foreach ($docCategories as $optKey => $optMeta): ?>
+                        <option value="<?= h($optKey) ?>"<?= $optKey === 'emirates_id' ? ' selected' : '' ?>><?= h($optMeta['label']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-12 col-sm-7">
+                        <label class="form-label fw-semibold" for="guestDocNumber">Document number <span class="text-muted fw-normal">(optional)</span></label>
+                        <input type="text" id="guestDocNumber" class="form-control" placeholder="784-0000-0000000-0">
+                    </div>
+                    <div class="col-12 col-sm-5">
+                        <label class="form-label fw-semibold" for="guestDocExpiry">Expiry <span class="text-muted fw-normal">(optional)</span></label>
+                        <input type="date" id="guestDocExpiry" class="form-control">
+                    </div>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label fw-semibold" for="guestDocFile">File</label>
+                    <input type="file" id="guestDocFile" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.xls,.xlsx,.txt">
+                    <div class="form-text">Max 10 MB. PDF, images, Office or text.</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-ars" id="guestDocUploadBtn"><i class="bi bi-upload me-1"></i>Upload</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+  var GUEST_ID = <?= (int)$guestId ?>;
+  var CSRF = <?= json_encode(csrf_token(), JSON_UNESCAPED_SLASHES) ?>;
+
+  function alertBox(msg, kind, targetId) {
+    var el = document.getElementById(targetId || 'guestDocAlert');
+    if (!el) { window.alert(msg); return; }
+    el.className = 'alert alert-' + (kind || 'info');
+    el.textContent = msg;
+    el.classList.remove('d-none');
+  }
+
+  function post(action, data) {
+    var fd = new FormData();
+    fd.append('action', action);
+    fd.append('guest_id', String(GUEST_ID));
+    fd.append('_csrf', CSRF);
+    Object.keys(data || {}).forEach(function (k) { fd.append(k, data[k]); });
+    return fetch('ajax_guest_documents.php', {
+      method: 'POST',
+      body: fd,
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': CSRF }
+    }).then(function (r) { return r.json(); });
+  }
+
+  var modal = document.getElementById('guestDocModal');
+  if (modal) {
+    modal.addEventListener('show.bs.modal', function (ev) {
+      var alertEl = document.getElementById('guestDocAlert');
+      if (alertEl) { alertEl.classList.add('d-none'); alertEl.textContent = ''; }
+      // The per-type "Upload" tiles preselect the type they sit under.
+      var trigger = ev.relatedTarget;
+      var preset = trigger && trigger.getAttribute('data-ars-doc-category');
+      var catEl = document.getElementById('guestDocCategory');
+      if (catEl && preset) {
+        var opt = catEl.querySelector('option[value="' + preset + '"]');
+        if (opt) catEl.value = preset;
+      }
+    });
+  }
+
+  var uploadBtn = document.getElementById('guestDocUploadBtn');
+  if (uploadBtn) {
+    uploadBtn.addEventListener('click', function () {
+      var input = document.getElementById('guestDocFile');
+      if (!input || !input.files || !input.files[0]) {
+        alertBox('Choose a file first.', 'danger');
+        return;
+      }
+      var fd = new FormData();
+      fd.append('action', 'upload_guest_document');
+      fd.append('guest_id', String(GUEST_ID));
+      fd.append('_csrf', CSRF);
+      fd.append('doc_category', (document.getElementById('guestDocCategory') || {}).value || 'other');
+      fd.append('doc_number', (document.getElementById('guestDocNumber') || {}).value || '');
+      fd.append('expiry_date', (document.getElementById('guestDocExpiry') || {}).value || '');
+      fd.append('file', input.files[0]);
+      uploadBtn.disabled = true;
+      fetch('ajax_guest_documents.php', {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': CSRF }
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          uploadBtn.disabled = false;
+          if (d && d.success) {
+            alertBox('Uploaded. Refreshing…', 'success');
+            window.setTimeout(function () { location.reload(); }, 500);
+          } else {
+            alertBox((d && d.error) || 'Upload failed.', 'danger');
+          }
+        })
+        .catch(function () {
+          uploadBtn.disabled = false;
+          alertBox('Network error.', 'danger');
+        });
+    });
+  }
+
+  document.querySelectorAll('.ars-guest-doc-refile').forEach(function (sel) {
+    sel._prev = sel.value;
+    sel.addEventListener('change', function () {
+      sel.disabled = true;
+      post('set_guest_document_category', {
+        attachment_id: sel.getAttribute('data-ars-attachment-id'),
+        doc_category: sel.value
+      })
+        .then(function (d) {
+          if (d && d.success) {
+            location.reload();
+          } else {
+            sel.disabled = false;
+            sel.value = sel._prev;
+            window.alert((d && d.error) || 'Could not move the document.');
+          }
+        })
+        .catch(function () {
+          sel.disabled = false;
+          sel.value = sel._prev;
+          window.alert('Network error moving the document.');
+        });
+    });
+  });
+
+  document.querySelectorAll('.ars-guest-doc-delete').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var name = btn.getAttribute('data-ars-doc-name') || 'this document';
+      if (!window.confirm('Delete ' + name + '? This removes the file permanently.')) return;
+      btn.disabled = true;
+      post('delete_guest_document', { attachment_id: btn.getAttribute('data-ars-attachment-id') })
+        .then(function (d) {
+          if (d && d.success) {
+            location.reload();
+          } else {
+            btn.disabled = false;
+            window.alert((d && d.error) || 'Could not delete the document.');
+          }
+        })
+        .catch(function () {
+          btn.disabled = false;
+          window.alert('Network error deleting the document.');
+        });
+    });
+  });
+})();
+</script>
 <?php endif; ?>
 
 <?php ars_shell_end(); ?>

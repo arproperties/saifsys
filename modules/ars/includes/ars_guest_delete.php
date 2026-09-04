@@ -95,7 +95,21 @@ function ars_guest_delete(PDO $conn, int $companyId, int $guestId, ?int $userId)
         'ars_guest_notifications' => 'guest_id = ? AND company_id = ?',
         'customer_device_tokens' => 'guest_id = ? AND company_id = ?',
         'customer_push_logs' => 'guest_id = ? AND company_id = ?',
+        'ars_guest_attachments' => 'guest_id = ? AND company_id = ?',
     ];
+
+    // Uploaded ID scans go with the profile. Paths are read before the rows are
+    // swept; the files themselves are removed only after the delete commits.
+    $docPaths = [];
+    if (ars_guest_delete_table_exists($conn, 'ars_guest_attachments')) {
+        try {
+            $ds = $conn->prepare('SELECT relative_path FROM ars_guest_attachments WHERE guest_id = ? AND company_id = ?');
+            $ds->execute([$guestId, $companyId]);
+            $docPaths = $ds->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        } catch (PDOException $e) {
+            $docPaths = [];
+        }
+    }
 
     $conn->beginTransaction();
     try {
@@ -120,6 +134,13 @@ function ars_guest_delete(PDO $conn, int $companyId, int $guestId, ?int $userId)
             $conn->rollBack();
         }
         return 'Failed to delete guest: ' . $e->getMessage();
+    }
+
+    foreach ($docPaths as $rel) {
+        $abs = dirname(__DIR__, 3) . '/' . ltrim((string)$rel, '/');
+        if (is_file($abs)) {
+            @unlink($abs);
+        }
     }
 
     $guestName = trim((string)($guest['first_name'] ?? '') . ' ' . (string)($guest['last_name'] ?? ''));
