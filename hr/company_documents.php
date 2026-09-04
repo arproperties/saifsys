@@ -472,7 +472,10 @@ $pageStyles = '
     .cdoc-kpi .kpi { font-size:1.35rem; font-weight:700; }
     .cdoc-kpi .sub { color:#6b7280; font-size:.8rem; }
     .cdoc-notes { max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display:inline-block; vertical-align:bottom; }
-    .cdoc-actions .btn, .cdoc-actions form { margin-left:.25rem; }
+    /* Keep row actions on one line: a fixed-width column forced Delete to wrap. */
+    .cdoc-actions { display:flex; justify-content:flex-end; align-items:center; gap:.375rem; flex-wrap:nowrap; }
+    .cdoc-actions form { margin:0; }
+    .cdoc-actions .btn { white-space:nowrap; }
 ';
 require_once __DIR__ . '/includes/hr_layout_header.php';
 
@@ -657,7 +660,7 @@ echo hr_ui_page_header(
                 <th>Expires</th>
                 <th>File</th>
                 <th>History</th>
-                <th class="text-end" style="width:220px;">Actions</th>
+                <th class="text-end" style="width:1%; white-space:nowrap;">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -704,12 +707,12 @@ echo hr_ui_page_header(
                     <span class="text-muted">—</span>
                   <?php endif; ?>
                 </td>
-                <td class="text-end cdoc-actions">
-                  <a class="btn btn-sm btn-outline-primary"
+                <td class="cdoc-actions">
+                  <a class="btn btn-sm btn-outline-secondary"
                      href="company_documents?<?= h(http_build_query(array_merge($filterQs, ['edit' => (int)$r['id']]))) ?>">Edit</a>
                   <button type="button" class="btn btn-sm btn-outline-success"
                           data-bs-toggle="modal" data-bs-target="#renewModal<?= (int)$r['id'] ?>">Renew</button>
-                  <form method="post" class="d-inline" onsubmit="return confirm('Delete this document and all its archived versions?')">
+                  <form method="post" onsubmit="return confirm('Delete this document and all its archived versions?')">
                     <?php csrf_field(); ?>
                     <input type="hidden" name="action" value="delete">
                     <input type="hidden" name="doc_id" value="<?= (int)$r['id'] ?>">
