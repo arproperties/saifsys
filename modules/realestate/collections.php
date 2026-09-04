@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../includes/branding.php';
 require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/rbac_department.php';
+require_once __DIR__ . '/includes/installment_outstanding.php';
 
 require_login();
 // Check department access (backward compatible: fallback to module access)
@@ -53,6 +54,11 @@ $overdueInstallments = $conn->prepare("
 ");
 $overdueInstallments->execute([$currentCompanyId]);
 $overdueInstallments = $overdueInstallments->fetchAll(PDO::FETCH_ASSOC);
+// The schedule row's own status/amount are not a settlement signal: in Invoice Mode a
+// receipt settles the invoices behind the row without ever writing it back to 'paid'.
+// Resolve what is actually still owed (same precedence as lease_view.php) and drop rows
+// that are already fully collected.
+$overdueInstallments = re_apply_installment_outstanding($conn, $currentCompanyId, $overdueInstallments);
 
 // Get overdue billing items
 $overdueBillingItems = $conn->prepare("
@@ -132,7 +138,7 @@ $bouncedCheques = $bouncedCheques->fetchAll(PDO::FETCH_ASSOC);
 // Calculate statistics
 $totalOverdue = 0;
 foreach ($overdueInstallments as $item) {
-    $totalOverdue += (float)$item['amount'];
+    $totalOverdue += (float)$item['outstanding_balance'];
 }
 foreach ($overdueBillingItems as $item) {
     $totalOverdue += (float)$item['total_amount'];
@@ -257,7 +263,15 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                                 <td>
                                                     <span class="badge bg-danger"><?= $item['days_overdue'] ?> days</span>
                                                 </td>
-                                                <td class="text-end"><strong><?= number_format($item['amount'], 2) ?> AED</strong></td>
+                                                <td class="text-end">
+                                                    <strong><?= number_format((float)$item['outstanding_balance'], 2) ?> AED</strong>
+                                                    <?php if ((float)$item['collected_amount'] > 0.005): ?>
+                                                        <br><small class="text-muted">
+                                                            of <?= number_format((float)$item['amount'], 2) ?> ·
+                                                            collected <?= number_format((float)$item['collected_amount'], 2) ?>
+                                                        </small>
+                                                    <?php endif; ?>
+                                                </td>
                                             </tr>
                                         <?php endforeach; ?>
                                     </tbody>

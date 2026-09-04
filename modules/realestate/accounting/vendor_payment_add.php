@@ -52,7 +52,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $vendorId = (int)$_POST['vendor_id'];
         $date = $_POST['payment_date'] ?? date('Y-m-d');
         $method = $_POST['payment_method'] ?? 'bank_transfer';
-        $bankId = !empty($_POST['bank_account_id']) ? (int)$_POST['bank_account_id'] : null;
+        // The picker returns a chart-of-accounts id; keep bank_account_id in sync
+        // when that GL account is a registered bank account.
+        $payAccountId = !empty($_POST['pay_account_id']) ? (int)$_POST['pay_account_id'] : 0;
+        $glAccountId = null;
+        $bankId = null;
+        if ($payAccountId > 0) {
+            $accStmt = $conn->prepare("
+                SELECT coa.id,
+                       (SELECT ba.id FROM re_bank_accounts ba
+                        WHERE ba.gl_account_id = coa.id AND ba.company_id = coa.company_id AND ba.is_active = 1
+                        ORDER BY ba.id LIMIT 1) AS bank_account_id
+                FROM re_chart_of_accounts coa
+                WHERE coa.id = ? AND coa.company_id = ? AND coa.is_active = 1 AND COALESCE(coa.is_header, 0) = 0
+                LIMIT 1
+            ");
+            $accStmt->execute([$payAccountId, $companyId]);
+            $acc = $accStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$acc) {
+                throw new RuntimeException('Select a valid bank or cash account.');
+            }
+            $glAccountId = (int)$acc['id'];
+            $bankId = !empty($acc['bank_account_id']) ? (int)$acc['bank_account_id'] : null;
+        }
         $ref = trim($_POST['reference_number'] ?? '');
         $notes = trim($_POST['notes'] ?? '');
         $paymentAmount = round((float)($_POST['payment_amount'] ?? 0), 2);
@@ -95,24 +117,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($allocated <= 0 && $advanceAmount <= 0) {
             throw new RuntimeException('Allocate to bills and/or leave a remainder as vendor advance.');
         }
+        // gl_account_id lands with migrations/re_vendor_payment_gl_account.sql;
+        // stay insertable on a database that has not had it applied yet.
+        $glReady = re_ap_payment_gl_column_ready($conn);
+        if (!$glReady && $glAccountId !== null && $bankId === null) {
+            throw new RuntimeException('Paying from a cash account requires migrations/re_vendor_payment_gl_account.sql to be applied first.');
+        }
         $conn->beginTransaction();
-        $stmt = $conn->prepare("
-            INSERT INTO re_vendor_payments
-            (company_id, vendor_id, payment_date, amount, advance_amount, payment_method, bank_account_id, reference_number, notes, status, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)
-        ");
-        $stmt->execute([
-            $companyId,
-            $vendorId,
-            $date,
-            $paymentAmount,
-            $advanceAmount,
-            $method,
-            $bankId,
-            $ref ?: null,
-            $notes ?: null,
-            $userId,
-        ]);
+        if ($glReady) {
+            $stmt = $conn->prepare("
+                INSERT INTO re_vendor_payments
+                (company_id, vendor_id, payment_date, amount, advance_amount, payment_method, bank_account_id, gl_account_id, reference_number, notes, status, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)
+            ");
+            $stmt->execute([
+                $companyId, $vendorId, $date, $paymentAmount, $advanceAmount, $method,
+                $bankId, $glAccountId, $ref ?: null, $notes ?: null, $userId,
+            ]);
+        } else {
+            $stmt = $conn->prepare("
+                INSERT INTO re_vendor_payments
+                (company_id, vendor_id, payment_date, amount, advance_amount, payment_method, bank_account_id, reference_number, notes, status, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)
+            ");
+            $stmt->execute([
+                $companyId, $vendorId, $date, $paymentAmount, $advanceAmount, $method,
+                $bankId, $ref ?: null, $notes ?: null, $userId,
+            ]);
+        }
         $paymentId = (int)$conn->lastInsertId();
         if ($valid) {
             $ins = $conn->prepare("
@@ -164,15 +196,36 @@ if ($vendorId > 0) {
     $bills = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 }
 
-$banks = $conn->prepare("
-    SELECT ba.id, ba.account_name, coa.account_code
-    FROM re_bank_accounts ba
-    JOIN re_chart_of_accounts coa ON coa.id = ba.gl_account_id
-    WHERE ba.company_id = ? AND ba.is_active = 1
+$selectedPayAccountId = ($success === '') ? (int)($_POST['pay_account_id'] ?? 0) : 0;
+
+// Every active cash/bank GL account is payable from, not just the ones
+// registered in re_bank_accounts. Registered ones keep their bank name.
+$payAccounts = $conn->prepare("
+    SELECT coa.id, coa.account_code, coa.account_name,
+           (SELECT ba.id FROM re_bank_accounts ba
+            WHERE ba.gl_account_id = coa.id AND ba.company_id = coa.company_id AND ba.is_active = 1
+            ORDER BY ba.id LIMIT 1) AS bank_account_id,
+           (SELECT ba2.account_name FROM re_bank_accounts ba2
+            WHERE ba2.gl_account_id = coa.id AND ba2.company_id = coa.company_id AND ba2.is_active = 1
+            ORDER BY ba2.id LIMIT 1) AS bank_account_name
+    FROM re_chart_of_accounts coa
+    WHERE coa.company_id = ?
+      AND coa.is_active = 1
+      AND COALESCE(coa.is_header, 0) = 0
+      AND (coa.account_code LIKE '11%' OR coa.account_code LIKE '12%')
     ORDER BY coa.account_code
 ");
-$banks->execute([$companyId]);
-$banks = $banks->fetchAll(PDO::FETCH_ASSOC) ?: [];
+$payAccounts->execute([$companyId]);
+$payAccounts = $payAccounts->fetchAll(PDO::FETCH_ASSOC) ?: [];
+$bankOptions = [];
+$cashOptions = [];
+foreach ($payAccounts as $acc) {
+    if (!empty($acc['bank_account_id'])) {
+        $bankOptions[] = $acc;
+    } else {
+        $cashOptions[] = $acc;
+    }
+}
 
 $billPayload = [];
 $prefillTotal = 0.0;
@@ -289,11 +342,22 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
                         </div>
                         <div class="col-md-5">
                             <label class="form-label">Bank / Cash Account</label>
-                            <select name="bank_account_id" class="form-select">
-                                <option value="">Cash / default</option>
-                                <?php foreach ($banks as $b): ?>
-                                    <option value="<?= (int)$b['id'] ?>"><?= h($b['account_code'] . ' — ' . $b['account_name']) ?></option>
-                                <?php endforeach; ?>
+                            <select name="pay_account_id" class="form-select">
+                                <option value="">Default for payment method</option>
+                                <?php if ($bankOptions): ?>
+                                    <optgroup label="Bank accounts">
+                                        <?php foreach ($bankOptions as $b): ?>
+                                            <option value="<?= (int)$b['id'] ?>"<?= ((int)$b['id'] === $selectedPayAccountId) ? ' selected' : '' ?>><?= h($b['account_code'] . ' — ' . ($b['bank_account_name'] ?: $b['account_name'])) ?></option>
+                                        <?php endforeach; ?>
+                                    </optgroup>
+                                <?php endif; ?>
+                                <?php if ($cashOptions): ?>
+                                    <optgroup label="Cash &amp; other accounts">
+                                        <?php foreach ($cashOptions as $c): ?>
+                                            <option value="<?= (int)$c['id'] ?>"<?= ((int)$c['id'] === $selectedPayAccountId) ? ' selected' : '' ?>><?= h($c['account_code'] . ' — ' . $c['account_name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </optgroup>
+                                <?php endif; ?>
                             </select>
                         </div>
                         <div class="col-md-3">

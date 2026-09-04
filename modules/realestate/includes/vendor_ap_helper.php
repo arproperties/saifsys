@@ -92,6 +92,22 @@ if($linkedAdvanceVat>$vatTotal+0.005)return ['success'=>false,'error'=>'Linked a
 $remainingInputVat=re_ap_money(max(0,$vatTotal-$linkedAdvanceVat));
 if($remainingInputVat>0.005){$vatAcc=re_ap_input_vat_account($conn,$companyId); if(!$vatAcc)return ['success'=>false,'error'=>'Input VAT account not found'];$lines[]=['account_id'=>(int)$vatAcc['id'],'debit'=>$remainingInputVat,'credit'=>0,'description'=>'Input VAT - '.$bill['invoice_number'].($linkedAdvanceVat>0.005?' (net of advance VAT)':''),'reference'=>$bill['invoice_number']];}
 $total=re_ap_money($netTotal+$vatTotal); $apCredit=re_ap_money($netTotal+$remainingInputVat); $lines[]=['account_id'=>(int)$ap['id'],'debit'=>0,'credit'=>$apCredit,'description'=>'AP: '.$bill['vendor_name'].($linkedAdvanceVat>0.005?' (net of advance VAT)':''),'reference'=>$bill['invoice_number']]; $desc='Vendor bill '.$bill['invoice_number'].' - '.$bill['vendor_name']; $res=create_and_post_journal($companyId,'manual','vendor_invoice',$billId,$lines,$desc,$bill['invoice_date'],$userId); if(empty($res['success']))return $res; $journalId=(int)$res['journal_id']; $ledger=get_or_create_vendor_ledger((int)$bill['vendor_id'],(int)$ap['id'],$companyId); $jl=$conn->prepare("SELECT id FROM re_journal_lines WHERE journal_id=? AND account_id=? ORDER BY line_number LIMIT 1");$jl->execute([$journalId,(int)$ap['id']]);$journalLineId=(int)($jl->fetchColumn()?:0); post_to_vendor_ledger($ledger['id'],$bill['invoice_date'],0,$apCredit,$desc,$bill['invoice_number'],$companyId,$journalId,$journalLineId?:null); $conn->prepare("UPDATE re_vendor_invoices SET posting_status='posted', journal_id=?, status=CASE WHEN status='draft' THEN 'open' ELSE status END, balance_due=CASE WHEN balance_due=0 THEN total_amount-paid_amount ELSE balance_due END WHERE id=? AND company_id=?")->execute([$journalId,$billId,$companyId]); re_ap_refresh_bill_status($conn,$companyId,$billId); re_ap_audit($conn,$companyId,(int)$bill['vendor_id'],$billId,null,'bill_posted',null,null,$total,'Vendor bill posted',$userId,'bill_entry',$journalId); return ['success'=>true,'journal_id'=>$journalId,'error'=>null]; }
+/** True once migrations/re_vendor_payment_gl_account.sql has run. */
+function re_ap_payment_gl_column_ready(PDO $conn): bool
+{
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    try {
+        $conn->query('SELECT gl_account_id FROM re_vendor_payments LIMIT 1');
+        $ready = true;
+    } catch (Throwable $e) {
+        $ready = false;
+    }
+    return $ready;
+}
+
 function re_ap_post_vendor_payment(PDO $conn, int $companyId, int $paymentId, ?int $userId = null): array
 {
     if ($companyId <= 0) {
@@ -144,7 +160,17 @@ function re_ap_post_vendor_payment(PDO $conn, int $companyId, int $paymentId, ?i
             throw new RuntimeException('AP account not found');
         }
         $bank = null;
-        if (!empty($pay['bank_account_id'])) {
+        // Explicit cash/bank GL account chosen on the payment wins; it covers
+        // cash accounts that are not registered in re_bank_accounts.
+        if (!empty($pay['gl_account_id'])) {
+            $g = $conn->prepare("
+                SELECT coa.* FROM re_chart_of_accounts coa
+                WHERE coa.id = ? AND coa.company_id = ? AND coa.is_active = 1
+            ");
+            $g->execute([(int)$pay['gl_account_id'], $companyId]);
+            $bank = $g->fetch(PDO::FETCH_ASSOC) ?: null;
+        }
+        if (!$bank && !empty($pay['bank_account_id'])) {
             $b = $conn->prepare("
                 SELECT coa.* FROM re_bank_accounts ba
                 JOIN re_chart_of_accounts coa ON coa.id = ba.gl_account_id
