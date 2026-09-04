@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# .htaccess — LIVE: project at server document root (e.g. https://example.com/)
+# For localhost in subfolder: copy .htaccess.localhost to .htaccess
+# ---------------------------------------------------------------------------
+RewriteEngine On
+
+# Live at root: no subfolder
+RewriteBase /
+
+# APP_BASE: empty at root; set only when running in subfolder (e.g. /herosysgro)
+<IfModule mod_rewrite.c>
+RewriteCond %{REQUEST_URI} ^/herosysgro(/|$)
+RewriteRule ^ - [E=APP_BASE:/herosysgro]
+</IfModule>
+RewriteCond %{ENV:APP_BASE} ^$
+RewriteRule ^ - [E=APP_BASE:]
+
+# Property share deep links (App Links / Universal Links host) — not a details page.
+RewriteRule ^\.well-known/assetlinks\.json$ property_share_well_known.php?type=assetlinks [L,QSA]
+RewriteRule ^\.well-known/apple-app-site-association$ property_share_well_known.php?type=aasa [L,QSA]
+RewriteRule ^p/([A-Za-z0-9\-]+)/?$ property_share_redirect.php?code=$1 [L,QSA]
+
+<Files .htaccess>
+    Order allow,deny
+    Deny from all
+</Files>
+Options -Indexes
+
+# ----- Specific pages -----
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/operation.php -f
+RewriteRule ^operation/?$ operation.php [L,QSA]
+RewriteCond %{THE_REQUEST} \s/operation[\s?] [NC]
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/operation.php -f
+RewriteRule ^operation$ operation.php [L,QSA]
+
+RewriteCond %{THE_REQUEST} \s/account/?[\s?] [NC]
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/account.php -f
+RewriteRule ^account/?$ account.php [L,QSA]
+RewriteCond %{REQUEST_URI} ^/account/?$
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/account.php -f
+RewriteRule ^account/?$ account.php [L,QSA]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} ^/account/?$
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/account.php -f
+RewriteRule ^account/?$ account.php [L,QSA]
+
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/settings.php -f
+RewriteRule ^settings/?$ settings.php [L,QSA]
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/login.php -f
+RewriteRule ^login/?$ login.php [L,QSA]
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/index.php -f
+RewriteRule ^index/?$ index.php [L,QSA]
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/select-module.php -f
+RewriteRule ^select-module/?$ select-module.php [L,QSA]
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/hr/dashboard.php -f
+RewriteRule ^hr/?$ hr/dashboard.php [L,R=301,QSA]
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/accounts/invoices.php -f
+RewriteRule ^accounts/?$ accounts/invoices.php [L,R=301,QSA]
+
+RewriteCond %{THE_REQUEST} \s/operation/worker_availability/?[\s?] [NC]
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/operation/worker_availability.php -f
+RewriteRule ^operation/worker_availability/?$ operation/worker_availability.php [L,QSA]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} ^/operation/worker_availability/?$
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/operation/worker_availability.php -f
+RewriteRule ^operation/worker_availability/?$ operation/worker_availability.php [L,QSA]
+
+# ----- Construction module (live at root: /modules/construction/...) -----
+RewriteCond %{REQUEST_URI} ^/modules/construction/?$
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/modules/construction/index.php -f
+RewriteRule ^modules/construction/?$ modules/construction/index.php [L,QSA]
+RewriteCond %{REQUEST_URI} ^/modules/construction$
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/modules/construction/index.php -f
+RewriteRule ^modules/construction$ modules/construction/index.php [L,QSA]
+
+# ----- Remove .php extension (general) -----
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} !^/(account|operation|settings|login|index|select-module)/?$
+RewriteCond %{REQUEST_URI} !^/operation/worker_availability/?$
+RewriteCond %{REQUEST_URI} ^/(.+)$
+RewriteCond %{DOCUMENT_ROOT}%{ENV:APP_BASE}/%1.php -f
+RewriteRule ^(.*)$ $1.php [L,QSA]
+
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} (.+)/$
+RewriteRule ^ %1 [R=301,L]
+
+<FilesMatch "\.(sql|log|md)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+# Note: *.json not blanket-denied so /.well-known/assetlinks.json can be served via rewrite.
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>

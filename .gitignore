@@ -1,0 +1,96 @@
+# ─── Secrets & configuration ────────────────────────────────
+# Never commit real credentials. Commit *.example files instead.
+.env
+.env.*
+!.env.example
+config.php
+config.local.php
+config.inc.php
+includes/config.php
+includes/db.php
+db_connect.php
+includes/db_connect.php
+api/mobile/config.php
+db_config.php
+credentials.*
+secrets.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+service-account*.json
+*-credentials.json
+*firebase-adminsdk*.json
+
+# ─── Data: tenant documents, PII, backups ───────────────────
+# This app stores tenant/AMC/invoice files. None of it belongs in git.
+uploads/
+storage/
+backups/
+logs/
+# Dumps are excluded, but schema migrations are NOT - they belong in git.
+*.sql
+*.sql.gz
+!migrations/**/*.sql
+!database/**/*.sql
+*.dump
+*.sqlite
+*.sqlite3
+*.db
+
+# ─── Dependencies & build output ────────────────────────────
+vendor/
+node_modules/
+composer.lock
+package-lock.json
+*.cache
+
+# ─── OS / editor noise ──────────────────────────────────────
+__MACOSX/
+.DS_Store
+._*
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.sublime-*
+
+# ─── Scratch ────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+*.log
+error_log
+live_hotfix/
+
+# Tenant contracts / notices sitting loose in the app root (PII)
+/*.pdf
+/*.docx
+/*.doc
+/*.xlsx
+
+# ─── Keep empty runtime dirs the app needs ──────────────────
+!**/.gitkeep
+
+# ─── Backup/copy variants of config files (suffix after .bak) ─
+# `*.bak` misses `config.php.bak-before-db-host`; these carry real creds.
+*.bak-*
+*.bak.*
+config.php.*
+includes/config.php*
+includes/email_config.php
+*" copy".php
+* copy.php
+* copy *.php
+
+# ─── Archives / snapshots of the app itself ─────────────────
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z

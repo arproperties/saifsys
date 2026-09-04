@@ -1,0 +1,2 @@
+-- Service Management Phase 3: adjustment requests + financial change audit
+-- Apply via tools/sm_apply_phase3_schema.php

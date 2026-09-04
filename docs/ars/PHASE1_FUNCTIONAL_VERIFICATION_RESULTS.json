@@ -1,0 +1,667 @@
+{
+    "generated_at": "2026-07-17T13:46:18+00:00",
+    "base_url": "http://127.0.0.1/herosysgro",
+    "db": "datanew",
+    "backup": "/Applications/XAMPP/xamppfiles/htdocs/herosysgro/docs/ars/backups/datanew_phase1_pre_verify_20260717_174150.sql.gz",
+    "engine_sha": "9cbb880fc3241615b69d4fe5b3adfbee14e513d03964924214cc9325f9d7c7d6",
+    "pass": 65,
+    "fail": 0,
+    "results": [
+        {
+            "id": "ENV-01",
+            "section": "prep",
+            "expected": "ARS company exists",
+            "actual": "company_id=8",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "ENV-02",
+            "section": "prep",
+            "expected": "Local DB datanew",
+            "actual": "db=datanew host=MacBookPro",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "ENV-03",
+            "section": "prep",
+            "expected": "Pre-verify backup exists",
+            "actual": "/Applications/XAMPP/xamppfiles/htdocs/herosysgro/docs/ars/backups/datanew_phase1_pre_verify_20260717_174150.sql.gz",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "ENV-04",
+            "section": "prep",
+            "expected": "Guest + unit available",
+            "actual": "guest=1 unit=9",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "A-01",
+            "section": "draft",
+            "expected": "Unlocked / draft financial_status",
+            "actual": "locked=0 fin=draft",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 28
+            }
+        },
+        {
+            "id": "A-02",
+            "section": "draft",
+            "expected": "Operational notes editable",
+            "actual": "notes=phase1 verify note",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 28
+            }
+        },
+        {
+            "id": "A-03",
+            "section": "draft",
+            "expected": "Charge allowed; no journal; one charge activity",
+            "actual": "acts=1 jv=0",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 28,
+                "charge_id": 7
+            }
+        },
+        {
+            "id": "A-04",
+            "section": "draft",
+            "expected": "Activity rows increment without duplicates of unrelated types",
+            "actual": "before=2 after=3",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 28
+            }
+        },
+        {
+            "id": "B-01",
+            "section": "confirm",
+            "expected": "Journal post fails when COA missing",
+            "actual": "{\"success\":false,\"journal_id\":null,\"error\":\"Missing ARS chart of accounts (1310, 4100, or 2310). Run seed migration.\"}",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29
+            }
+        },
+        {
+            "id": "B-02",
+            "section": "confirm",
+            "expected": "Confirm rolls back: status still pending, no journal",
+            "actual": "status=pending journal_id=null",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29
+            }
+        },
+        {
+            "id": "B-03",
+            "section": "confirm",
+            "expected": "Availability rechecked before confirm",
+            "actual": "{\"available\":true,\"conflicts\":[]}",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29
+            }
+        },
+        {
+            "id": "B-04",
+            "section": "confirm",
+            "expected": "Status confirmed + lock + journal once + activities",
+            "actual": "{\"status\":\"confirmed\",\"locked\":1,\"reason\":\"Revenue journal posted on confirm\",\"journal_id\":3492,\"jv_count\":1,\"conf_acts\":1,\"lock_acts\":1,\"fin_status\":\"invoice_created\"}",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29,
+                "journal_id": 3492
+            }
+        },
+        {
+            "id": "B-05",
+            "section": "confirm",
+            "expected": "Repeat confirm does not create second journal",
+            "actual": "blocked=1 jv=1",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29
+            }
+        },
+        {
+            "id": "C-01",
+            "section": "payment",
+            "expected": "Failed payment journal rolls back; no orphan payment",
+            "actual": "orphan_count=0",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 30
+            }
+        },
+        {
+            "id": "C-02",
+            "section": "payment",
+            "expected": "Payment recorded once with journal + lock + activity",
+            "actual": "{\"payment_id\":15,\"journal_id\":\"3494\",\"fin\":\"invoice_created\"}",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 30,
+                "payment_id": 15
+            }
+        },
+        {
+            "id": "D-01",
+            "section": "charge",
+            "expected": "Unlocked booking remains charge-eligible",
+            "actual": "locked=0",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 28
+            }
+        },
+        {
+            "id": "D-02",
+            "section": "charge",
+            "expected": "Locked booking blocks charge / requires amendment preview",
+            "actual": "{\"has_financial_impact\":true,\"requires_amendment\":true,\"locked\":true,\"impacted_fields\":[\"total_amount\"],\"allowed_fields\":[],\"blocked_fields\":[\"total_amount\"],\"preview_documents\":[\"Adjustment Invoice or Credit Note (rate\\/total change) \\u2014 Phase 2 adapter\"],\"message\":\"This booking is financially locked. Changes to total_amount require a Booking Amendment. Operational notes may still be edited.\"}",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29
+            }
+        },
+        {
+            "id": "D-03",
+            "section": "charge",
+            "expected": "No Option B financial doc tables created",
+            "actual": "ars_fin_tables=0",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "E-01",
+            "section": "lifecycle",
+            "expected": "Extension on locked booking requires amendment; preview docs only",
+            "actual": "{\"has_financial_impact\":true,\"requires_amendment\":true,\"locked\":true,\"impacted_fields\":[\"check_out\",\"nights\"],\"allowed_fields\":[],\"blocked_fields\":[\"check_out\",\"nights\"],\"preview_documents\":[\"Extension Invoice and\\/or Credit Note (date\\/unit change) \\u2014 Phase 2 adapter\"],\"message\":\"This booking is financially locked. Changes to check_out, nights require a Booking Amendment. Operational notes may still be edited.\"}",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29
+            }
+        },
+        {
+            "id": "E-02",
+            "section": "lifecycle",
+            "expected": "Financially impactful lifecycle blocked when locked",
+            "actual": "gate=1",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29
+            }
+        },
+        {
+            "id": "E-03",
+            "section": "lifecycle",
+            "expected": "Cancel rolls back when reverse fails; status unchanged",
+            "actual": "before=confirmed after=confirmed",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 31
+            }
+        },
+        {
+            "id": "G-01",
+            "section": "permissions",
+            "expected": "Core user has core not ops",
+            "actual": "coreOk=1",
+            "result": "PASS",
+            "refs": {
+                "user_id": 63
+            }
+        },
+        {
+            "id": "G-02",
+            "section": "permissions",
+            "expected": "Ops user has ops not core",
+            "actual": "[false,true]",
+            "result": "PASS",
+            "refs": {
+                "user_id": 64
+            }
+        },
+        {
+            "id": "G-03",
+            "section": "permissions",
+            "expected": "Ops denied confirm; allowed checkin",
+            "actual": "confirm=denied checkin=allowed",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "G-04",
+            "section": "permissions",
+            "expected": "Owner/admin path has core+ops",
+            "actual": "[true,true]",
+            "result": "PASS",
+            "refs": {
+                "user_id": 1
+            }
+        },
+        {
+            "id": "H-01",
+            "section": "scoping",
+            "expected": "Short-term units returned under scoped helper",
+            "actual": "count=10",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "H-02",
+            "section": "scoping",
+            "expected": "Non short-term unit rejected",
+            "actual": "unit=1 rejected=1",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "H-03",
+            "section": "scoping",
+            "expected": "Cross-company booking fetch returns empty",
+            "actual": "other_company=7 booking=29",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "H-04",
+            "section": "scoping",
+            "expected": "Shared RE-owned short-term units included under fallback when applicable",
+            "actual": "shared_re_owned_in_scope=10 total_scoped=10",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "I-01",
+            "section": "availability",
+            "expected": "Second overlapping confirm blocked by availability",
+            "actual": "{\"a1\":false,\"a2\":false,\"confirmed_count\":1}",
+            "result": "PASS",
+            "refs": {
+                "booking_ids": [
+                    32,
+                    33
+                ]
+            }
+        },
+        {
+            "id": "J-01",
+            "section": "regression",
+            "expected": "Existing bookings 1\u20135 unchanged by verification tests",
+            "actual": "unchanged",
+            "result": "PASS",
+            "refs": {
+                "booking_ids": [
+                    1,
+                    2,
+                    3,
+                    4,
+                    5
+                ]
+            }
+        },
+        {
+            "id": "J-02",
+            "section": "regression",
+            "expected": "Backfilled locks consistent with financial evidence",
+            "actual": "b1_locked=1 b4_locked=0",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "J-03",
+            "section": "regression",
+            "expected": "Deposit booking retains deposit amount + deposit journal",
+            "actual": "deposit=500.00 dj=1795",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "K-01",
+            "section": "api",
+            "expected": "Guest booking detail keeps top-level keys",
+            "actual": "missing_top=[] missing_booking=[]",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 5,
+                "guest_id": 4
+            }
+        },
+        {
+            "id": "K-02",
+            "section": "api",
+            "expected": "Phase 1 lock fields not exposed on booking payload",
+            "actual": "forbidden=[]",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "K-03",
+            "section": "api",
+            "expected": "Guest booking list returns items",
+            "actual": "count=4",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "K-04",
+            "section": "api",
+            "expected": "Payments + security_deposit present",
+            "actual": "payments=2 sd_keys=[\"amount\",\"status\",\"payment_method\",\"cash_requested\",\"received_date\",\"refunded_amount\",\"refundable_amount\",\"refunded_date\",\"currency\",\"can_pay_online\",\"can_choose_cash\",\"is_due\",\"is_received\",\"is_fully_refunded\"]",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-00",
+            "section": "csrf",
+            "expected": "Verifier login succeeds on localhost",
+            "actual": "http=302",
+            "result": "PASS",
+            "refs": {
+                "username": "p1v4295977"
+            }
+        },
+        {
+            "id": "F-01",
+            "section": "csrf",
+            "expected": "ARS CSRF token present in staff page",
+            "actual": "token_present",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-booking-missing",
+            "section": "csrf",
+            "expected": "booking AJAX rejects missing CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-booking-invalid",
+            "section": "csrf",
+            "expected": "booking AJAX rejects invalid CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-pricing-missing",
+            "section": "csrf",
+            "expected": "pricing AJAX rejects missing CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-pricing-invalid",
+            "section": "csrf",
+            "expected": "pricing AJAX rejects invalid CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-blocked-missing",
+            "section": "csrf",
+            "expected": "blocked AJAX rejects missing CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-blocked-invalid",
+            "section": "csrf",
+            "expected": "blocked AJAX rejects invalid CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-housekeeping-missing",
+            "section": "csrf",
+            "expected": "housekeeping AJAX rejects missing CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-housekeeping-invalid",
+            "section": "csrf",
+            "expected": "housekeeping AJAX rejects invalid CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-maintenance-missing",
+            "section": "csrf",
+            "expected": "maintenance AJAX rejects missing CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-maintenance-invalid",
+            "section": "csrf",
+            "expected": "maintenance AJAX rejects invalid CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-photo-missing",
+            "section": "csrf",
+            "expected": "photo AJAX rejects missing CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-photo-invalid",
+            "section": "csrf",
+            "expected": "photo AJAX rejects invalid CSRF",
+            "actual": "code=500 body={\"success\":false,\"error\":\"CSRF token invalid or missing.\"}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-booking-valid",
+            "section": "csrf",
+            "expected": "Valid CSRF succeeds on detect_amendment_impact",
+            "actual": "code=200 body={\"success\":true,\"impact\":{\"has_financial_impact\":false,\"requires_amendment\":false,\"locked\":true,\"impacted_fields\":[],\"allowed_fields\":[],\"blocked_fields\":[],\"preview_documents\":[],\"message\":null}}",
+            "result": "PASS",
+            "refs": {
+                "booking_id": 29
+            }
+        },
+        {
+            "id": "F-guests-missing",
+            "section": "csrf",
+            "expected": "guests.php rejects missing CSRF",
+            "actual": "code=200",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-form-settings",
+            "section": "csrf",
+            "expected": "settings form includes csrf_field",
+            "actual": "http=200 has_csrf=1",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-form-booking_add",
+            "section": "csrf",
+            "expected": "booking_add form includes csrf_field",
+            "actual": "http=200 has_csrf=1",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-form-unit_edit",
+            "section": "csrf",
+            "expected": "unit_edit form includes csrf_field",
+            "actual": "http=200 has_csrf=1",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-form-guest_view",
+            "section": "csrf",
+            "expected": "guest_view form includes csrf_field",
+            "actual": "http=200 has_csrf=1",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "F-form-unit_profile",
+            "section": "csrf",
+            "expected": "unit_profile form includes csrf_field",
+            "actual": "http=200 has_csrf=1",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "DB-01",
+            "section": "db",
+            "expected": "All activities point to valid bookings",
+            "actual": "orphan_activities=0",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "DB-02",
+            "section": "db",
+            "expected": "No duplicate ars_booking journals for test bookings",
+            "actual": "dup_groups=0",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "DB-03",
+            "section": "db",
+            "expected": "No locked+draft without financial evidence",
+            "actual": "inconsistent=0",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "DB-04",
+            "section": "db",
+            "expected": "Migration uses IF NOT EXISTS / information_schema guards",
+            "actual": "guards_present",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "DB-05",
+            "section": "db",
+            "expected": "accounting_engine.php unchanged",
+            "actual": "9cbb880fc3241615",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "DB-06",
+            "section": "db",
+            "expected": "re_invoices/leases/tenants row counts unchanged",
+            "actual": "{\"before\":{\"re_invoices\":190,\"re_leases\":189,\"re_tenants\":184},\"after\":{\"re_invoices\":190,\"re_leases\":189,\"re_tenants\":184}}",
+            "result": "PASS",
+            "refs": []
+        },
+        {
+            "id": "CLEAN-01",
+            "section": "cleanup",
+            "expected": "Disposable users/roles/bookings removed",
+            "actual": "cleaned",
+            "result": "PASS",
+            "refs": []
+        }
+    ],
+    "existing_bookings_snapshot": {
+        "1": {
+            "id": 1,
+            "booking_number": "ARS-26-00001",
+            "status": "checked_out",
+            "payment_status": "paid",
+            "journal_id": 1793,
+            "deposit_journal_id": 1795,
+            "is_financially_locked": 1,
+            "financial_status": "paid",
+            "paid_amount": "1260.00",
+            "deposit_amount": "500.00",
+            "total_amount": "1260.00"
+        },
+        "2": {
+            "id": 2,
+            "booking_number": "ARS-26-00002",
+            "status": "checked_in",
+            "payment_status": "paid",
+            "journal_id": 2370,
+            "deposit_journal_id": null,
+            "is_financially_locked": 1,
+            "financial_status": "paid",
+            "paid_amount": "455.70",
+            "deposit_amount": "0.00",
+            "total_amount": "455.70"
+        },
+        "3": {
+            "id": 3,
+            "booking_number": "ARS-26-00003",
+            "status": "confirmed",
+            "payment_status": "unpaid",
+            "journal_id": 2371,
+            "deposit_journal_id": null,
+            "is_financially_locked": 1,
+            "financial_status": "invoice_created",
+            "paid_amount": "0.00",
+            "deposit_amount": "0.00",
+            "total_amount": "911.40"
+        },
+        "4": {
+            "id": 4,
+            "booking_number": "ARS-26-00004",
+            "status": "expired",
+            "payment_status": "unpaid",
+            "journal_id": null,
+            "deposit_journal_id": null,
+            "is_financially_locked": 0,
+            "financial_status": "draft",
+            "paid_amount": "0.00",
+            "deposit_amount": "0.00",
+            "total_amount": "227.85"
+        },
+        "5": {
+            "id": 5,
+            "booking_number": "ARS-26-00005",
+            "status": "confirmed",
+            "payment_status": "paid",
+            "journal_id": 2393,
+            "deposit_journal_id": 2394,
+            "is_financially_locked": 1,
+            "financial_status": "paid",
+            "paid_amount": "3645.60",
+            "deposit_amount": "500.00",
+            "total_amount": "3645.60"
+        }
+    },
+    "test_booking_ids_created": [
+        28,
+        29,
+        30,
+        31,
+        32,
+        33
+    ]
+}

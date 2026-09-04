@@ -1,0 +1,2070 @@
+{
+    "phase": 4,
+    "tolerance_aed": 0.01,
+    "generated_at": "2026-07-30T13:08:02+00:00",
+    "leases": {
+        "69": {
+            "lease_id": 69,
+            "company_id": 2,
+            "tenant_id": 71,
+            "accounting_mode": "invoice",
+            "comparisons": {
+                "pm_svc_outstanding_total": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_overdue_amount": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_due_now_amount": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_invoice_total": {
+                    "pass": true,
+                    "pm": 45300,
+                    "svc": "45300.00"
+                },
+                "pm_svc_paid_total": {
+                    "pass": true,
+                    "pm": 45300,
+                    "svc": "45300.00"
+                },
+                "pm_svc_receipts_total": {
+                    "pass": true,
+                    "pm": 45300,
+                    "svc": "45300.00"
+                },
+                "pm_svc_allocated_total": {
+                    "pass": true,
+                    "pm": 45300,
+                    "svc": "45300.00"
+                },
+                "pm_svc_unallocated_receipts": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_tenant_credit": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "lv_pm_outstanding": {
+                    "pass": true,
+                    "lease_view": 0,
+                    "pm": 0
+                },
+                "lv_pm_allocated": {
+                    "pass": true,
+                    "lease_view": 45300,
+                    "pm": 45300
+                },
+                "app_svc_outstanding_total": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_rent_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_service_charge_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_penalty_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_overdue_amount": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_due_now_amount": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_invoice_total": {
+                    "pass": true,
+                    "app": 45300,
+                    "svc": "45300.00"
+                },
+                "app_svc_paid_total": {
+                    "pass": true,
+                    "app": 45300,
+                    "svc": "45300.00"
+                },
+                "app_svc_receipts_total": {
+                    "pass": true,
+                    "app": 45300,
+                    "svc": "45300.00"
+                },
+                "app_svc_allocated_total": {
+                    "pass": true,
+                    "app": 45300,
+                    "svc": "45300.00"
+                },
+                "app_svc_unallocated_receipts": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_tenant_credit": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                }
+            },
+            "line_items": [],
+            "notes": [
+                "Lease View IM strip does not display overdue_amount, due_now_amount, display_status, paid_total money, tenant_credit (credit is a separate section), or class breakdown — marked N\/A for UI surface, still validated on PM\/Service\/API\/App.",
+                "Installments validated as operational schedule only (not AR).",
+                "No next_due (empty-state \/ fully settled or no open items)."
+            ],
+            "erp_payment_manager": {
+                "total_invoiced": 45300,
+                "total_outstanding": 0,
+                "total_due_now": 0,
+                "total_overdue": 0,
+                "total_collected": 45300,
+                "allocated_total": 45300,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "invoice_count": 14,
+                "receipt_count": 4,
+                "due_now_count": 0,
+                "overdue_count": 0
+            },
+            "erp_financial_service": {
+                "financial_schema_version": 2,
+                "lease_id": 69,
+                "company_id": 2,
+                "tenant_id": 71,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "up_to_date",
+                "outstanding_total": "0.00",
+                "rent_outstanding": "0.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "0.00",
+                "due_now_amount": "0.00",
+                "invoice_total": "45300.00",
+                "paid_total": "45300.00",
+                "receipts_total": "45300.00",
+                "allocated_total": "45300.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 14,
+                "receipt_count": 4,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment": {
+                    "payment_id": 957,
+                    "payment_date": "2026-05-06",
+                    "cleared_date": "2026-05-06",
+                    "amount": "10875.00",
+                    "receipt_number": "REC-2026-00065",
+                    "display_status": "allocated"
+                },
+                "next_due": null
+            },
+            "erp_lease_view": {
+                "issued_invoices": 14,
+                "open_invoice_amount": 0,
+                "receipts_count_ui": 4,
+                "allocated_total": 45300,
+                "obligations_open_amount": 0,
+                "security_deposit_open": 0
+            },
+            "api_dashboard_financial": {
+                "financial_schema_version": 2,
+                "lease_id": 69,
+                "company_id": 2,
+                "tenant_id": 71,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "up_to_date",
+                "outstanding_total": "0.00",
+                "rent_outstanding": "0.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "0.00",
+                "due_now_amount": "0.00",
+                "invoice_total": "45300.00",
+                "paid_total": "45300.00",
+                "receipts_total": "45300.00",
+                "allocated_total": "45300.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 14,
+                "receipt_count": 4,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment": {
+                    "payment_id": 957,
+                    "payment_date": "2026-05-06",
+                    "cleared_date": "2026-05-06",
+                    "amount": "10875.00",
+                    "receipt_number": "REC-2026-00065",
+                    "display_status": "allocated"
+                },
+                "next_due": null,
+                "outstanding_rent": "0.00",
+                "outstanding_penalties": "0.00",
+                "outstanding_service_charges": "0.00",
+                "next_installment": {
+                    "installment_date": "2025-08-05",
+                    "amount": "12675.00",
+                    "status": "pending"
+                },
+                "next_service_charge": null
+            },
+            "flutter_bound": {
+                "accounting_mode": "invoice",
+                "outstanding_total": 0,
+                "rent_outstanding": 0,
+                "service_charge_outstanding": 0,
+                "penalty_outstanding": 0,
+                "overdue_amount": 0,
+                "due_now_amount": 0,
+                "invoice_total": 45300,
+                "paid_total": 45300,
+                "receipts_total": 45300,
+                "allocated_total": 45300,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "vat_total": 0,
+                "vat_available": true,
+                "display_status": "up_to_date",
+                "invoice_count": 14,
+                "receipt_count": 4,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment_amount": 10875,
+                "last_payment_date": "2026-05-06",
+                "last_payment_status": "allocated",
+                "next_due_amount": null,
+                "next_due_date": null,
+                "next_due_status": null
+            },
+            "scenario_tags": [
+                "fully_paid_or_zero_outstanding",
+                "no_next_due"
+            ]
+        },
+        "159": {
+            "lease_id": 159,
+            "company_id": 2,
+            "tenant_id": 153,
+            "accounting_mode": "invoice",
+            "comparisons": {
+                "pm_svc_outstanding_total": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_overdue_amount": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_due_now_amount": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_invoice_total": {
+                    "pass": true,
+                    "pm": 26803.75,
+                    "svc": "26803.75"
+                },
+                "pm_svc_paid_total": {
+                    "pass": true,
+                    "pm": 38000,
+                    "svc": "38000.00"
+                },
+                "pm_svc_receipts_total": {
+                    "pass": true,
+                    "pm": 38000,
+                    "svc": "38000.00"
+                },
+                "pm_svc_allocated_total": {
+                    "pass": true,
+                    "pm": 38000,
+                    "svc": "38000.00"
+                },
+                "pm_svc_unallocated_receipts": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_tenant_credit": {
+                    "pass": true,
+                    "pm": 11196.25,
+                    "svc": "11196.25"
+                },
+                "lv_pm_outstanding": {
+                    "pass": true,
+                    "lease_view": 0,
+                    "pm": 0
+                },
+                "lv_pm_allocated": {
+                    "pass": true,
+                    "lease_view": 38000,
+                    "pm": 38000
+                },
+                "app_svc_outstanding_total": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_rent_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_service_charge_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_penalty_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_overdue_amount": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_due_now_amount": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_invoice_total": {
+                    "pass": true,
+                    "app": 26803.75,
+                    "svc": "26803.75"
+                },
+                "app_svc_paid_total": {
+                    "pass": true,
+                    "app": 38000,
+                    "svc": "38000.00"
+                },
+                "app_svc_receipts_total": {
+                    "pass": true,
+                    "app": 38000,
+                    "svc": "38000.00"
+                },
+                "app_svc_allocated_total": {
+                    "pass": true,
+                    "app": 38000,
+                    "svc": "38000.00"
+                },
+                "app_svc_unallocated_receipts": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_tenant_credit": {
+                    "pass": true,
+                    "app": 11196.25,
+                    "svc": "11196.25"
+                }
+            },
+            "line_items": [],
+            "notes": [
+                "Lease View IM strip does not display overdue_amount, due_now_amount, display_status, paid_total money, tenant_credit (credit is a separate section), or class breakdown — marked N\/A for UI surface, still validated on PM\/Service\/API\/App.",
+                "Installments validated as operational schedule only (not AR).",
+                "No next_due (empty-state \/ fully settled or no open items)."
+            ],
+            "erp_payment_manager": {
+                "total_invoiced": 26803.75,
+                "total_outstanding": 0,
+                "total_due_now": 0,
+                "total_overdue": 0,
+                "total_collected": 38000,
+                "allocated_total": 38000,
+                "unallocated_receipts": 0,
+                "tenant_credit": 11196.25,
+                "invoice_count": 16,
+                "receipt_count": 3,
+                "due_now_count": 0,
+                "overdue_count": 0
+            },
+            "erp_financial_service": {
+                "financial_schema_version": 2,
+                "lease_id": 159,
+                "company_id": 2,
+                "tenant_id": 153,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "up_to_date",
+                "outstanding_total": "0.00",
+                "rent_outstanding": "0.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "0.00",
+                "due_now_amount": "0.00",
+                "invoice_total": "26803.75",
+                "paid_total": "38000.00",
+                "receipts_total": "38000.00",
+                "allocated_total": "38000.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "137.06",
+                "vat_available": true,
+                "tenant_credit": "11196.25",
+                "invoice_count": 16,
+                "receipt_count": 3,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment": {
+                    "payment_id": 937,
+                    "payment_date": "2026-07-06",
+                    "cleared_date": "2026-07-06",
+                    "amount": "1000.00",
+                    "receipt_number": "REC-2026-00045",
+                    "display_status": "overpaid"
+                },
+                "next_due": null
+            },
+            "erp_lease_view": {
+                "issued_invoices": 16,
+                "open_invoice_amount": 0,
+                "receipts_count_ui": 3,
+                "allocated_total": 38000,
+                "obligations_open_amount": 18406.21,
+                "security_deposit_open": 0
+            },
+            "api_dashboard_financial": {
+                "financial_schema_version": 2,
+                "lease_id": 159,
+                "company_id": 2,
+                "tenant_id": 153,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "up_to_date",
+                "outstanding_total": "0.00",
+                "rent_outstanding": "0.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "0.00",
+                "due_now_amount": "0.00",
+                "invoice_total": "26803.75",
+                "paid_total": "38000.00",
+                "receipts_total": "38000.00",
+                "allocated_total": "38000.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "137.06",
+                "vat_available": true,
+                "tenant_credit": "11196.25",
+                "invoice_count": 16,
+                "receipt_count": 3,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment": {
+                    "payment_id": 937,
+                    "payment_date": "2026-07-06",
+                    "cleared_date": "2026-07-06",
+                    "amount": "1000.00",
+                    "receipt_number": "REC-2026-00045",
+                    "display_status": "overpaid"
+                },
+                "next_due": null,
+                "outstanding_rent": "0.00",
+                "outstanding_penalties": "0.00",
+                "outstanding_service_charges": "0.00",
+                "next_installment": {
+                    "installment_date": "2026-05-01",
+                    "amount": "31210.00",
+                    "status": "pending"
+                },
+                "next_service_charge": null
+            },
+            "flutter_bound": {
+                "accounting_mode": "invoice",
+                "outstanding_total": 0,
+                "rent_outstanding": 0,
+                "service_charge_outstanding": 0,
+                "penalty_outstanding": 0,
+                "overdue_amount": 0,
+                "due_now_amount": 0,
+                "invoice_total": 26803.75,
+                "paid_total": 38000,
+                "receipts_total": 38000,
+                "allocated_total": 38000,
+                "unallocated_receipts": 0,
+                "tenant_credit": 11196.25,
+                "vat_total": 137.06,
+                "vat_available": true,
+                "display_status": "up_to_date",
+                "invoice_count": 16,
+                "receipt_count": 3,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment_amount": 1000,
+                "last_payment_date": "2026-07-06",
+                "last_payment_status": "overpaid",
+                "next_due_amount": null,
+                "next_due_date": null,
+                "next_due_status": null
+            },
+            "scenario_tags": [
+                "fully_paid_or_zero_outstanding",
+                "tenant_credit",
+                "no_next_due"
+            ]
+        },
+        "269": {
+            "lease_id": 269,
+            "company_id": 2,
+            "tenant_id": 177,
+            "accounting_mode": "invoice",
+            "comparisons": {
+                "pm_svc_outstanding_total": {
+                    "pass": true,
+                    "pm": 5000,
+                    "svc": "5000.00"
+                },
+                "pm_svc_overdue_amount": {
+                    "pass": true,
+                    "pm": 5000,
+                    "svc": "5000.00"
+                },
+                "pm_svc_due_now_amount": {
+                    "pass": true,
+                    "pm": 5000,
+                    "svc": "5000.00"
+                },
+                "pm_svc_invoice_total": {
+                    "pass": true,
+                    "pm": 13300,
+                    "svc": "13300.00"
+                },
+                "pm_svc_paid_total": {
+                    "pass": true,
+                    "pm": 16300,
+                    "svc": "16300.00"
+                },
+                "pm_svc_receipts_total": {
+                    "pass": true,
+                    "pm": 16300,
+                    "svc": "16300.00"
+                },
+                "pm_svc_allocated_total": {
+                    "pass": true,
+                    "pm": 16300,
+                    "svc": "16300.00"
+                },
+                "pm_svc_unallocated_receipts": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_tenant_credit": {
+                    "pass": true,
+                    "pm": 2862.5,
+                    "svc": "2862.50"
+                },
+                "lv_pm_outstanding": {
+                    "pass": true,
+                    "lease_view": 5000,
+                    "pm": 5000
+                },
+                "lv_pm_allocated": {
+                    "pass": true,
+                    "lease_view": 16300,
+                    "pm": 16300
+                },
+                "app_svc_outstanding_total": {
+                    "pass": true,
+                    "app": 5000,
+                    "svc": "5000.00"
+                },
+                "app_svc_rent_outstanding": {
+                    "pass": true,
+                    "app": 5000,
+                    "svc": "5000.00"
+                },
+                "app_svc_service_charge_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_penalty_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_overdue_amount": {
+                    "pass": true,
+                    "app": 5000,
+                    "svc": "5000.00"
+                },
+                "app_svc_due_now_amount": {
+                    "pass": true,
+                    "app": 5000,
+                    "svc": "5000.00"
+                },
+                "app_svc_invoice_total": {
+                    "pass": true,
+                    "app": 13300,
+                    "svc": "13300.00"
+                },
+                "app_svc_paid_total": {
+                    "pass": true,
+                    "app": 16300,
+                    "svc": "16300.00"
+                },
+                "app_svc_receipts_total": {
+                    "pass": true,
+                    "app": 16300,
+                    "svc": "16300.00"
+                },
+                "app_svc_allocated_total": {
+                    "pass": true,
+                    "app": 16300,
+                    "svc": "16300.00"
+                },
+                "app_svc_unallocated_receipts": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_tenant_credit": {
+                    "pass": true,
+                    "app": 2862.5,
+                    "svc": "2862.50"
+                }
+            },
+            "line_items": [],
+            "notes": [
+                "Lease View IM strip does not display overdue_amount, due_now_amount, display_status, paid_total money, tenant_credit (credit is a separate section), or class breakdown — marked N\/A for UI surface, still validated on PM\/Service\/API\/App.",
+                "Installments validated as operational schedule only (not AR)."
+            ],
+            "erp_payment_manager": {
+                "total_invoiced": 13300,
+                "total_outstanding": 5000,
+                "total_due_now": 5000,
+                "total_overdue": 5000,
+                "total_collected": 16300,
+                "allocated_total": 16300,
+                "unallocated_receipts": 0,
+                "tenant_credit": 2862.5,
+                "invoice_count": 4,
+                "receipt_count": 1,
+                "due_now_count": 1,
+                "overdue_count": 1
+            },
+            "erp_financial_service": {
+                "financial_schema_version": 2,
+                "lease_id": 269,
+                "company_id": 2,
+                "tenant_id": 177,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "5000.00",
+                "rent_outstanding": "5000.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "5000.00",
+                "due_now_amount": "5000.00",
+                "invoice_total": "13300.00",
+                "paid_total": "16300.00",
+                "receipts_total": "16300.00",
+                "allocated_total": "16300.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "2862.50",
+                "invoice_count": 4,
+                "receipt_count": 1,
+                "due_now_count": 1,
+                "overdue_count": 1,
+                "last_payment": {
+                    "payment_id": 947,
+                    "payment_date": "2026-06-22",
+                    "cleared_date": "2026-06-22",
+                    "amount": "16300.00",
+                    "receipt_number": "REC-2026-00055",
+                    "display_status": "overpaid"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 531,
+                    "reference_number": "INV-2026-00525",
+                    "due_date": "2026-07-22",
+                    "amount": "5000.00",
+                    "display_status": "overdue",
+                    "class": "rent"
+                }
+            },
+            "erp_lease_view": {
+                "issued_invoices": 4,
+                "open_invoice_amount": 5000,
+                "receipts_count_ui": 1,
+                "allocated_total": 16300,
+                "obligations_open_amount": 55000,
+                "security_deposit_open": 0
+            },
+            "api_dashboard_financial": {
+                "financial_schema_version": 2,
+                "lease_id": 269,
+                "company_id": 2,
+                "tenant_id": 177,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "5000.00",
+                "rent_outstanding": "5000.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "5000.00",
+                "due_now_amount": "5000.00",
+                "invoice_total": "13300.00",
+                "paid_total": "16300.00",
+                "receipts_total": "16300.00",
+                "allocated_total": "16300.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "2862.50",
+                "invoice_count": 4,
+                "receipt_count": 1,
+                "due_now_count": 1,
+                "overdue_count": 1,
+                "last_payment": {
+                    "payment_id": 947,
+                    "payment_date": "2026-06-22",
+                    "cleared_date": "2026-06-22",
+                    "amount": "16300.00",
+                    "receipt_number": "REC-2026-00055",
+                    "display_status": "overpaid"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 531,
+                    "reference_number": "INV-2026-00525",
+                    "due_date": "2026-07-22",
+                    "amount": "5000.00",
+                    "display_status": "overdue",
+                    "class": "rent"
+                },
+                "outstanding_rent": "5000.00",
+                "outstanding_penalties": "0.00",
+                "outstanding_service_charges": "0.00",
+                "next_installment": {
+                    "installment_date": "2026-06-22",
+                    "amount": "16300.00",
+                    "status": "pending"
+                },
+                "next_service_charge": null
+            },
+            "flutter_bound": {
+                "accounting_mode": "invoice",
+                "outstanding_total": 5000,
+                "rent_outstanding": 5000,
+                "service_charge_outstanding": 0,
+                "penalty_outstanding": 0,
+                "overdue_amount": 5000,
+                "due_now_amount": 5000,
+                "invoice_total": 13300,
+                "paid_total": 16300,
+                "receipts_total": 16300,
+                "allocated_total": 16300,
+                "unallocated_receipts": 0,
+                "tenant_credit": 2862.5,
+                "vat_total": 0,
+                "vat_available": true,
+                "display_status": "overdue",
+                "invoice_count": 4,
+                "receipt_count": 1,
+                "due_now_count": 1,
+                "overdue_count": 1,
+                "last_payment_amount": 16300,
+                "last_payment_date": "2026-06-22",
+                "last_payment_status": "overpaid",
+                "next_due_amount": 5000,
+                "next_due_date": "2026-07-22",
+                "next_due_status": "overdue"
+            },
+            "http_financial_summary": {
+                "financial_schema_version": 2,
+                "lease_id": 269,
+                "company_id": 2,
+                "tenant_id": 177,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "5000.00",
+                "rent_outstanding": "5000.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "5000.00",
+                "due_now_amount": "5000.00",
+                "invoice_total": "13300.00",
+                "paid_total": "16300.00",
+                "receipts_total": "16300.00",
+                "allocated_total": "16300.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "2862.50",
+                "invoice_count": 4,
+                "receipt_count": 1,
+                "due_now_count": 1,
+                "overdue_count": 1,
+                "last_payment": {
+                    "payment_id": 947,
+                    "payment_date": "2026-06-22",
+                    "cleared_date": "2026-06-22",
+                    "amount": "16300.00",
+                    "receipt_number": "REC-2026-00055",
+                    "display_status": "overpaid"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 531,
+                    "reference_number": "INV-2026-00525",
+                    "due_date": "2026-07-22",
+                    "amount": "5000.00",
+                    "display_status": "overdue",
+                    "class": "rent"
+                }
+            },
+            "scenario_tags": [
+                "tenant_credit",
+                "overdue"
+            ]
+        },
+        "230": {
+            "lease_id": 230,
+            "company_id": 2,
+            "tenant_id": 121,
+            "accounting_mode": "invoice",
+            "comparisons": {
+                "pm_svc_outstanding_total": {
+                    "pass": true,
+                    "pm": 12760.88,
+                    "svc": "12760.88"
+                },
+                "pm_svc_overdue_amount": {
+                    "pass": true,
+                    "pm": 12760.88,
+                    "svc": "12760.88"
+                },
+                "pm_svc_due_now_amount": {
+                    "pass": true,
+                    "pm": 12760.88,
+                    "svc": "12760.88"
+                },
+                "pm_svc_invoice_total": {
+                    "pass": true,
+                    "pm": 22597.75,
+                    "svc": "22597.75"
+                },
+                "pm_svc_paid_total": {
+                    "pass": true,
+                    "pm": 9836.87,
+                    "svc": "9836.87"
+                },
+                "pm_svc_receipts_total": {
+                    "pass": true,
+                    "pm": 9836.87,
+                    "svc": "9836.87"
+                },
+                "pm_svc_allocated_total": {
+                    "pass": true,
+                    "pm": 9836.87,
+                    "svc": "9836.87"
+                },
+                "pm_svc_unallocated_receipts": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_tenant_credit": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "lv_pm_outstanding": {
+                    "pass": true,
+                    "lease_view": 12760.88,
+                    "pm": 12760.88
+                },
+                "lv_pm_allocated": {
+                    "pass": true,
+                    "lease_view": 9836.87,
+                    "pm": 9836.87
+                },
+                "app_svc_outstanding_total": {
+                    "pass": true,
+                    "app": 12760.88,
+                    "svc": "12760.88"
+                },
+                "app_svc_rent_outstanding": {
+                    "pass": true,
+                    "app": 10587.51,
+                    "svc": "10587.51"
+                },
+                "app_svc_service_charge_outstanding": {
+                    "pass": true,
+                    "app": 2173.37,
+                    "svc": "2173.37"
+                },
+                "app_svc_penalty_outstanding": {
+                    "pass": true,
+                    "app": 500,
+                    "svc": "500.00"
+                },
+                "app_svc_overdue_amount": {
+                    "pass": true,
+                    "app": 12760.88,
+                    "svc": "12760.88"
+                },
+                "app_svc_due_now_amount": {
+                    "pass": true,
+                    "app": 12760.88,
+                    "svc": "12760.88"
+                },
+                "app_svc_invoice_total": {
+                    "pass": true,
+                    "app": 22597.75,
+                    "svc": "22597.75"
+                },
+                "app_svc_paid_total": {
+                    "pass": true,
+                    "app": 9836.87,
+                    "svc": "9836.87"
+                },
+                "app_svc_receipts_total": {
+                    "pass": true,
+                    "app": 9836.87,
+                    "svc": "9836.87"
+                },
+                "app_svc_allocated_total": {
+                    "pass": true,
+                    "app": 9836.87,
+                    "svc": "9836.87"
+                },
+                "app_svc_unallocated_receipts": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_tenant_credit": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                }
+            },
+            "line_items": [],
+            "notes": [
+                "Lease View IM strip does not display overdue_amount, due_now_amount, display_status, paid_total money, tenant_credit (credit is a separate section), or class breakdown — marked N\/A for UI surface, still validated on PM\/Service\/API\/App.",
+                "Class breakdown (13260.88) ≠ outstanding_total (12760.88) — legitimate if deposits\/other\/unclassified; not a FAIL.",
+                "Installments validated as operational schedule only (not AR)."
+            ],
+            "erp_payment_manager": {
+                "total_invoiced": 22597.75,
+                "total_outstanding": 12760.88,
+                "total_due_now": 12760.88,
+                "total_overdue": 12760.88,
+                "total_collected": 9836.87,
+                "allocated_total": 9836.87,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "invoice_count": 17,
+                "receipt_count": 2,
+                "due_now_count": 10,
+                "overdue_count": 10
+            },
+            "erp_financial_service": {
+                "financial_schema_version": 2,
+                "lease_id": 230,
+                "company_id": 2,
+                "tenant_id": 121,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "12760.88",
+                "rent_outstanding": "10587.51",
+                "service_charge_outstanding": "2173.37",
+                "penalty_outstanding": "500.00",
+                "overdue_amount": "12760.88",
+                "due_now_amount": "12760.88",
+                "invoice_total": "22597.75",
+                "paid_total": "9836.87",
+                "receipts_total": "9836.87",
+                "allocated_total": "9836.87",
+                "unallocated_receipts": "0.00",
+                "vat_total": "221.50",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 17,
+                "receipt_count": 2,
+                "due_now_count": 10,
+                "overdue_count": 10,
+                "last_payment": {
+                    "payment_id": 952,
+                    "payment_date": "2026-03-15",
+                    "cleared_date": "2026-03-15",
+                    "amount": "525.00",
+                    "receipt_number": "REC-2026-00060",
+                    "display_status": "allocated"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 492,
+                    "reference_number": "INV-2026-00486",
+                    "due_date": "2026-04-15",
+                    "amount": "43.73",
+                    "display_status": "overdue",
+                    "class": "service"
+                }
+            },
+            "erp_lease_view": {
+                "issued_invoices": 17,
+                "open_invoice_amount": 12760.88,
+                "receipts_count_ui": 2,
+                "allocated_total": 9836.87,
+                "obligations_open_amount": 42434.24,
+                "security_deposit_open": 0
+            },
+            "api_dashboard_financial": {
+                "financial_schema_version": 2,
+                "lease_id": 230,
+                "company_id": 2,
+                "tenant_id": 121,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "12760.88",
+                "rent_outstanding": "10587.51",
+                "service_charge_outstanding": "2173.37",
+                "penalty_outstanding": "500.00",
+                "overdue_amount": "12760.88",
+                "due_now_amount": "12760.88",
+                "invoice_total": "22597.75",
+                "paid_total": "9836.87",
+                "receipts_total": "9836.87",
+                "allocated_total": "9836.87",
+                "unallocated_receipts": "0.00",
+                "vat_total": "221.50",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 17,
+                "receipt_count": 2,
+                "due_now_count": 10,
+                "overdue_count": 10,
+                "last_payment": {
+                    "payment_id": 952,
+                    "payment_date": "2026-03-15",
+                    "cleared_date": "2026-03-15",
+                    "amount": "525.00",
+                    "receipt_number": "REC-2026-00060",
+                    "display_status": "allocated"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 492,
+                    "reference_number": "INV-2026-00486",
+                    "due_date": "2026-04-15",
+                    "amount": "43.73",
+                    "display_status": "overdue",
+                    "class": "service"
+                },
+                "outstanding_rent": "10587.51",
+                "outstanding_penalties": "500.00",
+                "outstanding_service_charges": "2173.37",
+                "next_installment": {
+                    "installment_date": "2026-03-15",
+                    "amount": "9311.86",
+                    "status": "pending"
+                },
+                "next_service_charge": {
+                    "due_date": "2026-05-15",
+                    "service_name": "Extra Store PP UAT Exclusive 4",
+                    "amount": "262.50",
+                    "status": "overdue"
+                }
+            },
+            "flutter_bound": {
+                "accounting_mode": "invoice",
+                "outstanding_total": 12760.88,
+                "rent_outstanding": 10587.51,
+                "service_charge_outstanding": 2173.37,
+                "penalty_outstanding": 500,
+                "overdue_amount": 12760.88,
+                "due_now_amount": 12760.88,
+                "invoice_total": 22597.75,
+                "paid_total": 9836.87,
+                "receipts_total": 9836.87,
+                "allocated_total": 9836.87,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "vat_total": 221.5,
+                "vat_available": true,
+                "display_status": "overdue",
+                "invoice_count": 17,
+                "receipt_count": 2,
+                "due_now_count": 10,
+                "overdue_count": 10,
+                "last_payment_amount": 525,
+                "last_payment_date": "2026-03-15",
+                "last_payment_status": "allocated",
+                "next_due_amount": 43.73,
+                "next_due_date": "2026-04-15",
+                "next_due_status": "overdue"
+            },
+            "scenario_tags": [
+                "overdue",
+                "service_charges",
+                "penalties"
+            ]
+        },
+        "61": {
+            "lease_id": 61,
+            "company_id": 2,
+            "tenant_id": 63,
+            "accounting_mode": "invoice",
+            "comparisons": {
+                "pm_svc_outstanding_total": {
+                    "pass": true,
+                    "pm": 7000,
+                    "svc": "7000.00"
+                },
+                "pm_svc_overdue_amount": {
+                    "pass": true,
+                    "pm": 7000,
+                    "svc": "7000.00"
+                },
+                "pm_svc_due_now_amount": {
+                    "pass": true,
+                    "pm": 7000,
+                    "svc": "7000.00"
+                },
+                "pm_svc_invoice_total": {
+                    "pass": true,
+                    "pm": 11800,
+                    "svc": "11800.00"
+                },
+                "pm_svc_paid_total": {
+                    "pass": true,
+                    "pm": 6900,
+                    "svc": "6900.00"
+                },
+                "pm_svc_receipts_total": {
+                    "pass": true,
+                    "pm": 6900,
+                    "svc": "6900.00"
+                },
+                "pm_svc_allocated_total": {
+                    "pass": true,
+                    "pm": 6900,
+                    "svc": "6900.00"
+                },
+                "pm_svc_unallocated_receipts": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_tenant_credit": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "lv_pm_outstanding": {
+                    "pass": true,
+                    "lease_view": 7000,
+                    "pm": 7000
+                },
+                "lv_pm_allocated": {
+                    "pass": true,
+                    "lease_view": 6900,
+                    "pm": 6900
+                },
+                "app_svc_outstanding_total": {
+                    "pass": true,
+                    "app": 7000,
+                    "svc": "7000.00"
+                },
+                "app_svc_rent_outstanding": {
+                    "pass": true,
+                    "app": 3500,
+                    "svc": "3500.00"
+                },
+                "app_svc_service_charge_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_penalty_outstanding": {
+                    "pass": true,
+                    "app": 3500,
+                    "svc": "3500.00"
+                },
+                "app_svc_overdue_amount": {
+                    "pass": true,
+                    "app": 7000,
+                    "svc": "7000.00"
+                },
+                "app_svc_due_now_amount": {
+                    "pass": true,
+                    "app": 7000,
+                    "svc": "7000.00"
+                },
+                "app_svc_invoice_total": {
+                    "pass": true,
+                    "app": 11800,
+                    "svc": "11800.00"
+                },
+                "app_svc_paid_total": {
+                    "pass": true,
+                    "app": 6900,
+                    "svc": "6900.00"
+                },
+                "app_svc_receipts_total": {
+                    "pass": true,
+                    "app": 6900,
+                    "svc": "6900.00"
+                },
+                "app_svc_allocated_total": {
+                    "pass": true,
+                    "app": 6900,
+                    "svc": "6900.00"
+                },
+                "app_svc_unallocated_receipts": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_tenant_credit": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                }
+            },
+            "line_items": [],
+            "notes": [
+                "Lease View IM strip does not display overdue_amount, due_now_amount, display_status, paid_total money, tenant_credit (credit is a separate section), or class breakdown — marked N\/A for UI surface, still validated on PM\/Service\/API\/App.",
+                "Installments validated as operational schedule only (not AR)."
+            ],
+            "erp_payment_manager": {
+                "total_invoiced": 11800,
+                "total_outstanding": 7000,
+                "total_due_now": 7000,
+                "total_overdue": 7000,
+                "total_collected": 6900,
+                "allocated_total": 6900,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "invoice_count": 5,
+                "receipt_count": 4,
+                "due_now_count": 2,
+                "overdue_count": 2
+            },
+            "erp_financial_service": {
+                "financial_schema_version": 2,
+                "lease_id": 61,
+                "company_id": 2,
+                "tenant_id": 63,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "7000.00",
+                "rent_outstanding": "3500.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "3500.00",
+                "overdue_amount": "7000.00",
+                "due_now_amount": "7000.00",
+                "invoice_total": "11800.00",
+                "paid_total": "6900.00",
+                "receipts_total": "6900.00",
+                "allocated_total": "6900.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 5,
+                "receipt_count": 4,
+                "due_now_count": 2,
+                "overdue_count": 2,
+                "last_payment": {
+                    "payment_id": 925,
+                    "payment_date": "2026-02-02",
+                    "cleared_date": "2026-02-02",
+                    "amount": "1050.00",
+                    "receipt_number": "REC-2026-00033",
+                    "display_status": "allocated"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 269,
+                    "reference_number": "INV-2026-00269",
+                    "due_date": "2025-09-01",
+                    "amount": "3500.00",
+                    "display_status": "overdue",
+                    "class": "rent"
+                }
+            },
+            "erp_lease_view": {
+                "issued_invoices": 5,
+                "open_invoice_amount": 7000,
+                "receipts_count_ui": 4,
+                "allocated_total": 6900,
+                "obligations_open_amount": 7000,
+                "security_deposit_open": 0
+            },
+            "api_dashboard_financial": {
+                "financial_schema_version": 2,
+                "lease_id": 61,
+                "company_id": 2,
+                "tenant_id": 63,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "7000.00",
+                "rent_outstanding": "3500.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "3500.00",
+                "overdue_amount": "7000.00",
+                "due_now_amount": "7000.00",
+                "invoice_total": "11800.00",
+                "paid_total": "6900.00",
+                "receipts_total": "6900.00",
+                "allocated_total": "6900.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 5,
+                "receipt_count": 4,
+                "due_now_count": 2,
+                "overdue_count": 2,
+                "last_payment": {
+                    "payment_id": 925,
+                    "payment_date": "2026-02-02",
+                    "cleared_date": "2026-02-02",
+                    "amount": "1050.00",
+                    "receipt_number": "REC-2026-00033",
+                    "display_status": "allocated"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 269,
+                    "reference_number": "INV-2026-00269",
+                    "due_date": "2025-09-01",
+                    "amount": "3500.00",
+                    "display_status": "overdue",
+                    "class": "rent"
+                },
+                "outstanding_rent": "3500.00",
+                "outstanding_penalties": "3500.00",
+                "outstanding_service_charges": "0.00",
+                "next_installment": {
+                    "installment_date": "2025-08-01",
+                    "amount": "3400.00",
+                    "status": "pending"
+                },
+                "next_service_charge": null
+            },
+            "flutter_bound": {
+                "accounting_mode": "invoice",
+                "outstanding_total": 7000,
+                "rent_outstanding": 3500,
+                "service_charge_outstanding": 0,
+                "penalty_outstanding": 3500,
+                "overdue_amount": 7000,
+                "due_now_amount": 7000,
+                "invoice_total": 11800,
+                "paid_total": 6900,
+                "receipts_total": 6900,
+                "allocated_total": 6900,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "vat_total": 0,
+                "vat_available": true,
+                "display_status": "overdue",
+                "invoice_count": 5,
+                "receipt_count": 4,
+                "due_now_count": 2,
+                "overdue_count": 2,
+                "last_payment_amount": 1050,
+                "last_payment_date": "2026-02-02",
+                "last_payment_status": "allocated",
+                "next_due_amount": 3500,
+                "next_due_date": "2025-09-01",
+                "next_due_status": "overdue"
+            },
+            "scenario_tags": [
+                "overdue",
+                "penalties"
+            ]
+        },
+        "37": {
+            "lease_id": 37,
+            "company_id": 2,
+            "tenant_id": 42,
+            "accounting_mode": "invoice",
+            "comparisons": {
+                "pm_svc_outstanding_total": {
+                    "pass": true,
+                    "pm": 50125,
+                    "svc": "50125.00"
+                },
+                "pm_svc_overdue_amount": {
+                    "pass": true,
+                    "pm": 50125,
+                    "svc": "50125.00"
+                },
+                "pm_svc_due_now_amount": {
+                    "pass": true,
+                    "pm": 50125,
+                    "svc": "50125.00"
+                },
+                "pm_svc_invoice_total": {
+                    "pass": true,
+                    "pm": 55425,
+                    "svc": "55425.00"
+                },
+                "pm_svc_paid_total": {
+                    "pass": true,
+                    "pm": 5300,
+                    "svc": "5300.00"
+                },
+                "pm_svc_receipts_total": {
+                    "pass": true,
+                    "pm": 5300,
+                    "svc": "5300.00"
+                },
+                "pm_svc_allocated_total": {
+                    "pass": true,
+                    "pm": 5300,
+                    "svc": "5300.00"
+                },
+                "pm_svc_unallocated_receipts": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_tenant_credit": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "lv_pm_outstanding": {
+                    "pass": true,
+                    "lease_view": 50125,
+                    "pm": 50125
+                },
+                "lv_pm_allocated": {
+                    "pass": true,
+                    "lease_view": 5300,
+                    "pm": 5300
+                },
+                "app_svc_outstanding_total": {
+                    "pass": true,
+                    "app": 50125,
+                    "svc": "50125.00"
+                },
+                "app_svc_rent_outstanding": {
+                    "pass": true,
+                    "app": 43312.5,
+                    "svc": "43312.50"
+                },
+                "app_svc_service_charge_outstanding": {
+                    "pass": true,
+                    "app": 5250,
+                    "svc": "5250.00"
+                },
+                "app_svc_penalty_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_overdue_amount": {
+                    "pass": true,
+                    "app": 50125,
+                    "svc": "50125.00"
+                },
+                "app_svc_due_now_amount": {
+                    "pass": true,
+                    "app": 50125,
+                    "svc": "50125.00"
+                },
+                "app_svc_invoice_total": {
+                    "pass": true,
+                    "app": 55425,
+                    "svc": "55425.00"
+                },
+                "app_svc_paid_total": {
+                    "pass": true,
+                    "app": 5300,
+                    "svc": "5300.00"
+                },
+                "app_svc_receipts_total": {
+                    "pass": true,
+                    "app": 5300,
+                    "svc": "5300.00"
+                },
+                "app_svc_allocated_total": {
+                    "pass": true,
+                    "app": 5300,
+                    "svc": "5300.00"
+                },
+                "app_svc_unallocated_receipts": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_tenant_credit": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                }
+            },
+            "line_items": [],
+            "notes": [
+                "Lease View IM strip does not display overdue_amount, due_now_amount, display_status, paid_total money, tenant_credit (credit is a separate section), or class breakdown — marked N\/A for UI surface, still validated on PM\/Service\/API\/App.",
+                "Class breakdown (48562.50) ≠ outstanding_total (50125.00) — legitimate if deposits\/other\/unclassified; not a FAIL.",
+                "Installments validated as operational schedule only (not AR)."
+            ],
+            "erp_payment_manager": {
+                "total_invoiced": 55425,
+                "total_outstanding": 50125,
+                "total_due_now": 50125,
+                "total_overdue": 50125,
+                "total_collected": 5300,
+                "allocated_total": 5300,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "invoice_count": 26,
+                "receipt_count": 2,
+                "due_now_count": 22,
+                "overdue_count": 22
+            },
+            "erp_financial_service": {
+                "financial_schema_version": 2,
+                "lease_id": 37,
+                "company_id": 2,
+                "tenant_id": 42,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "50125.00",
+                "rent_outstanding": "43312.50",
+                "service_charge_outstanding": "5250.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "50125.00",
+                "due_now_amount": "50125.00",
+                "invoice_total": "55425.00",
+                "paid_total": "5300.00",
+                "receipts_total": "5300.00",
+                "allocated_total": "5300.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "75.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 26,
+                "receipt_count": 2,
+                "due_now_count": 22,
+                "overdue_count": 22,
+                "last_payment": {
+                    "payment_id": 922,
+                    "payment_date": "2026-07-10",
+                    "cleared_date": "2026-07-10",
+                    "amount": "525.00",
+                    "receipt_number": "REC-2026-00030",
+                    "display_status": "allocated"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 230,
+                    "reference_number": "INV-2026-00230",
+                    "due_date": "2025-05-22",
+                    "amount": "1562.50",
+                    "display_status": "overdue",
+                    "class": "other"
+                }
+            },
+            "erp_lease_view": {
+                "issued_invoices": 26,
+                "open_invoice_amount": 50125,
+                "receipts_count_ui": 2,
+                "allocated_total": 5300,
+                "obligations_open_amount": 50125,
+                "security_deposit_open": 0
+            },
+            "api_dashboard_financial": {
+                "financial_schema_version": 2,
+                "lease_id": 37,
+                "company_id": 2,
+                "tenant_id": 42,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "50125.00",
+                "rent_outstanding": "43312.50",
+                "service_charge_outstanding": "5250.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "50125.00",
+                "due_now_amount": "50125.00",
+                "invoice_total": "55425.00",
+                "paid_total": "5300.00",
+                "receipts_total": "5300.00",
+                "allocated_total": "5300.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "75.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 26,
+                "receipt_count": 2,
+                "due_now_count": 22,
+                "overdue_count": 22,
+                "last_payment": {
+                    "payment_id": 922,
+                    "payment_date": "2026-07-10",
+                    "cleared_date": "2026-07-10",
+                    "amount": "525.00",
+                    "receipt_number": "REC-2026-00030",
+                    "display_status": "allocated"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 230,
+                    "reference_number": "INV-2026-00230",
+                    "due_date": "2025-05-22",
+                    "amount": "1562.50",
+                    "display_status": "overdue",
+                    "class": "other"
+                },
+                "outstanding_rent": "43312.50",
+                "outstanding_penalties": "0.00",
+                "outstanding_service_charges": "5250.00",
+                "next_installment": {
+                    "installment_date": "2025-05-22",
+                    "amount": "4250.00",
+                    "status": "pending"
+                },
+                "next_service_charge": {
+                    "due_date": "2025-07-22",
+                    "service_name": "Extra Store",
+                    "amount": "525.00",
+                    "status": "overdue"
+                }
+            },
+            "flutter_bound": {
+                "accounting_mode": "invoice",
+                "outstanding_total": 50125,
+                "rent_outstanding": 43312.5,
+                "service_charge_outstanding": 5250,
+                "penalty_outstanding": 0,
+                "overdue_amount": 50125,
+                "due_now_amount": 50125,
+                "invoice_total": 55425,
+                "paid_total": 5300,
+                "receipts_total": 5300,
+                "allocated_total": 5300,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "vat_total": 75,
+                "vat_available": true,
+                "display_status": "overdue",
+                "invoice_count": 26,
+                "receipt_count": 2,
+                "due_now_count": 22,
+                "overdue_count": 22,
+                "last_payment_amount": 525,
+                "last_payment_date": "2026-07-10",
+                "last_payment_status": "allocated",
+                "next_due_amount": 1562.5,
+                "next_due_date": "2025-05-22",
+                "next_due_status": "overdue"
+            },
+            "http_financial_summary": {
+                "financial_schema_version": 2,
+                "lease_id": 37,
+                "company_id": 2,
+                "tenant_id": 42,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "overdue",
+                "outstanding_total": "50125.00",
+                "rent_outstanding": "43312.50",
+                "service_charge_outstanding": "5250.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "50125.00",
+                "due_now_amount": "50125.00",
+                "invoice_total": "55425.00",
+                "paid_total": "5300.00",
+                "receipts_total": "5300.00",
+                "allocated_total": "5300.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "75.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 26,
+                "receipt_count": 2,
+                "due_now_count": 22,
+                "overdue_count": 22,
+                "last_payment": {
+                    "payment_id": 922,
+                    "payment_date": "2026-07-10",
+                    "cleared_date": "2026-07-10",
+                    "amount": "525.00",
+                    "receipt_number": "REC-2026-00030",
+                    "display_status": "allocated"
+                },
+                "next_due": {
+                    "kind": "invoice",
+                    "reference_id": 230,
+                    "reference_number": "INV-2026-00230",
+                    "due_date": "2025-05-22",
+                    "amount": "1562.50",
+                    "display_status": "overdue",
+                    "class": "other"
+                }
+            },
+            "scenario_tags": [
+                "overdue",
+                "service_charges"
+            ]
+        },
+        "49": {
+            "lease_id": 49,
+            "company_id": 2,
+            "tenant_id": 7,
+            "accounting_mode": "invoice",
+            "comparisons": {
+                "pm_svc_outstanding_total": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_overdue_amount": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_due_now_amount": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_invoice_total": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_paid_total": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_receipts_total": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_allocated_total": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_unallocated_receipts": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "pm_svc_tenant_credit": {
+                    "pass": true,
+                    "pm": 0,
+                    "svc": "0.00"
+                },
+                "lv_pm_outstanding": {
+                    "pass": true,
+                    "lease_view": 0,
+                    "pm": 0
+                },
+                "lv_pm_allocated": {
+                    "pass": true,
+                    "lease_view": 0,
+                    "pm": 0
+                },
+                "app_svc_outstanding_total": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_rent_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_service_charge_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_penalty_outstanding": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_overdue_amount": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_due_now_amount": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_invoice_total": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_paid_total": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_receipts_total": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_allocated_total": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_unallocated_receipts": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                },
+                "app_svc_tenant_credit": {
+                    "pass": true,
+                    "app": 0,
+                    "svc": "0.00"
+                }
+            },
+            "line_items": [],
+            "notes": [
+                "Lease View IM strip does not display overdue_amount, due_now_amount, display_status, paid_total money, tenant_credit (credit is a separate section), or class breakdown — marked N\/A for UI surface, still validated on PM\/Service\/API\/App.",
+                "No invoices — empty invoice state.",
+                "No receipts — empty receipt state.",
+                "Installments validated as operational schedule only (not AR).",
+                "No last_payment (empty-state).",
+                "No next_due (empty-state \/ fully settled or no open items)."
+            ],
+            "erp_payment_manager": {
+                "total_invoiced": 0,
+                "total_outstanding": 0,
+                "total_due_now": 0,
+                "total_overdue": 0,
+                "total_collected": 0,
+                "allocated_total": 0,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "invoice_count": 0,
+                "receipt_count": 0,
+                "due_now_count": 0,
+                "overdue_count": 0
+            },
+            "erp_financial_service": {
+                "financial_schema_version": 2,
+                "lease_id": 49,
+                "company_id": 2,
+                "tenant_id": 7,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "up_to_date",
+                "outstanding_total": "0.00",
+                "rent_outstanding": "0.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "0.00",
+                "due_now_amount": "0.00",
+                "invoice_total": "0.00",
+                "paid_total": "0.00",
+                "receipts_total": "0.00",
+                "allocated_total": "0.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 0,
+                "receipt_count": 0,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment": null,
+                "next_due": null
+            },
+            "erp_lease_view": {
+                "issued_invoices": 0,
+                "open_invoice_amount": 0,
+                "receipts_count_ui": 0,
+                "allocated_total": 0,
+                "obligations_open_amount": 68250,
+                "security_deposit_open": 0
+            },
+            "api_dashboard_financial": {
+                "financial_schema_version": 2,
+                "lease_id": 49,
+                "company_id": 2,
+                "tenant_id": 7,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "up_to_date",
+                "outstanding_total": "0.00",
+                "rent_outstanding": "0.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "0.00",
+                "due_now_amount": "0.00",
+                "invoice_total": "0.00",
+                "paid_total": "0.00",
+                "receipts_total": "0.00",
+                "allocated_total": "0.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 0,
+                "receipt_count": 0,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment": null,
+                "next_due": null,
+                "outstanding_rent": "0.00",
+                "outstanding_penalties": "0.00",
+                "outstanding_service_charges": "0.00",
+                "next_installment": null,
+                "next_service_charge": null
+            },
+            "flutter_bound": {
+                "accounting_mode": "invoice",
+                "outstanding_total": 0,
+                "rent_outstanding": 0,
+                "service_charge_outstanding": 0,
+                "penalty_outstanding": 0,
+                "overdue_amount": 0,
+                "due_now_amount": 0,
+                "invoice_total": 0,
+                "paid_total": 0,
+                "receipts_total": 0,
+                "allocated_total": 0,
+                "unallocated_receipts": 0,
+                "tenant_credit": 0,
+                "vat_total": 0,
+                "vat_available": true,
+                "display_status": "up_to_date",
+                "invoice_count": 0,
+                "receipt_count": 0,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment_amount": null,
+                "last_payment_date": null,
+                "last_payment_status": null,
+                "next_due_amount": null,
+                "next_due_date": null,
+                "next_due_status": null
+            },
+            "http_financial_summary": {
+                "financial_schema_version": 2,
+                "lease_id": 49,
+                "company_id": 2,
+                "tenant_id": 7,
+                "accounting_mode": "invoice",
+                "currency": "AED",
+                "as_of_date": "2026-07-30",
+                "display_status": "up_to_date",
+                "outstanding_total": "0.00",
+                "rent_outstanding": "0.00",
+                "service_charge_outstanding": "0.00",
+                "penalty_outstanding": "0.00",
+                "overdue_amount": "0.00",
+                "due_now_amount": "0.00",
+                "invoice_total": "0.00",
+                "paid_total": "0.00",
+                "receipts_total": "0.00",
+                "allocated_total": "0.00",
+                "unallocated_receipts": "0.00",
+                "vat_total": "0.00",
+                "vat_available": true,
+                "tenant_credit": "0.00",
+                "invoice_count": 0,
+                "receipt_count": 0,
+                "due_now_count": 0,
+                "overdue_count": 0,
+                "last_payment": null,
+                "next_due": null
+            },
+            "scenario_tags": [
+                "fully_paid_or_zero_outstanding",
+                "no_next_due",
+                "no_last_payment"
+            ]
+        }
+    },
+    "totals": {
+        "passed": 437,
+        "failed": 0,
+        "skipped": 9
+    },
+    "multi_lease": {
+        "tenant_id": 177,
+        "lease_ids": [
+            262,
+            265,
+            267,
+            268,
+            269
+        ],
+        "a_outstanding": "0.00",
+        "b_outstanding": "5250.00"
+    },
+    "invoice_display_status_histogram": {
+        "paid": 47,
+        "overdue": 35
+    }
+}

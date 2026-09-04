@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TENANCY CONTRACT</title>
+    <style>
+        @page {
+            margin: 35mm 15mm 30mm 15mm;
+            size: A4;
+        }
+        
+        @page :first {
+            margin-top: 20mm;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'DejaVu Sans', 'Arial', sans-serif;
+            font-size: 10.5px;
+            line-height: 1.5;
+            color: #000;
+            background: #fff;
+        }
+        
+        /* Title Section */
+        .contract-title {
+            text-align: center;
+            margin: 25px 0 20px 0;
+        }
+        
+        .contract-title h1 {
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .contract-title h2 {
+            font-size: 15px;
+            font-weight: bold;
+            direction: rtl;
+            text-align: center !important;
+            font-family: 'DejaVu Sans', 'Arial', sans-serif;
+            margin-bottom: 10px;
+        }
+        
+        /* Date and Plot No Section */
+        .date-plot-section {
+            display: table;
+            width: 100%;
+            margin-bottom: 18px;
+            font-size: 10.5px;
+            font-weight: bold;
+        }
+        
+        .plot-no {
+            display: table-cell;
+            width: 50%;
+            text-align: left;
+            padding-left: 5px;
+        }
+        
+        .date-section {
+            display: table-cell;
+            width: 50%;
+            text-align: right;
+            padding-right: 5px;
+        }
+        
+        /* Contract Details Table */
+        .contract-details {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 25px;
+            table-layout: fixed;
+        }
+        
+        .contract-details td {
+            padding: 5px 6px;
+            vertical-align: middle;
+            border: none;
+            font-size: 10px;
+        }
+        
+        .contract-details tr {
+            height: 22px;
+        }
+        
+        .contract-details .label {
+            font-weight: bold;
+            width: 35%;
+            text-align: left;
+            padding-right: 8px;
+        }
+        
+        .contract-details .value {
+            width: 30%;
+            border-bottom: 1px solid #000;
+            min-height: 16px;
+            padding-bottom: 2px;
+            text-align: center;
+            font-weight: normal;
+        }
+        
+        .contract-details .label-ar {
+            font-weight: bold;
+            width: 35%;
+            direction: rtl;
+            text-align: right;
+            font-family: 'DejaVu Sans', 'Arial', sans-serif;
+            padding-left: 8px;
+        }
+        
+        /* Clauses Section */
+        .clauses-section {
+            margin-top: 60px;
+            margin-bottom: 15px;
+        }
+        
+        .clauses-title-container {
+            display: table;
+            width: 100%;
+            margin-bottom: 15px;
+        }
+        
+        .clauses-title {
+            font-size: 11px;
+            font-weight: bold;
+            margin-bottom: 0;
+            text-align: left;
+            display: table-cell;
+            width: 48%;
+            padding-right: 12px;
+            vertical-align: top;
+            border-right: 1px solid #ccc;
+        }
+        
+        .clauses-title.ar {
+            display: table-cell;
+            width: 48%;
+            padding-left: 12px;
+            vertical-align: top;
+            direction: rtl;
+            text-align: right;
+            font-family: 'DejaVu Sans', 'Arial', sans-serif;
+            margin-top: 0;
+            margin-bottom: 0;
+        }
+        
+        .clause-bilingual {
+            display: table;
+            width: 100%;
+            margin-bottom: 10px;
+            page-break-inside: avoid;
+            border-collapse: separate;
+            orphans: 3;
+            widows: 3;
+        }
+        
+        .clause-en {
+            display: table-cell;
+            width: 48%;
+            padding-right: 12px;
+            vertical-align: top;
+            direction: ltr;
+            text-align: left;
+            border-right: 1px solid #ccc;
+            font-size: 10px;
+            line-height: 1.4;
+        }
+        
+        .clause-ar {
+            display: table-cell;
+            width: 48%;
+            padding-left: 18px;
+            vertical-align: top;
+            direction: rtl;
+            text-align: right;
+            font-family: 'DejaVu Sans', 'Arial', sans-serif;
+            font-size: 10px;
+            line-height: 1.4;
+        }
+        
+        /* Arabic: number on RIGHT - float:right in PHP-injected styles */
+        
+        .clause-number {
+            font-weight: bold;
+            display: inline;
+            margin-right: 3px;
+        }
+        
+        .clause-content {
+            display: inline;
+            text-align: justify;
+        }
+        
+        .clause-ar .clause-content {
+            text-align: justify;
+        }
+        
+        /* Page Break */
+        .page-break {
+            page-break-after: always;
+            page-break-inside: avoid;
+        }
+        
+        /* Remarks Section - matches original PDF layout */
+        .remarks-section {
+            margin-top: 30px;
+            border-top: 1px solid #000;
+            padding-top: 18px;
+            page-break-inside: avoid;
+        }
+        
+        .remarks-title {
+            font-size: 11px;
+            font-weight: bold;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+        }
+        
+        /* Two lines for notes (lease notes) - matches original PDF */
+        .remarks-notes {
+            border-bottom: 1px solid #000;
+            min-height: 18px;
+            margin-bottom: 8px;
+            padding-bottom: 2px;
+        }
+        
+        .remarks-notes-line2 {
+            border-bottom: 1px solid #000;
+            min-height: 18px;
+            margin-bottom: 15px;
+            padding-bottom: 2px;
+        }
+        
+        /* Tenant details - Phone and Emirates ID on SAME row, Email on next (matches original) */
+        .remarks-tenant-row1 {
+            display: table;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        
+        .remarks-tenant-row1 .cell {
+            display: table-cell;
+            vertical-align: bottom;
+            padding: 4px 8px 6px 0;
+        }
+        
+        .remarks-tenant-row1 .cell-phone {
+            width: 50%;
+        }
+        
+        .remarks-tenant-row1 .cell-id {
+            width: 50%;
+        }
+        
+        .remarks-tenant-row1 .label {
+            font-weight: bold;
+            font-size: 10px;
+        }
+        
+        .remarks-tenant-row1 .value {
+            border-bottom: 1px solid #000;
+            min-height: 18px;
+            padding-bottom: 3px;
+            font-size: 10px;
+        }
+        
+        .remarks-tenant-email {
+            margin-bottom: 20px;
+        }
+        
+        .remarks-tenant-email .label {
+            font-weight: bold;
+            font-size: 10px;
+        }
+        
+        .remarks-tenant-email .value {
+            border-bottom: 1px solid #000;
+            min-height: 18px;
+            padding-bottom: 3px;
+            font-size: 10px;
+        }
+        
+        .undertake-en {
+            margin-top: 20px;
+            text-align: center;
+            font-size: 10.5px;
+            margin-bottom: 8px;
+        }
+        
+        .undertake-ar {
+            text-align: center;
+            direction: rtl;
+            font-family: 'DejaVu Sans', 'Arial', sans-serif;
+        }
+        
+        /* Signature Section */
+        .signature-section {
+            margin-top: 30px;
+            page-break-inside: avoid;
+        }
+        
+        .signature-block {
+            margin-top: 50px;
+            display: table;
+            width: 100%;
+            page-break-inside: avoid;
+        }
+        
+        .signature-left {
+            display: table-cell;
+            width: 50%;
+            padding-right: 25px;
+            vertical-align: top;
+        }
+        
+        .signature-right {
+            display: table-cell;
+            width: 50%;
+            padding-left: 25px;
+            vertical-align: top;
+        }
+        
+        .signature-label {
+            font-weight: bold;
+            margin-bottom: 8px;
+            font-size: 10.5px;
+        }
+        
+        .signature-line {
+            border-bottom: 1px solid #000;
+            min-height: 45px;
+            margin-bottom: 12px;
+            position: relative;
+        }
+        
+        .signature-image {
+            max-width: 180px;
+            max-height: 70px;
+            margin-bottom: 8px;
+            display: block;
+            position: absolute;
+            bottom: 5px;
+            left: 0;
+        }
+        
+        .ar {
+            direction: rtl;
+            text-align: right;
+        }
+        
+        .en {
+            direction: ltr;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div class="contract-title">
+        <h2 class="ar">وثيقة ايجار</h2>
+        <h1>TENANCY CONTRACT</h1>
+    </div>
+    
+    <div class="date-plot-section">
+        <div class="plot-no">Plot No.: {{LEASE_NUMBER}}</div>
+        <div class="date-section">Date: {{TODAY_DATE}}</div>
+    </div>
+    
+    <table class="contract-details">
+        <tr>
+            <td class="label">Landlord name:</td>
+            <td class="value">{{LANDLORD_NAME}}</td>
+            <td class="label-ar">المؤجر:</td>
+        </tr>
+        <tr>
+            <td class="label">Tenant name:</td>
+            <td class="value">{{TENANT_NAME}}</td>
+            <td class="label-ar">المستأجر:</td>
+        </tr>
+        <tr>
+            <td class="label">Subject of Tenancy:</td>
+            <td class="value">{{PROPERTY_NAME}}</td>
+            <td class="label-ar">موضوع الايجار:</td>
+        </tr>
+        <tr>
+            <td class="label">Period of Tenancy:</td>
+            <td class="value">{{START_DATE}} - {{END_DATE}}</td>
+            <td class="label-ar">مدة الايجار:</td>
+        </tr>
+        <tr>
+            <td class="label">Premises No (DEWA):</td>
+            <td class="value">{{PREMISES_NUMBER}}</td>
+            <td class="label-ar">رقم عداد الكهرباء:</td>
+        </tr>
+        <tr>
+            <td class="label">Unit No:</td>
+            <td class="value">{{UNIT_NO}}</td>
+            <td class="label-ar">رقم الوحدة:</td>
+        </tr>
+        <tr>
+            <td class="label">Rent:</td>
+            <td class="value">AED {{ANNUAL_RENT}}</td>
+            <td class="label-ar">قيمة الايجار:</td>
+        </tr>
+        <tr>
+            <td class="label">Terms of Payment:</td>
+            <td class="value">{{TERMS_OF_PAYMENT}}</td>
+            <td class="label-ar">اقساط الدفع:</td>
+        </tr>
+        <tr>
+            <td class="label">Security Deposit:</td>
+            <td class="value">AED {{SECURITY_DEPOSIT}}</td>
+            <td class="label-ar">وديعة التامين:</td>
+        </tr>
+    </table>
+    
+    <div class="clauses-section">
+        <div class="clauses-title-container">
+            <div class="clauses-title">Conditions Mutually Agreed Upon as Under:</div>
+            <div class="clauses-title ar">الشرط المتفق عليها كما يلي:</div>
+        </div>
+    </div>
+    
+    <!-- Clauses 1-31: structure with Arabic number on right -->
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">1.</span>
+            <span class="clause-content">The Tenant, upon signing this Lease Agreement, acknowledges having received the Leased Premises and its appurtenances in good condition, suitable for the intended use, and free from any defects that may hinder such use, in accordance with the terms set forth herein. The Tenant further undertakes to return the Leased Premises to the Landlord or their authorized representative upon the expiration or termination of the lease term, in the same condition as received, subject to normal wear and tear resulting from ordinary use. This clause is in accordance with Law No. (26) of 2007 Regulating the Relationship between Landlords and Tenants in the Emirate of Dubai, and its amendments.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">1.</span>
+            <span class="clause-content">يقرّ المستأجر، بعد توقيعه على هذا العقد، بأنه قد تسلّم العين المؤجرة وملحقاتها بحالة جيدة وصالحة للاستعمال، وخالية من أي عيوب تؤثر على الانتفاع بها، وذلك وفقاً لما نص عليه هذا العقد. كما يتعهد المستأجر بإعادة العين المؤجرة إلى المؤجر أو من ينهيه عند انتهاء مدة العقد أو فسخه لأي سبب، بالحالة ذاتها التي كانت عليها وقت التسليم، مع مراعاة الاستهلاك العادي الناتج عن الاستخدام المألوف، وذلك عملاً بأحكام القانون رقم (26) لسنة 2007 بشأن تنظيم العلاقة بين مؤجري ومستأجري العقارات في إمارة دبي وتعديلاته.</span>
+        </div>
+    </div>
+    
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">2.</span>
+            <span class="clause-content">Upon vacating the Leased Premises, the Tenant undertakes to return the property in good condition, similar to its condition at the commencement of the lease, subject to normal wear and tear. The Tenant shall be responsible, at their own expense, for repairing or restoring any damage, breakages, loss, unauthorized additions, or alterations made to the property during the lease term. If the Tenant fails to carry out the necessary repairs, the Landlord shall have the right to assess the condition of the property through their maintenance team after handover and charge the Tenant the full cost of repair based on such assessment.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">2.</span>
+            <span class="clause-content">يتعهد المستأجر، عند إخلاء العين المؤجرة، بإعادتها إلى المالك وهي في حالة جيدة ومماثلة للحالة التي كانت عليها عند بدء عقد الإيجار، مع مراعاة الاستهلاك العادي الناتج عن الاستخدام المعتاد. كما يلتزم المستأجر بإصلاح أو تحمل تكلفة إصلاح أي أضرار، أو كسور، أو فقدان، أو تغييرات، أو إضافات غير مصرح بها طرأت على العين المؤجرة خلال فترة الإيجار، وذلك على نفقته الخاصة. وفي حال عدم قيام المستأجر بهذه الإصلاحات، يحق للمالك تقييم الأضرار من خلال فريق الصيانة الخاص به بعد استلام العقار، وتحميل المستأجر كامل تكلفة الإصلاح وفقًا للتقييم.</span>
+        </div>
+    </div>
+    
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">3.</span>
+            <span class="clause-content">The Tenant shall not affix carpets, flooring, or any installations within the Leased Premises using adhesives or any other materials that may cause damage to the flooring or the structural integrity of the property. The Tenant is further prohibited from carrying out any alterations, internal works, or installing signs, written letters, trademarks, or any visual or moving displays inside or on the Leased Premises without obtaining the Landlord’s prior written consent.Upon the expiration or termination of the lease term, the Tenant shall be obligated to remove all such additions or modifications made during the lease period and restore the Leased Premises to its original condition as it was at the commencement of the lease. The Tenant shall bear the full cost of such removal and any necessary repairs resulting from said alterations, without the need for formal notice from the Landlord.
+                The Landlord shall have the right to deduct the cost of such removal and/or repairs from the security deposit held, without prejudice to the Landlord’s right to claim any additional amounts should the cost of restoration exceed the deposit, in accordance with the applicable laws and regulations in the Emirate of Dubai.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">3.</span>
+            <span class="clause-content">يلتزم المستأجر بعدم تثبيت أو لصق السجاد أو أي أرضيات أو تركيبات داخل العين المؤجرة باستخدام المواد اللاصقة أو غيرها من الوسائل التي قد تُحدث ضرراً بالأرضيات أو البنية التحتية للعقار، كما لا يجوز له إجراء أي تعديلات أو أعمال داخلية أو تركيب لافتات أو حروف مكتوبة أو علامات تجارية أو أي عروض مرئية أو متحركة داخل أو على العين المؤجرة، إلا بعد الحصول على موافقة خطية مسبقة من المؤجر.وعند انتهاء مدة الإيجار، يلتزم المستأجر بإزالة جميع الإضافات أو التعديلات التي قام بها، وإعادة العين المؤجرة إلى حالتها الأصلية التي كانت عليها عند بدء العلاقة الإيجارية، مع إصلاح أي ضرر ناتج عن تلك التعديلات على نفقته الخاصة، وذلك دون الحاجة إلى توجيه إنذار رسمي من المؤجر.
+                ويحق للمؤجر، في حال عدم التزام المستأجر بذلك، خصم التكاليف اللازمة للإصلاح أو الإزالة من مبلغ التأمين المودع لديه، دون الإخلال بحقه في المطالبة بأية مبالغ إضافية إن لزم الأمر، وفقاً لأحكام القوانين المعمول بها في إمارة دبي.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">4.</span>
+            <span class="clause-content">The Tenant shall be fully responsible for the maintenance and repair of all works and modifications carried out by the Tenant or any previous tenant within the Leased Premises, including but not limited to internal decorations, plumbing works, electrical installations, air conditioning systems, and installation of computer or communication wiring, as well as any additions or alterations not part of the original property fittings. The Tenant shall bear all costs related to such maintenance and repairs throughout the Lease Term, and shall keep the Leased Premises in good condition, refraining from causing any damage due to misuse or negligence.The Landlord shall be responsible for the maintenance and renewal of the original and fixed fixtures within the Leased Premises, including all components and fittings existing prior to the commencement of the Lease Term</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">4.</span>
+            <span class="clause-content">يلتزم المستأجر بمسؤولية كاملة عن صيانة وإصلاح جميع الأعمال والتعديلات التي قام بها هو أو المستأجر السابق داخل العين المؤجرة، والتي تشمل على سبيل المثال لا الحصر: الديكورات الداخلية، أعمال السباكة، التمديدات الكهربائية، التكييف، وتركيب أسلاك الحاسب الآلي أو الاتصالات، وأي إضافات أو تغييرات غير جزء من التجهيزات الأصلية للعقار. ويتحمل المستأجر كافة التكاليف الناجمة عن هذه الصيانة والإصلاح طوال مدة عقد الإيجار، كما يلتزم بالحفاظ على العين المؤجرة في حالة جيدة وعدم التسبب بأي أضرار ناتجة عن سوء الاستخدام أو الإهمال. ويلتزم المالك بمسؤولية صيانة وتجديد التجهيزات الأصلية والثابتة في العين المؤجرة، بما يشمل كافة المكونات والتجهيزات التي كانت موجودة قبل بداية فترة الإيجار</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">5.</span>
+            <span class="clause-content">Upon signing the lease agreement, both parties shall prepare and sign a detailed inventory report that reflects the current condition of the leased premises, including all original fittings and any additional installations. This inventory shall serve as an official document and a primary reference for assessing the condition of the leased premises upon the termination of the lease, in order to determine any damages or changes for which the Tenant is responsible for repairing or covering the costs. Both the Landlord and the Tenant shall retain a copy of this inventory and commit to documenting any remarks or modifications to the condition of the leased premises throughout the lease term.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">5.</span>
+            <span class="clause-content">عند توقيع عقد الإيجار، يقوم الطرفان بإعداد وتوقيع جردة حالة تفصيلية توضح الوضع الحالي للعين المؤجرة، بما في ذلك كافة التجهيزات الأصلية والتركيبات الإضافية. تعتبر هذه الجردة وثيقة رسمية تُستخدم كمرجع أساسي لتقييم حالة العين المؤجرة عند انتهاء مدة الإيجار، بهدف تحديد الأضرار أو التغيرات التي يكون المستأجر مسؤولاً عن إصلاحها أو تحمل تكاليفها. و حيث يلتزم كل من المالك والمستأجر بالاحتفاظ بنسخة من هذه الجردة، كما يلتزمان بتوثيق أي ملاحظات أو تعديلات تطرأ على حالة العين المؤجرة طوال فترة الإيجار.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">6.</span>
+            <span class="clause-content">The Tenant shall permit the Landlord or his authorized agents or workers to enter the leased premises at reasonable and appropriate times for the purpose of inspecting and assessing the condition of the premises, supervising, or carrying out repair and maintenance works. The Tenant shall be notified in advance of the intended visit, except in cases of emergency where immediate access is required.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">6.</span>
+            <span class="clause-content">يلتزم المستأجر بالسماح للمالك أو من ينوب عنه من وكلاء أو عمال بالدخول إلى العين المؤجرة في الأوقات المناسبة والمعقولة، وذلك لغرض معاينة وفحص حالة العين المؤجرة، والإشراف على أعمال الإصلاح والصيانة أو تنفيذها.على أن يتم إبلاغ المستأجر مسبقًا بموعد الزيارة ما لم تكن الحالة طارئة تستدعي الدخول الفوري.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">7.</span>
+            <span class="clause-content">The Tenant shall obtain prior written approval from the Landlord before moving in any new furniture into the leased premises or disposing of the existing furniture upon vacating the premises. The Tenant must present a clearance letter from the Landlord before commencing any furniture moving or packing operations</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">7.</span>
+            <span class="clause-content">يلتزم المستأجر بالحصول على موافقة خطية مسبقة من المالك قبل نقل أو إدخال أي أثاث جديد إلى العين المؤجرة أو التصرف في الأثاث القديم عند إخلاء العين المؤجرة. 
+                كما يجب على المستأجر تقديم خطاب التحرير (إخلاء الأثاث) من المالك قبل بدء عمليات نقل أو تعبئة الأثاث.
+                </span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">8.</span>
+            <span class="clause-content">The Tenant shall not install any television antenna, satellite dish, or similar equipment within or outside the Leased Premises, including on walls, roofs, or balconies, without obtaining the prior written consent of the Landlord.In the event that the Tenant proceeds with such installations without the required approval, the Landlord or its authorized representative shall have the right to remove the unauthorized installations without prior notice to the Tenant. All related costs, including removal, repair, and any resulting damages, shall be borne solely by the Tenant, without prejudice to the Landlord’s right to pursue further legal action in accordance with the applicable laws and regulations of the Emirate of Dubai.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">8.</span>
+            <span class="clause-content">لا يجوز للمستأجر تركيب هوائي تلفزيون أو طبق استقبال (ستالايت) أو أي تجهيزات مشابهة داخل أو خارج العين المؤجرة، بما في ذلك على الجدران أو الأسطح أو الشرفات، دون الحصول على موافقة خطية مسبقة من المالك. وفي حال قيام المستأجر بأي تركيب دون الحصول على هذه الموافقة، يحق للمالك أو من ينوب عنه إزالة تلك التركيبات دون إشعار مسبق للمستأجر، وتحميله كافة التكاليف والنفقات المترتبة على الإزالة أو الإصلاح أو أي أضرار ناجمة عنها، دون الإخلال بحق المالك في اتخاذ أي إجراءات قانونية إضافية وفق القوانين المعمول بها في إمارة دبي.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">9.</span>
+            <span class="clause-content">In the event that there are any applicable municipal restrictions or regulations concerning the use of LPG cylinders in residential properties, the Tenant shall fully comply with such laws and regulations. The Tenant shall be solely responsible for any losses or damages arising from non-compliance, as well as for any claims or liabilities resulting therefrom.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">9.</span>
+            <span class="clause-content">في حال وجود أي قيود أو لوائح بلدية معمول بها تتعلق باستخدام أسطوانات غاز البترول في العقارات السكنية، يلتزم المستأجر بالامتثال الكامل لهذه القوانين واللوائح. ويكون المستأجر مسؤولاً بشكل كامل عن أي خسائر أو أضرار تنشأ نتيجة عدم الامتثال، وكذلك عن جميع المطالبات القانونية أو التعويضات التي قد تترتب على ذلك.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">10.</span>
+            <span class="clause-content">The Tenant must not remove any fixtures (e.g., wiring, pipes, or sanitary fittings) if it would damage the property. If this obligation is breached, the Landlord may claim the full cost of repairs and compensation, in line with Dubai laws and may escalate the matter to the Dubai Rental Disputes Center or other relevant authorities.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">10.</span>
+            <span class="clause-content">يتعهد المستأجر بعدم إزالة أي من التركيبات المثبتة أو المدمجة في الجدران (مثل الأسلاك الكهربائية، أنابيب المياه، التركيبات الصحية) إذا كان ذلك سيؤدي إلى ضرر في هيكل أو تشطيبات العين المؤجرة. 
+                وفي حال الإخلال، يحق للمؤجر المطالبة بالتعويض الكامل عن الأضرار والخسائر المباشرة أو التبعية، وفقًا للقوانين السارية في إمارة دبي، ودون المساس بحقوقه في اللجوء للجهات المختصة
+                </span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">11.</span>
+            <span class="clause-content">The Tenant shall not carry out any substantial repairs or modifications to the leased premises without the prior written consent of the Landlord. Any unauthorized work shall be considered a breach of this agreement and shall entitle the Landlord to claim damages</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">11.</span>
+            <span class="clause-content">لا يجوز للمستأجر تنفيذ أي تعديلات أو إصلاحات جوهرية في العين المؤجرة دون الحصول على موافقة خطية مسبقة من المؤجر، وأي مخالفة تُعد خرقًا صريحًا للعقد وتخول المؤجر المطالبة بالتعويض</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">12.</span>
+            <span class="clause-content">The Tenant hereby acknowledges their full obligation to settle the rent payments on the dates specified and agreed upon in this Agreement, whether by post-dated cheques or any other approved payment methods.
+                In the event that any cheque issued by the Tenant is returned unpaid for any reason attributable to the Tenant, a contractual penalty of AED 500 (Five Hundred Dirhams) shall be imposed for each bounced cheque.
+                If the Tenant fails to settle the outstanding amount resulting from the bounced cheque within five (5) days from the date of written notice issued by the Landlord, the Landlord shall have the right to request termination of this Agreement and reclaim the Leased Premises, in accordance with Article (25) of Law No. (26) of 2007, as amended.
+                Furthermore, a late payment penalty of AED 500 (Five Hundred Dirhams) shall be imposed for each instance of delay in paying the monthly or annual rent. This penalty shall be deemed a part of the Tenant's financial obligations and shall not conflict with the provisions of applicable law
+                </span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">12.</span>
+            <span class="clause-content">يقرّ المستأجر بالتزامه التام بسداد الإيجار في المواعيد المحددة والمتفق عليها في هذا العقد، سواء عن طريق شيكات مؤجلة أو وسائل دفع أخرى معتمدة. وفي حال ارتداد أي من الشيكات المقدمة من المستأجر لأي سبب يتعلق به، تُفرض عليه غرامة تعاقدية مقدارها (500) خمسمائة درهم عن كل شيك مرتجع.
+                وفي حال عدم قيام المستأجر بسداد المبلغ المستحق الناتج عن الشيك المرتجع خلال مدة خمسة (5) ايام من تاريخ إشعاره خطيًا من قبل المؤجر، فيحق للأخير التقدّم بطلب فسخ العقد واستعادة العين المؤجرة، وفقًا للمادة (25) من القانون رقم (26) لسنة 2007 وتعديلاته. كما تُفرض غرامة تأخير مقدارها (500) خمسمائة درهم عن كل حالة تأخير في سداد الإيجار الشهري أو السنوي، على أن لا تتعارض هذه الغرامة مع ما نص عليه القانون، وتُعد جزءًا من الالتزامات المالية للمستأجر.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">13.</span>
+            <span class="clause-content">The lease agreement shall not be considered effective nor delivered to the Tenant until the first rent installment cheque is cleared by the bank and the Tenant has submitted all documents required by the Landlord or his authorized representative. Failure to fulfill these conditions entitles the Landlord to withhold delivery of the lease agreement or suspend its effectiveness until full compliance is meet</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">13.</span>
+            <span class="clause-content">يُعتبر عقد الإيجار نافذًا ولا يُسلَّم للمستأجر إلا بعد تسوية أول شيك من القسط الإيجاري من قبل البنك، واستيفاء المستأجر لجميع المستندات والمستندات المطلوبة من قبل المالك أو وكيله. وفي حال عدم استكمال هذه الشروط، يحتفظ المالك بحق عدم تسليم العقد أو تعليق سريان مفعوله حتى تمام التنفيذ.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">14.</span>
+            <span class="clause-content">The Tenant shall not have the right to terminate this Lease Agreement prior to the expiry of its fixed term, unless prior written approval is granted by the Landlord. In the event that the Landlord consents to an early termination, the Tenant shall be liable to pay an early termination compensation equivalent to three (3) month’s rent, which shall be payable prior to or upon the actual date of vacating the Leased Premises. This clause shall constitute an integral part of the contractual obligations of both parties.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">14.</span>
+            <span class="clause-content">لا يحق للمستأجر إنهاء هذا العقد قبل انتهاء مدته المحددة، ما لم تتم الموافقة الخطية المسبقة من قبل المالك على ذلك. وفي حال وافق المالك على إنهاء العقد قبل الأجل، يلتزم المستأجر بدفع مبلغ يعادل قيمة إيجار ثلاثة (3) أشهر كتعويض إنهاء مبكر، على أن يُدفع هذا المبلغ قبل أو عند تاريخ الإخلاء الفعلي. ويُعد هذا البند جزءًا لا يتجزأ من الالتزامات التعاقدية للطرفين</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">15.</span>
+            <span class="clause-content">This Lease Agreement shall not be automatically renewed upon the expiration of its term. Renewal for an equivalent period shall only occur pursuant to an express written agreement between the Parties and subject to mutually agreed terms.
+                Either Party wishing not to renew the Lease must serve a written notice to the other Party at least ninety (90) days prior to the expiration date of the Lease Term.In the event that the Tenant submits such notice less than ninety (90) days before the expiration date, the Tenant shall be liable to pay a late notice penalty equivalent to ninety (90) days of rent, calculated from the earlier of the Lease expiration date or the actual handover date of the Leased Premises.
+                Failure to provide such notice shall not be construed as a renewal of the Lease, nor shall it obligate the Landlord to renew the Lease in the absence of an express written agreement between the Parties.
+                </span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">15.</span>
+            <span class="clause-content">لا يُجدد هذا العقد تلقائيًا عند انتهاء مدته، ويجوز تجديده لمدة مماثلة فقط بموجب اتفاق خطي صريح بين الطرفين، ووفقًا للشروط التي يتم الاتفاق عليها. ويشترط أن يُقدّم أي من الطرفين إشعارًا خطيًا للطرف الآخر يُعبّر فيه عن رغبته في عدم تجديد العقد، وذلك قبل تسعين (90) يومًا على الأقل من تاريخ انتهاء مدة الإيجار. وفي حال قدّم المستأجر هذا الإشعار خلال مدة تقل عن تسعين (90) يومًا، فإنه يلتزم بدفع ما يعادل تسعين (90) يومًا من الإيجار كغرامة تأخير، تُحسب من تاريخ انتهاء العقد أو تاريخ تسليم العين المؤجرة، أيهما أسبق.
+                ولا يُعدّ عدم تقديم الإشعار تجديدًا تلقائيًا للعقد، كما لا يُلزم المؤجر بتجديد العقد ما لم يُبرم اتفاق خطي صريح بين الطرفين.
+                </span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">16.</span>
+            <span class="clause-content">In the event that the Tenant intends to vacate the Leased Premises or permanently leave the United Arab Emirates prior to the expiration of the Lease Term, the Tenant shall notify the Landlord or the Landlord’s agent in writing and obtain prior written approval.
+                If the Tenant vacates the Leased Premises without such approval, or it is established that the Premises have been left unoccupied and the Tenant has failed to fulfill contractual obligations, the Landlord or the Landlord’s agent shall have the right to file an official request with the relevant authorities (such as the Dubai Rental Dispute Center) to take the necessary legal action to repossess the Leased Premises in accordance with the applicable laws and regulations.
+                In such case, the Tenant shall have no right to object to the legal procedures undertaken by the Landlord to recover the Premises, without prejudice to the Landlord’s right to claim any damages or outstanding dues under the Lease Agreement.
+                </span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">16.</span>
+            <span class="clause-content">في حال رغب المستأجر في إخلاء العين المؤجرة أو مغادرة دولة الإمارات العربية المتحدة قبل انتهاء مدة العقد، يتعين عليه إشعار المؤجر أو وكيله خطيًا بذلك، والحصول على موافقة خطية مسبقة. وفي حال قام المستأجر بإخلاء العين المؤجرة بشكل مفاجئ ودون الحصول على هذه الموافقة، أو ثبت أن العين المؤجرة قد تُركت شاغرة دون إشغال فعلي ولم يتم الوفاء بالالتزامات التعاقدية، يحق للمؤجر أو وكيله التقدم بطلب رسمي إلى الجهات المختصة (مثل مركز فض المنازعات الإيجارية بدبي) لاتخاذ الإجراءات اللازمة لاستعادة حيازة العين المؤجرة، وفقًا لما تقرره القوانين والأنظمة السارية.
+                ولا يحق للمستأجر في هذه الحالة الاعتراض على إجراءات المؤجر القانونية لاسترداد العين المؤجرة، دون أن يخل ذلك بحق المؤجر في المطالبة بالتعويض عن الأضرار أو المستحقات المتبقية بموجب العقد.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">17.</span>
+            <span class="clause-content">The Tenant shall not sublease the leased premises, whether in whole or in part, nor assign or permit any third party to occupy or use the premises in any manner, whether for consideration or otherwise, without the prior express written consent of the Landlord. The Tenant is strictly prohibited from using the leased premises for any purpose other than the residential purpose stated in this Agreement. In the event of a breach of this provision, the Landlord shall have the right to take all necessary legal actions, including immediate eviction and claiming damages.
+                Furthermore, the Tenant undertakes to provide the Landlord or his authorized representative with copies of valid identification or residency documents for all individuals residing with the Tenant in the leased premises, within seven (7) days from the date of their occupancy, for security and regulatory purposes.
+                </span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">17.</span>
+            <span class="clause-content">يلتزم المستأجر بعدم تأجير العين المؤجرة من الباطن كليًا أو جزئيًا، أو التنازل عنها، أو السماح لأي طرف ثالث باستخدامها بأي شكل من الأشكال، سواء بمقابل أو بدون مقابل، دون الحصول على موافقة خطية مسبقة وصريحة من المالك. كما يُحظر على المستأجر استخدام العين المؤجرة في غير الغرض السكني المنصوص عليه في هذا العقد. وفي حال خرق هذا الالتزام، يحق للمالك اتخاذ كافة الإجراءات القانونية، بما في ذلك الإخلاء الفوري والمطالبة بالتعويضات. وكما يتعهد المستأجر بتزويد المالك أو وكيله بنسخ من بطاقات الهوية أو الإقامات السارية لكافة الأفراد المقيمين معه في العين المؤجرة، خلال مدة لا تتجاوز (7) أيام من تاريخ سكنهم، وذلك لأغراض أمنية وتنظيمية.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">18.</span>
+            <span class="clause-content">In the event that either party to this Agreement wishes to amend any of its terms or conditions, the party seeking such amendment shall notify the other party in writing at least thirty (30) days prior to the expiration date of this Agreement. Failure to provide such notice within the specified period shall result in the automatic renewal of this Agreement under the same terms and conditions, unless otherwise agreed in writing between the parties</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">18.</span>
+            <span class="clause-content">في حال رغبة أي من طرفي هذا العقد في تعديل أي شرط من شروطه أو أي بند من بنوده، يلتزم الطرف الراغب بالتعديل بإخطار الطرف الآخر بذلك إخطارًا خطيًا قبل مدة لا تقل عن ثلاثين (30) يومًا من تاريخ انتهاء مدة هذا العقد. وفي حال عدم تقديم الإخطار خلال المدة المحددة، يُعد العقد مجددًا تلقائيًا بذات الشروط والأحكام السابقة، ما لم يتفق الطرفان كتابةً على خلاف ذلك</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">19.</span>
+            <span class="clause-content">The Tenant shall bear full responsibility for the payment of all governmental, municipal, and housing fees, as well as the registration fees of the Lease Agreement with the Real Estate Regulatory Agency (RERA), whether such fees are currently due or may become due in the future, in relation to the Leased Premises throughout the lease term. The Tenant shall also be responsible for the timely settlement of all utility bills including water, electricity, sewage, and any other service charges related to the Leased Premises. Any delay or failure in payment shall be deemed a breach of the Tenant’s contractual obligations.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">19.</span>
+            <span class="clause-content">يتحمل المستأجر كامل المسؤولية عن سداد جميع الرسوم الحكومية والبلدية ورسوم الإسكان، وكذلك رسوم تسجيل عقد الإيجار لدى مؤسسة التنظيم العقاري (ريرا)، سواء كانت هذه الرسوم مستحقة في الوقت الحالي أو قد تُستحق في المستقبل، وذلك عن العين المؤجرة طوال مدة الإيجار. كما يلتزم المستأجر بسداد جميع فواتير المياه والكهرباء والصرف الصحي والخدمات المرتبطة بالعين المؤجرة، ويُعتبر أي تأخير أو تقصير في السداد إخلالًا بالتزاماته التعاقدية.</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">20.</span>
+            <span class="clause-content">The Tenant undertakes to pay a minimum service fee of AED 1,500 or 2% of the annual rent, whichever is higher, for each renewal of the lease contract</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">20.</span>
+            <span class="clause-content">يلتزم المستأجر بدفع الحد الأدنى من رسوم الخدمة المقررة بمبلغ 1,500 درهم إماراتي أو بنسبة 2% من قيمة الإيجار السنوي، أيهما أعلى، وذلك عن كل عملية تجديد لعقد الإيجار</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">21.</span>
+            <span class="clause-content">In the event the Tenant has paid a security deposit, such deposit may be refunded upon vacating the leased premises, subject to deductions for costs related to repairing any damage to the property and any unpaid utility bills, including the final electricity and water bills issued by the Dubai Electricity and Water Authority (DEWA). The refund shall be processed within twenty-five (25) working days from the date the final invoice is submitted.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">21.</span>
+            <span class="clause-content">يجوز للمستأجر استرداد مبلغ التامين عند إخلاء العين المؤجرة، وذلك بعد خصم تكاليف إصلاح الأضرار التي لحقت بالعقار، وأي فواتير غير مدفوعة لاستخدام المرافق، بما في ذلك الفواتير النهائية للكهرباء والمياه الصادرة عن هيئة الكهرباء والمياه بدبي. ويتم استرداد مبلغ التأمين خلال فترة لا تتجاوز خمسة وعشرين (25) يوم عمل من تاريخ تقديم الفاتورة النهائية</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">22.</span>
+            <span class="clause-content">The Tenant is permitted to keep pets in the apartment, subject to a non-refundable pet fee of AED 500 (Five Hundred Dirhams) per pet. The Tenant shall ensure that the presence of any pet does not cause damage to the property or disturbance to other residents. The Tenant shall be held liable for any damages or additional cleaning costs arising from the keeping of pets in the Leased Premises.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">22.</span>
+            <span class="clause-content">ُسمح للمستأجر باقتناء حيوانات أليفة داخل الشقة المؤجرة، وذلك مقابل رسوم غير قابلة للاسترداد قدرها (500) خمسمائة درهم عن كل حيوان أليف. ويلتزم المستأجر بعدم التسبب بأي إزعاج للسكان الآخرين أو إلحاق ضرر بالممتلكات نتيجة وجود الحيوانات الأليفة. ويتحمل المستأجر المسؤولية الكاملة عن أي أضرار أو تكاليف تنظيف إضافية ناتجة عن اقتناء الحيوانات الأليفة داخل العين المؤجرة</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">23.</span>
+            <span class="clause-content">Tenants shall not engage in any activities that may cause disturbance, nuisance, or inconvenience to neighbors or other occupants of the building. All Tenants must observe proper conduct and adhere to the rules and regulations applicable to the Property.
+                The storage or placement of any personal belongings or materials in hallways, balconies, apartment entrances, or any of the building’s common areas is strictly prohibited.
+                The Landlord or Building Management reserves the right to remove any such items left in violation of this clause without prior notice and shall not be held liable for any loss or damage resulting therefrom. The Landlord further reserves the right to charge the Tenant for any costs incurred in relation to the removal, cleaning, or related damage.
+                </span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">23.</span>
+            <span class="clause-content">لا يجوز للمستأجرين ممارسة أي أنشطة من شأنها التسبب في الإزعاج أو الإضرار براحة الجيران أو سكان المبنى، ويجب عليهم الالتزام بالسلوك العام واحترام القواعد المعمول بها في العقار. كما يُمنع منعًا باتًا تخزين أو ترك أية ممتلكات شخصية أو مواد في الممرات، أو الشرفات، أو مداخل الوحدات، أو أي من المناطق المشتركة في المبنى.
+                ويحق للمؤجر أو إدارة المبنى إزالة أي ممتلكات تُترك بالمخالفة لهذا البند دون إشعار مسبق، ولا يتحمل المؤجر أية مسؤولية عن ضياع أو تلف تلك الممتلكات، كما يحتفظ بحقه في تحميل المستأجر أي تكاليف ناتجة عن الإزالة أو التنظيف أو الأضرار ذات الصلة
+                </span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">24.</span>
+            <span class="clause-content">The Landlord, the property agent, and their respective representatives or affiliates shall not be held liable for any bodily injuries or material damages sustained by the Tenant or their guests while using the swimming pool or any other shared or communal facilities within the building. The Tenant acknowledges that use of such facilities is at their own risk and agrees to comply with all rules and safety instructions issued by the building management or facility operator.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">24.</span>
+            <span class="clause-content">لا يتحمل المالك أو الوكيل العقاري أو أي من ممثليهما القانونيين أو التابعين لهما، أي مسؤولية عن أية إصابات جسدية أو أضرار مادية قد يتعرض لها المستأجر أو زواره نتيجة استخدام حمام السباحة أو أي من المرافق المشتركة أو العامة داخل المبنى. ويقر المستأجر بأنه يستخدم هذه المرافق على مسؤوليته الخاصة، مع التزامه بالتقيد بكافة التعليمات والإرشادات الصادرة من إدارة المبنى أو الجهة المشغّلة للمرافق</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">25.</span>
+            <span class="clause-content">If the Property or Building is equipped with parking facilities, the Tenant shall be entitled to use one parking space for their personal vehicle during the Lease Term.
+                The Landlord shall not, under any circumstances, be held liable for any damage, loss, theft, or destruction of the vehicle while parked in the allocated space, regardless of the cause.
+                The Tenant shall bear full responsibility for insuring the vehicle.
+                An additional parking space may be provided, subject to availability and the Landlord’s prior approval, and shall be subject to additional charges.
+                </span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">25.</span>
+            <span class="clause-content">في حال كان العقار أو المبنى مزودًا بخدمات مواقف سيارات، وسيتم تخصيص فتحة موقف سيارة واحدة للمستأجر خلال مدة الإيجار، وذلك دون أن يترتب على المالك أية مسؤولية تجاه سلامة أو حماية أو فقدان أو تلف أو سرقة المركبة أثناء وجودها في الموقف، بغض النظر عن سبب الواقعة حيث تقع مسؤولية تأمين المركبة بالكامل على عاتق المستأجر.كما يُطبق رسم إضافي في حال طلب المستأجر تخصيص موقف سيارة إضافي، ويخضع ذلك لموافقة المالك وتوفر المساحة</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">26.</span>
+            <span class="clause-content">If the Building provides any facilities such as a gym, swimming pool, sauna, steam room, jacuzzi, or other shared amenities, the Tenant shall undertake to use these facilities in accordance with applicable laws and regulations, respecting their safety and condition, and refraining from any misuse or damage.
+                Use of these facilities is strictly limited to the Tenant and their immediate family members only, and third-party use is prohibited without the prior consent of the Landlord or Building Management.
+                </span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">26.</span>
+            <span class="clause-content">في حال وجود أية مرافق داخل المبنى مثل الجيم، حمام السباحة، الساونا، غرفة البخار، الجاكوزي، أو غيرها من المرافق المشتركة، يلتزم المستأجر باستخدام هذه المرافق بما يتوافق مع القوانين واللوائح المعمول بها، وأن يحترم سلامة المرافق وألا يسيء إليها بأي شكل من الأشكال.
+                ويقتصر استخدام هذه المرافق على المستأجر وأفراد أسرته فقط، ولا يجوز السماح للغير باستخدامها دون موافقة المالك أو إدارة المبنى
+                </span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">27.</span>
+            <span class="clause-content">In the event the Tenant breaches any of the terms stipulated in this Agreement, the Landlord shall notify the Tenant in writing to remedy the breach within a period of no less than fifteen (15) days from the date of such notice. If the Tenant fails to rectify the breach within this period, the Landlord shall have the right to terminate the Agreement and demand evacuation of the leased premises, holding the Tenant liable for all damages and losses arising from such breach. The Landlord shall also be entitled to take all necessary legal actions to enforce his rights, including claiming compensation and legal costs, in accordance with the provisions of this Agreement and the applicable laws of the Emirate of Dubai.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">27.</span>
+            <span class="clause-content">في حال خرق المستأجر لأي من الشروط الواردة في هذا العقد، يلتزم المالك بإخطار المستأجر كتابيًا بوجوب معالجة هذا الخرق خلال مدة لا تقل عن (15) يومًا من تاريخ الإخطار. في حال عدم تصحيح المستأجر للخرق خلال هذه المدة، يحق للمالك فسخ العقد وطلب إخلاء العين المؤجرة، مع تحميل المستأجر كافة الأضرار والخسائر التي تنجم عن هذا الانتهاك. كما يحق للمالك اتخاذ كافة الإجراءات القانونية اللازمة لاسترداد حقوقه، بما في ذلك المطالبة بالتعويضات والتكاليف القانونية، وفقًا لأحكام هذا العقد والقوانين السارية في إمارة دبي</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">28.</span>
+            <span class="clause-content">In the event that there are authorized signatories or company representatives involved, legally certified powers of attorney must be provided evidencing their authority to sign or represent in this matter, and such documents shall be attached to the contract.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">28.</span>
+            <span class="clause-content">في حال وجود مفوضين بالتوقيع أو ممثلين لشركات، يجب تقديم الوكالات القانونية المعتمدة التي تفيد بحقهم في التوقيع أو التمثيل في هذا الشأن، ويتم إرفاقها بالعقد</span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">29.</span>
+            <span class="clause-content">In the event of any dispute arising between the Landlord and the Tenant in relation to the interpretation, implementation, or enforcement of the provisions of this Agreement, such dispute shall be referred to the competent courts of the Emirate of Dubai, which shall have exclusive jurisdiction.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">29.</span>
+            <span class="clause-content">في حال نشوب أي نزاع بين المالك والمستأجر يتعلق بتفسير أو تنفيذ أو تطبيق أحكام هذا العقد، يتم إحالة النزاع إلى المحاكم المختصة في إمارة دبي للفصل فيه،
+                وتكون هذه المحاكم صاحبة الولاية القضائية الحصرية
+               </span>
+        </div>
+    </div>
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">30.</span>
+            <span class="clause-content">In the event of any discrepancy or conflict in interpretation between the Arabic text and the translated version of this Agreement, the Arabic text shall prevail and shall be deemed the official and legally binding version before all judicial and administrative authorities in the Emirate of Dubai. All parties acknowledge and sign the Arabic version as the primary and authoritative version of the Agreement.</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">30.</span>
+            <span class="clause-content">في حال وجود أي تعارض أو اختلاف في التفسير بين النص العربي والنص المترجم لهذا العقد، يُعتد بالنص العربي ويُعتبر هو المرجع الرسمي والملزم قانونًا، وتسود أحكامه أمام كافة الجهات القضائية والإدارية في إمارة دبي. 
+                وتُوقّع جميع الأطراف على النسخة العربية باعتبارها النسخة المعتمدة والأساسية للعقد</span>
+        </div>
+    </div>
+    
+    <div class="clause-bilingual">
+        <div class="clause-en">
+            <span class="clause-number">31.</span>
+            <span class="clause-content">This contract is made in two copies, and both the parties are deemed to have received a cop contract upon signing</span>
+        </div>
+        <div class="clause-ar">
+            <span class="clause-number">31.</span>
+            <span class="clause-content">تم إبرام هذا العقد من نسختين ويحصل بموجبه كل طرف على نسخة من العقد بعد التوقيع عليه</span>
+        </div>
+    </div>
+    
+    <!-- Remarks Section - MATCHES ORIGINAL PDF -->
+    <div class="remarks-section">
+        <div class="remarks-title">Remarks:</div>
+        <!-- Lease notes - two lines as in original; {{LEASE_NOTES}} shows lease notes if any -->
+        <div class="remarks-notes">{{LEASE_NOTES}}</div>
+        <div class="remarks-notes-line2"></div>
+        <!-- Tenant's Phone and Emirates ID on SAME row -->
+        <div class="remarks-tenant-row1">
+            <div class="cell cell-phone">
+                <span class="label">Tenant's Phone:</span>
+                <span class="value">{{TENANT_PHONE}}</span>
+            </div>
+            <div class="cell cell-id">
+                <span class="label">Tenant's Emirates ID:</span>
+                <span class="value">{{TENANT_EMIRATES_ID}}</span>
+            </div>
+        </div>
+        <div class="remarks-tenant-email">
+            <span class="label">Tenant's Email:</span>
+            <span class="value">{{TENANT_EMAIL}}</span>
+        </div>
+        <div class="undertake-en">I undertake to act in accordance with this Contract and its Conditions.</div>
+        <div class="undertake-ar">أتعهد بالعمل وفق هذه الاتفاقية وشروطها</div>
+    </div>
+    
+    <div class="signature-section">
+        <div class="signature-block">
+            <div class="signature-left">
+                <div class="signature-label">Landlord's Signature:</div>
+                <div class="signature-line">{{LANDLORD_SIGNATURE}}</div>
+            </div>
+            <div class="signature-right">
+                <div class="signature-label">Tenant's Signature:</div>
+                <div class="signature-line">{{TENANT_SIGNATURE}}</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

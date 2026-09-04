@@ -1,0 +1,1 @@
+-- Service Management Phase 4: hybrid batch invoicing (apply via tools/sm_apply_phase4_schema.php)

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ARS Phase 3A Prototype — Command Center</title>
+  <style>
+    :root { --ink:#0F4C5C; --sand:#C4A574; --bg:#F7F5F2; --card:#fff; --muted:#5C5C5C; --line:#E5E1DB; --danger:#B42318; --warn:#B54708; --ok:#027A48; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:#1a1a1a; }
+    .banner { background:#1a1a1a; color:#fff; padding:8px 16px; font-size:12px; }
+    .shell { display:grid; grid-template-columns:220px 1fr; min-height:100vh; }
+    aside { background:var(--ink); color:#fff; padding:20px 14px; }
+    aside h1 { font-size:16px; margin:0 0 20px; font-weight:600; }
+    aside a { display:block; color:#d7e6ea; text-decoration:none; padding:8px 10px; border-radius:8px; margin-bottom:4px; }
+    aside a.active { background:rgba(255,255,255,.12); color:#fff; }
+    main { padding:24px; }
+    .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+    .kpi { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+    .kpi b { display:block; font-size:22px; }
+    .kpi span { color:var(--muted); font-size:12px; }
+    .grid { display:grid; grid-template-columns:1.4fr 1fr; gap:16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+    .card h2 { margin:0 0 12px; font-size:15px; }
+    .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line); }
+    .tag { font-size:11px; padding:2px 8px; border-radius:999px; background:#E8F3F5; color:var(--ink); }
+    .alert { border-left:3px solid var(--warn); padding:8px 10px; background:#FFF7ED; margin-bottom:8px; border-radius:0 8px 8px 0; }
+    .note { margin-top:16px; color:var(--muted); font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="banner">PROTOTYPE ONLY — docs/ars/prototypes/phase3a — not a production route</div>
+  <div class="shell">
+    <aside>
+      <h1>ARS Rentals</h1>
+      <a class="active" href="#">Command Center</a>
+      <a href="#">Reservations</a>
+      <a href="#">Calendar</a>
+      <a href="#">Guests</a>
+      <a href="#">Operations</a>
+      <a href="#">Finance</a>
+      <a href="#">Settings</a>
+    </aside>
+    <main>
+      <h1 style="margin:0 0 4px;font-size:22px;">Today</h1>
+      <p style="color:var(--muted);margin:0 0 16px;">Friday, 17 Jul 2026 · Property: All</p>
+      <div class="kpis">
+        <div class="kpi"><b>6</b><span>Arrivals</span></div>
+        <div class="kpi"><b>4</b><span>Departures</span></div>
+        <div class="kpi"><b>2</b><span>Units not ready</span></div>
+        <div class="kpi"><b>3</b><span>Payment alerts</span></div>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h2>Arrivals</h2>
+          <div class="row"><span>BK-1042 · Al Noor 1204</span><span class="tag">Confirmed</span></div>
+          <div class="row"><span>BK-1048 · Marina 802</span><span class="tag">Unpaid</span></div>
+          <div class="row"><span>BK-1051 · JBR 305</span><span class="tag">Ready</span></div>
+        </div>
+        <div class="card">
+          <h2>Alerts</h2>
+          <div class="alert">Unit 1204 still Dirty — arrival 15:00</div>
+          <div class="alert">BK-1048 balance due AED 1,200</div>
+          <div class="alert">Deposit pending BK-0991</div>
+        </div>
+      </div>
+      <p class="note">Wireframe · hierarchy: arrivals/departures/readiness first · role widgets TBD</p>
+    </main>
+  </div>
+</body>
+</html>

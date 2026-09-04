@@ -1,0 +1,32 @@
+<!--
+REPLACEMENT FOR REMARKS SECTION
+Replace your current Remarks Section (from <!-- Remarks Section --> to </div> before <!-- Signature Section -->)
+with the following block to match the original 2026Tanacey contract.pdf
+-->
+
+    <!-- Remarks Section - matches original PDF layout -->
+    <div class="remarks-section">
+        <div class="remarks-title">Remarks:</div>
+        <!-- Two lines for lease notes ({{LEASE_NOTES}} from lease form) -->
+        <div class="remarks-notes-line">{{LEASE_NOTES}}</div>
+        <div class="remarks-notes-line"></div>
+        <!-- Tenant's Phone and Emirates ID on SAME row (as in original PDF) -->
+        <table class="remarks-table remarks-tenant-row">
+            <tr>
+                <td class="label" style="width: 25%;">Tenant's Phone:</td>
+                <td class="value" style="width: 25%; border-bottom: 1px solid #000;">{{TENANT_PHONE}}</td>
+                <td class="label" style="width: 25%;">Tenant's Emirates ID:</td>
+                <td class="value" style="width: 25%; border-bottom: 1px solid #000;">{{TENANT_EMIRATES_ID}}</td>
+            </tr>
+        </table>
+        <table class="remarks-table">
+            <tr>
+                <td class="label" style="width: 25%;">Tenant's Email:</td>
+                <td class="value" style="width: 75%; border-bottom: 1px solid #000;">{{TENANT_EMAIL}}</td>
+            </tr>
+        </table>
+        <div style="margin-top: 20px; text-align: center; font-size: 10.5px;">
+            <div style="margin-bottom: 8px;">I undertake to act in accordance with this Contract and its Conditions.</div>
+            <div class="ar" style="font-family: 'DejaVu Sans', 'Arial', sans-serif;">أتعهد بالعمل وفق هذه الاتفاقية وشروطها</div>
+        </div>
+    </div>

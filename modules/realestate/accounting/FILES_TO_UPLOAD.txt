@@ -1,0 +1,120 @@
+================================================================================
+REAL ESTATE ACCOUNTING MODULE - FILES TO UPLOAD TO LIVE SERVER
+================================================================================
+
+IMPORTANT: Upload files maintaining the exact directory structure shown below.
+
+================================================================================
+1. DATABASE MIGRATION FILES (Run in ORDER using phpMyAdmin)
+================================================================================
+
+migrations/create_real_estate_accounting_tables.sql
+migrations/seed_real_estate_chart_of_accounts.sql
+migrations/add_reconciliation_to_gl.sql
+
+⚠️ RUN THESE SQL FILES IN THE ORDER LISTED ABOVE
+
+================================================================================
+2. CORE ACCOUNTING ENGINE FILES
+================================================================================
+
+modules/realestate/accounting/accounting_engine.php
+modules/realestate/accounting/accounting_integration.php
+modules/realestate/accounting/README.md
+
+================================================================================
+3. FINANCIAL REPORTS
+================================================================================
+
+modules/realestate/accounting/trial_balance.php
+modules/realestate/accounting/general_ledger.php
+modules/realestate/accounting/account_ledger.php
+modules/realestate/accounting/tenant_statement.php
+modules/realestate/accounting/profit_loss.php
+modules/realestate/accounting/balance_sheet.php
+modules/realestate/accounting/vat_report.php
+
+================================================================================
+4. JOURNAL ENTRY MANAGEMENT
+================================================================================
+
+modules/realestate/accounting/journal_entry_list.php
+modules/realestate/accounting/journal_entry_add.php
+modules/realestate/accounting/journal_entry_view.php
+
+================================================================================
+5. BANK RECONCILIATION
+================================================================================
+
+modules/realestate/accounting/bank_reconciliation.php
+modules/realestate/accounting/bank_reconciliation_match.php
+modules/realestate/accounting/ajax_reconcile_transactions.php
+modules/realestate/accounting/ajax_unreconcile_transactions.php
+modules/realestate/accounting/ajax_clear_match_results.php
+
+================================================================================
+6. PERIOD MANAGEMENT
+================================================================================
+
+modules/realestate/accounting/periods.php
+modules/realestate/accounting/period_close.php
+
+================================================================================
+7. VAT CONFIGURATION
+================================================================================
+
+modules/realestate/accounting/vat_config.php
+
+================================================================================
+8. DATA MIGRATION TOOL
+================================================================================
+
+modules/realestate/accounting/migrate_existing_data.php
+
+================================================================================
+9. MODIFIED EXISTING FILES
+================================================================================
+
+modules/realestate/includes/re_layout_header.php
+
+⚠️ CHECK IF THESE FILES WERE MODIFIED (if accounting integration was added):
+modules/realestate/billing_invoice_create.php
+modules/realestate/payment_add.php
+modules/realestate/lease_add.php
+
+================================================================================
+TOTAL FILE COUNT
+================================================================================
+
+Database Files: 3
+Core Engine: 3
+Reports: 7
+Journals: 3
+Bank Reconciliation: 5
+Period Management: 2
+VAT: 1
+Modified Files: 1-4 (depending on integration)
+
+TOTAL: ~26-29 files
+
+================================================================================
+QUICK UPLOAD CHECKLIST
+================================================================================
+
+[ ] 1. Backup database
+[ ] 2. Run SQL migrations (in order)
+[ ] 3. Upload accounting_engine.php
+[ ] 4. Upload accounting_integration.php
+[ ] 5. Upload all report files (7 files)
+[ ] 6. Upload journal entry files (3 files)
+[ ] 7. Upload bank reconciliation files (5 files)
+[ ] 8. Upload period management files (2 files)
+[ ] 9. Upload vat_config.php
+[ ] 10. Upload modified re_layout_header.php
+[ ] 11. Upload modified integration files (if any)
+[ ] 12. Test access to accounting pages
+[ ] 13. Configure VAT settings
+
+================================================================================
+END OF FILE LIST
+================================================================================

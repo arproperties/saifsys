@@ -1,0 +1,2 @@
+# Schema snapshots (structure only, no business data in routine exports)
+schema_snapshot_local.json

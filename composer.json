@@ -1,0 +1,16 @@
+{
+    "require": {
+        "dompdf/dompdf": "^3.1",
+        "mpdf/mpdf": "^8.2",
+        "phpmailer/phpmailer": "^6.10",
+        "khaled.alshamaa/ar-php": "^6.0",
+        "stripe/stripe-php": "^20.1",
+        "phpoffice/phpspreadsheet": "^5.8"
+    },
+    "config": {
+        "platform": {
+            "php": "8.2.4"
+        },
+        "platform-check": false
+    }
+}

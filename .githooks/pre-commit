@@ -1,0 +1,56 @@
+#!/bin/sh
+# Blocks commits containing credentials, data dumps, or oversized files.
+# Bypass (only when you are certain): git commit --no-verify
+set -u
+fail=0
+red() { printf '\033[31m%s\033[0m\n' "$1"; }
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+# 1. Filenames that should never be committed
+for f in $staged; do
+  case "$f" in
+    .env|.env.*|*/.env|*/.env.*)
+      [ "${f##*.}" = "example" ] || { red "BLOCKED  env file: $f"; fail=1; } ;;
+    *.sql|*.sql.gz|*.dump|*.sqlite|*.sqlite3|*.db)
+      red "BLOCKED  database dump: $f"; fail=1 ;;
+    *.pem|*.key|*.p12|*.pfx|*.jks|*.keystore)
+      red "BLOCKED  key material: $f"; fail=1 ;;
+    uploads/*|storage/*|backups/*|logs/*)
+      red "BLOCKED  data directory: $f"; fail=1 ;;
+  esac
+  # 2. Oversized files (>5MB)
+  if [ -f "$f" ]; then
+    size=$(wc -c < "$f" | tr -d ' ')
+    [ "$size" -gt 5242880 ] && { red "BLOCKED  large file ($((size/1048576))MB): $f"; fail=1; }
+  fi
+done
+
+# 3. Secret patterns in newly added lines
+added=$(git diff --cached -U0 --diff-filter=ACM | grep '^+' | grep -v '^+++')
+
+scan() {
+  hits=$(printf '%s\n' "$added" | grep -nE -- "$1" | head -3)
+  [ -n "$hits" ] && { red "BLOCKED  $2"; printf '%s\n' "$hits" | cut -c1-120 | sed 's/^/           /'; fail=1; }
+}
+
+scan '-----BEGIN [A-Z ]*PRIVATE KEY-----' "private key"
+scan 'AKIA[0-9A-Z]{16}'                      "AWS access key id"
+scan 'AIza[0-9A-Za-z_-]{35}'                 "Google API key"
+scan '\bsk-(ant-)?[A-Za-z0-9_-]{20,}'        "AI provider API key"
+scan '\b(ghp|gho|ghs|ghu)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' "GitHub token"
+scan 'xox[baprs]-[A-Za-z0-9-]{10,}'          "Slack token"
+scan '\bBearer [A-Za-z0-9._-]{20,}'          "bearer token"
+
+# Generic assignment: password/secret/token = "something real"
+scan "(pass(word|wd)?|secret|api[_-]?key|auth[_-]?token|access[_-]?token)['\"]?[[:space:]]*(=>?|:)[[:space:]]*['\"][^'\"\$]{6,}['\"]" \
+     "hardcoded credential"
+
+if [ "$fail" -ne 0 ]; then
+  echo
+  red "Commit rejected by pre-commit secret scan."
+  echo "Move the value to an ignored config file, or use 'git commit --no-verify' if this is a false positive."
+  exit 1
+fi
+exit 0

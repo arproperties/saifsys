@@ -1,0 +1,205 @@
+{
+    "phase": "2D",
+    "pass": 24,
+    "fail": 0,
+    "blocked": 0,
+    "skip": 0,
+    "total": 24,
+    "previously_blocked_2c_completed": true,
+    "results": [
+        {
+            "id": "REG-01",
+            "cat": "regression",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "regression"
+        },
+        {
+            "id": "FLAG-01",
+            "cat": "setup",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "setup"
+        },
+        {
+            "id": "WF-INV",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-CREDIT-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "credit_id=7 unalloc=90",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-CREDIT-02",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-CREDIT-03",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-EXT-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "ACC-EXT",
+            "cat": "accounting",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "accounting"
+        },
+        {
+            "id": "WF-EXT-02",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "second extension ",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-SVC-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-DMG-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-FORF-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-ADJ-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-CN-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-EARLY-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-REF-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-NOSHOW-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-STRIPE-PAY",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-STRIPE-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "WF-CANCEL-01",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "{\"reverse_54\":{\"success\":true,\"error\":null,\"code\":null,\"document_id\":54,\"journal_id\":\"3618\",\"reversal_journal_id\":\"3618\"}}",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "GATE-GONE",
+            "cat": "workflow",
+            "st": "PASS",
+            "detail": "Former Phase 2C blocked scenarios exercised above",
+            "status": "PASS",
+            "category": "workflow"
+        },
+        {
+            "id": "SEC-ISO",
+            "cat": "security",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "security"
+        },
+        {
+            "id": "REG-RE",
+            "cat": "regression",
+            "st": "PASS",
+            "detail": "re_invoices=190",
+            "status": "PASS",
+            "category": "regression"
+        },
+        {
+            "id": "FLAG-OFF",
+            "cat": "setup",
+            "st": "PASS",
+            "detail": "",
+            "status": "PASS",
+            "category": "setup"
+        }
+    ],
+    "engine_sha": "9cbb880fc3241615b69d4fe5b3adfbee14e513d03964924214cc9325f9d7c7d6",
+    "adapter_flag_final": 0
+}

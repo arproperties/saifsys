@@ -1,0 +1,72 @@
+/**
+ * Construction Module — Mobile-first responsive styles
+ * Touch targets, responsive layout, no horizontal overflow
+ */
+
+:root {
+  --co-touch: 44px;
+  --co-radius: 12px;
+  --co-radius-sm: 8px;
+}
+
+/* Prevent horizontal scroll on mobile */
+html, body { overflow-x: hidden; }
+.container,
+.container-fluid,
+.co-content {
+  max-width: 100%;
+}
+
+/* Touch targets (min 44px for tap) */
+.btn, .form-control, .form-select, .nav-link, .slink {
+  min-height: var(--co-touch);
+}
+@media (min-width: 768px) {
+  .slink { min-height: var(--co-touch); }
+}
+
+/* Cards */
+.card { border-radius: var(--co-radius); }
+
+/* Tables: horizontal scroll on small screens */
+.table-responsive {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.table-responsive .table {
+  display: table;
+  width: 100%;
+  min-width: 100%;
+  margin-bottom: 0;
+}
+/* Any table inside card-body without wrapper gets scroll via parent */
+.card-body > .table:not(.table-responsive .table) {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.card-body.table-responsive > .table {
+  display: table;
+  width: 100%;
+  min-width: 100%;
+}
+
+@media (max-width: 767px) {
+  .table-responsive,
+  .card-body .table { font-size: 0.875rem; }
+  .btn-group .btn { padding: 0.375rem 0.5rem; }
+  .container { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .card-body { padding: 0.75rem; }
+  .d-flex.gap-2, .d-flex.gap-3 { flex-wrap: wrap; }
+  .navbar-brand { font-size: 0.95rem; }
+  /* Stack action buttons on small screens */
+  .card-header.d-flex { flex-wrap: wrap; gap: 0.5rem; }
+}
+
+@media (max-width: 575px) {
+  .container { padding-left: 0.5rem; padding-right: 0.5rem; }
+  .card-body { padding: 0.5rem; }
+  .btn { padding: 0.375rem 0.75rem; font-size: 0.875rem; }
+  .h4, .card-header h6 { font-size: 1.1rem; }
+}

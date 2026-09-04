@@ -1,0 +1,1095 @@
+/* ============================================================================
+   ARS Home Rentals — Design Language
+   White + gold luxury hospitality theme
+   ============================================================================ */
+
+:root {
+    --ars-primary:       #b8860b;
+    --ars-primary-light: #d4af37;
+    --ars-primary-dark:  #9a7209;
+    --ars-primary-soft:  rgba(184, 134, 11, 0.12);
+    --ars-accent:        #d4af37;
+    --ars-accent-light:  #e8d48b;
+    --ars-coral:         #dc2626;
+    --ars-success:       #059669;
+    --ars-warning:       #d97706;
+    --ars-info:          #2563eb;
+    --ars-text:          #1a1a1a;
+    --ars-text-muted:    #6b7280;
+    --ars-bg:            #f7f5f0;
+    --ars-card-bg:       #ffffff;
+    --ars-border:        #e8e4dc;
+    --ars-sidebar-width: 248px;
+    --ars-sidebar-collapsed: 72px;
+    --ars-radius:        14px;
+    --ars-radius-sm:     10px;
+    --ars-shadow-sm:     0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.06);
+    --ars-shadow:        0 4px 16px rgba(15,23,42,0.08);
+    --ars-shadow-lg:     0 12px 32px rgba(15,23,42,0.12);
+}
+
+body {
+    background: var(--ars-bg);
+    min-height: 100vh;
+    font-family: 'Plus Jakarta Sans', 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    color: var(--ars-text);
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* =========================================================================
+   Sidebar
+   ========================================================================= */
+.ars-sidebar {
+    width: var(--ars-sidebar-width);
+    min-height: 100vh;
+    max-height: 100vh;
+    position: sticky;
+    top: 0;
+    z-index: 1030;
+    background: linear-gradient(180deg, var(--ars-primary-dark) 0%, var(--ars-primary) 60%, var(--ars-primary-light) 100%);
+    color: #fff;
+    transition: width 0.25s cubic-bezier(.4,0,.2,1);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 1rem 0.5rem;
+}
+.ars-sidebar.collapsed {
+    width: var(--ars-sidebar-collapsed);
+}
+
+.ars-sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem 1rem;
+    border-bottom: 1px solid rgba(255,255,255,0.12);
+    margin-bottom: 0.75rem;
+}
+.ars-logo {
+    width: 38px;
+    height: 38px;
+    object-fit: contain;
+    border-radius: var(--ars-radius-sm);
+}
+.ars-logo-icon {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    font-size: 1.5rem;
+    background: rgba(255,255,255,0.15);
+    border-radius: var(--ars-radius-sm);
+}
+.ars-brand-text {
+    font-weight: 800;
+    font-size: 1.05rem;
+    letter-spacing: 0.02em;
+    color: #fff;
+    white-space: nowrap;
+}
+.ars-sidebar.collapsed .ars-brand-text { display: none; }
+
+.ars-collapse-btn {
+    position: absolute;
+    right: -12px;
+    top: 14px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #fff;
+    color: var(--ars-primary);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    z-index: 1031;
+    font-size: 0.8rem;
+}
+
+/* Nav sections */
+.ars-nav-section {
+    padding: 0.5rem 0.75rem 0.15rem;
+}
+.ars-nav-section-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: rgba(255,255,255,0.5);
+    font-weight: 600;
+}
+.ars-sidebar.collapsed .ars-nav-section { display: none; }
+
+/* Nav links */
+.ars-nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.5rem 0.7rem;
+    margin: 1px 0.25rem;
+    border-radius: var(--ars-radius-sm);
+    color: rgba(255,255,255,0.82);
+    text-decoration: none;
+    font-size: 0.88rem;
+    font-weight: 500;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+.ars-nav-link:hover {
+    background: rgba(255,255,255,0.08);
+    color: #fff;
+    transform: translateX(1px);
+}
+.ars-nav-link.active {
+    background: rgba(255,255,255,0.14);
+    color: #fff;
+    font-weight: 600;
+}
+.ars-nav-icon {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    background: rgba(255,255,255,0.09);
+    border-radius: var(--ars-radius-sm);
+    font-size: 0.95rem;
+    flex-shrink: 0;
+}
+.ars-nav-link.active .ars-nav-icon {
+    background: var(--ars-accent);
+    color: #fff;
+}
+.ars-nav-label { white-space: nowrap; }
+.ars-sidebar.collapsed .ars-nav-label { display: none; }
+
+.ars-nav-switch {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+}
+
+/* =========================================================================
+   Top Bar
+   ========================================================================= */
+.ars-topbar {
+    background: var(--ars-card-bg);
+    box-shadow: var(--ars-shadow-sm);
+    border-bottom: 1px solid var(--ars-border);
+}
+.ars-topbar-brand {
+    color: var(--ars-primary) !important;
+    font-size: 1rem;
+}
+.ars-user-dropdown {
+    color: var(--ars-text) !important;
+}
+.ars-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--ars-primary-light), var(--ars-primary));
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    color: #fff;
+    font-size: 0.85rem;
+}
+
+/* =========================================================================
+   Cards
+   ========================================================================= */
+.ars-card {
+    background: var(--ars-card-bg);
+    border: 1px solid var(--ars-border);
+    border-radius: var(--ars-radius);
+    box-shadow: var(--ars-shadow-sm);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.ars-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--ars-shadow);
+}
+.ars-card .card-header {
+    background: #fafbfc;
+    border-bottom: 1px solid var(--ars-border);
+    font-weight: 600;
+    padding: 0.8rem 1.1rem;
+    color: var(--ars-text);
+}
+.ars-card .card-body {
+    padding: 1.25rem;
+}
+
+.ars-card a,
+.ars-card .btn,
+.ars-stat-card a,
+.ars-stat-card .btn,
+.ars-calendar-shell a,
+.ars-calendar-shell .btn {
+    text-decoration: none;
+}
+
+.ars-card .card-footer {
+    border-color: var(--ars-border);
+    padding: 0.8rem 1.1rem;
+}
+
+.ars-card .table-responsive:last-child {
+    border-radius: 0 0 var(--ars-radius) var(--ars-radius);
+}
+
+/* Stat cards for dashboard */
+.ars-stat-card {
+    background: var(--ars-card-bg);
+    border: 1px solid var(--ars-border);
+    border-radius: var(--ars-radius);
+    padding: 1.25rem;
+    transition: transform 0.2s, box-shadow 0.2s;
+    position: relative;
+    overflow: hidden;
+}
+.ars-stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--ars-shadow);
+}
+.ars-stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+}
+.ars-stat-card.primary::before   { background: var(--ars-primary); }
+.ars-stat-card.accent::before    { background: var(--ars-accent); }
+.ars-stat-card.success::before   { background: var(--ars-success); }
+.ars-stat-card.info::before      { background: var(--ars-info); }
+.ars-stat-card.coral::before     { background: var(--ars-coral); }
+
+.ars-stat-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--ars-text);
+    line-height: 1.2;
+}
+.ars-stat-label {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ars-text-muted);
+    font-weight: 600;
+    margin-top: 0.25rem;
+}
+.ars-stat-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    font-size: 1.25rem;
+    color: #fff;
+}
+.ars-stat-icon.primary { background: var(--ars-primary); }
+.ars-stat-icon.accent  { background: var(--ars-accent); }
+.ars-stat-icon.success { background: var(--ars-success); }
+.ars-stat-icon.info    { background: var(--ars-info); }
+.ars-stat-icon.coral   { background: var(--ars-coral); }
+
+/* =========================================================================
+   Page header
+   ========================================================================= */
+.ars-page-header {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--ars-text);
+}
+.ars-page-header i {
+    color: var(--ars-primary);
+}
+
+/* =========================================================================
+   Buttons
+   ========================================================================= */
+.btn-ars {
+    background: var(--ars-primary);
+    color: #fff;
+    border: none;
+    border-radius: var(--ars-radius-sm);
+    font-weight: 600;
+    padding: 0.5rem 1.25rem;
+    transition: all 0.2s;
+}
+.btn-ars:hover {
+    background: var(--ars-primary-dark);
+    color: #fff;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(184, 134, 11, 0.28);
+}
+.btn-ars-outline {
+    background: transparent;
+    color: var(--ars-primary);
+    border: 1.5px solid var(--ars-primary);
+    border-radius: var(--ars-radius-sm);
+    font-weight: 600;
+    padding: 0.5rem 1.25rem;
+    transition: all 0.2s;
+}
+.btn-ars-outline:hover {
+    background: var(--ars-primary);
+    color: #fff;
+}
+.btn-ars-accent {
+    background: var(--ars-accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--ars-radius-sm);
+    font-weight: 600;
+    padding: 0.5rem 1.25rem;
+    transition: all 0.2s;
+}
+.btn-ars-accent:hover {
+    background: #ea580c;
+    color: #fff;
+}
+
+/* =========================================================================
+   Badges — booking statuses
+   ========================================================================= */
+.ars-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+.ars-badge.available    { background: #dcfce7; color: #166534; }
+.ars-badge.booked       { background: #dbeafe; color: #1e40af; }
+.ars-badge.check-in     { background: #fef3c7; color: #92400e; }
+.ars-badge.check-out    { background: #fce7f3; color: #9d174d; }
+.ars-badge.cleaning     { background: #e0e7ff; color: #4338ca; }
+.ars-badge.maintenance  { background: #fee2e2; color: #991b1b; }
+.ars-badge.pending      { background: #fef9c3; color: #854d0e; }
+.ars-badge.confirmed    { background: #cffafe; color: #155e75; }
+.ars-badge.cancelled    { background: #f1f5f9; color: #475569; }
+.ars-badge.expired      { background: #fce4ec; color: #880e4f; }
+
+/* =========================================================================
+   Tables
+   ========================================================================= */
+.ars-table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+.ars-table thead th {
+    background: var(--ars-bg);
+    color: var(--ars-text-muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.75rem 1rem;
+    border-bottom: 2px solid var(--ars-border);
+}
+.ars-table tbody td {
+    padding: 0.75rem 1rem;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--ars-border);
+}
+.ars-table tbody tr:hover {
+    background: rgba(13,148,136,0.03);
+}
+
+/* =========================================================================
+   Forms
+   ========================================================================= */
+.ars-form-control:focus,
+.form-control:focus,
+.form-select:focus {
+    border-color: var(--ars-primary);
+    box-shadow: 0 0 0 0.2rem rgba(13,148,136,0.15);
+}
+
+/* =========================================================================
+   Calendar — Premium occupancy timeline
+   ========================================================================= */
+.ars-calendar-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 0 0 var(--ars-radius) var(--ars-radius);
+    background: var(--ars-card-bg);
+}
+
+.ars-calendar-nav a,
+.ars-calendar-nav .btn {
+    text-decoration: none !important;
+}
+
+.ars-calendar-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.ars-cal-unit-header {
+    position: sticky;
+    left: 0;
+    z-index: 10;
+    background: #f8fafc;
+    box-shadow: 1px 0 0 var(--ars-border);
+    min-width: 168px;
+    padding: 0.65rem 1rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ars-text-muted);
+    border-bottom: 1px solid var(--ars-border);
+    border-right: 1px solid var(--ars-border);
+}
+
+.ars-cal-day-header {
+    padding: 0.45rem 0.2rem;
+    text-align: center;
+    min-width: 42px;
+    max-width: 52px;
+    border-bottom: 1px solid var(--ars-border);
+    background: #fafbfc;
+    font-size: 0.7rem;
+}
+
+.ars-cal-day-header.weekend {
+    background: #f1f5f9;
+}
+
+.ars-cal-day-header.today {
+    background: var(--ars-primary);
+    color: #fff;
+    border-radius: 8px 8px 0 0;
+}
+
+.ars-cal-day-num {
+    font-weight: 700;
+    font-size: 0.85rem;
+    line-height: 1.2;
+}
+
+.ars-cal-day-name {
+    font-size: 0.58rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.75;
+}
+
+.ars-cal-unit-cell {
+    position: sticky;
+    left: 0;
+    z-index: 5;
+    background: var(--ars-card-bg);
+    padding: 0.55rem 1rem;
+    min-width: 168px;
+    border-right: 1px solid var(--ars-border);
+    border-bottom: 1px solid var(--ars-border);
+    box-shadow: 1px 0 0 var(--ars-border);
+}
+
+.ars-cal-unit-cell a {
+    color: var(--ars-text);
+    font-weight: 600;
+    font-size: 0.8125rem;
+    text-decoration: none;
+}
+
+.ars-cal-unit-cell a:hover {
+    color: var(--ars-primary);
+}
+
+.ars-cal-cell {
+    min-width: 42px;
+    max-width: 52px;
+    height: 44px;
+    border-bottom: 1px solid var(--ars-border);
+    border-right: 1px solid #edf2f7;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+    position: relative;
+}
+
+.ars-cal-cell:hover {
+    filter: brightness(0.96);
+    outline: 2px solid var(--ars-primary);
+    outline-offset: -2px;
+    z-index: 2;
+    box-shadow: inset 0 0 0 1px rgba(15,116,110,0.18);
+}
+
+.ars-cal-available {
+    background: #f8fafc !important;
+}
+
+.ars-cal-booked {
+    background: #3b82f6 !important;
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35);
+}
+
+.ars-cal-check-in {
+    background: linear-gradient(135deg, #d1fae5 48%, #f59e0b 52%) !important;
+    border-radius: 4px;
+}
+
+.ars-cal-check-out {
+    background: linear-gradient(135deg, #ec4899 48%, #d1fae5 52%) !important;
+    border-radius: 4px;
+}
+
+.ars-cal-maintenance {
+    background: #fca5a5 !important;
+    background-image: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 4px,
+        rgba(0, 0, 0, 0.07) 4px,
+        rgba(0, 0, 0, 0.07) 8px
+    ) !important;
+    border-radius: 4px;
+}
+
+.ars-cal-pending {
+    background: #fde68a !important;
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 1px rgba(217, 119, 6, 0.35);
+}
+
+/* =========================================================================
+   Unit Photo Gallery & Thumbnails
+   ========================================================================= */
+.ars-unit-photo-thumb {
+    position: relative;
+    height: 180px;
+    overflow: hidden;
+    border-radius: var(--ars-radius) var(--ars-radius) 0 0;
+}
+.ars-unit-photo-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.ars-unit-photo-placeholder {
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+    background: #f1f5f9;
+    color: #94a3b8;
+    font-size: 3rem;
+}
+.ars-photo-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 0.5rem;
+}
+.ars-photo-item {
+    position: relative;
+    border-radius: var(--ars-radius-sm);
+    overflow: hidden;
+    aspect-ratio: 1;
+}
+.ars-photo-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.ars-photo-actions {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(transparent, rgba(0,0,0,0.6));
+    padding: 0.5rem 0.25rem 0.25rem;
+    display: flex;
+    justify-content: center;
+    gap: 0.25rem;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+.ars-photo-item:hover .ars-photo-actions {
+    opacity: 1;
+}
+
+/* =========================================================================
+   Booking detail pricing card
+   ========================================================================= */
+.ars-card hr {
+    border-color: var(--ars-border);
+    opacity: 0.5;
+    margin: 0.75rem 0;
+}
+
+/* =========================================================================
+   Dark Mode
+   ========================================================================= */
+body.dark-mode {
+    --ars-bg:      #0f172a;
+    --ars-card-bg: #1e293b;
+    --ars-border:  #334155;
+    --ars-text:    #e2e8f0;
+    --ars-text-muted: #94a3b8;
+}
+body.dark-mode .ars-sidebar {
+    background: linear-gradient(180deg, #064e3b, #065f46, #047857);
+}
+body.dark-mode .ars-topbar {
+    background: var(--ars-card-bg);
+    border-bottom-color: var(--ars-border);
+}
+body.dark-mode .ars-topbar-brand {
+    color: var(--ars-primary-light) !important;
+}
+body.dark-mode .ars-user-dropdown {
+    color: var(--ars-text) !important;
+}
+body.dark-mode .ars-cal-day-header.weekend {
+    background: #422006;
+}
+body.dark-mode .ars-cal-available {
+    background: #1e293b !important;
+}
+body.dark-mode .ars-cal-booked {
+    background: #1565c0 !important;
+}
+body.dark-mode .ars-cal-check-in {
+    background: linear-gradient(135deg, #14532d 50%, #1565c0 50%) !important;
+}
+body.dark-mode .ars-cal-check-out {
+    background: linear-gradient(135deg, #1565c0 50%, #14532d 50%) !important;
+}
+body.dark-mode .ars-cal-maintenance {
+    background: #7f1d1d !important;
+}
+body.dark-mode .ars-cal-pending {
+    background: #78350f !important;
+}
+body.dark-mode .ars-unit-photo-placeholder {
+    background: #334155;
+    color: #94a3b8;
+}
+
+/* =========================================================================
+   Pricing Rules Page
+   ========================================================================= */
+.form-check-input:checked {
+    background-color: var(--ars-primary);
+    border-color: var(--ars-primary);
+}
+.form-check-input:focus {
+    box-shadow: 0 0 0 0.2rem rgba(13,148,136,0.25);
+    border-color: var(--ars-primary);
+}
+
+/* =========================================================================
+   Revenue — Bar Chart
+   ========================================================================= */
+.ars-bar-chart {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+.ars-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+.ars-bar-label {
+    min-width: 70px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ars-text-muted);
+    text-align: right;
+    flex-shrink: 0;
+}
+.ars-bar-track {
+    flex: 1;
+    height: 26px;
+    background: var(--ars-bg);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.ars-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--ars-primary), var(--ars-primary-light));
+    border-radius: 6px;
+    min-width: 2px;
+    transition: width 0.5s ease;
+}
+.ars-bar-value {
+    min-width: 110px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--ars-text);
+    text-align: right;
+    flex-shrink: 0;
+}
+
+/* =========================================================================
+   Revenue — Occupancy Ring
+   ========================================================================= */
+.ars-occupancy-ring {
+    display: inline-block;
+    width: 140px;
+    height: 140px;
+}
+.ars-circular-chart {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.ars-circle-bg {
+    fill: none;
+    stroke: var(--ars-border);
+    stroke-width: 3;
+}
+.ars-circle-fill {
+    fill: none;
+    stroke: var(--ars-primary);
+    stroke-width: 3;
+    stroke-linecap: round;
+    transition: stroke-dasharray 0.6s ease;
+}
+.ars-circle-text {
+    fill: var(--ars-text);
+    font-size: 0.5em;
+    font-weight: 700;
+    text-anchor: middle;
+}
+
+/* =========================================================================
+   Print
+   ========================================================================= */
+@media print {
+    .ars-sidebar,
+    .ars-topbar,
+    .no-print {
+        display: none !important;
+    }
+    body {
+        background: #fff !important;
+        min-height: auto !important;
+    }
+    .ars-card {
+        box-shadow: none !important;
+        border: 1px solid #dee2e6 !important;
+        break-inside: avoid;
+    }
+    .ars-card:hover {
+        transform: none !important;
+    }
+    .ars-stat-card:hover {
+        transform: none !important;
+    }
+    .ars-bar-fill {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    .ars-circle-fill, .ars-circle-bg {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+}
+
+/* =========================================================================
+   Sticky pricing card (desktop only)
+   ========================================================================= */
+.ars-sticky-card {
+    position: sticky;
+    top: 80px;
+}
+
+/* =========================================================================
+   Sidebar backdrop overlay
+   ========================================================================= */
+.ars-sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 1035;
+}
+.ars-sidebar-backdrop.active {
+    display: block;
+}
+
+/* Hamburger button */
+.ars-hamburger {
+    border: none;
+    line-height: 1;
+}
+
+/* =========================================================================
+   Responsive — Below 992px (tablet)
+   ========================================================================= */
+@media (max-width: 991.98px) {
+    .ars-sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 260px;
+        transform: translateX(-100%);
+        z-index: 1040;
+        transition: transform 0.3s cubic-bezier(.4,0,.2,1);
+    }
+    .ars-sidebar.collapsed {
+        transform: translateX(-100%);
+        width: 260px;
+    }
+    .ars-sidebar.mobile-open {
+        transform: translateX(0) !important;
+    }
+    .ars-collapse-btn {
+        display: none;
+    }
+    .ars-sticky-card {
+        position: static;
+    }
+}
+
+/* =========================================================================
+   Responsive — Below 768px (phone landscape / small tablet)
+   ========================================================================= */
+@media (max-width: 767.98px) {
+    .ars-page-header {
+        font-size: 1.25rem;
+    }
+    .ars-stat-value {
+        font-size: 1.35rem;
+    }
+    .ars-stat-card {
+        padding: 1rem;
+    }
+    .ars-card .card-header {
+        padding: 0.75rem 1rem;
+        font-size: 0.9rem;
+    }
+    .ars-card .card-body {
+        padding: 1rem;
+    }
+    .ars-cal-cell {
+        min-width: 32px;
+        height: 34px;
+    }
+    .ars-cal-day-header {
+        min-width: 32px;
+    }
+    .ars-cal-unit-cell {
+        min-width: 110px;
+        font-size: 0.78rem;
+    }
+    .ars-unit-photo-thumb {
+        height: 140px;
+    }
+    .ars-photo-gallery {
+        grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+    }
+
+    /* Mobile card transform for tables */
+    .ars-mobile-cards thead {
+        display: none;
+    }
+    .ars-mobile-cards tbody tr {
+        display: block;
+        background: var(--ars-card-bg);
+        border: 1px solid var(--ars-border);
+        border-radius: var(--ars-radius-sm);
+        margin-bottom: 0.75rem;
+        padding: 0.5rem 0;
+        box-shadow: var(--ars-shadow-sm);
+    }
+    .ars-mobile-cards tbody tr:hover {
+        transform: none;
+    }
+    .ars-mobile-cards tbody td {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.45rem 1rem;
+        border-bottom: 1px solid rgba(0,0,0,0.04);
+        text-align: right;
+    }
+    .ars-mobile-cards tbody td:last-child {
+        border-bottom: none;
+    }
+    .ars-mobile-cards tbody td::before {
+        content: attr(data-label);
+        font-weight: 600;
+        color: var(--ars-text-muted);
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        text-align: left;
+        margin-right: 1rem;
+        flex-shrink: 0;
+    }
+    .ars-mobile-cards tbody td[colspan] {
+        display: block;
+        text-align: center;
+    }
+    .ars-mobile-cards tbody td[colspan]::before {
+        display: none;
+    }
+
+    /* Revenue bar chart responsive */
+    .ars-bar-label {
+        min-width: 50px;
+        font-size: 0.7rem;
+    }
+    .ars-bar-value {
+        min-width: 80px;
+        font-size: 0.75rem;
+    }
+    .ars-bar-track {
+        height: 20px;
+    }
+    .ars-occupancy-ring {
+        width: 110px;
+        height: 110px;
+    }
+
+    /* Calendar scroll hint */
+    .ars-calendar-wrapper {
+        position: relative;
+    }
+    .ars-calendar-wrapper::after {
+        content: '→';
+        position: absolute;
+        right: 4px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 1.25rem;
+        color: var(--ars-text-muted);
+        opacity: 0.4;
+        pointer-events: none;
+        animation: ars-scroll-hint 2s ease-in-out infinite;
+    }
+    @keyframes ars-scroll-hint {
+        0%, 100% { opacity: 0.4; transform: translateY(-50%) translateX(0); }
+        50% { opacity: 0.8; transform: translateY(-50%) translateX(6px); }
+    }
+}
+
+/* =========================================================================
+   Responsive — Below 576px (phone portrait)
+   ========================================================================= */
+@media (max-width: 575.98px) {
+    .ars-page-header {
+        font-size: 1.1rem;
+    }
+    .ars-content .col-6:not(.col-sm-6):not(.col-12),
+    .ars-content .col-md-4,
+    .ars-content .col-md-3 {
+        flex: 0 0 50%;
+        max-width: 50%;
+    }
+    .modal .col-6 {
+        flex: 0 0 100% !important;
+        max-width: 100% !important;
+    }
+    .btn, .btn-sm {
+        min-height: 44px;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    .ars-stat-label {
+        font-size: 0.7rem;
+    }
+    .ars-stat-value {
+        font-size: 1.2rem;
+    }
+    .ars-stat-icon {
+        width: 36px;
+        height: 36px;
+        font-size: 1rem;
+    }
+    .ars-topbar-brand {
+        font-size: 0.85rem;
+    }
+    .ars-topbar-brand .me-2 {
+        display: none;
+    }
+}
+
+/* ---- Booking Activity Center (Phase 1B) ---- */
+.ars-activity-filters .ars-activity-filter {
+    border-radius: 999px;
+    border: 1px solid var(--ars-border);
+    background: #fff;
+    color: var(--ars-text);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+.ars-activity-filters .ars-activity-filter.active {
+    background: var(--ars-primary);
+    border-color: var(--ars-primary);
+    color: #fff;
+}
+.ars-activity-feed {
+    max-height: 520px;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
+.ars-activity-item {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.85rem 0.25rem;
+    border-bottom: 1px solid var(--ars-border);
+}
+.ars-activity-item:last-child {
+    border-bottom: 0;
+}
+.ars-activity-icon {
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--ars-primary-soft);
+    color: var(--ars-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.ars-activity-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.ars-activity-empty {
+    background: #f8fafc;
+    border-radius: var(--ars-radius-sm);
+}
+.ars-quick-actions .btn {
+    white-space: normal;
+    line-height: 1.25;
+    min-height: 2.65rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.35rem;
+    font-weight: 500;
+    border-radius: var(--ars-radius-sm) !important;
+    text-align: left;
+}
+.ars-sticky-card {
+    box-shadow: var(--ars-shadow) !important;
+}
+@media (max-width: 991.98px) {
+    .ars-activity-feed {
+        max-height: 420px;
+    }
+}
+@media print {
+    .ars-activity-filters,
+    #quick-actions,
+    #activityLoadMore {
+        display: none !important;
+    }
+}

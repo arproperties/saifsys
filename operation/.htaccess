@@ -1,0 +1,23 @@
+# LIVE: project at server document root (e.g. https://example.com/operation/)
+# For localhost: copy .htaccess.localhost to .htaccess
+Options -Indexes
+RewriteEngine On
+RewriteBase /operation/
+
+RewriteCond %{THE_REQUEST} \s/operation/worker_availability/?[\s?] [NC]
+RewriteCond %{DOCUMENT_ROOT}/operation/worker_availability.php -f
+RewriteRule ^worker_availability/?$ worker_availability.php [L,QSA]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} ^/operation/worker_availability/?$
+RewriteCond %{DOCUMENT_ROOT}/operation/worker_availability.php -f
+RewriteRule ^worker_availability/?$ worker_availability.php [L,QSA]
+
+RewriteCond %{REQUEST_URI} ^/operation/?$
+RewriteCond %{DOCUMENT_ROOT}/operation.php -f
+RewriteRule ^$ /operation.php [L,R=301]
+
+<FilesMatch "\.php$">
+    Order allow,deny
+    Allow from all
+</FilesMatch>

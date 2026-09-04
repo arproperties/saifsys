@@ -1,0 +1,497 @@
+{
+    "phase": "2C",
+    "environment": "localhost",
+    "production_deploy": false,
+    "live_migration": false,
+    "adapter_flag_final": 0,
+    "pass": 66,
+    "fail": 0,
+    "blocked": 10,
+    "skip": 1,
+    "total": 77,
+    "performance": {
+        "booking_create_ms": 2.779999999999999804600747665972448885440826416015625,
+        "invoice_post_ms": 21.10000000000000142108547152020037174224853515625,
+        "report_documents_ms": 0.2800000000000000266453525910037569701671600341796875,
+        "report_ar_ms": 0.2300000000000000099920072216264088638126850128173828125,
+        "report_deposit_ms": 0.190000000000000002220446049250313080847263336181640625,
+        "activity_center_ms": 0.38000000000000000444089209850062616169452667236328125,
+        "volume_20_bookings_ms": 14.480000000000000426325641456060111522674560546875
+    },
+    "engine_sha": "9cbb880fc3241615b69d4fe5b3adfbee14e513d03964924214cc9325f9d7c7d6",
+    "results": [
+        {
+            "id": "REG-01",
+            "category": "regression",
+            "status": "PASS",
+            "detail": "accounting_engine.php SHA unchanged"
+        },
+        {
+            "id": "REG-API-1",
+            "category": "regression",
+            "status": "PASS",
+            "detail": "API file present: api\/customer\/v1\/stay_endpoints.php"
+        },
+        {
+            "id": "REG-API-2",
+            "category": "regression",
+            "status": "PASS",
+            "detail": "API file present: api\/customer\/v1\/guest_endpoints.php"
+        },
+        {
+            "id": "REG-API-3",
+            "category": "regression",
+            "status": "PASS",
+            "detail": "API file present: api\/customer\/v1\/index.php"
+        },
+        {
+            "id": "SEC-CSRF-1",
+            "category": "security",
+            "status": "PASS",
+            "detail": "modules\/ars\/ajax_booking_actions.php"
+        },
+        {
+            "id": "SEC-CSRF-2",
+            "category": "security",
+            "status": "PASS",
+            "detail": "modules\/ars\/ajax_activity_actions.php"
+        },
+        {
+            "id": "SEC-CSRF-3",
+            "category": "security",
+            "status": "PASS",
+            "detail": "modules\/ars\/ajax_housekeeping_actions.php"
+        },
+        {
+            "id": "SEC-CSRF-4",
+            "category": "security",
+            "status": "PASS",
+            "detail": "modules\/ars\/ajax_maintenance_actions.php"
+        },
+        {
+            "id": "SEC-PERM-01",
+            "category": "security",
+            "status": "PASS",
+            "detail": "Permission helpers present"
+        },
+        {
+            "id": "FLAG-01",
+            "category": "setup",
+            "status": "PASS",
+            "detail": "Adapter enabled for UAT session"
+        },
+        {
+            "id": "WF-A-01",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Draft booking created ARS-UAT-260717172109-243",
+            "booking_id": 37
+        },
+        {
+            "id": "WF-A-02",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Confirm\/invoice posted doc=4"
+        },
+        {
+            "id": "ACC-A-01",
+            "category": "accounting",
+            "status": "PASS",
+            "detail": "Revenue JV balanced d=210 c=210"
+        },
+        {
+            "id": "ACC-A-02",
+            "category": "accounting",
+            "status": "PASS",
+            "detail": "AR\/Revenue\/VAT accounts present: 1310,4100,2310"
+        },
+        {
+            "id": "WF-A-03",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Financial lock engaged"
+        },
+        {
+            "id": "WF-A-04",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Partial cash payment posted"
+        },
+        {
+            "id": "WF-A-05",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Bank transfer payment posted"
+        },
+        {
+            "id": "ACC-A-03",
+            "category": "accounting",
+            "status": "PASS",
+            "detail": "Bank payment JV balance"
+        },
+        {
+            "id": "WF-A-06",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Card payment posted"
+        },
+        {
+            "id": "WF-A-07",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Document status=paid allocated=210.00"
+        },
+        {
+            "id": "WF-A-08",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Check-in status"
+        },
+        {
+            "id": "WF-A-09",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Check-out status"
+        },
+        {
+            "id": "WF-A-10",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Booking completed"
+        },
+        {
+            "id": "ACT-A-01",
+            "category": "activity",
+            "status": "PASS",
+            "detail": "Invoice activity present"
+        },
+        {
+            "id": "WF-B-01",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Deposit collected"
+        },
+        {
+            "id": "ACC-B-01",
+            "category": "accounting",
+            "status": "PASS",
+            "detail": "Deposit JV balanced"
+        },
+        {
+            "id": "ACC-B-02",
+            "category": "accounting",
+            "status": "PASS",
+            "detail": "Deposit uses 2200 + cash\/bank"
+        },
+        {
+            "id": "WF-B-02",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Deposit refunded"
+        },
+        {
+            "id": "ACC-B-03",
+            "category": "accounting",
+            "status": "PASS",
+            "detail": "Deposit refund JV"
+        },
+        {
+            "id": "WF-C-01",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Document reversed on cancel path"
+        },
+        {
+            "id": "WF-C-02",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Doc status=reversed"
+        },
+        {
+            "id": "WF-C-03",
+            "category": "workflow",
+            "status": "PASS",
+            "detail": "Booking cancelled"
+        },
+        {
+            "id": "EDGE-01",
+            "category": "edge",
+            "status": "PASS",
+            "detail": "idempotent docs=1"
+        },
+        {
+            "id": "EDGE-02",
+            "category": "edge",
+            "status": "PASS",
+            "detail": "Overpay capped to invoice; allocated=52.5"
+        },
+        {
+            "id": "WF-CREDIT-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "Guest credit \/ stay refund GL requires BC confirmation"
+        },
+        {
+            "id": "SEC-ISO-01",
+            "category": "security",
+            "status": "PASS",
+            "detail": "Fail closed company_id=0"
+        },
+        {
+            "id": "INT-01",
+            "category": "integrity",
+            "status": "PASS",
+            "detail": "No cross-company doc\/booking orphans"
+        },
+        {
+            "id": "WF-EXT-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "BC-09 Extension correctly gated"
+        },
+        {
+            "id": "WF-SVC-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "BC-11 Additional services\/damage correctly gated"
+        },
+        {
+            "id": "WF-ADJ-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "BC-06\/07\/08 Adjustments correctly gated"
+        },
+        {
+            "id": "WF-CN-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "BC-06 Credit notes correctly gated"
+        },
+        {
+            "id": "WF-FORF-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "BC-10\/11 Deposit forfeiture correctly gated"
+        },
+        {
+            "id": "WF-REF-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "Guest refund GL correctly gated"
+        },
+        {
+            "id": "WF-STRIPE-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "BC-12\/13 Stripe settlement correctly gated"
+        },
+        {
+            "id": "WF-NOSHOW-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "No-show fee formula Needs business confirmation — ops status only not auto-posted"
+        },
+        {
+            "id": "WF-EARLY-01",
+            "category": "workflow",
+            "status": "BLOCKED",
+            "detail": "Early checkout fee\/CN Needs BC-08 — ops checkout available without invented fee"
+        },
+        {
+            "id": "WF-STRIPE-UI-01",
+            "category": "workflow",
+            "status": "SKIP",
+            "detail": "Stripe live charge skipped on localhost (no production keys; module does not post GL until BC-12)"
+        },
+        {
+            "id": "SM-01",
+            "category": "state_machine",
+            "status": "PASS",
+            "detail": "Blocks draft→posted skip"
+        },
+        {
+            "id": "SM-02",
+            "category": "state_machine",
+            "status": "PASS",
+            "detail": "Allows validated→posted"
+        },
+        {
+            "id": "ACC-DEF-01",
+            "category": "accounting",
+            "status": "PASS",
+            "detail": "DEFERRED_REVENUE role resolves to 2400 (unused until BC-02\/03 — Confirmed design)"
+        },
+        {
+            "id": "RPT-01",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "Documents report rows=8"
+        },
+        {
+            "id": "RPT-02",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "Outstanding AR total=530"
+        },
+        {
+            "id": "RPT-03",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "Deposit liability net=0"
+        },
+        {
+            "id": "RPT-04",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "Adapter journal ids count=10"
+        },
+        {
+            "id": "RPT-SHARED-1",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "trial_balance.php present (shared engine consumers)"
+        },
+        {
+            "id": "RPT-SHARED-2",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "profit_loss.php present (shared engine consumers)"
+        },
+        {
+            "id": "RPT-SHARED-3",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "balance_sheet.php present (shared engine consumers)"
+        },
+        {
+            "id": "RPT-SHARED-4",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "bank_reconciliation.php present (shared engine consumers)"
+        },
+        {
+            "id": "RPT-ACT-01",
+            "category": "reports",
+            "status": "PASS",
+            "detail": "Activity items=5 in 0.38ms"
+        },
+        {
+            "id": "INT-02",
+            "category": "integrity",
+            "status": "PASS",
+            "detail": "Orphan lines=0"
+        },
+        {
+            "id": "INT-03",
+            "category": "integrity",
+            "status": "PASS",
+            "detail": "Orphan allocations=0"
+        },
+        {
+            "id": "INT-04",
+            "category": "integrity",
+            "status": "PASS",
+            "detail": "Orphan activities=0"
+        },
+        {
+            "id": "INT-05",
+            "category": "integrity",
+            "status": "PASS",
+            "detail": "Missing journals=0"
+        },
+        {
+            "id": "INT-06",
+            "category": "integrity",
+            "status": "PASS",
+            "detail": "Idempotency unique index present"
+        },
+        {
+            "id": "INT-07",
+            "category": "integrity",
+            "status": "PASS",
+            "detail": "Transition audit rows=30"
+        },
+        {
+            "id": "REG-02",
+            "category": "regression",
+            "status": "PASS",
+            "detail": "re_invoices before=190 after=190"
+        },
+        {
+            "id": "REG-03",
+            "category": "regression",
+            "status": "PASS",
+            "detail": "re_leases before=189 after=189"
+        },
+        {
+            "id": "REG-04",
+            "category": "regression",
+            "status": "PASS",
+            "detail": "Engine still unchanged post-UAT"
+        },
+        {
+            "id": "FLAG-02",
+            "category": "setup",
+            "status": "PASS",
+            "detail": "Adapter restored OFF (localhost safe default)"
+        },
+        {
+            "id": "REG-05",
+            "category": "regression",
+            "status": "PASS",
+            "detail": "Legacy bridge posts when flag off"
+        },
+        {
+            "id": "SEC-LOCK-01",
+            "category": "security",
+            "status": "PASS",
+            "detail": "Completed booking remains financially locked"
+        },
+        {
+            "id": "PERF-booking_create_ms",
+            "category": "performance",
+            "status": "PASS",
+            "detail": "2.78ms (limit 200ms)",
+            "ms": 2.779999999999999804600747665972448885440826416015625,
+            "limit": 200
+        },
+        {
+            "id": "PERF-invoice_post_ms",
+            "category": "performance",
+            "status": "PASS",
+            "detail": "21.1ms (limit 1500ms)",
+            "ms": 21.10000000000000142108547152020037174224853515625,
+            "limit": 1500
+        },
+        {
+            "id": "PERF-report_documents_ms",
+            "category": "performance",
+            "status": "PASS",
+            "detail": "0.28ms (limit 500ms)",
+            "ms": 0.2800000000000000266453525910037569701671600341796875,
+            "limit": 500
+        },
+        {
+            "id": "PERF-report_ar_ms",
+            "category": "performance",
+            "status": "PASS",
+            "detail": "0.23ms (limit 500ms)",
+            "ms": 0.2300000000000000099920072216264088638126850128173828125,
+            "limit": 500
+        },
+        {
+            "id": "PERF-activity_center_ms",
+            "category": "performance",
+            "status": "PASS",
+            "detail": "0.38ms (limit 500ms)",
+            "ms": 0.38000000000000000444089209850062616169452667236328125,
+            "limit": 500
+        },
+        {
+            "id": "PERF-volume_20",
+            "category": "performance",
+            "status": "PASS",
+            "detail": "14.48ms for 20 inserts"
+        }
+    ]
+}

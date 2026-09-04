@@ -1,0 +1,25 @@
+-- Create discounts table for promotional discounts
+CREATE TABLE IF NOT EXISTS `discounts` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `title` VARCHAR(255) NOT NULL,
+  `discount_type` ENUM('category', 'service', 'mixed') NOT NULL DEFAULT 'service',
+  `category_id` INT(11) DEFAULT NULL,
+  `service_id` INT(11) DEFAULT NULL,
+  `zone_id` INT(11) DEFAULT NULL,
+  `amount_type` ENUM('percentage', 'fixed') NOT NULL DEFAULT 'percentage',
+  `amount` DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  `min_purchase_amount` DECIMAL(10, 2) DEFAULT 0.00,
+  `max_discount_amount` DECIMAL(10, 2) DEFAULT NULL,
+  `start_date` DATETIME NOT NULL,
+  `end_date` DATETIME NOT NULL,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_category` (`category_id`),
+  INDEX `idx_service` (`service_id`),
+  INDEX `idx_active_dates` (`is_active`, `start_date`, `end_date`),
+  INDEX `idx_discount_type` (`discount_type`),
+  CONSTRAINT `fk_discount_category` FOREIGN KEY (`category_id`) REFERENCES `service_categories` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_discount_service` FOREIGN KEY (`service_id`) REFERENCES `services` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

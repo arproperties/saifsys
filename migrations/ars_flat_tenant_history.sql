@@ -1,0 +1,90 @@
+-- ============================================================================
+-- ARS Flat Tenant History
+-- Adds long-term/manual occupancy history while preserving existing ARS bookings.
+-- Safe to run multiple times on MariaDB/MySQL setups that support IF NOT EXISTS.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS `ars_unit_occupancies` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `company_id` INT(11) NOT NULL,
+  `unit_id` INT(11) NOT NULL,
+  `guest_id` INT(11) DEFAULT NULL,
+  `tenant_first_name` VARCHAR(100) NOT NULL,
+  `tenant_last_name` VARCHAR(100) DEFAULT NULL,
+  `tenant_phone` VARCHAR(50) DEFAULT NULL,
+  `tenant_email` VARCHAR(200) DEFAULT NULL,
+  `tenant_id_type` ENUM('emirates_id','passport','visa','driving_license','other') DEFAULT NULL,
+  `tenant_id_number` VARCHAR(100) DEFAULT NULL,
+  `tenant_nationality` VARCHAR(100) DEFAULT NULL,
+  `contract_number` VARCHAR(100) DEFAULT NULL,
+  `status` ENUM('active','inactive') NOT NULL DEFAULT 'active',
+  `contract_start` DATE DEFAULT NULL,
+  `contract_end` DATE DEFAULT NULL,
+  `move_in_date` DATE NOT NULL,
+  `move_out_date` DATE DEFAULT NULL,
+  `monthly_rent` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `security_deposit` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `deposit_status` ENUM('none','pending','received','partially_refunded','refunded','forfeited') NOT NULL DEFAULT 'none',
+  `final_settlement_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `final_settlement_date` DATE DEFAULT NULL,
+  `final_settlement_notes` TEXT DEFAULT NULL,
+  `notes` TEXT DEFAULT NULL,
+  `created_by` INT(11) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_ars_occ_company` (`company_id`),
+  KEY `idx_ars_occ_unit` (`unit_id`),
+  KEY `idx_ars_occ_guest` (`guest_id`),
+  KEY `idx_ars_occ_status` (`status`),
+  KEY `idx_ars_occ_contract` (`contract_number`),
+  KEY `idx_ars_occ_tenant_name` (`tenant_last_name`, `tenant_first_name`),
+  KEY `idx_ars_occ_tenant_phone` (`tenant_phone`),
+  KEY `idx_ars_occ_tenant_id` (`tenant_id_number`),
+  KEY `idx_ars_occ_dates` (`move_in_date`, `move_out_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `ars_unit_monthly_ledger` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `company_id` INT(11) NOT NULL,
+  `occupancy_id` INT(11) NOT NULL,
+  `unit_id` INT(11) NOT NULL,
+  `ledger_month` DATE NOT NULL COMMENT 'First day of the month',
+  `rent_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `deposit_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `maintenance_charges` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `utility_charges` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `other_charges` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `total_charges` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `paid_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `pending_balance` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `status` ENUM('pending','partial','paid','waived') NOT NULL DEFAULT 'pending',
+  `notes` TEXT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_ars_ledger_occupancy_month` (`occupancy_id`, `ledger_month`),
+  KEY `idx_ars_ledger_company` (`company_id`),
+  KEY `idx_ars_ledger_unit` (`unit_id`),
+  KEY `idx_ars_ledger_month` (`ledger_month`),
+  KEY `idx_ars_ledger_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `ars_unit_occupancy_payments` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `company_id` INT(11) NOT NULL,
+  `occupancy_id` INT(11) NOT NULL,
+  `ledger_id` INT(11) DEFAULT NULL,
+  `payment_date` DATE NOT NULL,
+  `amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `payment_method` ENUM('cash','bank_transfer','card','online','cheque','other') NOT NULL DEFAULT 'cash',
+  `reference_number` VARCHAR(100) DEFAULT NULL,
+  `notes` TEXT DEFAULT NULL,
+  `created_by` INT(11) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_ars_occ_pay_company` (`company_id`),
+  KEY `idx_ars_occ_pay_occupancy` (`occupancy_id`),
+  KEY `idx_ars_occ_pay_ledger` (`ledger_id`),
+  KEY `idx_ars_occ_pay_date` (`payment_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

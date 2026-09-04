@@ -1,0 +1,95 @@
+-- Find Your Home Phase 1: ERP public long-term listing foundation.
+-- Safe migration note: the PHP helper modules/realestate/includes/unit_public_listing_helper.php
+-- performs column/table existence checks before applying these changes at runtime.
+
+ALTER TABLE re_units
+  ADD COLUMN IF NOT EXISTS publish_to_mobile TINYINT(1) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS marketing_status ENUM('ready_to_move','under_maintenance','coming_soon','reserved') NOT NULL DEFAULT 'ready_to_move',
+  ADD COLUMN IF NOT EXISTS listing_description TEXT NULL,
+  ADD COLUMN IF NOT EXISTS cheques_count TINYINT UNSIGNED NULL,
+  ADD COLUMN IF NOT EXISTS security_deposit DECIMAL(12,2) NULL,
+  ADD COLUMN IF NOT EXISTS commission DECIMAL(12,2) NULL,
+  ADD COLUMN IF NOT EXISTS unit_size_sqft DECIMAL(10,2) NULL,
+  ADD COLUMN IF NOT EXISTS bedrooms TINYINT UNSIGNED NULL,
+  ADD COLUMN IF NOT EXISTS bathrooms DECIMAL(3,1) NULL,
+  ADD COLUMN IF NOT EXISTS parking_count TINYINT UNSIGNED NULL,
+  ADD COLUMN IF NOT EXISTS balcony TINYINT(1) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS floor_plan_file VARCHAR(500) NULL,
+  ADD COLUMN IF NOT EXISTS virtual_tour_url VARCHAR(500) NULL,
+  ADD COLUMN IF NOT EXISTS map_url VARCHAR(500) NULL,
+  ADD COLUMN IF NOT EXISTS latitude DECIMAL(10,8) NULL,
+  ADD COLUMN IF NOT EXISTS longitude DECIMAL(11,8) NULL,
+  ADD COLUMN IF NOT EXISTS whatsapp_contact VARCHAR(50) NULL,
+  ADD COLUMN IF NOT EXISTS call_contact VARCHAR(50) NULL,
+  ADD COLUMN IF NOT EXISTS featured TINYINT(1) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS re_unit_public_media (
+  id INT NOT NULL AUTO_INCREMENT,
+  company_id INT NOT NULL,
+  unit_id INT NOT NULL,
+  media_type ENUM('photo','floor_plan') NOT NULL DEFAULT 'photo',
+  file_path VARCHAR(500) NOT NULL,
+  file_name VARCHAR(255) DEFAULT NULL,
+  mime_type VARCHAR(100) DEFAULT NULL,
+  file_size INT DEFAULT NULL,
+  title VARCHAR(150) DEFAULT NULL,
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
+  uploaded_by INT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT NULL,
+  PRIMARY KEY (id),
+  KEY idx_unit_media (unit_id, media_type, sort_order),
+  KEY idx_primary_photo (unit_id, media_type, is_primary),
+  KEY idx_company_unit (company_id, unit_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS re_unit_viewing_requests (
+  id INT NOT NULL AUTO_INCREMENT,
+  company_id INT NOT NULL,
+  unit_id INT NOT NULL,
+  full_name VARCHAR(150) NOT NULL,
+  phone VARCHAR(50) NOT NULL,
+  email VARCHAR(150) DEFAULT NULL,
+  preferred_date DATE DEFAULT NULL,
+  preferred_time TIME DEFAULT NULL,
+  message TEXT DEFAULT NULL,
+  status ENUM('new','contacted','viewing_scheduled','completed','cancelled','closed') NOT NULL DEFAULT 'new',
+  admin_notes TEXT DEFAULT NULL,
+  assigned_to INT DEFAULT NULL,
+  reviewed_by INT DEFAULT NULL,
+  reviewed_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT NULL,
+  PRIMARY KEY (id),
+  KEY idx_viewing_unit_status (unit_id, status),
+  KEY idx_viewing_company_status (company_id, status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS re_unit_lease_applications (
+  id INT NOT NULL AUTO_INCREMENT,
+  company_id INT NOT NULL,
+  unit_id INT NOT NULL,
+  full_name VARCHAR(150) NOT NULL,
+  phone VARCHAR(50) NOT NULL,
+  email VARCHAR(150) DEFAULT NULL,
+  nationality VARCHAR(100) DEFAULT NULL,
+  employer VARCHAR(150) DEFAULT NULL,
+  move_in_date DATE DEFAULT NULL,
+  occupants_count TINYINT UNSIGNED DEFAULT NULL,
+  notes TEXT DEFAULT NULL,
+  status ENUM('new','contacted','documents_requested','applied','converted','rejected','closed') NOT NULL DEFAULT 'new',
+  converted_tenant_id INT DEFAULT NULL,
+  converted_lease_id INT DEFAULT NULL,
+  admin_notes TEXT DEFAULT NULL,
+  assigned_to INT DEFAULT NULL,
+  reviewed_by INT DEFAULT NULL,
+  reviewed_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT NULL,
+  PRIMARY KEY (id),
+  KEY idx_application_unit_status (unit_id, status),
+  KEY idx_application_company_status (company_id, status, created_at),
+  KEY idx_application_converted (converted_tenant_id, converted_lease_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
