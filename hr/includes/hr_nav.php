@@ -141,6 +141,13 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'pages' => ['documents.php'],
                 ],
                 [
+                    'key' => 'company_docs',
+                    'label' => 'Company Documents',
+                    'icon' => 'building-2',
+                    'href' => $hrBase . '/company_documents',
+                    'pages' => ['company_documents.php'],
+                ],
+                [
                     'key' => 'access',
                     'label' => 'Access',
                     'icon' => 'shield',
@@ -190,6 +197,7 @@ function hr_nav_page_title(string $currentPage): string
         'cash_advances.php' => 'Loans / Advances',
         'loan_settle_cash.php' => 'Settle loan',
         'documents.php' => 'Documents',
+        'company_documents.php' => 'Company Documents',
         'access.php' => 'Access',
         'performance.php' => 'Performance',
         'performance_detail.php' => 'Performance detail',

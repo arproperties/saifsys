@@ -37,6 +37,10 @@ return [
         'upload',
         'delete'
     ],
+    'company_documents' => [
+        'view',
+        'manage'
+    ],
     'performance' => [
         'view',
         'create',

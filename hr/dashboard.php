@@ -8,6 +8,7 @@ require_once __DIR__ . '/../includes/company_helper.php';
 require_once __DIR__ . '/../includes/module_access.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
+require_once __DIR__ . '/includes/hr_company_documents.php';
 
 // Get branding settings
 $brand = getBrandSettings($conn);
@@ -87,6 +88,46 @@ $expSoonCnt = scalar($conn, "SELECT COUNT(*)
                              WHERE d.expires_at IS NOT NULL
                                AND d.expires_at!='0000-00-00'
                                AND d.expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)" . $companyClause . $currentStatusClause, array_merge($companyParams, $currentStatusParams));
+
+// Company documents (trade licence, MOA, Ejari, establishment card, POA) expiring / expired.
+// Scoped on hr_company_documents.company_id - there is no employee join here.
+// Guarded so the dashboard still renders where the migration has not been applied.
+$companyDocParams = $selectedCompanyId > 0 ? [$selectedCompanyId] : [];
+$companyDocClause = $selectedCompanyId > 0 ? ' AND hcd.company_id = ?' : '';
+$companyDocSoon = 0;
+$companyDocExpired = 0;
+$companyDocList = [];
+try {
+    $companyDocSoon = (int)scalar($conn, "SELECT COUNT(*)
+                                 FROM hr_company_documents hcd
+                                 WHERE hcd.status = 'active'
+                                   AND hcd.expiry_date IS NOT NULL
+                                   AND hcd.expiry_date != '0000-00-00'
+                                   AND hcd.expiry_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)" . $companyDocClause, $companyDocParams);
+    $companyDocExpired = (int)scalar($conn, "SELECT COUNT(*)
+                                 FROM hr_company_documents hcd
+                                 WHERE hcd.status = 'active'
+                                   AND hcd.expiry_date IS NOT NULL
+                                   AND hcd.expiry_date != '0000-00-00'
+                                   AND hcd.expiry_date < CURDATE()" . $companyDocClause, $companyDocParams);
+    $companyDocList = fetchAllAssoc($conn, "
+      SELECT hcd.id, hcd.doc_type, hcd.title, hcd.doc_number, hcd.expiry_date, c.name AS company_name
+      FROM hr_company_documents hcd
+      LEFT JOIN companies c ON c.id = hcd.company_id
+      WHERE hcd.status = 'active'
+        AND hcd.expiry_date IS NOT NULL
+        AND hcd.expiry_date != '0000-00-00'
+        AND hcd.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+        " . $companyDocClause . "
+      ORDER BY hcd.expiry_date ASC
+      LIMIT 8
+    ", $companyDocParams);
+} catch (Throwable $e) {
+    $companyDocSoon = 0;
+    $companyDocExpired = 0;
+    $companyDocList = [];
+}
+$companyDocsHref = 'company_documents.php?status=soon' . $appendCompanyQuery;
 
 // Leave: pending + on leave today
 $leavePending = scalar($conn, "SELECT COUNT(*)
@@ -228,6 +269,28 @@ echo hr_ui_page_header(
     </div>
   </div>
 
+  <?php if ($companyDocExpired > 0 || $companyDocSoon > 0): ?>
+  <div class="hr-settings-card mb-3">
+    <div class="card-body d-flex flex-wrap align-items-center gap-3">
+      <div class="kpi-icon" style="width:44px;height:44px;border-radius:12px;background:var(--hr-primary-soft);color:var(--hr-<?= $companyDocExpired > 0 ? 'danger' : 'warning' ?>);display:grid;place-items:center">
+        <i data-lucide="building-2" style="width:22px;height:22px"></i>
+      </div>
+      <div class="flex-grow-1">
+        <h6 class="mb-1">
+          <?php if ($companyDocExpired > 0): ?>
+            <strong><?= (int)$companyDocExpired ?></strong> company document<?= $companyDocExpired > 1 ? 's have' : ' has' ?> expired
+            <?php if ($companyDocSoon > 0): ?>· <strong><?= (int)$companyDocSoon ?></strong> expiring within 30 days<?php endif; ?>
+          <?php else: ?>
+            <strong><?= (int)$companyDocSoon ?></strong> company document<?= $companyDocSoon > 1 ? 's expire' : ' expires' ?> within 30 days
+          <?php endif; ?>
+        </h6>
+        <div class="small text-muted mb-0">Trade licence, MOA, Ejari, establishment card or power of attorney</div>
+      </div>
+      <a class="btn btn-outline-primary" href="<?= h($companyDocsHref) ?>">Review</a>
+    </div>
+  </div>
+  <?php endif; ?>
+
   <?php if ($cashAdvPending > 0): ?>
   <div class="hr-settings-card mb-3">
     <div class="card-body d-flex flex-wrap align-items-center gap-3">
@@ -346,5 +409,45 @@ echo hr_ui_page_header(
       </div>
     </div>
   </div>
+
+  <?php if ($companyDocList): ?>
+  <div class="row g-3 mt-0">
+    <div class="col-12">
+      <div class="hr-settings-card">
+        <div class="settings-header d-flex justify-content-between align-items-center">
+          <h6 class="mb-0">Company documents expiring (30 days)</h6>
+          <a class="small" href="<?= h($companyDocsHref) ?>">Company documents</a>
+        </div>
+        <div class="card-body p-0">
+          <div class="hr-table-shell border-0 shadow-none rounded-0">
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead><tr><th>Company</th><th>Document</th><th>Number</th><th class="text-end">Expires</th></tr></thead>
+                <tbody>
+                  <?php foreach ($companyDocList as $cd): ?>
+                    <tr>
+                      <td><?= h($cd['company_name'] ?: '—') ?></td>
+                      <td>
+                        <a href="company_documents.php?edit=<?= (int)$cd['id'] ?>"><?= h(hr_company_document_type_label($cd['doc_type'])) ?></a>
+                        <?php if (!empty($cd['title']) && $cd['title'] !== hr_company_document_type_label($cd['doc_type'])): ?>
+                          <div class="small text-muted"><?= h($cd['title']) ?></div>
+                        <?php endif; ?>
+                      </td>
+                      <td><?= h($cd['doc_number'] ?: '—') ?></td>
+                      <td class="text-end text-nowrap">
+                        <?= h($cd['expiry_date']) ?>
+                        <?= hr_company_document_expiry_badge($cd['expiry_date']) ?>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <?php endif; ?>
 
 <?php require_once __DIR__ . '/includes/hr_layout_footer.php'; ?>
