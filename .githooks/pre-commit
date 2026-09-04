@@ -13,6 +13,8 @@ for f in $staged; do
   case "$f" in
     .env|.env.*|*/.env|*/.env.*)
       [ "${f##*.}" = "example" ] || { red "BLOCKED  env file: $f"; fail=1; } ;;
+    migrations/*.sql|migrations/*/*.sql|database/*.sql|database/*/*.sql)
+      : ;;  # schema migrations belong in git (mirrors .gitignore's !migrations/**/*.sql)
     *.sql|*.sql.gz|*.dump|*.sqlite|*.sqlite3|*.db)
       red "BLOCKED  database dump: $f"; fail=1 ;;
     *.pem|*.key|*.p12|*.pfx|*.jks|*.keystore)
