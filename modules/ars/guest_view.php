@@ -10,6 +10,7 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/includes/ars_helpers.php';
 require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
+require_once __DIR__ . '/includes/ars_guest_delete.php';
 
 $arsCompanyId = arsPageAuth($conn);
 $brand = getBrandSettings($conn);
@@ -28,6 +29,24 @@ if (!$guest) {
 }
 
 $success = $error = '';
+$canDeleteGuests = ars_user_can_delete_guest($conn);
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_guest'])) {
+    csrf_verify();
+    if (!$canDeleteGuests) {
+        $error = 'You do not have permission to delete guests.';
+    } else {
+        $err = ars_guest_delete($conn, $arsCompanyId, $guestId, function_exists('current_user_id') ? current_user_id() : null);
+        if ($err === null) {
+            $deletedName = trim(($guest['first_name'] ?? '') . ' ' . ($guest['last_name'] ?? ''));
+            header('Location: guests.php?deleted=' . rawurlencode($deletedName !== '' ? $deletedName : ('#' . $guestId)));
+            exit;
+        }
+        $error = $err;
+    }
+}
+
+$deleteBlockers = $canDeleteGuests ? ars_guest_delete_blockers($conn, $arsCompanyId, $guestId) : [];
 $section = (string)($_GET['section'] ?? 'overview');
 if ($section === 'flats') {
     $section = 'overview'; // legacy URL; flat tenancy is not shown on guest profile
@@ -118,6 +137,17 @@ $actions = '<div class="d-flex flex-wrap gap-2">'
         'size' => 'sm',
         'icon' => 'arrow-left',
     ])
+    . ($canDeleteGuests
+        ? ars_ui_button('Delete', [
+            'variant' => 'danger-outline',
+            'size' => 'sm',
+            'icon' => 'trash-2',
+            'disabled' => !empty($deleteBlockers),
+            'attrs' => empty($deleteBlockers)
+                ? 'data-bs-toggle="modal" data-bs-target="#deleteGuestModal"'
+                : 'title="' . h(implode('; ', $deleteBlockers)) . '"',
+        ])
+        : '')
     . '</div>';
 
 $pageTitle = 'Guest — ' . $guestName;
@@ -319,6 +349,29 @@ ars_shell_begin([
             <?php endforeach; ?>
             </tbody>
         </table>
+    </div>
+</div>
+<?php endif; ?>
+
+<?php if ($canDeleteGuests && empty($deleteBlockers)): ?>
+<div class="modal fade" id="deleteGuestModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <form method="POST" class="modal-content">
+            <?php csrf_field(); ?>
+            <input type="hidden" name="delete_guest" value="1">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i>Delete guest</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">Permanently delete <strong><?= h($guestName !== '' ? $guestName : ('Guest #' . $guestId)) ?></strong>?</p>
+                <p class="small text-muted mb-0">This cannot be undone. The delete is re-checked on submit and refused if the guest has any booking, financial document, credit, occupancy record, or portal account.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-1"></i>Delete guest</button>
+            </div>
+        </form>
     </div>
 </div>
 <?php endif; ?>

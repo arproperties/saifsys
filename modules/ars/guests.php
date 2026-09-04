@@ -10,10 +10,29 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/includes/ars_helpers.php';
 require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
+require_once __DIR__ . '/includes/ars_guest_delete.php';
 
 $arsCompanyId = arsPageAuth($conn);
+$canDeleteGuests = ars_user_can_delete_guest($conn);
 $brand = getBrandSettings($conn);
 $success = $error = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_guest'])) {
+    csrf_verify();
+    if (!$canDeleteGuests) {
+        $error = 'You do not have permission to delete guests.';
+    } else {
+        $delId = (int)($_POST['guest_id'] ?? 0);
+        $err = $delId > 0
+            ? ars_guest_delete($conn, $arsCompanyId, $delId, function_exists('current_user_id') ? current_user_id() : null)
+            : 'Missing guest.';
+        if ($err === null) {
+            $success = 'Guest deleted.';
+        } else {
+            $error = $err;
+        }
+    }
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_guest'])) {
     csrf_verify();
@@ -49,6 +68,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_guest'])) {
     }
 }
 
+$deletedFlash = trim((string)($_GET['deleted'] ?? ''));
+if ($deletedFlash !== '' && $success === '') {
+    $success = 'Guest ' . $deletedFlash . ' deleted.';
+}
+
 $search = trim((string)($_GET['q'] ?? ''));
 $filter = (string)($_GET['filter'] ?? 'all');
 if (!in_array($filter, ['all', 'with_bookings', 'no_bookings'], true)) {
@@ -60,6 +84,8 @@ $sql = "
            (SELECT COUNT(*) FROM ars_bookings b
              WHERE b.guest_id = g.id AND b.company_id = g.company_id
                AND b.status NOT IN ('cancelled','expired')) AS live_bookings,
+           (SELECT COUNT(*) FROM ars_bookings b3
+             WHERE b3.guest_id = g.id AND b3.company_id = g.company_id) AS any_bookings,
            (SELECT MAX(b2.check_in) FROM ars_bookings b2
              WHERE b2.guest_id = g.id AND b2.company_id = g.company_id
                AND b2.status NOT IN ('cancelled','expired')) AS last_check_in
@@ -175,6 +201,7 @@ ars_shell_begin([
                 $name = trim(($g['first_name'] ?? '') . ' ' . ($g['last_name'] ?? ''));
                 $stays = (int)($g['live_bookings'] ?? $g['total_bookings'] ?? 0);
                 $lastIn = (string)($g['last_check_in'] ?? '');
+                $anyBookings = (int)($g['any_bookings'] ?? 0);
             ?>
                 <tr class="ars-row-click" style="cursor:pointer" onclick="location.href='guest_view.php?id=<?= (int)$g['id'] ?>'">
                     <td data-label="Guest">
@@ -199,7 +226,27 @@ ars_shell_begin([
                     <td data-label="Total spent" class="text-end ars-tabular fw-semibold"><?= formatArsAmount($g['total_spent'] ?? 0) ?></td>
                     <td data-label="Last check-in" class="text-nowrap small text-muted"><?= $lastIn !== '' ? h($lastIn) : '—' ?></td>
                     <td data-label="" onclick="event.stopPropagation()">
-                        <?= ars_ui_button('Open', ['href' => 'guest_view.php?id=' . (int)$g['id'], 'variant' => 'secondary', 'size' => 'sm', 'icon' => 'eye']) ?>
+                        <div class="d-flex justify-content-end gap-2">
+                            <?= ars_ui_button('Open', ['href' => 'guest_view.php?id=' . (int)$g['id'], 'variant' => 'secondary', 'size' => 'sm', 'icon' => 'eye']) ?>
+                            <?php if ($canDeleteGuests): ?>
+                                <?php if ($anyBookings === 0): ?>
+                                    <?= ars_ui_button('Delete', [
+                                        'variant' => 'danger-outline',
+                                        'size' => 'sm',
+                                        'icon' => 'trash-2',
+                                        'attrs' => 'onclick="arsDeleteGuest(' . (int)$g['id'] . ', \'' . h(addslashes($name !== '' ? $name : ('Guest #' . (int)$g['id']))) . '\')"',
+                                    ]) ?>
+                                <?php else: ?>
+                                    <?= ars_ui_button('Delete', [
+                                        'variant' => 'danger-outline',
+                                        'size' => 'sm',
+                                        'icon' => 'trash-2',
+                                        'disabled' => true,
+                                        'attrs' => 'title="Has ' . $anyBookings . ' booking(s) — cancel and remove those first"',
+                                    ]) ?>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </div>
                     </td>
                 </tr>
             <?php endforeach; ?>
@@ -246,5 +293,36 @@ ars_shell_begin([
         </form>
     </div>
 </div>
+
+<?php if ($canDeleteGuests): ?>
+<div class="modal fade" id="deleteGuestModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <form method="POST" class="modal-content">
+            <?php csrf_field(); ?>
+            <input type="hidden" name="delete_guest" value="1">
+            <input type="hidden" name="guest_id" id="deleteGuestId" value="">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i>Delete guest</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">Permanently delete <strong id="deleteGuestName"></strong>?</p>
+                <p class="small text-muted mb-0">This cannot be undone. The delete is refused if the guest turns out to have any booking, financial document, credit, occupancy record, or portal account.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-1"></i>Delete guest</button>
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+function arsDeleteGuest(id, name) {
+    document.getElementById('deleteGuestId').value = id;
+    document.getElementById('deleteGuestName').textContent = name || 'this guest';
+    new bootstrap.Modal(document.getElementById('deleteGuestModal')).show();
+}
+</script>
+<?php endif; ?>
 
 <?php ars_shell_end(); ?>
