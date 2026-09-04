@@ -73,7 +73,7 @@ $logoSrc = function_exists('brand_logo_src') ? brand_logo_src($brand) : null;
   <title><?= hr_ui_h($pageTitle) ?> · HR | <?= hr_ui_h($brand['system_name'] ?? 'HeroSysgro') ?></title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <link href="<?= hr_ui_h($hrAssetBase) ?>/hr-ui-v2.css?v=20260716-2" rel="stylesheet">
+  <link href="<?= hr_ui_h($hrAssetBase) ?>/hr-ui-v2.css?v=20260904-1" rel="stylesheet">
   <?php if (!empty($pageStyles)): ?><style><?= $pageStyles ?></style><?php endif; ?>
   <?php if (!empty($pageHead)) {
       echo $pageHead;

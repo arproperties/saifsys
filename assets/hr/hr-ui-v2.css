@@ -13,6 +13,9 @@ body.hr-ui-v2 {
   --hr-sidebar-bg: #ffffff;
   --hr-border: #e5e7eb;
   --hr-border-strong: #d1d5db;
+  /* Input borders need far more contrast than container borders: #d1d5db is
+     1.5:1 on white and reads as no border at all. */
+  --hr-field-border: #9ca3af;
   --hr-text: #111827;
   --hr-text-muted: #6b7280;
   --hr-text-dim: #9ca3af;
@@ -40,6 +43,7 @@ body.hr-ui-v2[data-theme="dark"] {
   --hr-card-bg: #151e2e;
   --hr-sidebar-bg: #0f172a;
   --hr-border: #1f2937;
+  --hr-field-border: #4b5563;
   --hr-text: #f1f5f9;
   --hr-text-muted: #94a3b8;
 }
@@ -434,10 +438,42 @@ body.hr-ui-v2 .hr-btn-primary:hover {
   color: #111;
 }
 
+/* Form fields — resting state.
+   Only :focus was styled before, so at rest fields fell back to Bootstrap's
+   --bs-border-color (#dee2e6). Against the white card and modal background that
+   is ~1.2:1 contrast, i.e. fields read as borderless on every HR screen.
+   Specificity is kept at (0,2,1) so the :focus, validation and disabled rules
+   below still win. */
+body.hr-ui-v2 .form-control,
+body.hr-ui-v2 .form-select,
+body.hr-ui-v2 .input-group-text {
+  border: 1px solid var(--hr-field-border);
+  border-radius: var(--hr-radius-sm);
+}
+
+body.hr-ui-v2 .form-control:disabled,
+body.hr-ui-v2 .form-select:disabled,
+body.hr-ui-v2 .form-control[readonly] {
+  background-color: #f9fafb;
+  border-color: var(--hr-border);
+}
+
 body.hr-ui-v2 .form-control:focus,
 body.hr-ui-v2 .form-select:focus {
   border-color: var(--hr-primary);
   box-shadow: 0 0 0 0.2rem var(--hr-primary-soft);
+}
+
+/* Bootstrap's own validation rules are (0,2,0) and would lose to the base rule
+   above, so restate them here. */
+body.hr-ui-v2 .form-control.is-invalid,
+body.hr-ui-v2 .form-select.is-invalid {
+  border-color: var(--hr-danger);
+}
+
+body.hr-ui-v2 .form-control.is-valid,
+body.hr-ui-v2 .form-select.is-valid {
+  border-color: var(--hr-success);
 }
 
 body.hr-ui-v2 .text-primary { color: var(--hr-primary) !important; }
