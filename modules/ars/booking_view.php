@@ -83,6 +83,12 @@ try {
 } catch (Throwable $ignored) {
 }
 
+require_once __DIR__ . '/includes/ars_booking_unified_docs.php';
+$unifiedDocs = ars_booking_unified_documents($conn, $booking, $arsCompanyId, $financialDocs);
+$unifiedDocsFlat = ars_booking_unified_documents_flat($unifiedDocs);
+$unifiedDocsTotal = ars_udoc_total($unifiedDocs);
+$docCategories = ars_booking_doc_categories();
+
 $openDocsBalance = 0.0;
 foreach ($financialDocs as $fd) {
     $openDocsBalance += max(0, (float)($fd['balance_due'] ?? 0));
@@ -253,7 +259,7 @@ if ($booking['status'] === 'pending') {
 <?php if ($created): ?>
 <div class="alert alert-success alert-dismissible fade show">
   <div class="fw-semibold mb-1"><i class="bi bi-check-circle me-1"></i>Booking created — status Pending</div>
-  <div class="small mb-0">Recommended flow: <strong>1)</strong> Confirm (posts revenue) → <strong>2)</strong> Record stay payment → <strong>3)</strong> Collect security deposit → <strong>4)</strong> Check Documents tab for journals.</div>
+  <div class="small mb-0">Recommended flow: <strong>1)</strong> Confirm (posts revenue) → <strong>2)</strong> Record stay payment → <strong>3)</strong> Collect security deposit → <strong>4)</strong> Documents tab for the contract, receipts and deposit paperwork.</div>
   <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
 </div>
 <?php endif; ?>
@@ -306,6 +312,66 @@ $arsBvJs = __DIR__ . '/assets/js/ars-booking-view.js';
 $arsBvJsV = is_file($arsBvJs) ? (string)filemtime($arsBvJs) : '1';
 $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . rawurlencode($arsBvJsV);
 ?>
+<style>
+/* Unified Documents table.
+   Only the trailing columns get a fixed, nowrap width; Document takes every
+   remaining pixel so long names like ARS-INV-2026-00089 stay on one line. */
+#ws-docs .ars-udoc-table { min-width: 720px; }
+#ws-docs .ars-udoc-col-doc { width: auto; min-width: 15rem; }
+#ws-docs .ars-udoc-col-type,
+#ws-docs .ars-udoc-col-date,
+#ws-docs .ars-udoc-col-amount,
+#ws-docs .ars-udoc-actions { width: 1%; white-space: nowrap; }
+
+/* Source + status + note ride under the title instead of costing two columns. */
+#ws-docs .ars-udoc-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .3rem;
+    margin-top: .2rem;
+    font-size: .78rem;
+}
+#ws-docs .ars-udoc-meta .badge { font-weight: 500; }
+#ws-docs .ars-udoc-type { font-size: .8125rem; }
+
+/* The shell pins .btn to min-height:40px and .form-select to 42px, so Bootstrap's
+   btn-sm/form-select-sm cannot shrink them. Override inside this table only. */
+#ws-docs .ars-udoc-col-type .ars-udoc-refile {
+    width: auto;
+    min-width: 9.5rem;
+    min-height: 0;
+    padding: .15rem 1.75rem .15rem .5rem;
+    font-size: .78rem;
+    background-position: right .4rem center;
+}
+#ws-docs .ars-udoc-actions-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: .35rem;
+}
+#ws-docs .ars-udoc-actions-row .btn {
+    min-height: 0;
+    padding: .18rem .55rem;
+    font-size: .78rem;
+    line-height: 1.4;
+    border-width: 1px;
+    white-space: nowrap;
+}
+
+/* Phones use the existing stacked-card layout; drop the desktop width rules. */
+@media (max-width: 767.98px) {
+    #ws-docs .ars-udoc-table { min-width: 0; }
+    #ws-docs .ars-udoc-col-doc,
+    #ws-docs .ars-udoc-col-type,
+    #ws-docs .ars-udoc-col-date,
+    #ws-docs .ars-udoc-col-amount,
+    #ws-docs .ars-udoc-actions { width: auto; min-width: 0; white-space: normal; }
+    #ws-docs .ars-udoc-actions-row { flex-wrap: wrap; justify-content: flex-start; }
+}
+</style>
 <script>window.ARS_BOOKING_ID = <?= (int)$booking['id'] ?>;</script>
 <script src="<?= h($arsBvJsHref) ?>"></script>
 
@@ -751,68 +817,113 @@ echo $arsWsLifecycleHtml;
 
         <section id="ars-ws-panel-documents" data-ars-ws-panel="documents" class="ars-ws-panel">
         <div id="documents">
-        <!-- Option B financial documents (Phase 2B adapter) -->
-        <div class="ars-card mb-4" id="ws-financial-docs">
-            <div class="card-header"><i class="bi bi-file-earmark-text me-2"></i>Financial documents</div>
-            <?php if (empty($financialDocs)): ?>
-            <div class="card-body text-center text-muted py-4">
-                <i class="bi bi-file-earmark-x fs-3 d-block mb-2"></i>
-                No financial documents yet.<br>
-                <small>With the Financial Adapter on, Confirm creates an original invoice here. Payments and deposits add more documents.</small>
+        <!-- Unified Documents — one flat list; the Type column says where each doc is filed -->
+        <div class="ars-card mb-4" id="ws-docs">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <span><i class="bi bi-folder2-open me-2"></i>Documents
+                    <span class="badge bg-secondary ms-1"><?= (int)$unifiedDocsTotal ?></span>
+                </span>
+                <div class="d-flex gap-1 flex-wrap">
+                    <button type="button" class="btn btn-ars-outline btn-sm" data-bs-toggle="modal" data-bs-target="#documentsActionModal" data-ars-docs-mode="send"><i class="bi bi-envelope-check me-1"></i>Send to guest</button>
+                    <button type="button" class="btn btn-ars btn-sm" data-bs-toggle="modal" data-bs-target="#attachmentModal"><i class="bi bi-upload me-1"></i>Upload</button>
+                </div>
             </div>
-            <?php else: ?>
-            <div class="table-responsive">
-                <table class="table ars-table ars-mobile-cards mb-0">
-                    <thead>
-                        <tr>
-                            <th>Document</th>
-                            <th>Type</th>
-                            <th>Date</th>
-                            <th>Status</th>
-                            <th class="text-end">Total</th>
-                            <th class="text-end">Balance</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($financialDocs as $fd): ?>
-                        <?php
-                        $fdType = str_replace('_', ' ', (string)($fd['document_type'] ?? ''));
-                        $fdStatus = (string)($fd['status'] ?? '');
-                        $fdStatusClass = match ($fdStatus) {
-                            'posted' => 'success',
-                            'paid' => 'primary',
-                            'partially_paid' => 'info',
-                            'reversed' => 'danger',
-                            'draft' => 'secondary',
-                            default => 'secondary',
-                        };
-                        ?>
-                        <tr>
-                            <td data-label="Document" class="fw-semibold">
-                                <a class="text-decoration-none" href="financial_document_view.php?id=<?= (int)$fd['id'] ?>">
-                                    <?= h((string)($fd['document_number'] ?? ('#' . $fd['id']))) ?>
-                                </a>
-                            </td>
-                            <td data-label="Type"><span class="badge bg-light text-dark border text-capitalize"><?= h($fdType) ?></span></td>
-                            <td data-label="Date"><?= h((string)($fd['document_date'] ?? '')) ?></td>
-                            <td data-label="Status"><span class="badge bg-<?= h($fdStatusClass) ?>"><?= h($fdStatus) ?></span></td>
-                            <td data-label="Total" class="text-end fw-semibold">AED <?= number_format((float)($fd['total_amount'] ?? 0), 2) ?></td>
-                            <td data-label="Balance" class="text-end">AED <?= number_format((float)($fd['balance_due'] ?? 0), 2) ?></td>
-                            <td data-label="" class="text-end">
-                                <a class="btn btn-sm btn-ars-outline" href="financial_document_view.php?id=<?= (int)$fd['id'] ?>">View</a>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
+            <div class="card-body pb-3">
+                <?php if (empty($unifiedDocsFlat)): ?>
+                <div class="border rounded text-center text-muted py-4 px-2 bg-light">
+                    <i class="bi bi-folder2-open fs-4 d-block mb-2"></i>
+                    No documents on this booking yet.
+                </div>
+                <?php else: ?>
+                <div class="table-responsive border rounded">
+                    <table class="table ars-table ars-mobile-cards ars-udoc-table mb-0 align-middle">
+                        <thead>
+                            <tr>
+                                <th class="ars-udoc-col-doc">Document</th>
+                                <th class="ars-udoc-col-type">Type</th>
+                                <th class="ars-udoc-col-date">Date</th>
+                                <th class="text-end ars-udoc-col-amount">Amount</th>
+                                <th class="text-end ars-udoc-actions">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($unifiedDocsFlat as $item): ?>
+                            <tr>
+                                <td data-label="Document" class="ars-udoc-col-doc">
+                                    <div class="fw-semibold"><?= h($item['title']) ?></div>
+                                    <div class="ars-udoc-meta">
+                                        <span class="badge <?= h($item['badge_class']) ?>"><?= h($item['badge']) ?></span>
+                                        <?php if ($item['status'] !== ''): ?>
+                                        <span class="badge <?= h($item['status_class']) ?>"<?= $item['unavailable_reason'] !== '' ? ' title="' . h($item['unavailable_reason']) . '"' : '' ?>><?= h(str_replace('_', ' ', $item['status'])) ?></span>
+                                        <?php endif; ?>
+                                        <?php if ($item['subtitle'] !== ''): ?>
+                                        <span class="text-muted"><?= h($item['subtitle']) ?></span>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                                <td data-label="Type" class="ars-udoc-col-type">
+                                    <?php if ($item['attachment_id'] !== null): ?>
+                                    <select class="form-select form-select-sm ars-udoc-refile"
+                                            data-ars-attachment-id="<?= (int)$item['attachment_id'] ?>"
+                                            aria-label="Change document type">
+                                        <?php foreach ($docCategories as $optKey => $optMeta): ?>
+                                        <option value="<?= h($optKey) ?>" <?= $optKey === $item['category'] ? 'selected' : '' ?>><?= h($optMeta['label']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <?php else: ?>
+                                    <span class="ars-udoc-type"><?= h($item['category_label']) ?></span>
+                                    <?php endif; ?>
+                                </td>
+                                <td data-label="Date" class="ars-udoc-col-date"><?= $item['date'] !== '' ? h($item['date']) : '—' ?></td>
+                                <td data-label="Amount" class="text-end ars-tabular ars-udoc-col-amount">
+                                    <?= $item['amount'] !== null ? h($item['currency']) . ' ' . number_format((float)$item['amount'], 2) : '—' ?>
+                                </td>
+                                <td data-label="Actions" class="text-end ars-udoc-actions">
+                                    <div class="ars-udoc-actions-row">
+                                        <?php if ($item['view_url'] !== ''): ?>
+                                        <a class="btn btn-sm btn-ars-outline" href="<?= h($item['view_url']) ?>">View</a>
+                                        <?php endif; ?>
+                                        <?php if ($item['download_url'] !== '' && $item['available']): ?>
+                                        <a class="btn btn-sm btn-ars-outline" href="<?= h($item['download_url']) ?>" target="_blank" rel="noopener"><?= $item['kind'] === 'upload' ? 'Download' : 'PDF' ?></a>
+                                        <?php endif; ?>
+                                        <?php if ($item['can_send']): ?>
+                                        <button type="button" class="btn btn-sm btn-ars-outline"
+                                                data-ars-doc-send="<?= h($item['doc_type']) ?>"
+                                                data-ars-doc-payment="<?= h((string)($item['payment_id'] ?? '')) ?>">Email</button>
+                                        <?php endif; ?>
+                                        <?php if ($item['kind'] === 'deposit'): ?>
+                                        <button type="button" class="btn btn-sm btn-ars-outline" onclick="openWorkspaceTab('deposit', 'security-deposit')">Open</button>
+                                        <?php endif; ?>
+                                        <?php // show a dash only when no button above actually rendered ?>
+                                        <?php if ($item['view_url'] === '' && !($item['download_url'] !== '' && $item['available']) && !$item['can_send'] && $item['kind'] !== 'deposit'): ?>
+                                        <span class="text-muted">—</span>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
             </div>
-            <?php endif; ?>
         </div>
 
-        <!-- Accounting Trail (journals) -->
-        <div class="ars-card mb-4" id="ws-docs">
-            <div class="card-header"><i class="bi bi-journal-check me-2"></i>Accounting Trail</div>
+        <!-- Accounting Trail (journals) — audit detail, collapsed so the tab stays readable -->
+        <div class="ars-card mb-4" id="ws-accounting-trail">
+            <div class="card-header">
+                <button type="button"
+                        class="btn btn-link p-0 w-100 text-start fw-semibold d-flex justify-content-between align-items-center"
+                        style="color:inherit"
+                        data-bs-toggle="collapse" data-bs-target="#accountingTrailBody"
+                        aria-expanded="false" aria-controls="accountingTrailBody">
+                    <span><i class="bi bi-journal-check me-2"></i>Accounting trail (audit)
+                        <span class="badge bg-secondary ms-1"><?= count($journals) ?></span>
+                    </span>
+                    <i class="bi bi-chevron-down small" aria-hidden="true"></i>
+                </button>
+            </div>
+            <div class="collapse" id="accountingTrailBody">
             <?php if (empty($journals)): ?>
             <div class="card-body text-center text-muted py-4"><i class="bi bi-journal-x fs-3 d-block mb-2"></i>No journal entries yet.<br><small>Journals are created when bookings are confirmed, payments recorded, or deposits processed.</small></div>
             <?php else: ?>
@@ -870,6 +981,7 @@ echo $arsWsLifecycleHtml;
                 </table>
             </div>
             <?php endif; ?>
+            </div>
         </div>
         </div>
         </section>
@@ -894,8 +1006,7 @@ echo $arsWsLifecycleHtml;
                     <div class="col-6"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#internalNoteModal"><i class="bi bi-sticky me-1"></i>Note</button></div>
                     <div class="col-6"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#documentsActionModal" data-ars-docs-mode="print"><i class="bi bi-printer me-1"></i>Print / PDF</button></div>
                     <div class="col-6"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#documentsActionModal" data-ars-docs-mode="send"><i class="bi bi-envelope-check me-1"></i>Send docs</button></div>
-                    <div class="col-6"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#attachmentModal"><i class="bi bi-paperclip me-1"></i>Attachments</button></div>
-                    <div class="col-6"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="extension"><i class="bi bi-calendar-range me-1"></i>Extend stay</button></div>
+                    <div class="col-12"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="extension"><i class="bi bi-calendar-range me-1"></i>Extend stay</button></div>
                     <div class="col-12"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="adjustment"><i class="bi bi-sliders me-1"></i>Rate adjustment</button></div>
                     <div class="col-12"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="credit"><i class="bi bi-arrow-counterclockwise me-1"></i>Credit note / stay refund</button></div>
                     </div>
@@ -1315,11 +1426,20 @@ echo $arsWsLifecycleHtml;
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header" style="background:var(--ars-primary);color:#fff">
-                <h5 class="modal-title"><i class="bi bi-paperclip me-2"></i>Booking attachments</h5>
+                <h5 class="modal-title"><i class="bi bi-upload me-2"></i>Upload document</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <div id="attachModalAlert" class="d-none"></div>
+                <div class="mb-3">
+                    <label class="form-label fw-semibold" for="attachCategory">Document type</label>
+                    <select id="attachCategory" class="form-select">
+                        <?php foreach ($docCategories as $optKey => $optMeta): ?>
+                        <option value="<?= h($optKey) ?>"<?= $optKey === 'other' ? ' selected' : '' ?>><?= h($optMeta['label']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Files the system did not generate go here. Any type can be added later, including for older bookings.</div>
+                </div>
                 <div class="mb-3">
                     <label class="form-label fw-semibold">Upload file</label>
                     <input type="file" id="attachFileInput" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.xls,.xlsx,.txt">

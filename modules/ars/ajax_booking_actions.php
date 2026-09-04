@@ -1180,7 +1180,8 @@ try {
                 echo json_encode(['success' => false, 'error' => 'No file uploaded.']);
                 exit;
             }
-            $up = ars_booking_attachment_upload($conn, $arsCompanyId, $bookingId, $_FILES['file'], $userId);
+            $docCategory = ars_booking_doc_category_normalize((string)($_POST['doc_category'] ?? 'other'));
+            $up = ars_booking_attachment_upload($conn, $arsCompanyId, $bookingId, $_FILES['file'], $userId, $docCategory);
             if (!$up['success']) {
                 echo json_encode(['success' => false, 'error' => $up['error']]);
                 exit;
@@ -1191,7 +1192,7 @@ try {
                 'booking_number' => $booking['booking_number'] ?? null,
                 'event_category' => 'documents',
                 'event_type' => 'attachment_uploaded',
-                'title' => 'Attachment uploaded',
+                'title' => 'Document uploaded — ' . ars_booking_doc_category_label($docCategory),
                 'description' => (string)($up['attachment']['original_name'] ?? ''),
                 'related_entity_type' => 'ars_booking_attachment',
                 'related_entity_id' => (int)($up['attachment']['id'] ?? 0),
@@ -1199,6 +1200,38 @@ try {
                 'source' => 'user',
             ]);
             echo json_encode(['success' => true, 'attachment' => $up['attachment']]);
+            break;
+        }
+
+        case 'set_attachment_category': {
+            require_once __DIR__ . '/includes/ars_booking_attachments.php';
+            $attachmentId = (int)($_POST['attachment_id'] ?? 0);
+            if ($attachmentId <= 0) {
+                echo json_encode(['success' => false, 'error' => 'Missing attachment.']);
+                exit;
+            }
+            $docCategory = ars_booking_doc_category_normalize((string)($_POST['doc_category'] ?? 'other'));
+            $res = ars_booking_attachment_set_category($conn, $arsCompanyId, $bookingId, $attachmentId, $docCategory);
+            if (!$res['success']) {
+                echo json_encode(['success' => false, 'error' => $res['error']]);
+                exit;
+            }
+            try {
+                ars_booking_activity_log($conn, [
+                    'company_id' => $arsCompanyId,
+                    'booking_id' => $bookingId,
+                    'booking_number' => $booking['booking_number'] ?? null,
+                    'event_category' => 'documents',
+                    'event_type' => 'attachment_recategorised',
+                    'title' => 'Document re-filed under ' . ars_booking_doc_category_label($docCategory),
+                    'related_entity_type' => 'ars_booking_attachment',
+                    'related_entity_id' => $attachmentId,
+                    'created_by' => $userId,
+                    'source' => 'user',
+                ]);
+            } catch (Throwable $ignored) {
+            }
+            echo json_encode(['success' => true, 'doc_category' => $res['doc_category']]);
             break;
         }
 

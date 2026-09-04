@@ -40,12 +40,24 @@ function ars_booking_attachments_ensure_schema(PDO $conn): void {
             relative_path VARCHAR(500) NOT NULL,
             mime_type VARCHAR(120) NOT NULL,
             file_size INT UNSIGNED NOT NULL DEFAULT 0,
+            doc_category VARCHAR(32) NOT NULL DEFAULT 'other',
             uploaded_by INT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_ars_att_booking (company_id, booking_id),
             INDEX idx_ars_att_created (created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+
+    // Existing installs predate the unified Documents tab: backfill the column.
+    // Untagged rows stay 'other' so old bookings are not disturbed.
+    try {
+        $has = $conn->query("SHOW COLUMNS FROM ars_booking_attachments LIKE 'doc_category'")->fetch(PDO::FETCH_ASSOC);
+        if (!$has) {
+            $conn->exec("ALTER TABLE ars_booking_attachments
+                ADD COLUMN doc_category VARCHAR(32) NOT NULL DEFAULT 'other' AFTER file_size");
+        }
+    } catch (Throwable $ignored) {
+    }
 
     $root = ars_booking_attachments_storage_root();
     if (!ars_booking_attachments_ensure_writable_dir($root)) {
@@ -55,6 +67,48 @@ function ars_booking_attachments_ensure_schema(PDO $conn): void {
     if (!is_file($ht)) {
         @file_put_contents($ht, "Options -Indexes\n<FilesMatch \"\\.(?i:php|phtml|phar|cgi|pl)$\">\n  Require all denied\n</FilesMatch>\n");
     }
+}
+
+/**
+ * The four default document types of the unified Documents tab.
+ * Uploaded files and system-generated documents both file into these buckets.
+ *
+ * @return array<string,array{label:string,icon:string,hint:string}>
+ */
+function ars_booking_doc_categories(): array {
+    return [
+        'contract' => [
+            'label' => 'Short-Term Contract',
+            'icon' => 'bi-file-earmark-text',
+            'hint' => 'The signed short-term rental contract, plus guest ID / passport pages.',
+        ],
+        'payment_receipt' => [
+            'label' => 'Payment Receipts',
+            'icon' => 'bi-receipt',
+            'hint' => 'Invoices, receipts and credit notes for the stay.',
+        ],
+        'security_deposit' => [
+            'label' => 'Security Deposit',
+            'icon' => 'bi-shield-lock',
+            'hint' => 'Deposit receipts, refund proof, damage / deduction evidence.',
+        ],
+        'other' => [
+            'label' => 'Other',
+            'icon' => 'bi-paperclip',
+            'hint' => 'Booking confirmation, inspection photos, correspondence, handover notes.',
+        ],
+    ];
+}
+
+/** Unknown / legacy values fall back to 'other'. */
+function ars_booking_doc_category_normalize(?string $value): string {
+    $value = strtolower(trim((string)$value));
+    return array_key_exists($value, ars_booking_doc_categories()) ? $value : 'other';
+}
+
+function ars_booking_doc_category_label(?string $value): string {
+    $key = ars_booking_doc_category_normalize($value);
+    return ars_booking_doc_categories()[$key]['label'];
 }
 
 /** @return list<string> */
@@ -85,7 +139,7 @@ function ars_booking_attachment_mime_map(): array {
 function ars_booking_attachments_list(PDO $conn, int $companyId, int $bookingId): array {
     ars_booking_attachments_ensure_schema($conn);
     $stmt = $conn->prepare("
-        SELECT id, original_name, mime_type, file_size, uploaded_by, created_at
+        SELECT id, original_name, mime_type, file_size, doc_category, uploaded_by, created_at
         FROM ars_booking_attachments
         WHERE company_id = ? AND booking_id = ?
         ORDER BY id DESC
@@ -102,9 +156,11 @@ function ars_booking_attachment_upload(
     int $companyId,
     int $bookingId,
     array $file,
-    ?int $userId
+    ?int $userId,
+    ?string $docCategory = 'other'
 ): array {
     ars_booking_attachments_ensure_schema($conn);
+    $docCategory = ars_booking_doc_category_normalize($docCategory);
 
     if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
         return ['success' => false, 'error' => 'Upload failed (error code ' . (int)($file['error'] ?? 0) . ').', 'attachment' => null];
@@ -160,9 +216,9 @@ function ars_booking_attachment_upload(
 
     $conn->prepare("
         INSERT INTO ars_booking_attachments
-            (company_id, booking_id, original_name, stored_name, relative_path, mime_type, file_size, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ")->execute([$companyId, $bookingId, $safeOrig, $stored, $rel, $mime, $size, $userId]);
+            (company_id, booking_id, original_name, stored_name, relative_path, mime_type, file_size, doc_category, uploaded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ")->execute([$companyId, $bookingId, $safeOrig, $stored, $rel, $mime, $size, $docCategory, $userId]);
 
     $id = (int)$conn->lastInsertId();
     return [
@@ -173,8 +229,40 @@ function ars_booking_attachment_upload(
             'original_name' => $safeOrig,
             'mime_type' => $mime,
             'file_size' => $size,
+            'doc_category' => $docCategory,
         ],
     ];
+}
+
+/**
+ * Re-file an existing attachment. Lets staff sort documents uploaded before the
+ * unified tab existed (they all land in 'other') into the right category.
+ *
+ * @return array{success:bool,error:?string,doc_category:?string}
+ */
+function ars_booking_attachment_set_category(
+    PDO $conn,
+    int $companyId,
+    int $bookingId,
+    int $attachmentId,
+    ?string $docCategory
+): array {
+    ars_booking_attachments_ensure_schema($conn);
+    $docCategory = ars_booking_doc_category_normalize($docCategory);
+    $stmt = $conn->prepare("
+        UPDATE ars_booking_attachments
+        SET doc_category = ?
+        WHERE id = ? AND company_id = ? AND booking_id = ?
+    ");
+    $stmt->execute([$docCategory, $attachmentId, $companyId, $bookingId]);
+    if ($stmt->rowCount() === 0) {
+        $check = $conn->prepare("SELECT id FROM ars_booking_attachments WHERE id = ? AND company_id = ? AND booking_id = ? LIMIT 1");
+        $check->execute([$attachmentId, $companyId, $bookingId]);
+        if (!$check->fetch(PDO::FETCH_ASSOC)) {
+            return ['success' => false, 'error' => 'Attachment not found.', 'doc_category' => null];
+        }
+    }
+    return ['success' => true, 'error' => null, 'doc_category' => $docCategory];
 }
 
 /**

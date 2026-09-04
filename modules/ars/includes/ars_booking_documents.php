@@ -130,6 +130,8 @@ function ars_booking_documents_catalog(PDO $conn, array $booking): array {
         'available' => $confirmationAvailable,
         'unavailable_reason' => $confirmationAvailable ? null : 'Not available for cancelled or expired bookings.',
         'currency' => $currency,
+        'document_date' => substr((string)($booking['created_at'] ?? ''), 0, 10),
+        'amount' => (float)($booking['total_amount'] ?? 0),
     ];
 
     $payStmt = $conn->prepare("
@@ -155,6 +157,8 @@ function ars_booking_documents_catalog(PDO $conn, array $booking): array {
             'available' => true,
             'unavailable_reason' => null,
             'currency' => $ccy,
+            'document_date' => substr((string)($p['payment_date'] ?? ''), 0, 10),
+            'amount' => (float)$p['amount'],
         ];
     }
 
@@ -172,6 +176,8 @@ function ars_booking_documents_catalog(PDO $conn, array $booking): array {
         'available' => $invoiceAvailable,
         'unavailable_reason' => $invoiceAvailable ? null : 'VAT invoice is available once VAT applies and the booking is confirmed or paid.',
         'currency' => $currency,
+        'document_date' => substr((string)($booking['created_at'] ?? ''), 0, 10),
+        'amount' => (float)($booking['total_amount'] ?? 0),
     ];
 
     foreach ($catalog as &$item) {
