@@ -5,6 +5,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
+require_once __DIR__ . '/includes/hr_export.php';
 
 require_login();
 require_role(['Owner','Admin','HR'], $conn);
@@ -18,43 +19,6 @@ function hr_report_fetch(PDO $conn, string $sql, array $params = []): array
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function hr_report_csv(string $filename, array $headers, array $rows): void
-{
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename="' . $filename . '"');
-    $out = fopen('php://output', 'w');
-    fputcsv($out, $headers);
-    foreach ($rows as $row) {
-        $line = [];
-        foreach ($headers as $key => $label) {
-            $line[] = $row[$key] ?? '';
-        }
-        fputcsv($out, $line);
-    }
-    fclose($out);
-    exit;
-}
-
-function hr_report_excel(string $filename, array $headers, array $rows): void
-{
-    header('Content-Type: application/vnd.ms-excel; charset=utf-8');
-    header('Content-Disposition: attachment; filename="' . $filename . '"');
-    echo "\xEF\xBB\xBF";
-    echo "<table border=\"1\"><thead><tr>";
-    foreach ($headers as $label) {
-        echo '<th>' . h($label) . '</th>';
-    }
-    echo "</tr></thead><tbody>";
-    foreach ($rows as $row) {
-        echo "<tr>";
-        foreach ($headers as $key => $label) {
-            echo '<td>' . h($row[$key] ?? '') . '</td>';
-        }
-        echo "</tr>";
-    }
-    echo "</tbody></table>";
-    exit;
-}
 
 $companies = hr_active_companies($conn);
 $selectedCompanyId = hr_selected_company_id($conn, $companies);
@@ -182,28 +146,28 @@ $attendanceRows = hr_report_fetch($conn, "
 
 $export = $_GET['export'] ?? '';
 if ($export === 'headcount') {
-    hr_report_csv('hr_headcount_by_company.csv', [
+    hr_export_csv('hr_headcount_by_company.csv', [
         'company_name' => 'Company',
         'status' => 'Status',
         'employee_count' => 'Employees',
     ], $headcountRows);
 }
 if ($export === 'leave') {
-    hr_report_csv('hr_pending_leave_by_company.csv', [
+    hr_export_csv('hr_pending_leave_by_company.csv', [
         'company_name' => 'Company',
         'pending_count' => 'Pending Requests',
         'pending_days' => 'Pending Days',
     ], $leaveRows);
 }
 if ($export === 'documents') {
-    hr_report_csv('hr_document_expiry_by_company.csv', [
+    hr_export_csv('hr_document_expiry_by_company.csv', [
         'company_name' => 'Company',
         'expiring_count' => 'Expiring Documents',
         'next_expiry' => 'Next Expiry',
     ], $documentRows);
 }
 if ($export === 'visa_expiry') {
-    hr_report_excel('hr_visa_expiry_by_company.xls', [
+    hr_export_excel('hr_visa_expiry_by_company.xls', [
         'company_name' => 'Company',
         'employee_code' => 'Employee Code',
         'employee_name' => 'Employee Name',
@@ -213,7 +177,7 @@ if ($export === 'visa_expiry') {
     ], $visaRows);
 }
 if ($export === 'payroll') {
-    hr_report_csv('hr_payroll_totals_by_company.csv', [
+    hr_export_csv('hr_payroll_totals_by_company.csv', [
         'company_name' => 'Company',
         'run_count' => 'Payroll Runs',
         'employee_count' => 'Employees Paid',
@@ -221,7 +185,7 @@ if ($export === 'payroll') {
     ], $payrollRows);
 }
 if ($export === 'attendance') {
-    hr_report_csv('hr_attendance_exceptions_by_company.csv', [
+    hr_export_csv('hr_attendance_exceptions_by_company.csv', [
         'company_name' => 'Company',
         'status' => 'Status',
         'exception_count' => 'Exceptions',

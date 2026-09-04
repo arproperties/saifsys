@@ -8,6 +8,7 @@ require_once dirname(__DIR__) . '/includes/company_helper.php';
 require_once dirname(__DIR__) . '/includes/module_access.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
+require_once __DIR__ . '/includes/hr_export.php';
 
 //rbac_bootstrap($conn);
 require_role(['Owner','Admin','HR'], $conn);
@@ -61,6 +62,68 @@ if ($status !== 'all') {
 
 $where_sql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
+// Export uses the filters above but ignores pagination, so the file matches
+// exactly what the current view is scoped to. Must run before any layout output.
+if (($_GET['export'] ?? '') === 'employees') {
+  $sql_export = "
+  SELECT
+    e.employee_code, e.full_name, e.nickname, e.email, e.phone, e.address,
+    e.position_title, e.date_joined, e.date_of_birth, e.payment_type,
+    e.basic_salary, e.allowance, e.bonus, e.total_salary,
+    e.exit_date, e.last_working_day, e.exit_type, e.exit_reason,
+    e.status,
+    d.name AS department, l.name AS location,
+    c.name AS company_name,
+    m.full_name AS manager_name,
+    (
+      SELECT MIN(expires_at)
+      FROM employee_documents ed
+      WHERE ed.employee_id = e.id AND ed.expires_at IS NOT NULL
+    ) AS next_expiry
+  FROM employees e
+  LEFT JOIN departments d ON d.id = e.department_id
+  LEFT JOIN locations l  ON l.id = e.location_id
+  LEFT JOIN companies c ON c.id = e.company_id
+  LEFT JOIN employees m ON m.id = e.manager_id
+  $where_sql
+  ORDER BY e.full_name IS NULL, e.full_name ASC, e.id ASC";
+  $stmt = $conn->prepare($sql_export);
+  $stmt->execute($params);
+  $exportRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+  foreach ($exportRows as &$exportRow) {
+    $exportRow['status'] = hr_employee_status_label($exportRow['status']);
+  }
+  unset($exportRow);
+
+  hr_export_csv('hr_employees_' . date('Y-m-d') . '.csv', [
+    'employee_code'    => 'Employee Code',
+    'full_name'        => 'Full Name',
+    'nickname'         => 'Nickname',
+    'email'            => 'Email',
+    'phone'            => 'Phone',
+    'address'          => 'Address',
+    'company_name'     => 'Company',
+    'department'       => 'Department',
+    'location'         => 'Location',
+    'position_title'   => 'Position',
+    'manager_name'     => 'Manager',
+    'status'           => 'Status',
+    'date_joined'      => 'Date Joined',
+    'date_of_birth'    => 'Date of Birth',
+    'exit_date'        => 'Exit Date',
+    'last_working_day' => 'Last Working Day',
+    'exit_type'        => 'Exit Type',
+    'exit_reason'      => 'Exit Reason',
+    'payment_type'     => 'Payment Type',
+    'basic_salary'     => 'Basic Salary',
+    'allowance'        => 'Allowance',
+    'bonus'            => 'Bonus',
+    'total_salary'     => 'Total Salary',
+    'next_expiry'      => 'Next Document Expiry',
+  ], $exportRows);
+}
+
 // count
 $sql_count = "SELECT COUNT(*) FROM employees e $where_sql";
 $stmt = $conn->prepare($sql_count);
@@ -99,6 +162,11 @@ function days_to($dateStr) {
   return (int)$today->diff($dt)->format('%r%a'); // negative if past
 }
 
+// Carry the active filters into the export link so the file matches the view.
+$exportQuery = $_GET;
+unset($exportQuery['page']);
+$exportQuery['export'] = 'employees';
+
 $pageTitle = 'Employees';
 if ($isHRManager) {
     $hrScopeLabel = hr_company_scope_label($companies, $selectedCompanyId);
@@ -113,7 +181,8 @@ echo hr_ui_page_header(
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Employees'],
     ],
-    '<a href="employee_edit.php" class="btn btn-primary"><i class="bi bi-plus-circle"></i> Add Employee</a>'
+    '<a href="employees.php?' . htmlspecialchars(http_build_query($exportQuery), ENT_QUOTES, 'UTF-8') . '" class="btn btn-outline-primary"><i class="bi bi-download"></i> Export CSV</a>'
+    . ' <a href="employee_edit.php" class="btn btn-primary"><i class="bi bi-plus-circle"></i> Add Employee</a>'
 );
 ?>
 
