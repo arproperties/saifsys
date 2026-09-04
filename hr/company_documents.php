@@ -86,8 +86,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        if ($title === '') {
-            $title = hr_company_document_type_label($docType);
+        // Leave title empty when it adds nothing: the list falls back to the type
+        // label. Storing a copy of the label here would snapshot it, so renaming a
+        // type later would leave every old row showing a stale duplicate subtitle.
+        if ($title !== '' && $title === hr_company_document_type_label($docType)) {
+            $title = '';
         }
 
         try {
@@ -420,7 +423,7 @@ try {
         $have->execute([$selectedCompanyId]);
         $haveTypes = $have->fetchAll(PDO::FETCH_COLUMN) ?: [];
         foreach ($docTypes as $code => $meta) {
-            if ($code !== 'other' && !in_array($code, $haveTypes, true)) {
+            if (!empty($meta['expected']) && !in_array($code, $haveTypes, true)) {
                 $missingTypes[] = $meta['label'];
             }
         }
@@ -482,7 +485,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 $pageActions = '<button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#companyDocModal">+ Add Document</button>';
 echo hr_ui_page_header(
     'Company Documents',
-    'Trade licence, MOA, Ejari, establishment card and power of attorney for each company.',
+    'Trade licence, MOA, Ejari, establishment card, power of attorney and tax certificates for each company.',
     [
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Company Documents'],

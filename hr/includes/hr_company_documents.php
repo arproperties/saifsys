@@ -3,7 +3,8 @@
  * HR company documents — vocabulary and file helpers.
  *
  * Company-level statutory documents (trade licence, MOA, Ejari, establishment card,
- * power of attorney). Files land in uploads/company_docs/<company_id>/ and are only
+ * power of attorney, VAT and corporate tax certificates). Files land in
+ * uploads/company_docs/<company_id>/ and are only
  * ever linked through hr/company_document_file.php — never as a bare uploads/ href.
  */
 
@@ -20,7 +21,10 @@ if (!defined('HR_COMPANY_DOC_MAX_BYTES')) {
 /**
  * Fixed document catalog. Codes are stored in hr_company_documents.doc_type.
  *
- * @return array<string,array{label:string,icon:string,has_expiry:bool,order:int}>
+ * 'expected' drives the "Missing types" KPI: set it to false for a document a
+ * company is not obliged to hold, so it is not reported as missing.
+ *
+ * @return array<string,array{label:string,icon:string,has_expiry:bool,expected:bool,order:int}>
  */
 if (!function_exists('hr_company_document_types')) {
     function hr_company_document_types(): array
@@ -30,36 +34,57 @@ if (!function_exists('hr_company_document_types')) {
                 'label' => 'Trade License',
                 'icon' => 'file-badge',
                 'has_expiry' => true,
+                'expected' => true,
                 'order' => 10,
             ],
             'moa' => [
                 'label' => 'Memorandum of Association (MOA)',
                 'icon' => 'scroll-text',
                 'has_expiry' => false,
+                'expected' => true,
                 'order' => 20,
             ],
             'ejari' => [
                 'label' => 'Ejari / Tenancy Contract',
                 'icon' => 'home',
                 'has_expiry' => true,
+                'expected' => true,
                 'order' => 30,
             ],
             'establishment_card' => [
                 'label' => 'Establishment Card',
                 'icon' => 'id-card',
                 'has_expiry' => true,
+                'expected' => true,
                 'order' => 40,
             ],
             'power_of_attorney' => [
                 'label' => 'Power of Attorney',
                 'icon' => 'stamp',
                 'has_expiry' => false,
+                'expected' => true,
                 'order' => 50,
+            ],
+            // FTA registration certificates carry no expiry date.
+            'vat_certificate' => [
+                'label' => 'VAT Certificate',
+                'icon' => 'receipt',
+                'has_expiry' => false,
+                'expected' => true,
+                'order' => 60,
+            ],
+            'corporate_tax_certificate' => [
+                'label' => 'Corporate Tax Certificate',
+                'icon' => 'landmark',
+                'has_expiry' => false,
+                'expected' => true,
+                'order' => 70,
             ],
             'other' => [
                 'label' => 'Other',
                 'icon' => 'file',
                 'has_expiry' => false,
+                'expected' => false,
                 'order' => 90,
             ],
         ];
