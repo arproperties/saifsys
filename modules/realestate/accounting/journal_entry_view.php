@@ -129,6 +129,26 @@ function load_bank_accounts_by_gl(PDO $conn, int $companyId): array {
     }
 }
 
+/**
+ * Where a journal's source document lives, or null when that reference_type has
+ * no detail page of its own (vendor_payment, tenant_credit, ars_*, payroll ...).
+ * Those journals stay plain text rather than linking somewhere unhelpful.
+ */
+function journal_source_document_url(?string $referenceType, int $referenceId): ?string {
+    if (!$referenceType || $referenceId <= 0) {
+        return null;
+    }
+    $pages = [
+        'payment'        => '../payment_view.php',
+        'invoice'        => '../billing_invoice_view.php',
+        'vendor_invoice' => 'vendor_bill_view.php',
+    ];
+    if (!isset($pages[$referenceType])) {
+        return null;
+    }
+    return $pages[$referenceType] . '?id=' . $referenceId;
+}
+
 $bankAccountsByGl = load_bank_accounts_by_gl($conn, $currentCompanyId);
 // Ledger window: the exact date of this journal entry, so the ledger opens on
 // the day you came from rather than the whole month.
@@ -302,7 +322,15 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
             <div class="row mt-2">
                 <div class="col-12">
                     <strong>Reference:</strong><br>
-                    <code><?= h($journal['reference_type']) ?> #<?= $journal['reference_id'] ?></code>
+                    <?php $sourceUrl = journal_source_document_url($journal['reference_type'], (int)$journal['reference_id']); ?>
+                    <?php if ($sourceUrl): ?>
+                        <a href="<?= h($sourceUrl) ?>" title="Open the source document">
+                            <code><?= h($journal['reference_type']) ?> #<?= $journal['reference_id'] ?></code>
+                            <i class="bi bi-box-arrow-up-right small"></i>
+                        </a>
+                    <?php else: ?>
+                        <code><?= h($journal['reference_type']) ?> #<?= $journal['reference_id'] ?></code>
+                    <?php endif; ?>
                 </div>
             </div>
         <?php endif; ?>
