@@ -89,7 +89,6 @@ $reports = [
         ['Maintenance Summary', 'Maintenance requests and cost summary.', 'Maintenance operational tables', 'Operational Only', 'reports_maintenance_summary.php', 'Print'],
         ['Maintenance by Building', 'Maintenance grouped by building.', 'Maintenance operational tables', 'Operational Only', 'reports_maintenance_by_building.php', 'Print'],
         ['Maintenance by Category', 'Maintenance grouped by category.', 'Maintenance operational tables', 'Operational Only', 'reports_maintenance_by_category.php', 'Print'],
-        ['SLA Performance', 'SLA compliance and violation analysis.', 'Maintenance SLA tables', 'Operational Only', 'reports_sla_performance.php', 'Print'],
     ],
     'Diagnostics & Exceptions' => [
         ['Accounting Exception Dashboard', 'Invoices without journals, missing allocations, AR/VAT/deposit/bank variances.', 'Cross-engine diagnostics', 'Diagnostic', 'accounting/accounting_exception_dashboard.php', 'To add'],

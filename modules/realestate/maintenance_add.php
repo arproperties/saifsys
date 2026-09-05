@@ -142,8 +142,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } catch (Throwable $ignored) {
                 }
 
-                require_once __DIR__ . '/includes/sla_helper.php';
-                create_sla_tracking($conn, $currentCompanyId, $requestId, $priority, $category ?: null, $requestDateTime);
 
                 $photoUpload = ['saved' => 0, 'errors' => []];
                 if (!empty($_FILES['photos']) && is_array($_FILES['photos']['name'] ?? null)) {

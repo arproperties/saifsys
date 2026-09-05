@@ -223,8 +223,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             ");
             $stmt->execute([$assignedTo, $respondedAt, $cost, $updateNotes, $requestId, $currentCompanyId]);
 
-            require_once __DIR__ . '/includes/sla_helper.php';
-            update_sla_response_time($conn, $requestId, $respondedAt);
 
             if ($assignedTo) {
                 $stmt = $conn->prepare("SELECT id, full_name, email, phone FROM employees WHERE id = ?");
@@ -285,9 +283,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $updateData['cost'] = $actualCost;
                     }
                     
-                    // Update SLA tracking for resolution time
-                    require_once __DIR__ . '/includes/sla_helper.php';
-                    update_sla_resolution_time($conn, $requestId, $completedAt);
                 }
                 
                 $setClause = [];

@@ -429,7 +429,7 @@ $navBasePath = $isInAccounting ? '../' : '';
         <?php endif; ?>
 
         <?php
-        $maintPages = ['maintenance.php','maintenance_schedule.php','maintenance_schedule_pdf.php','maintenance_schedule_ical.php','preventive_maintenance.php','amc.php','amc_add.php','amc_view.php','amc_visits.php','amc_certificates.php','amc_alerts.php','amc_payments.php','amc_set_alert_email.php','sla_dashboard.php','sla_config.php','extra_service_rates.php','extra_service_requests.php','cleaning_rates.php','cleaning_requests.php','pest_control_rates.php','pest_control_requests.php'];
+        $maintPages = ['maintenance.php','maintenance_schedule.php','maintenance_schedule_pdf.php','maintenance_schedule_ical.php','preventive_maintenance.php','amc.php','amc_add.php','amc_view.php','amc_visits.php','amc_certificates.php','amc_alerts.php','amc_payments.php','amc_set_alert_email.php','extra_service_rates.php','extra_service_requests.php','cleaning_rates.php','cleaning_requests.php','pest_control_rates.php','pest_control_requests.php'];
         $maintActive = in_array($currentPage, $maintPages);
         if ($hasMaintenance): ?>
         <div class="nav-group" data-nav-id="maintenance">
@@ -443,8 +443,6 @@ $navBasePath = $isInAccounting ? '../' : '';
                 <a href="<?= $navBasePath ?>extra_service_requests.php" class="slink <?= in_array($currentPage, ['extra_service_requests.php', 'extra_service_rates.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-plus-circle"></i></span><span class="slabel">Tenant extra services</span></a>
                 <a href="<?= $navBasePath ?>preventive_maintenance.php" class="slink <?= $currentPage === 'preventive_maintenance.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-calendar-check"></i></span><span class="slabel">Preventive Maint.</span></a>
                 <a href="<?= $navBasePath ?>amc.php" class="slink <?= in_array($currentPage, ['amc.php', 'amc_add.php', 'amc_view.php', 'amc_visits.php', 'amc_certificates.php', 'amc_alerts.php', 'amc_payments.php', 'amc_set_alert_email.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-check"></i></span><span class="slabel">AMC Contracts</span></a>
-                <a href="<?= $navBasePath ?>sla_dashboard.php" class="slink <?= $currentPage === 'sla_dashboard.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-speedometer2"></i></span><span class="slabel">SLA Dashboard</span></a>
-                <a href="<?= $navBasePath ?>sla_config.php" class="slink <?= $currentPage === 'sla_config.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-clock-history"></i></span><span class="slabel">SLA Config</span></a>
             </div>
         </div>
         <?php endif; ?>

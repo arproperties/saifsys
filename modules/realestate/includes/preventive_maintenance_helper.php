@@ -292,16 +292,6 @@ if (!function_exists('create_maintenance_request_from_task')) {
         ");
         $linkStmt->execute([$requestId, $taskId]);
         
-        // Create SLA tracking if needed
-        require_once __DIR__ . '/sla_helper.php';
-        create_sla_tracking(
-            $conn,
-            $task['company_id'],
-            $requestId,
-            $task['priority'],
-            $task['category'],
-            $requestDate . ' ' . date('H:i:s')
-        );
         
         return $requestId;
     }
@@ -433,9 +423,6 @@ if (!function_exists('complete_preventive_maintenance_task')) {
                 ");
                 $requestUpdateStmt->execute([$cost, $task['maintenance_request_id']]);
                 
-                // Update SLA tracking
-                require_once __DIR__ . '/sla_helper.php';
-                update_sla_resolution_time($conn, $task['maintenance_request_id'], date('Y-m-d H:i:s'));
             }
             
             $conn->commit();

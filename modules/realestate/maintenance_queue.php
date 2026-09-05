@@ -89,9 +89,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ");
                 $stmt->execute([$assignedTo, $priority, $category, $description, $cost, $notes, $respondedAt, $requestId, $currentCompanyId]);
                 
-                // Update SLA tracking for response time
-                require_once __DIR__ . '/includes/sla_helper.php';
-                update_sla_response_time($conn, $requestId, $respondedAt);
                 
                 // Get assigned employee details
                 if ($assignedTo) {

@@ -60,14 +60,6 @@ try {
             $stmt->execute([$reCompanyId, $unitId, $priority, $category ?: null, $description, $cost, $userId]);
             $requestId = (int)$conn->lastInsertId();
 
-            // Create SLA tracking if the helper exists
-            $slaHelper = dirname(__DIR__) . '/realestate/includes/sla_helper.php';
-            if (file_exists($slaHelper)) {
-                require_once $slaHelper;
-                if (function_exists('create_sla_tracking')) {
-                    create_sla_tracking($conn, $reCompanyId, $requestId, $priority, $category ?: null, date('Y-m-d H:i:s'));
-                }
-            }
 
             $blockedId = null;
             if ($blockUnit && $blockStart && $blockEnd && $blockEnd >= $blockStart) {

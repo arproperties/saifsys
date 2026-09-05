@@ -162,12 +162,6 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             <a href="maintenance_queue.php" class="btn btn-warning">
                 <i class="bi bi-list-check"></i> Queue
             </a>
-            <a href="sla_dashboard.php" class="btn btn-outline-info">
-                <i class="bi bi-speedometer2"></i> SLA
-            </a>
-            <a href="sla_config.php" class="btn btn-outline-secondary">
-                <i class="bi bi-gear"></i> SLA Config
-            </a>
         <?php endif; ?>
         <a href="maintenance_add.php" class="btn btn-primary">
             <i class="bi bi-plus-circle"></i> New Request
