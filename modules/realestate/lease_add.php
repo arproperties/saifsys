@@ -1079,7 +1079,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $paymentMethodCheque = re_payment_schedule_normalize_method($chequeData['payment_method'] ?? 'cheque');
                         $bankName = trim($chequeData['bank_name'] ?? '');
                         $referenceNumber = trim((string)($chequeData['reference_number'] ?? ''));
-                        if ($referenceNumber === '') {
+                        // A stale system placeholder (CHQ-<lease>-<n>) must not be carried into the reference
+                        // field, where it would shadow the real cheque number on the lease view.
+                        if ($referenceNumber === '' || re_is_auto_cheque_number($referenceNumber)) {
                             $referenceNumber = $chequeNumber;
                         }
                         $scheduleNotes = trim((string)($chequeData['notes'] ?? ''));
@@ -1669,7 +1671,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $paymentMethodCheque = re_payment_schedule_normalize_method($chequeData['payment_method'] ?? $paymentMethod);
                             $bankName = trim($chequeData['bank_name'] ?? '');
                             $referenceNumber = trim((string)($chequeData['reference_number'] ?? ''));
-                            if ($referenceNumber === '') {
+                            // A stale system placeholder (CHQ-<lease>-<n>) must not be carried into the reference
+                            // field, where it would shadow the real cheque number on the lease view.
+                            if ($referenceNumber === '' || re_is_auto_cheque_number($referenceNumber)) {
                                 $referenceNumber = $chequeNumber;
                             }
                             $scheduleNotes = trim((string)($chequeData['notes'] ?? ''));
@@ -3781,7 +3785,11 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         chequeAmount = parseFloat(existingCheque.cheque_amount) || installmentAmount;
                     }
                     const chequeNumber = existingCheque ? (existingCheque.cheque_number || '') : '';
-                    const referenceNumber = existingCheque ? (existingCheque.reference_number || chequeNumber || '') : '';
+                    const storedReference = existingCheque ? (existingCheque.reference_number || '') : '';
+                    // Never re-post a system placeholder (CHQ-<lease>-<n>) as the reference.
+                    const referenceNumber = (!storedReference || /^CHQ-\d+-\d+$/i.test(storedReference))
+                        ? chequeNumber
+                        : storedReference;
                     const bankName = existingCheque ? (existingCheque.bank_name || '') : '';
                     const rowNotes = existingCheque ? (existingCheque.notes || '') : '';
                     const holderName   = existingCheque ? (existingCheque.account_holder_name || '') : '';

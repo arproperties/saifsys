@@ -223,3 +223,15 @@ if (!function_exists('re_payment_schedule_log_mismatch_approval')) {
     }
 }
 
+
+/**
+ * True when a cheque/reference value is a system-generated placeholder ("CHQ-<lease id>-<n>")
+ * rather than a real cheque number entered by data entry. Placeholders are written when a
+ * schedule row is created without a cheque number, and must never shadow a real number.
+ */
+if (!function_exists('re_is_auto_cheque_number')) {
+    function re_is_auto_cheque_number(?string $value): bool
+    {
+        return (bool)preg_match('/^CHQ-\d+-\d+$/i', trim((string)$value));
+    }
+}

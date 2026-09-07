@@ -1916,7 +1916,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <thead>
                             <tr>
                                 <th>Method</th>
-                                <th>Cheque / Reference No.</th>
+                                <th>Cheque No.</th>
                                 <th>Bank</th>
                                 <th>Expected Date</th>
                                 <th>Amount</th>
@@ -1965,11 +1965,24 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 } elseif ($instType === '' || $instType === 'rent') {
                                     $amountDetails = $splitPaymentExtras;
                                 }
+                                // Cheque No.: for a cheque row the cheque number entered on the
+                                // lease form is the identifier; reference_number is only a fallback. A stored
+                                // system placeholder (CHQ-<lease>-<n>) never shadows a real number.
+                                $rowMethod    = strtolower((string)($inst['schedule_payment_method'] ?? 'cheque'));
+                                $rowCheque    = trim((string)($inst['cheque_number'] ?? ''));
+                                $rowReference = trim((string)($inst['reference_number'] ?? ''));
+                                $rowPrimary   = $rowMethod === 'cheque' ? $rowCheque : $rowReference;
+                                $rowFallback  = $rowMethod === 'cheque' ? $rowReference : $rowCheque;
+                                if ($rowPrimary === ''
+                                    || (re_is_auto_cheque_number($rowPrimary) && $rowFallback !== '' && !re_is_auto_cheque_number($rowFallback))) {
+                                    $rowPrimary = $rowFallback;
+                                }
+                                $chequeRefDisplay = $rowPrimary !== '' ? $rowPrimary : '-';
                             ?>
                                 <tr>
                                     <td><?= h(ucwords(str_replace('_', ' ', (string)($inst['schedule_payment_method'] ?? 'cheque')))) ?></td>
                                     <td>
-                                        <?= h($inst['reference_number'] ?: ($inst['cheque_number'] ?? '-')) ?>
+                                        <?= h($chequeRefDisplay) ?>
                                         <?php
                                         $rowChequeDisplayStatus = '';
                                         if ($accountingMode === 'invoice' && !empty($inst['cheque_id'])) {
