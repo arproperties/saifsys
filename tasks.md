@@ -17,8 +17,6 @@ ON ALLOCATION, IT SHOULD NOT REFLECT TO RENTAL PAYMENT , ITS SHOULD NOT COME AGA
 Collection page AED value display
 discussion with tauqeer (BR) short brief
 
-
-
 03 sep 2026
 -----------
 
@@ -29,8 +27,6 @@ establish link to ledger
 establish link to payment receipt also.
 add attachment option to journal entries and view on attachment on detail page
 
-
-
 04 sep 2026
 -----------
 
@@ -40,3 +36,29 @@ payment not reflected on collections page. still showing as outstanding payment.
 added export button for employees page
 cash with chart of account name for making payment.
 unified document tabs for the guest in ars module.
+
+05 Sep 2026
+-----------
+
+working on operation module admin side
+
+06 Sep 2026
+-----------
+
+Sunday off
+
+07 Sep 2026
+-----------
+
+Completing Operations admin side
+mobile app for operations
+check number showing correct in edit page same check number should show in lease view page.
+
+07 Sep 2026
+-----------
+
+complete previous task 
+creating apk
+upload to production and testing
+
+
