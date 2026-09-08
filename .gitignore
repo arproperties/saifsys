@@ -95,3 +95,4 @@ includes/email_config.php
 *.rar
 *.7z
 OPERATION-MOBILE-APP
+tasks.md
