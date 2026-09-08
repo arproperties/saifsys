@@ -20,6 +20,7 @@ define('MODULE_ARS', 'ars');
 define('MODULE_GROCERY', 'grocery');
 define('MODULE_BARBER', 'barber');
 define('MODULE_LEGAL', 'legal');
+define('MODULE_OPERATIONS', 'operations');
 
 /**
  * Get user's accessible modules based on departments
@@ -74,7 +75,7 @@ function get_user_modules(PDO $conn, int $userId): array {
     // Don't add empty modules for non-Owner/Admin users
     $roles = current_user_roles($conn);
     if (in_array('Owner', $roles, true) || in_array('Admin', $roles, true)) {
-        $allModules = [MODULE_CLEANING, MODULE_REALESTATE, MODULE_CONSTRUCTION, MODULE_HR, MODULE_FINANCE, MODULE_INVENTORY, MODULE_ARS, MODULE_GROCERY, MODULE_BARBER, MODULE_LEGAL];
+        $allModules = [MODULE_CLEANING, MODULE_REALESTATE, MODULE_CONSTRUCTION, MODULE_HR, MODULE_FINANCE, MODULE_INVENTORY, MODULE_ARS, MODULE_GROCERY, MODULE_BARBER, MODULE_LEGAL, MODULE_OPERATIONS];
         $existingModules = array_column($modules, 'module');
         foreach ($allModules as $module) {
             if (!in_array($module, $existingModules, true)) {
@@ -110,7 +111,7 @@ function get_user_company_modules(PDO $conn, int $userId, int $companyId): array
         $moduleName = $module['module'];
         
         // Shared modules are always available (HR, Finance, Inventory, Legal for RE companies)
-        if ($moduleName === MODULE_HR || $moduleName === MODULE_FINANCE || $moduleName === MODULE_INVENTORY) {
+        if ($moduleName === MODULE_HR || $moduleName === MODULE_FINANCE || $moduleName === MODULE_INVENTORY || $moduleName === MODULE_OPERATIONS) {
             $companyModules[] = $module;
             continue;
         }
@@ -251,7 +252,8 @@ function get_module_display_name(string $module): string {
         MODULE_ARS => 'ARS Home Rentals',
         MODULE_GROCERY => 'Grocery',
         MODULE_BARBER => 'Barber shop',
-        MODULE_LEGAL => 'Legal Department'
+        MODULE_LEGAL => 'Legal Department',
+        MODULE_OPERATIONS => 'Operations'
     ];
     return $names[$module] ?? ucfirst($module);
 }
@@ -273,6 +275,7 @@ function get_module_selector_summary_labels(string $moduleName, array $moduleEnt
         MODULE_GROCERY => ['POS (retail)', 'Back office'],
         MODULE_BARBER => ['POS', 'Back office'],
         MODULE_LEGAL => ['Legal Department'],
+        MODULE_OPERATIONS => ['Cleaning', 'Maintenance'],
     ];
 
     $departments = $moduleEntry['departments'] ?? [];
@@ -340,7 +343,8 @@ function get_department_route(string $module, string $department): ?string {
         DEPT_GROCERY_POS => '/modules/grocery/pos_retail.php',
         DEPT_GROCERY_BACKOFFICE => '/modules/grocery/pos_dashboard.php',
         DEPT_BARBER_POS => '/modules/barber/pos.php',
-        DEPT_BARBER_BACKOFFICE => '/modules/barber/dashboard.php'
+        DEPT_BARBER_BACKOFFICE => '/modules/barber/dashboard.php',
+        DEPT_OPERATIONS_SUPERVISOR => '/modules/operations/index.php'
     ];
     
     if (isset($deptRoutes[$department])) {
@@ -395,6 +399,17 @@ function resolve_grocery_or_barber_entry_route(string $module, array $deptsForMo
 }
 
 /**
+ * Landing route for Operations: the jobs dashboard.
+ */
+function resolve_operations_entry_route(array $deptsForModule): ?string {
+    require_once __DIR__ . '/rbac_department.php';
+    if (in_array(DEPT_OPERATIONS_SUPERVISOR, $deptsForModule, true)) {
+        return get_department_route(MODULE_OPERATIONS, DEPT_OPERATIONS_SUPERVISOR);
+    }
+    return null;
+}
+
+/**
  * Get module route (checks user's departments and redirects to first available)
  */
 function get_module_route(string $module, ?int $userId = null): string {
@@ -433,6 +448,8 @@ function get_module_route(string $module, ?int $userId = null): string {
         if (!empty($moduleDepts)) {
             if ($module === MODULE_GROCERY || $module === MODULE_BARBER) {
                 $route = resolve_grocery_or_barber_entry_route($module, $moduleDepts);
+            } elseif ($module === MODULE_OPERATIONS) {
+                $route = resolve_operations_entry_route($moduleDepts);
             } else {
                 $dept = $moduleDepts[0];
                 $route = get_department_route($module, $dept);
@@ -454,7 +471,8 @@ function get_module_route(string $module, ?int $userId = null): string {
         MODULE_ARS => '/modules/ars',
         MODULE_GROCERY => '/modules/grocery',
         MODULE_BARBER => '/modules/barber',
-        MODULE_LEGAL => '/modules/legal/legal_dashboard.php'
+        MODULE_LEGAL => '/modules/legal/legal_dashboard.php',
+        MODULE_OPERATIONS => '/modules/operations'
     ];
     
     $route = $routes[$module] ?? '/';
@@ -508,6 +526,8 @@ function get_non_cleaning_home_redirect_route(PDO $conn, int $userId): ?string {
     $moduleDepts = $modulesWithDepts[0]['departments'];
     if ($moduleName === MODULE_GROCERY || $moduleName === MODULE_BARBER) {
         $route = resolve_grocery_or_barber_entry_route($moduleName, $moduleDepts);
+    } elseif ($moduleName === MODULE_OPERATIONS) {
+        $route = resolve_operations_entry_route($moduleDepts);
     } else {
         $route = get_department_route($moduleName, $moduleDepts[0]);
     }

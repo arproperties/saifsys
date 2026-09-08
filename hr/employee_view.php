@@ -12,12 +12,17 @@ require_once __DIR__ . '/includes/hr_document_file_helper.php';
 require_once __DIR__ . '/includes/hr_loans.php';
 require_once __DIR__ . '/includes/employee_view/load_employee.php';
 require_once __DIR__ . '/includes/employee_view/load_payroll.php';
+require_once __DIR__ . '/../modules/operations/includes/ops_pin.php';
+require_once __DIR__ . '/includes/hr_employee_login.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
 $isOwner = in_array('Owner', $roles);
 // Issue loans / record cash repayments: same as cash_advances.php (Owner, Admin, HR).
 $canManageLoans = !$isWorkerSelfService && (bool) array_intersect($roles, ['Owner', 'Admin', 'HR']);
+// Hand out a field app PIN: the same people who can create a login, because it
+// is the same decision — who gets into the company's systems from a phone.
+$canManageOpsPin = $canManageLoans;
 
 if (!function_exists('app_get_setting')) {
     function app_get_setting(PDO $conn, string $key, $default = '')
@@ -3436,6 +3441,10 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
               <div class="alert alert-success mb-2"><?= htmlspecialchars($_SESSION['flash_success']) ?></div>
               <?php unset($_SESSION['flash_success']); ?>
             <?php endif; ?>
+            <?php if (!empty($_SESSION['flash_error'])): ?>
+              <div class="alert alert-danger mb-2"><?= htmlspecialchars($_SESSION['flash_error']) ?></div>
+              <?php unset($_SESSION['flash_error']); ?>
+            <?php endif; ?>
             <div class="text-muted small fw-semibold text-uppercase">HR Module</div>
             <h3 class="mb-0">Employee Profile</h3>
         </div>
@@ -3772,6 +3781,150 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                     </div>
                 </div>
             </div>
+
+            <?php if ($canManageOpsPin): ?>
+            <?php
+            /* The field app PIN. Read-only about the PIN itself — the value is
+               never recoverable, only replaceable. */
+            $opsPinUserId  = (int)($emp['user_id'] ?? 0);
+            $opsPinReady   = ops_pin_table_ready($conn);
+            $opsPinStatus  = ($opsPinReady && $opsPinUserId > 0) ? ops_pin_status($conn, $opsPinUserId) : null;
+            // No login is not a blocker: saving a PIN creates one. Say so, so
+            // the extra account in the flash message is expected rather than a
+            // surprise. A user_id pointing at a deleted account counts as none.
+            $opsPinNeedsLogin = !hr_employee_has_login($conn, $opsPinUserId);
+            ?>
+            <div class="row g-3 mt-1">
+                <div class="col-12">
+                    <div class="card panel-card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-3">
+                                <div>
+                                    <h6 class="card-title mb-1">Operations App PIN</h6>
+                                    <div class="stat-meta">The <?= (int)ops_pin_length() ?> digits this employee types to sign in to the Operations app on their phone.</div>
+                                </div>
+                                <span class="stat-icon mb-0"><i class="bi bi-phone"></i></span>
+                            </div>
+
+                            <?php if (!$opsPinReady): ?>
+                                <div class="alert alert-warning mb-0 py-2 small">
+                                    Field app PINs are not set up on this server yet. Run <code>migrations/ops_staff_pin.sql</code>.
+                                </div>
+                            <?php elseif (!ops_pin_configured()): ?>
+                                <div class="alert alert-warning mb-0 py-2 small">
+                                    Field app PINs are switched off. Ask IT to set <code>OPS_MOBILE_PIN_SECRET</code> before handing any out.
+                                </div>
+                            <?php elseif ($opsPinStatus): ?>
+                                <div class="d-flex flex-wrap align-items-center gap-3">
+                                    <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle px-3 py-2">
+                                        <i class="bi bi-check-circle me-1"></i>PIN active
+                                    </span>
+                                    <span class="stat-meta">
+                                        Set <?= htmlspecialchars(date('d M Y', strtotime((string)$opsPinStatus['set_at']))) ?>
+                                        <?php if (!empty($opsPinStatus['set_by_name'])): ?>
+                                            by <?= htmlspecialchars((string)$opsPinStatus['set_by_name']) ?>
+                                        <?php endif; ?>
+                                    </span>
+                                    <div class="ms-auto d-flex gap-2">
+                                        <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#opsPinModal">
+                                            <i class="bi bi-arrow-repeat me-1"></i>Change PIN
+                                        </button>
+                                        <form method="post" action="employee_pin_save" class="d-inline m-0"
+                                              onsubmit="return confirm('Remove this PIN? Their phone will be signed out and they will not be able to open the app until a new PIN is set.');">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
+                                            <input type="hidden" name="remove_pin" value="1">
+                                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-x-circle me-1"></i>Remove</button>
+                                        </form>
+                                    </div>
+                                </div>
+                                <div class="stat-meta mt-2">
+                                    A PIN cannot be looked up — if it is forgotten, set a new one.
+                                </div>
+                            <?php else: ?>
+                                <div class="d-flex flex-wrap align-items-center gap-3">
+                                    <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle px-3 py-2">
+                                        <i class="bi bi-dash-circle me-1"></i>No PIN yet
+                                    </span>
+                                    <span class="stat-meta">This employee cannot sign in to the Operations app.</span>
+                                    <div class="ms-auto">
+                                        <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#opsPinModal">
+                                            <i class="bi bi-key me-1"></i>Set PIN
+                                        </button>
+                                    </div>
+                                </div>
+                                <?php if ($opsPinNeedsLogin): ?>
+                                <div class="stat-meta mt-2">
+                                    They have no system login yet — saving a PIN creates one for them, and its
+                                    username and temporary password are shown once here afterwards.
+                                </div>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <?php if ($opsPinReady && ops_pin_configured()): ?>
+            <div class="modal fade" id="opsPinModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-dialog-centered">
+                <form class="modal-content" method="post" action="employee_pin_save" autocomplete="off">
+                  <?php csrf_field(); ?>
+                  <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
+                  <div class="modal-header">
+                    <h5 class="modal-title"><?= $opsPinStatus ? 'Change' : 'Set' ?> Operations App PIN</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <div class="modal-body">
+                    <p class="text-muted small">
+                      For <strong><?= htmlspecialchars($emp['full_name'] ?: $emp['employee_code']) ?></strong>.
+                      <?php if ($opsPinStatus): ?>
+                        Saving replaces the old PIN and signs their phone out.
+                      <?php elseif ($opsPinNeedsLogin): ?>
+                        Saving also creates their system login — you will see the username and a
+                        temporary password once, on the next screen.
+                      <?php endif; ?>
+                    </p>
+                    <div class="mb-3">
+                      <label class="form-label" for="opsPinInput">New PIN</label>
+                      <input class="form-control form-control-lg text-center" id="opsPinInput" name="pin"
+                             type="text" inputmode="numeric" pattern="\d{<?= (int)ops_pin_length() ?>}"
+                             maxlength="<?= (int)ops_pin_length() ?>" required autocomplete="off"
+                             style="letter-spacing:.7rem; font-weight:700;">
+                    </div>
+                    <div class="mb-3">
+                      <label class="form-label" for="opsPinConfirm">Type it again</label>
+                      <input class="form-control form-control-lg text-center" id="opsPinConfirm" name="pin_confirm"
+                             type="text" inputmode="numeric" pattern="\d{<?= (int)ops_pin_length() ?>}"
+                             maxlength="<?= (int)ops_pin_length() ?>" required autocomplete="off"
+                             style="letter-spacing:.7rem; font-weight:700;">
+                    </div>
+                    <div class="alert alert-info py-2 small mb-0">
+                      No two employees may share a PIN. Write it down before you save —
+                      it cannot be looked up again, only replaced.
+                    </div>
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button class="btn btn-primary">Save PIN</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+            <script>
+            (function () {
+              // Digits only, and nothing to correct after the fact — a stray
+              // letter here becomes a PIN the person cannot type on a phone
+              // keypad, and they find that out standing in a stairwell.
+              document.querySelectorAll('#opsPinInput, #opsPinConfirm').forEach(function (input) {
+                input.addEventListener('input', function () {
+                  this.value = this.value.replace(/\D/g, '').slice(0, <?= (int)ops_pin_length() ?>);
+                });
+              });
+            })();
+            </script>
+            <?php endif; ?>
+            <?php endif; ?>
 
             <div class="row g-3 mt-1">
                 <div class="col-lg-4">

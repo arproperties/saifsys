@@ -31,6 +31,8 @@ define('DEPT_GROCERY_BACKOFFICE', 'grocery_backoffice');
 /** Barber: tablet POS vs admin / reports */
 define('DEPT_BARBER_POS', 'barber_pos');
 define('DEPT_BARBER_BACKOFFICE', 'barber_backoffice');
+/** Operations: cleaning & maintenance job tracking */
+define('DEPT_OPERATIONS_SUPERVISOR', 'operations_supervisor');
 
 // Module constants (if not already defined)
 if (!defined('MODULE_CLEANING')) {
@@ -56,6 +58,9 @@ if (!defined('MODULE_BARBER')) {
 }
 if (!defined('MODULE_LEGAL')) {
     define('MODULE_LEGAL', 'legal');
+}
+if (!defined('MODULE_OPERATIONS')) {
+    define('MODULE_OPERATIONS', 'operations');
 }
 
 /**
@@ -182,7 +187,8 @@ function get_user_departments(int $userId, ?PDO $conn = null): array {
             ],
             MODULE_INVENTORY => [DEPT_INVENTORY],
             MODULE_GROCERY => [DEPT_GROCERY_POS, DEPT_GROCERY_BACKOFFICE],
-            MODULE_BARBER => [DEPT_BARBER_POS, DEPT_BARBER_BACKOFFICE]
+            MODULE_BARBER => [DEPT_BARBER_POS, DEPT_BARBER_BACKOFFICE],
+            MODULE_OPERATIONS => [DEPT_OPERATIONS_SUPERVISOR]
         ];
     }
     
@@ -261,7 +267,8 @@ function get_department_display_name(string $department): string {
         DEPT_GROCERY_POS => 'Grocery — POS (retail)',
         DEPT_GROCERY_BACKOFFICE => 'Grocery — Back office',
         DEPT_BARBER_POS => 'Barber shop — POS',
-        DEPT_BARBER_BACKOFFICE => 'Barber shop — Back office'
+        DEPT_BARBER_BACKOFFICE => 'Barber shop — Back office',
+        DEPT_OPERATIONS_SUPERVISOR => 'Operations'
     ];
     return $names[$department] ?? ucfirst(str_replace('_', ' ', $department));
 }
@@ -305,6 +312,8 @@ function get_module_departments(string $module): array {
         return [DEPT_GROCERY_POS, DEPT_GROCERY_BACKOFFICE];
     } elseif ($module === MODULE_BARBER) {
         return [DEPT_BARBER_POS, DEPT_BARBER_BACKOFFICE];
+    } elseif ($module === MODULE_OPERATIONS) {
+        return [DEPT_OPERATIONS_SUPERVISOR];
     }
     return [];
 }
@@ -450,6 +459,8 @@ function rbac_department_selection_to_structure(array $selectedDeptCodes): array
             $module = MODULE_BARBER;
         } elseif ($deptCode === DEPT_LEGAL || strpos($deptCode, 'legal_') === 0) {
             $module = MODULE_LEGAL;
+        } elseif ($deptCode === DEPT_OPERATIONS_SUPERVISOR) {
+            $module = MODULE_OPERATIONS;
         }
         if ($module) {
             if (!isset($departmentsStructure[$module])) {
@@ -513,4 +524,12 @@ function require_any_grocery_department(?PDO $conn = null): void {
     if (!has_any_grocery_department($conn)) {
         require_department_access(MODULE_GROCERY, DEPT_GROCERY_POS, $conn);
     }
+}
+
+function has_operations_supervisor_department(?PDO $conn = null): bool {
+    return has_department_access(MODULE_OPERATIONS, DEPT_OPERATIONS_SUPERVISOR, $conn);
+}
+
+function require_operations_supervisor_department(?PDO $conn = null): void {
+    require_department_access(MODULE_OPERATIONS, DEPT_OPERATIONS_SUPERVISOR, $conn);
 }

@@ -105,7 +105,9 @@ if ($modulesWithDeptsCount === 1) {
         }
         
         if (!empty($moduleDepts)) {
-            if ($moduleName === MODULE_GROCERY || $moduleName === MODULE_BARBER) {
+            if ($moduleName === MODULE_OPERATIONS) {
+                $route = resolve_operations_entry_route($moduleDepts);
+            } elseif ($moduleName === MODULE_GROCERY || $moduleName === MODULE_BARBER) {
                 $route = resolve_grocery_or_barber_entry_route($moduleName, $moduleDepts);
             } else {
                 $dept = $moduleDepts[0];
@@ -148,7 +150,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['company_id']) && isse
         $moduleDepts = $userDepartments[$module] ?? [];
         
         if (!empty($moduleDepts)) {
-            if ($module === MODULE_GROCERY || $module === MODULE_BARBER) {
+            if ($module === MODULE_OPERATIONS) {
+                $route = resolve_operations_entry_route($moduleDepts);
+            } elseif ($module === MODULE_GROCERY || $module === MODULE_BARBER) {
                 $route = resolve_grocery_or_barber_entry_route($module, $moduleDepts);
             } else {
                 $dept = $moduleDepts[0];
@@ -242,8 +246,34 @@ function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
             $isOwnerRole = in_array('Owner', $_SESSION['role_names'] ?? [], true);
             $displayModules = array_values(array_filter($userModules, static function ($m) use ($isOwnerRole) {
                 $mn = is_array($m) ? ($m['module'] ?? '') : $m;
-                return !($mn === 'legal' && !$isOwnerRole);
+                if ($mn === 'legal' && !$isOwnerRole) {
+                    return false;
+                }
+                // Cleaning is hidden from the launcher; /operation is still reachable directly.
+                if ($mn === 'cleaning') {
+                    return false;
+                }
+                // Inventory is retired from the launcher — day-to-day stock lives in Operations.
+                // Files stay in place: Grocery POS, purchasing and cross-module material
+                // requests still reach /modules/inventory/ through their own links.
+                if ($mn === MODULE_INVENTORY) {
+                    return false;
+                }
+                return true;
             }));
+
+            // Operations leads the list; everything else keeps its existing order.
+            $opsCard = [];
+            $otherCards = [];
+            foreach ($displayModules as $m) {
+                $mn = is_array($m) ? ($m['module'] ?? '') : $m;
+                if ($mn === MODULE_OPERATIONS) {
+                    $opsCard[] = $m;
+                } else {
+                    $otherCards[] = $m;
+                }
+            }
+            $displayModules = array_merge($opsCard, $otherCards);
             ?>
 
             <div class="sm-section-head">
@@ -270,6 +300,7 @@ function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
                         'grocery' => 'bi-cart3',
                         'barber' => 'bi-scissors',
                         'ars' => 'bi-house-heart-fill',
+                        'operations' => 'bi-clipboard-check-fill',
                     ];
                     $icon = $icons[$moduleName] ?? 'bi-grid-fill';
                     $deptNames = get_module_selector_summary_labels($moduleName, is_array($module) ? $module : ['module' => $moduleName]);

@@ -2704,6 +2704,9 @@ require __DIR__ . '/includes/admin/admin_layout_header.php';
             DEPT_BARBER_POS => 'Barber shop — POS',
             DEPT_BARBER_BACKOFFICE => 'Barber shop — Back office'
         ],
+        'Operations (shared — cleaning & maintenance)' => [
+            DEPT_OPERATIONS_SUPERVISOR => 'Operations (jobs, materials)'
+        ],
         'Shared' => [
             DEPT_HR => 'HR (Shared across modules)'
         ]

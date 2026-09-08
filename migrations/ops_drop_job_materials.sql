@@ -1,0 +1,23 @@
+-- Operations — drop the per-job materials table.
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- Materials are no longer tracked against a job. Someone on site asks for what
+-- they need in the conversation, which raises ops_jobs.needs_materials; the
+-- office reads the message, hands the thing over, and takes it off the Stock
+-- page. That stock movement is the whole record, so this table has nothing left
+-- to hold.
+--
+-- Nothing reads or writes it: the "Materials used" panel, its add/delete
+-- actions and the `materials` list in the mobile job detail are all gone. No
+-- foreign key points at it either — it only pointed out, at ops_jobs.
+--
+-- BACK IT UP FIRST. This throws away every row, including the test data.
+--   mysqldump -u USER -p DBNAME ops_job_materials > ops_job_materials_backup.sql
+--
+-- What is NOT touched:
+--   ops_items, ops_stock_moves  — the Stock page, still in use
+--   ops_jobs.needs_materials    — the waiting flag, still in use
+--   ops_job_comments.is_material_request — the request itself, still in use
+
+DROP TABLE IF EXISTS `ops_job_materials`;
