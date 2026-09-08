@@ -18,6 +18,13 @@ $companyId = ops_company_id($conn);
 $appBase = get_application_web_root();
 $opsBase = $appBase . '/modules/operations';
 
+// Daily repeating jobs are made here, on the way in, rather than by a cron job
+// somebody has to install and nobody would notice had stopped. Whoever opens
+// the module first that morning is what puts the day's work on the board — and
+// the field app's job list does the same, so a cleaner opening the app before
+// the office does still sees their day.
+ops_generate_daily_jobs($conn, $companyId);
+
 // ---------------------------------------------------------------------------
 // Filters
 // ---------------------------------------------------------------------------
@@ -76,13 +83,14 @@ $whereSql = implode(' AND ', $where);
 // ---------------------------------------------------------------------------
 // Headline numbers — always for today / overall, not affected by the filters
 // ---------------------------------------------------------------------------
+$lateSql = ops_late_sql();
 $statsStmt = $conn->prepare("
     SELECT
         COUNT(*) AS total,
         SUM(status = 'open') AS open_count,
         SUM(status = 'in_progress') AS in_progress_count,
         SUM(status = 'done') AS done_count,
-        SUM(status IN ('open','in_progress') AND scheduled_date < CURDATE()) AS overdue_count,
+        SUM({$lateSql}) AS overdue_count,
         SUM(scheduled_date = CURDATE() AND status <> 'cancelled') AS today_count,
         SUM(needs_materials = 1 AND status <> 'cancelled') AS materials_count,
         SUM(assigned_to IS NULL AND scheduled_date = CURDATE() AND status IN ('open','in_progress')) AS unassigned_today
@@ -368,7 +376,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
           </td></tr>
         <?php endif; ?>
         <?php foreach ($jobs as $j): ?>
-          <?php $isLate = in_array($j['status'], ['open', 'in_progress'], true) && $j['scheduled_date'] < date('Y-m-d'); ?>
+          <?php $isLate = ops_job_is_late($j); ?>
           <tr>
             <td>
               <a href="<?= h($opsBase) ?>/job_view.php?id=<?= (int)$j['id'] ?>" class="fw-semibold text-decoration-none">
@@ -391,6 +399,9 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <?php if ((int)$j['needs_materials'] === 1): ?>
                   <span class="badge bg-warning text-dark ms-2"><i class="bi bi-box-seam"></i> Needs materials</span>
                 <?php endif; ?>
+                <?php if (ops_job_in_series($j)): ?>
+                  <span class="ms-2" title="Part of a job that repeats every day"><i class="bi bi-arrow-repeat"></i> Daily</span>
+                <?php endif; ?>
               </div>
             </td>
             <td><?= h($j['assignee_name'] ?: '—') ?></td>
@@ -400,7 +411,11 @@ require __DIR__ . '/includes/ops_layout_header.php';
             <td class="<?= $isLate ? 'text-danger fw-semibold' : '' ?>">
               <?= h(date('d M', strtotime($j['scheduled_date']))) ?>
               <?php if (!empty($j['scheduled_time'])): ?>
-                <div class="small text-muted"><?= h(date('g:i A', strtotime($j['scheduled_time']))) ?></div>
+                <div class="small <?= $isLate ? 'text-danger' : 'text-muted' ?>"><?= h(date('g:i A', strtotime($j['scheduled_time']))) ?></div>
+              <?php endif; ?>
+              <?php /* Colour is never the only signal — the word says it too. */ ?>
+              <?php if ($isLate): ?>
+                <span class="badge bg-danger mt-1">Late</span>
               <?php endif; ?>
             </td>
             <td><span class="badge bg-<?= h(ops_status_color($j['status'])) ?>"><?= h(ops_status_label($j['status'])) ?></span></td>

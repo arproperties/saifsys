@@ -156,6 +156,15 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
     $companyIn = ops_api_company_in($companyIds);
     $today = date('Y-m-d');
 
+    // Daily repeating jobs are created on the way in, exactly as the supervisor
+    // list does it — there is no cron behind this. A cleaner opening the app at
+    // six in the morning is often the first thing to touch the module all day,
+    // so if this did not run here their Today tab would be empty until somebody
+    // in the office logged in.
+    foreach ($companyIds as $cid) {
+        ops_generate_daily_jobs($conn, (int)$cid, $today);
+    }
+
     // Scope first, filter second. These two conditions are never optional.
     $base = " FROM ops_jobs j
               WHERE j.assigned_to = ?

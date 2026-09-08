@@ -68,6 +68,107 @@ function ops_format_duration(?int $minutes): string {
 }
 
 // ---------------------------------------------------------------------------
+// Late work
+// ---------------------------------------------------------------------------
+
+/** Minutes a timed job may run past its start time before it reads as late. */
+const OPS_LATE_GRACE_MINUTES = 30;
+
+/**
+ * Is this job late?
+ *
+ * Two rules, because a job carries two kinds of deadline.
+ *
+ * A job with a start time is late when nobody has started it half an hour
+ * past that time. The grace is deliberate: traffic and a job that ran long
+ * before it are normal, and a board that turns red the minute the clock does
+ * gets ignored. Once someone taps Start the clock stops mattering — they are
+ * on it, and how long it takes is the duration, not lateness.
+ *
+ * A job with no time only owes the day. It is late once that day has passed
+ * and it is still unfinished, whether or not it was ever started.
+ */
+function ops_job_is_late(array $job, ?int $now = null): bool
+{
+    $status = (string)($job['status'] ?? '');
+    if (!in_array($status, ['open', 'in_progress'], true)) {
+        return false;
+    }
+
+    $date = (string)($job['scheduled_date'] ?? '');
+    if ($date === '') {
+        return false;
+    }
+
+    $now = $now ?? time();
+    if ($date < date('Y-m-d', $now)) {
+        return true;
+    }
+
+    $time = (string)($job['scheduled_time'] ?? '');
+    if ($time === '' || $status !== 'open') {
+        return false;
+    }
+
+    $due = strtotime($date . ' ' . $time);
+    return $due !== false && $now > $due + (OPS_LATE_GRACE_MINUTES * 60);
+}
+
+/**
+ * The same rule as ops_job_is_late(), for counting in SQL.
+ *
+ * Kept beside it on purpose: the tile on the dashboard and the badge on the
+ * row have to agree, and they only do while these two say the same thing.
+ *
+ * @param string $alias Table alias used in the query, e.g. 'j'. '' for none.
+ */
+function ops_late_sql(string $alias = ''): string
+{
+    $p = $alias !== '' ? $alias . '.' : '';
+    $grace = (int)OPS_LATE_GRACE_MINUTES;
+
+    return "({$p}status IN ('open','in_progress') AND ("
+         . "{$p}scheduled_date < CURDATE()"
+         . " OR ({$p}status = 'open'"
+         . " AND {$p}scheduled_time IS NOT NULL"
+         . " AND TIMESTAMP({$p}scheduled_date, {$p}scheduled_time)"
+         . " < DATE_SUB(NOW(), INTERVAL {$grace} MINUTE))"
+         . "))";
+}
+
+/**
+ * How late, in words. Empty string when the job is not late.
+ *
+ * "Late" on its own makes someone open the job to find out whether that means
+ * ten minutes or last Tuesday, so the amount is said where the flag is.
+ */
+function ops_late_note(array $job, ?int $now = null): string
+{
+    if (!ops_job_is_late($job, $now)) {
+        return '';
+    }
+
+    $now = $now ?? time();
+    $date = (string)$job['scheduled_date'];
+    $time = (string)($job['scheduled_time'] ?? '');
+
+    if ($time !== '' && (string)$job['status'] === 'open') {
+        $due = strtotime($date . ' ' . $time);
+        if ($due !== false && $due > strtotime(date('Y-m-d', $now))) {
+            $mins = (int)floor(($now - $due) / 60);
+            return 'Not started — ' . ops_format_duration($mins)
+                 . ' past its ' . date('g:i A', $due) . ' start.';
+        }
+    }
+
+    $days = (int)floor(($now - strtotime($date)) / 86400);
+    if ($days <= 1) {
+        return 'Still not finished from yesterday.';
+    }
+    return 'Still not finished, ' . $days . ' days past its date.';
+}
+
+// ---------------------------------------------------------------------------
 // Access
 // ---------------------------------------------------------------------------
 
@@ -126,6 +227,122 @@ function ops_assignable_users(PDO $conn, int $companyId): array {
     ");
     $stmt->execute([$companyId]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+// ---------------------------------------------------------------------------
+// Daily repeating jobs
+// ---------------------------------------------------------------------------
+
+/**
+ * How many missed days the generator will still fill in.
+ *
+ * A gap means nobody opened the module — a long weekend, a week of leave. Up to
+ * a week of missed days is worth creating: they show up late, in red, which is
+ * the honest record that the lobby went uncleaned. Beyond that it is not a
+ * record, it is a month of noise nobody will ever tick off, so the run picks up
+ * from a week ago and carries on.
+ */
+const OPS_REPEAT_BACKFILL_DAYS = 7;
+
+/** True when this row is the job the supervisor ticked, not one the server made. */
+function ops_job_is_repeat_head(array $job): bool {
+    return (int)($job['series_id'] ?? 0) === (int)($job['id'] ?? 0) && (int)($job['id'] ?? 0) > 0;
+}
+
+/** True when the job belongs to a series at all — head or generated copy. */
+function ops_job_in_series(array $job): bool {
+    return (int)($job['series_id'] ?? 0) > 0;
+}
+
+/** The job that carries the repeat rule for this series. */
+function ops_repeat_head_id(array $job): int {
+    return (int)($job['series_id'] ?? 0) ?: (int)($job['id'] ?? 0);
+}
+
+/**
+ * Create whatever days a repeating job still owes, up to today.
+ *
+ * Called on the way into the supervisor list and the field app's job list, so
+ * there is no cron to install and no cron to quietly stop working: whoever
+ * opens the module first that morning is what makes the day's jobs appear.
+ *
+ * The unique key on (series_id, scheduled_date) — not a check-then-insert — is
+ * what stops two people opening the page at once from creating the same day
+ * twice. A duplicate is the expected outcome of losing that race, so it is
+ * swallowed; anything else is a real fault and is left to blow up.
+ *
+ * @return int how many jobs were created
+ */
+function ops_generate_daily_jobs(PDO $conn, int $companyId, ?string $today = null): int {
+    if ($companyId <= 0) {
+        return 0;
+    }
+    $today = $today !== null && $today !== '' ? $today : date('Y-m-d');
+
+    // Only heads still switched on, and only ones whose end date has not passed.
+    // A cancelled head stops the series: cancelling tomorrow's cleaning off the
+    // job itself is the obvious way to say "stop", so it has to mean that.
+    $stmt = $conn->prepare("
+        SELECT h.id, h.job_type, h.title, h.location, h.description, h.assigned_to,
+               h.scheduled_date, h.scheduled_time, h.priority, h.created_by,
+               (SELECT MAX(c.scheduled_date) FROM ops_jobs c WHERE c.series_id = h.id) AS last_date
+        FROM ops_jobs h
+        WHERE h.company_id = ?
+          AND h.repeat_daily = 1
+          AND h.series_id = h.id
+          AND h.status <> 'cancelled'
+    ");
+    $stmt->execute([$companyId]);
+    $heads = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    if (!$heads) {
+        return 0;
+    }
+
+    $insert = $conn->prepare("
+        INSERT INTO ops_jobs
+            (company_id, job_type, title, location, description, assigned_to,
+             scheduled_date, scheduled_time, priority, status, created_by, series_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+    ");
+
+    $stopAt = strtotime($today);
+    $earliest = strtotime($today . ' -' . OPS_REPEAT_BACKFILL_DAYS . ' days');
+    $created = 0;
+
+    foreach ($heads as $head) {
+        $last = (string)($head['last_date'] ?? '');
+        if ($last === '') {
+            // Only possible if series_id was set by hand; treat the head's own
+            // date as the last day covered so we carry on from there.
+            $last = (string)$head['scheduled_date'];
+        }
+        $cursor = strtotime($last . ' +1 day');
+        if ($cursor < $earliest) {
+            $cursor = $earliest;
+        }
+        // Each day copies the head as it stands now, so editing the head — a
+        // new cleaner, a different time — changes tomorrow without touching
+        // what has already been done.
+        while ($cursor !== false && $cursor <= $stopAt) {
+            $date = date('Y-m-d', $cursor);
+            try {
+                $insert->execute([
+                    $companyId, $head['job_type'], $head['title'], $head['location'],
+                    $head['description'], $head['assigned_to'], $date,
+                    $head['scheduled_time'], $head['priority'], $head['created_by'],
+                    (int)$head['id'],
+                ]);
+                $created++;
+            } catch (PDOException $e) {
+                if ($e->getCode() !== '23000') {
+                    throw $e;
+                }
+            }
+            $cursor = strtotime($date . ' +1 day');
+        }
+    }
+
+    return $created;
 }
 
 // ---------------------------------------------------------------------------

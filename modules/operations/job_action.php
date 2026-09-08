@@ -123,6 +123,36 @@ switch ($action) {
         $redirect($jobUrl);
         break;
 
+    // -----------------------------------------------------------------------
+    // Turning the daily repeat on or off.
+    //
+    // The rule lives on the head job, never on a generated day, so the write
+    // always goes to the head — otherwise "stop" pressed on Tuesday's copy
+    // would look like it worked and Wednesday would appear anyway.
+    // -----------------------------------------------------------------------
+    case 'set_repeat':
+        $repeatOn = !empty($_POST['repeat_daily']) ? 1 : 0;
+        $headId = ops_repeat_head_id($job);
+
+        $stmt = $conn->prepare("
+            UPDATE ops_jobs
+            SET repeat_daily = ?,
+                series_id = CASE WHEN ? = 1 THEN COALESCE(series_id, id) ELSE series_id END
+            WHERE id = ? AND company_id = ?
+        ");
+        $stmt->execute([$repeatOn, $repeatOn, $headId, $companyId]);
+
+        if ($repeatOn) {
+            // Switched back on after a gap — catch the days up straight away
+            // rather than leaving today empty until the next page load.
+            ops_generate_daily_jobs($conn, $companyId);
+            ops_flash('This job will be created again every day.');
+        } else {
+            ops_flash('Stopped. No new days will be created; the ones already there stay.');
+        }
+        $redirect($jobUrl);
+        break;
+
     case 'delete_job':
         $stmt = $conn->prepare("DELETE FROM ops_jobs WHERE id = ? AND company_id = ?");
         $stmt->execute([$jobId, $companyId]);

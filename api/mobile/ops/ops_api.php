@@ -585,6 +585,9 @@ function ops_api_job_row(array $job): array
         'status_label' => ops_status_label((string)$job['status']),
         'priority' => (string)$job['priority'],
         'is_urgent' => $job['priority'] === 'high',
+        // Same rule the office board uses, decided on the server so the two
+        // never disagree about which jobs are running late.
+        'is_late' => ops_job_is_late($job),
         'scheduled_date' => (string)$job['scheduled_date'],
         'scheduled_time' => $time,
         'duration_minutes' => $job['duration_minutes'] !== null ? (int)$job['duration_minutes'] : null,
@@ -592,6 +595,10 @@ function ops_api_job_row(array $job): array
             ? ops_format_duration((int)$job['duration_minutes'])
             : null,
         'needs_materials' => (bool)(int)$job['needs_materials'],
+        // A daily job. The app shows it as a small repeat mark so a cleaner can
+        // tell "this comes round again tomorrow" from a one-off callout — it
+        // changes nothing about how the job is worked.
+        'is_repeating' => ops_job_in_series($job),
         'before_photo_count' => $beforePhotos,
         // The app greys out Start on this flag; the start route enforces the
         // same rule again, because a queued start written offline arrives

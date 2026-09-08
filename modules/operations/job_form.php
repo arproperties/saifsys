@@ -44,7 +44,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'scheduled_date' => (string)($_POST['scheduled_date'] ?? ''),
         'scheduled_time' => trim((string)($_POST['scheduled_time'] ?? '')),
         'priority' => (string)($_POST['priority'] ?? 'normal'),
+        'repeat_daily' => !empty($_POST['repeat_daily']) ? 1 : 0,
     ];
+
+    // A generated day is not where the rule lives — the head job is. Editing
+    // Tuesday's copy must not quietly start a second series off the same days.
+    $isGeneratedCopy = $job && ops_job_in_series($job) && !ops_job_is_repeat_head($job);
+    if ($isGeneratedCopy) {
+        $data['repeat_daily'] = (int)($job['repeat_daily'] ?? 0);
+    }
 
     if ($data['title'] === '') {
         $errors[] = 'Give the job a short name, e.g. "Deep clean — Office 4".';
@@ -61,36 +69,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (!$errors) {
         if ($job) {
+            // series_id is set on the way in, not left to a second write: a
+            // head with repeat_daily = 1 and no series_id would be invisible to
+            // the generator, which is the one bug worth designing out here.
             $stmt = $conn->prepare("
                 UPDATE ops_jobs
                 SET job_type = ?, title = ?, location = ?, description = ?, assigned_to = ?,
-                    scheduled_date = ?, scheduled_time = ?, priority = ?
+                    scheduled_date = ?, scheduled_time = ?, priority = ?,
+                    repeat_daily = ?,
+                    series_id = CASE WHEN ? = 1 THEN COALESCE(series_id, id) ELSE series_id END
                 WHERE id = ? AND company_id = ?
             ");
-            $stmt->execute([
-                $data['job_type'], $data['title'], $data['location'] ?: null, $data['description'] ?: null,
-                $data['assigned_to'], $data['scheduled_date'], $data['scheduled_time'] ?: null,
-                $data['priority'], $jobId, $companyId,
-            ]);
-            ops_flash('Job updated.');
-            header('Location: ' . $opsBase . '/job_view.php?id=' . $jobId);
-            exit;
+            try {
+                $stmt->execute([
+                    $data['job_type'], $data['title'], $data['location'] ?: null, $data['description'] ?: null,
+                    $data['assigned_to'], $data['scheduled_date'], $data['scheduled_time'] ?: null,
+                    $data['priority'], $data['repeat_daily'],
+                    $data['repeat_daily'], $jobId, $companyId,
+                ]);
+            } catch (PDOException $e) {
+                // One day per series is the rule the unique key enforces. Moving
+                // a day onto a date the series already covers is the only way an
+                // ordinary edit can hit it, so say that instead of a 500.
+                if ($e->getCode() !== '23000') {
+                    throw $e;
+                }
+                $errors[] = 'This repeating job already has a day on '
+                          . date('D d M Y', strtotime($data['scheduled_date']))
+                          . '. Pick another date.';
+            }
+
+            if (!$errors) {
+                if ($data['repeat_daily']) {
+                    ops_generate_daily_jobs($conn, $companyId);
+                }
+                ops_flash('Job updated.');
+                header('Location: ' . $opsBase . '/job_view.php?id=' . $jobId);
+                exit;
+            }
         }
 
-        $stmt = $conn->prepare("
-            INSERT INTO ops_jobs
-                (company_id, job_type, title, location, description, assigned_to,
-                 scheduled_date, scheduled_time, priority, status, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
-        ");
-        $stmt->execute([
-            $companyId, $data['job_type'], $data['title'], $data['location'] ?: null,
-            $data['description'] ?: null, $data['assigned_to'], $data['scheduled_date'],
-            $data['scheduled_time'] ?: null, $data['priority'], $userId,
-        ]);
-        ops_flash('Job created.');
-        header('Location: ' . $opsBase . '/job_view.php?id=' . (int)$conn->lastInsertId());
+        // An edit that fell to the duplicate-day check above must not carry on
+        // into the insert and quietly make a second job.
+        if (!$job) {
+            $stmt = $conn->prepare("
+                INSERT INTO ops_jobs
+                    (company_id, job_type, title, location, description, assigned_to,
+                     scheduled_date, scheduled_time, priority, status, created_by,
+                     repeat_daily)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+            ");
+            $stmt->execute([
+                $companyId, $data['job_type'], $data['title'], $data['location'] ?: null,
+                $data['description'] ?: null, $data['assigned_to'], $data['scheduled_date'],
+                $data['scheduled_time'] ?: null, $data['priority'], $userId,
+                $data['repeat_daily'],
+            ]);
+            $newId = (int)$conn->lastInsertId();
+
+            // A repeating job is the head of its own series. It can only point at
+            // itself after the insert, because that is when it has an id.
+            if ($data['repeat_daily']) {
+                $conn->prepare("UPDATE ops_jobs SET series_id = id WHERE id = ? AND company_id = ?")
+                     ->execute([$newId, $companyId]);
+                // Backdated first day? Then the days since are owed already.
+                ops_generate_daily_jobs($conn, $companyId);
+        }
+
+        ops_flash($data['repeat_daily']
+            ? 'Job created. It will be created again every day from now on.'
+            : 'Job created.');
+        header('Location: ' . $opsBase . '/job_view.php?id=' . $newId);
         exit;
+        }
     }
 
     // Keep what they typed on the form after a validation error.
@@ -112,6 +163,29 @@ require __DIR__ . '/includes/ops_layout_header.php';
     <ul class="mb-0"><?php foreach ($errors as $e): ?><li><?= h($e) ?></li><?php endforeach; ?></ul>
   </div>
 <?php endif; ?>
+
+<style>
+  /* Off, this has to look like something you can press. Bootstrap paints a
+     grey knob on a white track, which reads as disabled rather than off. */
+  .ops-repeat-toggle{ cursor:pointer; padding-left:4rem; min-height:0; }
+  .ops-repeat-box .form-check-input{
+    width:3.25rem; height:1.75rem; margin-left:-4rem; margin-top:.05rem;
+    background-color:#ced4da; border:1px solid #adb5bd; cursor:pointer;
+    background-image:url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23fff'/%3e%3c/svg%3e");
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.12);
+  }
+  .ops-repeat-box .form-check-input:hover{ background-color:#b9c0c8; }
+  .ops-repeat-box .form-check-input:checked{
+    background-color:var(--primary); border-color:var(--primary); box-shadow:none;
+  }
+  .ops-repeat-box .form-check-input:focus-visible{
+    outline:3px solid rgba(13,110,253,.35); outline-offset:2px;
+  }
+  /* On, the panel says so without anyone having to read the switch. */
+  .ops-repeat-box{ transition:border-color .15s, background-color .15s; }
+  .ops-repeat-box:hover{ background-color:#f8f9fa; }
+  .ops-repeat-box.is-on{ border-color:var(--primary)!important; background-color:rgba(13,110,253,.04); }
+</style>
 
 <div class="card card-round" style="max-width:720px">
   <div class="card-body">
@@ -170,6 +244,40 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <label class="form-label fw-semibold">Time <span class="text-muted fw-normal small">(optional)</span></label>
         <input type="time" name="scheduled_time" class="form-control"
                value="<?= h($job['scheduled_time'] ?? '') ?>">
+      </div>
+
+<?php
+      // Where the whole feature lives on this screen: one tick box. The
+      // supervisor sets up today's clean and never opens a second page — every
+      // following day is made from this job as it stands.
+      $formIsGeneratedCopy = $jobId && ops_job_in_series($job ?? []) && !ops_job_is_repeat_head($job ?? []);
+      ?>
+      <div class="col-12">
+        <?php if ($formIsGeneratedCopy): ?>
+          <div class="alert alert-light border mb-0">
+            <i class="bi bi-arrow-repeat"></i>
+            This is one day of a repeating job. Changing it here only changes this day —
+            to change every day from now on, open the
+            <a href="<?= h($opsBase) ?>/job_form.php?id=<?= (int)ops_repeat_head_id($job) ?>">job it repeats from</a>.
+          </div>
+        <?php else: ?>
+          <div class="border rounded-3 p-3 ops-repeat-box <?= !empty($job['repeat_daily']) ? 'is-on' : '' ?>"
+               id="repeatBox">
+            <?php // The whole row is the target, not the 20px switch: this gets
+                  // used on a laptop trackpad in an office, in a hurry. ?>
+            <label class="form-check form-switch ops-repeat-toggle mb-0" for="repeatDaily">
+              <input class="form-check-input" type="checkbox" role="switch"
+                     id="repeatDaily" name="repeat_daily" value="1"
+                     <?= !empty($job['repeat_daily']) ? 'checked' : '' ?>
+                     onchange="document.getElementById('repeatBox').classList.toggle('is-on', this.checked);">
+              <span class="fw-semibold d-block">Repeat this job every day</span>
+              <span class="text-muted small d-block">
+                For work that comes round daily — the morning clean, the bin run.
+                The same job is created again each day, for the same person.
+              </span>
+            </label>
+          </div>
+        <?php endif; ?>
       </div>
 
       <div class="col-12">
