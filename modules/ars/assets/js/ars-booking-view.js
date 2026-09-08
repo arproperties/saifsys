@@ -1021,15 +1021,36 @@
     if (docsSendBusy) {
       return;
     }
+    // Send buttons now exist both in the modal and inline in the Documents tab.
+    // Only route feedback into the modal's alert box when the modal is open,
+    // otherwise it would land in a hidden container.
+    var modalEl = document.getElementById('documentsActionModal');
+    var inModal = !!(modalEl && modalEl.classList.contains('show'));
+    var alertTarget = inModal ? 'docsActionAlert' : undefined;
+
     var root = document.getElementById('ars-booking-view-root');
     var email = root ? root.getAttribute('data-guest-email') || '' : '';
     if (!email) {
-      showAlert('Guest has no email on file.', 'danger', 'docsActionAlert');
+      showAlert('Guest has no email on file.', 'danger', alertTarget);
       return;
     }
     if (!window.confirm('Email ' + docLabel(docType) + ' to ' + email + '?')) return;
 
-    setDocsSendBusy(true, triggerBtn || null);
+    var inlineHtml = null;
+    if (!inModal && triggerBtn) {
+      inlineHtml = triggerBtn.innerHTML;
+      triggerBtn.disabled = true;
+      triggerBtn.innerHTML =
+        '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+    }
+    var restoreInline = function () {
+      if (inlineHtml !== null && triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.innerHTML = inlineHtml;
+      }
+    };
+
+    setDocsSendBusy(true, inModal ? triggerBtn || null : null);
     showAlert(
       'Sending ' +
         docLabel(docType) +
@@ -1037,7 +1058,7 @@
         email +
         '… This can take up to a minute. Please wait.',
       'info',
-      'docsActionAlert'
+      alertTarget
     );
 
     ajaxPost('send_booking_document', {
@@ -1046,18 +1067,20 @@
     })
       .then(function (d) {
         setDocsSendBusy(false);
+        restoreInline();
         if (d.success) {
-          showAlert('Sent to ' + (d.sent_to || email), 'success', 'docsActionAlert');
+          showAlert('Sent to ' + (d.sent_to || email), 'success', alertTarget);
         } else {
-          showAlert(d.error || 'Send failed', 'danger', 'docsActionAlert');
+          showAlert(d.error || 'Send failed', 'danger', alertTarget);
         }
       })
       .catch(function (err) {
         setDocsSendBusy(false);
+        restoreInline();
         showAlert(
           (err && err.message) ? err.message : 'Network error sending document.',
           'danger',
-          'docsActionAlert'
+          alertTarget
         );
       });
   }
@@ -1087,7 +1110,9 @@
           item.innerHTML =
             '<span>' +
             String(a.original_name || 'file').replace(/</g, '&lt;') +
-            '</span><span class="text-muted">' +
+            ' <span class="badge bg-light text-dark border ms-1">' +
+            docCategoryLabel(a.doc_category) +
+            '</span></span><span class="text-muted">' +
             (a.created_at || '') +
             '</span>';
           list.appendChild(item);
@@ -1104,10 +1129,12 @@
       showAlert('Choose a file first.', 'danger', 'attachModalAlert');
       return;
     }
+    var catEl = document.getElementById('attachCategory');
     var fd = new FormData();
     fd.append('action', 'upload_attachment');
     fd.append('booking_id', String(bookingId()));
     fd.append('_csrf', csrfToken());
+    fd.append('doc_category', catEl ? catEl.value : 'other');
     fd.append('file', input.files[0]);
     var btn = document.getElementById('attachUploadBtn');
     if (btn) btn.disabled = true;
@@ -1127,8 +1154,13 @@
         if (btn) btn.disabled = false;
         if (d.success) {
           input.value = '';
-          showAlert('Uploaded.', 'success', 'attachModalAlert');
-          loadAttachments();
+          showAlert('Uploaded. Refreshing Documents…', 'success', 'attachModalAlert');
+          // Reload so the unified Documents tab picks the new file up in its
+          // category. The #ws-docs hash keeps the user on the same tab.
+          window.setTimeout(function () {
+            location.hash = 'ws-docs';
+            location.reload();
+          }, 600);
         } else {
           showAlert(d.error || 'Upload failed', 'danger', 'attachModalAlert');
         }
@@ -1272,14 +1304,77 @@
     }
   }
 
+  var DOC_CATEGORY_LABELS = {
+    contract: 'Short-Term Contract',
+    payment_receipt: 'Payment Receipts',
+    security_deposit: 'Security Deposit',
+    other: 'Other'
+  };
+
+  function docCategoryLabel(key) {
+    return DOC_CATEGORY_LABELS[key] || DOC_CATEGORY_LABELS.other;
+  }
+
+  // Send / re-file controls that live in the unified Documents tab (not a modal).
+  function initUnifiedDocuments() {
+    document.querySelectorAll('[data-ars-doc-send]').forEach(function (btn) {
+      if (btn._arsBound) return;
+      btn._arsBound = true;
+      btn.addEventListener('click', function () {
+        sendBookingDocument(
+          btn.getAttribute('data-ars-doc-send'),
+          btn.getAttribute('data-ars-doc-payment') || '',
+          btn
+        );
+      });
+    });
+
+    document.querySelectorAll('.ars-udoc-refile').forEach(function (sel) {
+      if (sel._arsBound) return;
+      sel._arsBound = true;
+      sel._arsPrev = sel.value;
+      sel.addEventListener('change', function () {
+        var id = sel.getAttribute('data-ars-attachment-id');
+        var next = sel.value;
+        sel.disabled = true;
+        ajaxPost('set_attachment_category', {
+          attachment_id: id,
+          doc_category: next
+        })
+          .then(function (d) {
+            if (d.success) {
+              location.hash = 'ws-docs';
+              location.reload();
+            } else {
+              sel.disabled = false;
+              sel.value = sel._arsPrev;
+              showAlert(d.error || 'Could not move the document.', 'danger');
+            }
+          })
+          .catch(function () {
+            sel.disabled = false;
+            sel.value = sel._arsPrev;
+            showAlert('Network error moving the document.', 'danger');
+          });
+      });
+    });
+  }
+
   function initAttachmentModal() {
     var modal = document.getElementById('attachmentModal');
     if (!modal) return;
-    modal.addEventListener('show.bs.modal', function () {
+    modal.addEventListener('show.bs.modal', function (ev) {
       var alertEl = document.getElementById('attachModalAlert');
       if (alertEl) {
         alertEl.classList.add('d-none');
         alertEl.innerHTML = '';
+      }
+      // "Upload here" buttons preselect the category they sit under.
+      var trigger = ev.relatedTarget;
+      var preset = trigger && trigger.getAttribute('data-ars-doc-category');
+      var catEl = document.getElementById('attachCategory');
+      if (catEl && preset && DOC_CATEGORY_LABELS[preset]) {
+        catEl.value = preset;
       }
       loadAttachments();
     });
@@ -1570,6 +1665,7 @@
     initPaymentModalGuards();
     initDocumentsModal();
     initAttachmentModal();
+    initUnifiedDocuments();
     initAmendmentModal();
     bindReceiptAccountPickers(document);
   }
