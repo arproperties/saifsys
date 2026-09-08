@@ -268,6 +268,44 @@ function ars_booking_discount_from_row(PDO $conn, int $companyId, array $booking
 }
 
 /**
+ * Rates an existing booking may be repriced at.
+ *
+ * An amendment must never reprice a stay from the unit's *current* nightly rate:
+ * a later rate change on re_units would silently rewrite nights the guest already
+ * agreed to. We reprice from the rate stored on the booking itself and fall back to
+ * the unit only when the booking carries none (legacy or zero-rated rows). This
+ * matches what the Phase 2D financial adapter already does for locked bookings.
+ *
+ * @param array<string,mixed> $booking
+ * @return array{base_rate:float,monthly_rate:float,locked:bool}
+ */
+function ars_booking_locked_rates(PDO $conn, array $booking, int $unitId): array {
+    $override = isset($booking['rate_override']) && $booking['rate_override'] !== null && $booking['rate_override'] !== ''
+        ? (float)$booking['rate_override'] : 0.0;
+    $agreedRate = $override > 0 ? $override : (float)($booking['nightly_rate'] ?? 0);
+
+    if ($agreedRate > 0) {
+        return [
+            'base_rate' => $agreedRate,
+            // Bookings store no monthly rate of their own; the agreed one is implied by
+            // the per-night figure the package was booked at (v3 bills nights / 30).
+            'monthly_rate' => round($agreedRate * 30, 2),
+            'locked' => true,
+        ];
+    }
+
+    $stmt = $conn->prepare('SELECT nightly_rate, COALESCE(monthly_rate, 0) AS monthly_rate FROM re_units WHERE id = ?');
+    $stmt->execute([$unitId]);
+    $ur = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    return [
+        'base_rate' => (float)($ur['nightly_rate'] ?? 0),
+        'monthly_rate' => (float)($ur['monthly_rate'] ?? 0),
+        'locked' => false,
+    ];
+}
+
+/**
  * Reprice and update booking dates (extension).
  *
  * @param array<string,mixed> $booking
@@ -291,11 +329,9 @@ function ars_booking_apply_date_change(PDO $conn, array $booking, string $newChe
         throw new RuntimeException('Unit not available for extended dates: ' . implode(', ', $labels));
     }
 
-    $stmt = $conn->prepare('SELECT nightly_rate, COALESCE(monthly_rate, 0) AS monthly_rate FROM re_units WHERE id = ?');
-    $stmt->execute([$unitId]);
-    $ur = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
-    $baseRate = (float)($ur['nightly_rate'] ?? 0);
-    $monthlyRt = (float)($ur['monthly_rate'] ?? 0);
+    $agreed = ars_booking_locked_rates($conn, $booking, $unitId);
+    $baseRate = $agreed['base_rate'];
+    $monthlyRt = $agreed['monthly_rate'];
 
     $pricingMode = (string)($booking['pricing_mode'] ?? 'nightly');
     $vatMode = (string)($booking['vat_mode'] ?? 'exclusive');
@@ -325,6 +361,7 @@ function ars_booking_apply_date_change(PDO $conn, array $booking, string $newChe
             'pricing_mode' => $pricingMode,
             'vat_mode' => $vatMode,
             'entered_amount' => $enteredAmount,
+            'skip_rate_rules' => $agreed['locked'],
         ]
     );
 
@@ -567,11 +604,9 @@ function ars_booking_compute_pending_stay_reprice(
         throw new RuntimeException('Unit not available: ' . implode(', ', $labels));
     }
 
-    $stmt = $conn->prepare('SELECT nightly_rate, COALESCE(monthly_rate, 0) AS monthly_rate FROM re_units WHERE id = ?');
-    $stmt->execute([$unitId]);
-    $ur = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
-    $baseRate = (float)($ur['nightly_rate'] ?? 0);
-    $monthlyRt = (float)($ur['monthly_rate'] ?? 0);
+    $agreed = ars_booking_locked_rates($conn, $booking, $unitId);
+    $baseRate = $agreed['base_rate'];
+    $monthlyRt = $agreed['monthly_rate'];
 
     $pricingMode = (string)($booking['pricing_mode'] ?? 'nightly');
     if (!in_array($pricingMode, ['nightly', 'monthly_package', 'manual_total'], true)) {
@@ -604,6 +639,7 @@ function ars_booking_compute_pending_stay_reprice(
             'pricing_mode' => $pricingMode,
             'vat_mode' => $vatMode,
             'entered_amount' => $enteredAmount,
+            'skip_rate_rules' => $agreed['locked'],
         ]
     );
 

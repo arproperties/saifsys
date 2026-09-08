@@ -3851,15 +3851,13 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 </div>
                             </div>
                             <div class="row">
-                                <div class="col-md-3 mb-2">
-                                    <label class="form-label small">Reference Number</label>
-                                    <input type="text" name="cheques[${chequeIndex}][reference_number]" class="form-control form-control-sm" placeholder="Optional" value="${referenceNumber}">
-                                </div>
-                                <div class="col-md-3 mb-2">
+                                <!-- Reference Number is not shown on the form; the stored value is carried through untouched. -->
+                                <input type="hidden" name="cheques[${chequeIndex}][reference_number]" value="${referenceNumber}">
+                                <div class="col-md-4 mb-2">
                                     <label class="form-label small">Bank Name</label>
                                     <input type="text" name="cheques[${chequeIndex}][bank_name]" class="form-control form-control-sm" placeholder="Optional" value="${bankName}">
                                 </div>
-                                <div class="col-md-6 mb-2">
+                                <div class="col-md-8 mb-2">
                                     <label class="form-label small">Notes</label>
                                     <input type="text" name="cheques[${chequeIndex}][notes]" class="form-control form-control-sm" placeholder="Operational note" value="${rowNotes}">
                                 </div>
@@ -3936,8 +3934,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <div class="col-md-2 mb-2"><label class="form-label small cheque-number-label">Cheque / Reference No.</label><input type="text" name="cheques[${index}][cheque_number]" class="form-control form-control-sm"></div>
                             <div class="col-md-2 mb-2"><label class="form-label small cheque-date-label">Expected Date *</label><input type="date" name="cheques[${index}][cheque_date]" class="form-control form-control-sm" value="${today}" required></div>
                             <div class="col-md-2 mb-2"><label class="form-label small">Amount (AED) *</label><input type="number" step="0.01" name="cheques[${index}][amount]" class="form-control form-control-sm" value="0.00" required></div>
-                            <div class="col-md-2 mb-2"><label class="form-label small">Reference Number</label><input type="text" name="cheques[${index}][reference_number]" class="form-control form-control-sm"></div>
-                            <div class="col-md-2 mb-2"><label class="form-label small">Bank Name</label><input type="text" name="cheques[${index}][bank_name]" class="form-control form-control-sm"></div>
+                            <input type="hidden" name="cheques[${index}][reference_number]" value="">
+                            <div class="col-md-4 mb-2"><label class="form-label small">Bank Name</label><input type="text" name="cheques[${index}][bank_name]" class="form-control form-control-sm"></div>
                             <div class="col-md-12 mb-2"><label class="form-label small">Notes</label><input type="text" name="cheques[${index}][notes]" class="form-control form-control-sm"></div>
                         </div></div>`;
                     container.appendChild(row);

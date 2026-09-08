@@ -418,6 +418,10 @@ function ars_calculate_booking_price_v3(
     $pricingMode   = $opts['pricing_mode'] ?? 'nightly';
     $vatMode       = ars_normalize_vat_mode((string)($opts['vat_mode'] ?? 'exclusive'));
     $enteredAmount = isset($opts['entered_amount']) ? (float)$opts['entered_amount'] : 0.0;
+    // Amendments reprice an existing stay at the rate it was agreed at, which already
+    // carries whatever seasonal/weekend rule applied when it was booked. Re-running the
+    // rules over that figure would layer the same adjustment a second time.
+    $skipRateRules = !empty($opts['skip_rate_rules']);
 
     if ($pricingMode === 'manual_total' && $enteredAmount <= 0) {
         return [
@@ -474,17 +478,22 @@ function ars_calculate_booking_price_v3(
             $subtotal      = round($rateOverride * $nights, 2);
             $effectiveRate = $rateOverride;
         } else {
-            $nightlyBreakdown = ars_get_nightly_breakdown($conn, $companyId, $unitId, $checkIn, $checkOut, $baseNightlyRate);
-            $ruleNames        = [];
-            foreach ($nightlyBreakdown as $nb) {
-                $subtotal += $nb['rate'];
-                if ($nb['rule_name'] && !in_array($nb['rule_name'], $ruleNames, true)) {
-                    $ruleNames[] = $nb['rule_name'];
+            if ($skipRateRules) {
+                $subtotal      = round($baseNightlyRate * $nights, 2);
+                $effectiveRate = $baseNightlyRate;
+            } else {
+                $nightlyBreakdown = ars_get_nightly_breakdown($conn, $companyId, $unitId, $checkIn, $checkOut, $baseNightlyRate);
+                $ruleNames        = [];
+                foreach ($nightlyBreakdown as $nb) {
+                    $subtotal += $nb['rate'];
+                    if ($nb['rule_name'] && !in_array($nb['rule_name'], $ruleNames, true)) {
+                        $ruleNames[] = $nb['rule_name'];
+                    }
                 }
+                $subtotal      = round($subtotal, 2);
+                $effectiveRate = $nights > 0 ? round($subtotal / $nights, 2) : $baseNightlyRate;
+                $rulesApplied  = $ruleNames;
             }
-            $subtotal      = round($subtotal, 2);
-            $effectiveRate = $nights > 0 ? round($subtotal / $nights, 2) : $baseNightlyRate;
-            $rulesApplied  = $ruleNames;
 
             $lengthDiscount = ars_get_length_discount($conn, $companyId, $unitId, $nights);
             if ($lengthDiscount) {
