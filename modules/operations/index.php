@@ -139,8 +139,15 @@ $listStmt = $conn->prepare("
     LEFT JOIN user cu ON cu.id = j.created_by
     WHERE {$whereSql}
     ORDER BY
-        FIELD(j.status, 'in_progress', 'open', 'done', 'cancelled'),
+        (j.status IN ('done','cancelled')),
+        CASE
+            WHEN j.scheduled_date = CURDATE() THEN 0
+            WHEN j.scheduled_date <  CURDATE() THEN 1
+            ELSE 2
+        END,
+        CASE WHEN j.scheduled_date < CURDATE() THEN j.scheduled_date END DESC,
         j.scheduled_date ASC,
+        FIELD(j.status, 'in_progress', 'open', 'done', 'cancelled'),
         FIELD(j.priority, 'high', 'normal', 'low')
     LIMIT 300
 ");

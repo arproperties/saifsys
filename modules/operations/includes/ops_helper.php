@@ -215,17 +215,31 @@ function ops_load_job(PDO $conn, int $jobId, int $companyId): ?array {
 }
 
 /**
- * People a job can be assigned to: active users attached to this company.
+ * People a job can be assigned to: active internal users attached to this
+ * company.
+ *
+ * Membership is read two ways on purpose. user_companies is the real
+ * multi-company link, but accounts created before that table was in use only
+ * ever got user.company_id — joining user_companies alone dropped most of the
+ * cleaning staff out of the assignee dropdown with nothing on screen to say
+ * why. Their home company counts as membership too.
  */
 function ops_assignable_users(PDO $conn, int $companyId): array {
     $stmt = $conn->prepare("
-        SELECT DISTINCT u.id, u.fullname, u.username
+        SELECT u.id, u.fullname, u.username
         FROM user u
-        JOIN user_companies uc ON uc.user_id = u.id
-        WHERE uc.company_id = ? AND u.status = 1
+        WHERE u.status = 1
+          AND u.user_type = 'internal'
+          AND (
+                u.company_id = ?
+                OR EXISTS (
+                     SELECT 1 FROM user_companies uc
+                     WHERE uc.user_id = u.id AND uc.company_id = ?
+                   )
+              )
         ORDER BY COALESCE(NULLIF(u.fullname, ''), u.username)
     ");
-    $stmt->execute([$companyId]);
+    $stmt->execute([$companyId, $companyId]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 }
 
