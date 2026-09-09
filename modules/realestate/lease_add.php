@@ -2283,8 +2283,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         </div>
                         <div class="col-md-4 mb-3">
                             <label class="form-label">Number of Installments *</label>
-                            <input type="number" min="1" max="12" class="form-control" name="number_of_installments" id="numberOfInstallments" value="<?= h(getFormValue('number_of_installments', $lease ? ($lease['number_of_installments'] ?? 12) : 12)) ?>" required>
-                            <small class="form-text text-muted">How many payments per year (1-12)</small>
+                            <input type="number" min="1" step="1" class="form-control" name="number_of_installments" id="numberOfInstallments" value="<?= h(getFormValue('number_of_installments', $lease ? ($lease['number_of_installments'] ?? 12) : 12)) ?>" required>
+                            <small class="form-text text-muted">How many payments for this lease</small>
                         </div>
                         <div class="col-md-4 mb-3">
                             <label class="form-label">Monthly Rent (AED)</label>

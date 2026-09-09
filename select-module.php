@@ -249,10 +249,6 @@ function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
                 if ($mn === 'legal' && !$isOwnerRole) {
                     return false;
                 }
-                // Cleaning is hidden from the launcher; /operation is still reachable directly.
-                if ($mn === 'cleaning') {
-                    return false;
-                }
                 // Inventory is retired from the launcher — day-to-day stock lives in Operations.
                 // Files stay in place: Grocery POS, purchasing and cross-module material
                 // requests still reach /modules/inventory/ through their own links.
