@@ -215,32 +215,49 @@ function ops_load_job(PDO $conn, int $jobId, int $companyId): ?array {
 }
 
 /**
- * People a job can be assigned to: active internal users attached to this
- * company.
+ * People a job can be assigned to: every active member of staff in the group.
  *
- * Membership is read two ways on purpose. user_companies is the real
- * multi-company link, but accounts created before that table was in use only
- * ever got user.company_id — joining user_companies alone dropped most of the
- * cleaning staff out of the assignee dropdown with nothing on screen to say
- * why. Their home company counts as membership too.
+ * Deliberately not scoped to one company. The nine companies in `companies` are
+ * one group of companies sharing one pool of staff — a cleaner on the Heroes
+ * Zone payroll works Ain Al Reem sites all week — so scoping the list to the
+ * job's company hid most of the workforce from the supervisor filling the job
+ * in, with nothing on screen to say why. $companyId is still taken so the four
+ * call sites read the same and scoping can come back if the group ever splits.
+ *
+ * Who is left out: anyone whose HR record says they have gone. An employee
+ * marked resigned, terminated or inactive stops appearing, so the dropdown is
+ * today's staff rather than everyone ever hired. A user with no employee record
+ * at all — the owner account — stays in.
  */
-function ops_assignable_users(PDO $conn, int $companyId): array {
-    $stmt = $conn->prepare("
-        SELECT u.id, u.fullname, u.username
+function ops_assignable_users(PDO $conn, int $companyId = 0): array {
+    $stmt = $conn->query("
+        SELECT u.id,
+               u.fullname,
+               u.username,
+               COALESCE(c.name, '') AS company_name
         FROM user u
+        LEFT JOIN employees e ON e.user_id = u.id
+        LEFT JOIN companies c ON c.id = COALESCE(e.company_id, u.company_id)
         WHERE u.status = 1
           AND u.user_type = 'internal'
-          AND (
-                u.company_id = ?
-                OR EXISTS (
-                     SELECT 1 FROM user_companies uc
-                     WHERE uc.user_id = u.id AND uc.company_id = ?
-                   )
-              )
-        ORDER BY COALESCE(NULLIF(u.fullname, ''), u.username)
+          AND (e.id IS NULL OR e.status = 'active')
+        ORDER BY COALESCE(NULLIF(c.name, ''), 'zzz'),
+                 COALESCE(NULLIF(u.fullname, ''), u.username)
     ");
-    $stmt->execute([$companyId, $companyId]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/**
+ * ops_assignable_users() output regrouped as company name => people, for
+ * rendering <optgroup>s. Forty-odd names in one flat list is a scroll; grouped
+ * by employer they are findable.
+ */
+function ops_people_by_company(array $people): array {
+    $grouped = [];
+    foreach ($people as $p) {
+        $grouped[$p['company_name'] ?: 'Other'][] = $p;
+    }
+    return $grouped;
 }
 
 // ---------------------------------------------------------------------------

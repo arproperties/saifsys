@@ -152,10 +152,14 @@ require __DIR__ . '/includes/ops_layout_header.php';
           <div class="d-flex gap-2 align-items-center">
             <select name="assigned_to" class="form-select" style="flex:0 1 320px; width:auto; min-width:0">
               <option value="">Nobody yet</option>
-              <?php foreach ($jobPeople as $p): ?>
-                <option value="<?= (int)$p['id'] ?>" <?= (int)$job['assigned_to'] === (int)$p['id'] ? 'selected' : '' ?>>
-                  <?= h($p['fullname'] ?: $p['username']) ?>
-                </option>
+              <?php foreach (ops_people_by_company($jobPeople) as $companyName => $group): ?>
+                <optgroup label="<?= h($companyName) ?>">
+                  <?php foreach ($group as $p): ?>
+                    <option value="<?= (int)$p['id'] ?>" <?= (int)$job['assigned_to'] === (int)$p['id'] ? 'selected' : '' ?>>
+                      <?= h($p['fullname'] ?: $p['username']) ?>
+                    </option>
+                  <?php endforeach; ?>
+                </optgroup>
               <?php endforeach; ?>
             </select>
             <button class="btn btn-outline-secondary flex-shrink-0">Save</button>

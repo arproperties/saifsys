@@ -314,10 +314,14 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <select name="assignee" class="form-select">
           <option value="">Everyone</option>
           <option value="0" <?= $fAssignee === 0 ? 'selected' : '' ?>>Unassigned</option>
-          <?php foreach ($people as $p): ?>
-            <option value="<?= (int)$p['id'] ?>" <?= $fAssignee === (int)$p['id'] ? 'selected' : '' ?>>
-              <?= h($p['fullname'] ?: $p['username']) ?>
-            </option>
+          <?php foreach (ops_people_by_company($people) as $companyName => $group): ?>
+            <optgroup label="<?= h($companyName) ?>">
+              <?php foreach ($group as $p): ?>
+                <option value="<?= (int)$p['id'] ?>" <?= $fAssignee === (int)$p['id'] ? 'selected' : '' ?>>
+                  <?= h($p['fullname'] ?: $p['username']) ?>
+                </option>
+              <?php endforeach; ?>
+            </optgroup>
           <?php endforeach; ?>
         </select>
       </div>

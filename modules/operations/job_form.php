@@ -226,10 +226,14 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <label class="form-label fw-semibold">Who does it?</label>
         <select name="assigned_to" class="form-select">
           <option value="">Decide later</option>
-          <?php foreach ($people as $p): ?>
-            <option value="<?= (int)$p['id'] ?>" <?= (int)($job['assigned_to'] ?? 0) === (int)$p['id'] ? 'selected' : '' ?>>
-              <?= h($p['fullname'] ?: $p['username']) ?>
-            </option>
+          <?php foreach (ops_people_by_company($people) as $companyName => $group): ?>
+            <optgroup label="<?= h($companyName) ?>">
+              <?php foreach ($group as $p): ?>
+                <option value="<?= (int)$p['id'] ?>" <?= (int)($job['assigned_to'] ?? 0) === (int)$p['id'] ? 'selected' : '' ?>>
+                  <?= h($p['fullname'] ?: $p['username']) ?>
+                </option>
+              <?php endforeach; ?>
+            </optgroup>
           <?php endforeach; ?>
         </select>
       </div>

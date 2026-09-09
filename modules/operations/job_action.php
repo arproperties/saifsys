@@ -94,7 +94,8 @@ switch ($action) {
     case 'assign':
         $assignTo = ($_POST['assigned_to'] ?? '') !== '' ? (int)$_POST['assigned_to'] : null;
 
-        // Only someone this company can actually give work to.
+        // Only current staff — the list is group-wide, but someone who has
+        // left must not be given work.
         if ($assignTo !== null) {
             $allowed = false;
             foreach (ops_assignable_users($conn, $companyId) as $p) {
@@ -104,7 +105,7 @@ switch ($action) {
                 }
             }
             if (!$allowed) {
-                ops_flash('That person cannot be given jobs in this company.', 'danger');
+                ops_flash('That person is not on the staff list and cannot be given jobs.', 'danger');
                 $redirect($jobUrl);
             }
         }
