@@ -116,10 +116,10 @@ function ops_api_handle_me(PDO $conn, array $user): void
 /**
  * Which jobs belong in each tab.
  *
- * `today`    — everything due on or before today that is still to be done.
- *              Work that ran past its date must not vanish, so late jobs sit
- *              here too. Finished and cancelled work drops out; the person
- *              finds it again under `done`.
+ * `today`    — dated today and still to be done, and nothing else. A job that
+ *              ran past its date is not today's work, so it drops off this
+ *              list rather than piling up on it. Finished and cancelled work
+ *              drops out too; the person finds it again under `done`.
  * `upcoming` — dated after today and still to be done.
  * `done`     — completed, newest first, whatever the date.
  *
@@ -135,7 +135,7 @@ function ops_api_tab_filter(string $tab, string $today): array
         case 'today':
         default:
             return [
-                " AND j.scheduled_date <= ? AND j.status IN ('open','in_progress')",
+                " AND j.scheduled_date = ? AND j.status IN ('open','in_progress')",
                 [$today],
             ];
     }
