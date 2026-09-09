@@ -869,32 +869,20 @@ function ops_serve_file_with_ranges(string $absPath, string $contentType): void 
 }
 
 /**
- * Store one attachment against an existing comment.
+ * Everything that has to be true of an uploaded photo, video or voice note
+ * before it is worth moving anywhere.
  *
- * Files live under uploads/operations/jobs/{jobId}/messages/, inside the same
- * folder tree the photo serving route already contains itself to, so the
- * realpath check that protects before/after photos protects these unchanged.
+ * Pulled out of ops_store_comment_media() when stock movements started
+ * carrying evidence of their own: the rules are about the file, not about what
+ * it is attached to, and two copies of them would drift the first time one
+ * whitelist changed.
  *
- * The caller must have inserted the comment first — an attachment with no
- * message to belong to is not a thing this app has.
- *
- * @param array $file      One entry from $_FILES
- * @param string $kind     'photo', 'voice' or 'video'
- * @param ?int $durationSeconds  Voice and video; what the phone measured
- * @param ?int $maxBytes   Defaults to ops_comment_media_max_bytes($kind)
- * @return array{ok:bool, error?:string, id?:int, file_path?:string}
+ * @param array $file    One entry from $_FILES
+ * @param string $kind   'photo', 'voice' or 'video'
+ * @param ?int $maxBytes Defaults to ops_comment_media_max_bytes($kind)
+ * @return array{ok:bool, error?:string, ext?:string, wording?:string}
  */
-function ops_store_comment_media(
-    PDO $conn,
-    int $companyId,
-    int $jobId,
-    int $commentId,
-    array $file,
-    string $kind,
-    ?int $uploadedBy,
-    ?int $durationSeconds = null,
-    ?int $maxBytes = null
-): array {
+function ops_check_media_upload(array $file, string $kind, ?int $maxBytes = null): array {
     if (!in_array($kind, ['photo', 'voice', 'video'], true)) {
         return ['ok' => false, 'error' => 'That kind of attachment is not allowed.'];
     }
@@ -952,6 +940,46 @@ function ops_store_comment_media(
     if (in_array($ext, ['m4a', 'mp4', 'mov'], true) && !ops_media_is_iso_bmff($file['tmp_name'])) {
         return ['ok' => false, 'error' => "That file is not a $wording."];
     }
+
+    return ['ok' => true, 'ext' => $ext, 'wording' => $wording];
+}
+
+/**
+ * Store one attachment against an existing comment.
+ *
+ * Files live under uploads/operations/jobs/{jobId}/messages/, inside the same
+ * folder tree the photo serving route already contains itself to, so the
+ * realpath check that protects before/after photos protects these unchanged.
+ *
+ * The caller must have inserted the comment first — an attachment with no
+ * message to belong to is not a thing this app has.
+ *
+ * @param array $file      One entry from $_FILES
+ * @param string $kind     'photo', 'voice' or 'video'
+ * @param ?int $durationSeconds  Voice and video; what the phone measured
+ * @param ?int $maxBytes   Defaults to ops_comment_media_max_bytes($kind)
+ * @return array{ok:bool, error?:string, id?:int, file_path?:string}
+ */
+function ops_store_comment_media(
+    PDO $conn,
+    int $companyId,
+    int $jobId,
+    int $commentId,
+    array $file,
+    string $kind,
+    ?int $uploadedBy,
+    ?int $durationSeconds = null,
+    ?int $maxBytes = null
+): array {
+    $check = ops_check_media_upload($file, $kind, $maxBytes);
+    if (empty($check['ok'])) {
+        return $check;
+    }
+    $ext = (string)$check['ext'];
+
+    $isVoice = $kind === 'voice';
+    $isVideo = $kind === 'video';
+    $wording = $check['wording'];
 
     $appRoot = dirname(__DIR__, 3);
     $relDir = 'uploads/operations/jobs/' . $jobId . '/messages';
@@ -1028,7 +1056,7 @@ function ops_low_stock_count(PDO $conn, int $companyId): int {
  * history can never disagree.
  *
  * @param float $qtyChange Positive to add, negative to take out
- * @return array{ok:bool,error?:string,new_qty?:float}
+ * @return array{ok:bool,error?:string,new_qty?:float,move_id?:int}
  */
 function ops_move_stock(
     PDO $conn,
@@ -1075,9 +1103,12 @@ function ops_move_stock(
             INSERT INTO ops_stock_moves (company_id, item_id, qty_change, reason, job_id, note, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         ")->execute([$companyId, $itemId, $qtyChange, $reason, $jobId, $note, $userId]);
+        // Read inside the transaction, before anything else on this connection
+        // can insert: it is what the caller hangs photos of the handover on.
+        $moveId = (int)$conn->lastInsertId();
 
         $conn->commit();
-        return ['ok' => true, 'new_qty' => $newQty];
+        return ['ok' => true, 'new_qty' => $newQty, 'move_id' => $moveId];
     } catch (Throwable $e) {
         if ($conn->inTransaction()) {
             $conn->rollBack();
@@ -1085,6 +1116,137 @@ function ops_move_stock(
         error_log('ops_move_stock failed: ' . $e->getMessage());
         return ['ok' => false, 'error' => 'Could not update stock. Please try again.'];
     }
+}
+
+/**
+ * How many photos or clips one stock movement may carry.
+ *
+ * Smaller than a message's ten on purpose: this is evidence of one handover —
+ * the drum, the meter, the slip — not a conversation.
+ */
+const OPS_STOCK_MOVE_MAX_ATTACHMENTS = 5;
+
+/**
+ * Store one photo or video against a stock movement.
+ *
+ * Files live under uploads/operations/stock/moves/{moveId}/, which is inside
+ * the uploads/operations tree the .htaccess there already denies outright — so
+ * they are reachable only through stock_media.php, exactly like the message
+ * attachments beside them.
+ *
+ * Voice is deliberately not accepted: nobody is talking to anybody here, and a
+ * player in the materials table would be a message with no thread to live in.
+ *
+ * The caller must have written the movement first — ops_move_stock() returns
+ * its id — because a photo of a handover that did not happen is not a thing
+ * this app has.
+ *
+ * @param array $file    One entry from $_FILES
+ * @param string $kind   'photo' or 'video'
+ * @return array{ok:bool, error?:string, id?:int, file_path?:string}
+ */
+function ops_store_stock_move_media(
+    PDO $conn,
+    int $companyId,
+    int $moveId,
+    ?int $jobId,
+    array $file,
+    string $kind,
+    ?int $uploadedBy
+): array {
+    if (!in_array($kind, ['photo', 'video'], true)) {
+        return ['ok' => false, 'error' => 'Only photos and video can be attached here.'];
+    }
+
+    $check = ops_check_media_upload($file, $kind);
+    if (empty($check['ok'])) {
+        return $check;
+    }
+    $ext = (string)$check['ext'];
+    $wording = (string)$check['wording'];
+
+    $appRoot = dirname(__DIR__, 3);
+    $relDir = 'uploads/operations/stock/moves/' . $moveId;
+    $absDir = $appRoot . '/' . $relDir;
+    if (!is_dir($absDir) && !@mkdir($absDir, 0775, true) && !is_dir($absDir)) {
+        return ['ok' => false, 'error' => "Server could not create the $wording folder."];
+    }
+
+    $name = $kind . '_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+    $absPath = $absDir . '/' . $name;
+    if (!move_uploaded_file($file['tmp_name'], $absPath)) {
+        return ['ok' => false, 'error' => "Server could not save the $wording."];
+    }
+    @chmod($absPath, 0644);
+
+    $relPath = $relDir . '/' . $name;
+    try {
+        $stmt = $conn->prepare("
+            INSERT INTO ops_stock_move_media
+                (move_id, company_id, job_id, kind, file_path, uploaded_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([$moveId, $companyId, $jobId ?: null, $kind, $relPath, $uploadedBy ?: null]);
+    } catch (PDOException $e) {
+        // The row is what makes the file reachable. Without it the file is
+        // litter nothing will ever point at, so take it back out.
+        @unlink($absPath);
+        error_log('ops_store_stock_move_media insert failed: ' . $e->getMessage());
+        return ['ok' => false, 'error' => "Server could not save the $wording."];
+    }
+
+    return ['ok' => true, 'id' => (int)$conn->lastInsertId(), 'file_path' => $relPath];
+}
+
+/**
+ * Attachments for a set of stock movements, keyed by move_id.
+ *
+ * One query for the whole table on screen rather than one per row — the
+ * materials list on a job and the history of an item are both read this way.
+ *
+ * @param int[] $moveIds
+ * @return array<int, array<int, array{id:int, kind:string}>>
+ */
+function ops_stock_move_media(PDO $conn, int $companyId, array $moveIds): array {
+    $ids = array_values(array_unique(array_filter(array_map('intval', $moveIds))));
+    if (!$ids) {
+        return [];
+    }
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $conn->prepare("
+        SELECT id, move_id, kind
+        FROM ops_stock_move_media
+        WHERE company_id = ? AND move_id IN ($in)
+        ORDER BY id ASC
+    ");
+    $stmt->execute(array_merge([$companyId], $ids));
+
+    $byMove = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $byMove[(int)$row['move_id']][] = ['id' => (int)$row['id'], 'kind' => (string)$row['kind']];
+    }
+    return $byMove;
+}
+
+/**
+ * Which job, when several share a title.
+ *
+ * A daily cleaning round makes nine jobs called "Cleaning" for one day, so a
+ * bare title on a stock movement points at all of them and helps with none.
+ * The place and the day are what actually tell them apart.
+ *
+ * Takes a row carrying job_location and job_date; returns "" when there is
+ * nothing to add, so it can be printed unguarded.
+ */
+function ops_job_where(array $row): string {
+    $bits = [];
+    if (!empty($row['job_location'])) {
+        $bits[] = (string)$row['job_location'];
+    }
+    if (!empty($row['job_date'])) {
+        $bits[] = date('d M', strtotime((string)$row['job_date']));
+    }
+    return $bits ? '— ' . implode(', ', $bits) : '';
 }
 
 /** Trim trailing zeros so 2.000 shows as 2 and 1.500 as 1.5. */

@@ -88,6 +88,86 @@ $opsFlash = ops_take_flash();
     .stat-tile .stat-label{ color:#6c757d; font-size:.85rem; }
     body.dark-mode .stat-tile,
     body.dark-mode .card-round{ background:rgba(30,41,59,.95); color:#e4e4e7; border-color:#334155; }
+    /* A data table that reads as one, rather than as Bootstrap's default rules.
+       Quiet uppercase headings, roomy rows, hairline separators between rows
+       only, and numbers that line up because they are tabular. */
+    .ops-table{ margin-bottom:0; }
+    .ops-table > thead > tr > th{
+      background:transparent; border-bottom:1px solid rgba(0,0,0,.12);
+      font-size:.7rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+      color:#8a9099; padding:.55rem .9rem; white-space:nowrap;
+    }
+    .ops-table > tbody > tr > td{
+      padding:.7rem .9rem; vertical-align:middle; border-top:1px solid rgba(0,0,0,.06);
+      border-bottom:0;
+    }
+    .ops-table > tbody > tr:first-child > td{ border-top:0; }
+    .ops-table > tbody > tr:hover{ background:rgba(0,0,0,.018); }
+    .ops-table .num{ font-variant-numeric:tabular-nums; }
+    /* Right-align the last column: it is the timestamp, and a ragged right edge
+       against the card border is what makes a table look unfinished. */
+    .ops-table > thead > tr > th:last-child,
+    .ops-table > tbody > tr > td:last-child{ text-align:right; }
+    /* A quantity is the one number people scan for, so it gets a shape. */
+    .ops-pill{
+      display:inline-block; padding:.12rem .5rem; border-radius:999px;
+      font-weight:700; font-size:.85rem; font-variant-numeric:tabular-nums;
+    }
+    .ops-pill-out{ background:rgba(220,53,69,.10); color:#b02a37; }
+    .ops-pill-in { background:rgba(25,135,84,.12); color:#146c43; }
+    body.dark-mode .ops-table > thead > tr > th{ color:#94a3b8; border-bottom-color:#334155; }
+    body.dark-mode .ops-table > tbody > tr > td{ border-top-color:rgba(255,255,255,.07); }
+    body.dark-mode .ops-table > tbody > tr:hover{ background:rgba(255,255,255,.03); }
+    body.dark-mode .ops-pill-out{ background:rgba(220,53,69,.18); color:#ffa2ab; }
+    body.dark-mode .ops-pill-in { background:rgba(25,135,84,.20); color:#8ce0b4; }
+
+    /* The grid's twelfths land on 66/33 or 75/25, and neither is the split the
+       materials tab wants. Two classes, applied beside col-12 so they still
+       stack on a phone like any other column. */
+    @media (min-width:992px){
+      .ops-col-65{ flex:0 0 auto; width:65%; }
+      .ops-col-35{ flex:0 0 auto; width:35%; }
+    }
+
+    /* Tabs across the top of a record.
+       Bootstrap's own .nav-tabs draws folder tabs that only read correctly when
+       the panel below them is a bordered box. Here the panes are free-standing
+       rounded cards on a grey page, so the folder edge has nothing to join and
+       the strip looks half-drawn. An underline instead: the active tab is the
+       one carrying the accent, and the rule under the row is the join. */
+    .ops-tabs{
+      border-bottom:1px solid rgba(0,0,0,.12);
+      gap:.15rem; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden;
+      scrollbar-width:none;
+    }
+    .ops-tabs::-webkit-scrollbar{ display:none; }
+    .ops-tabs .nav-link{
+      border:0; border-bottom:3px solid transparent; border-radius:0;
+      margin-bottom:-1px; padding:.6rem 1.1rem;
+      font-weight:600; color:#6c757d; white-space:nowrap; background:none;
+      display:inline-flex; align-items:center; gap:.4rem;
+    }
+    .ops-tabs .nav-link:hover{ color:var(--primary); border-bottom-color:rgba(0,0,0,.15); }
+    .ops-tabs .nav-link.active{ color:var(--primary); background:none; border-bottom-color:var(--primary); }
+    .ops-tabs .nav-link:focus-visible{ outline:2px solid var(--primary); outline-offset:-2px; }
+    /* The count sits on the tab, so it has to go quiet when the tab is not the
+       one you are on — otherwise three badges compete with the active accent. */
+    .ops-tabs .nav-link .badge{ font-size:.72rem; font-weight:600; }
+    .ops-tabs .nav-link:not(.active) .badge.bg-light{ opacity:.75; }
+    body.dark-mode .ops-tabs{ border-bottom-color:#334155; }
+    body.dark-mode .ops-tabs .nav-link{ color:#94a3b8; }
+    body.dark-mode .ops-tabs .nav-link.active{ color:#e4e4e7; border-bottom-color:var(--primary); }
+
+    /* By-person list: one line per person, capped so a long staff list scrolls
+       inside its card instead of stretching the dashboard row. */
+    .ops-byperson{ max-height:264px; overflow-y:auto; margin-right:-.25rem; padding-right:.25rem; }
+    .ops-byperson-row{ display:flex; align-items:center; gap:.6rem; padding:.28rem 0; }
+    .ops-byperson-name{
+      flex:0 0 38%; max-width:38%; font-size:.85rem; font-weight:600;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .ops-byperson-bar{ flex:1 1 auto; height:8px; }
+    .ops-byperson-count{ flex:0 0 auto; min-width:2.6rem; text-align:right; font-variant-numeric:tabular-nums; }
     @media (max-width: 767.98px){ .sidebar{ display:none; } }
   </style>
   <?php if (isset($pageHead)) { echo $pageHead; } ?>
