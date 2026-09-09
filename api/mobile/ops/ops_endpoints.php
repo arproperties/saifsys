@@ -116,10 +116,13 @@ function ops_api_handle_me(PDO $conn, array $user): void
 /**
  * Which jobs belong in each tab.
  *
- * `today`    — dated today and still to be done, and nothing else. A job that
- *              ran past its date is not today's work, so it drops off this
- *              list rather than piling up on it. Finished and cancelled work
- *              drops out too; the person finds it again under `done`.
+ * `today`    — dated today and still to be done, and nothing else. Work that
+ *              ran past its date is not today's work, so it does not pile up
+ *              here; it moves to `overdue`. Finished and cancelled work drops
+ *              out too; the person finds it again under `done`.
+ * `overdue`  — dated before today and still to be done. Nothing may fall out
+ *              of the four tabs: an unfinished job that is no longer today's
+ *              has to be somewhere the person can still reach it.
  * `upcoming` — dated after today and still to be done.
  * `done`     — completed, newest first, whatever the date.
  *
@@ -128,6 +131,8 @@ function ops_api_handle_me(PDO $conn, array $user): void
 function ops_api_tab_filter(string $tab, string $today): array
 {
     switch ($tab) {
+        case 'overdue':
+            return [" AND j.scheduled_date < ? AND j.status IN ('open','in_progress')", [$today]];
         case 'upcoming':
             return [" AND j.scheduled_date > ? AND j.status IN ('open','in_progress')", [$today]];
         case 'done':
@@ -146,7 +151,9 @@ function ops_api_tab_order(string $tab): string
     if ($tab === 'done') {
         return ' ORDER BY COALESCE(j.finished_at, j.updated_at) DESC, j.id DESC';
     }
-    // Timed work first, in clock order; "any time" jobs after it.
+    // Timed work first, in clock order; "any time" jobs after it. On Overdue
+    // that also puts the oldest debt at the top, which is the one the office
+    // is being asked about.
     return ' ORDER BY j.scheduled_date ASC, j.scheduled_time IS NULL, j.scheduled_time ASC, j.id ASC';
 }
 
@@ -172,7 +179,7 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
     $baseArgs = array_merge([$user['id']], $companyIds);
 
     $tab = (string)($_GET['tab'] ?? 'today');
-    if (!in_array($tab, ['today', 'upcoming', 'done'], true)) {
+    if (!in_array($tab, ['today', 'overdue', 'upcoming', 'done'], true)) {
         $tab = 'today';
     }
 
@@ -230,7 +237,7 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
     // Tab badges in one round trip. Each badge counts exactly what its tab
     // shows, so the number and the list can never disagree.
     $counts = [];
-    foreach (['today', 'upcoming', 'done'] as $name) {
+    foreach (['today', 'overdue', 'upcoming', 'done'] as $name) {
         [$tabSql, $tabArgs] = ops_api_tab_filter($name, $today);
         $countStmt = $conn->prepare('SELECT COUNT(*)' . $base . $tabSql);
         $countStmt->execute(array_merge($baseArgs, $tabArgs));
