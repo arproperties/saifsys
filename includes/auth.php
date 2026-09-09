@@ -34,7 +34,12 @@ if (!headers_sent()) {
     header('X-Frame-Options: SAMEORIGIN');
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: strict-origin-when-cross-origin');
-    header("Content-Security-Policy: default-src 'self' https: data: blob; img-src 'self' https: data: blob; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-inline' https:; frame-ancestors 'self';");
+    // blob:, with the colon. Written without it these were not permissive
+    // tokens but invalid ones, silently dropped — which blocked every preview
+    // thumbnail the operations composer draws from URL.createObjectURL().
+    // media-src is spelled out for the same reason: a staged video preview is
+    // a blob: URL in a <video>.
+    header("Content-Security-Policy: default-src 'self' https: data: blob:; img-src 'self' https: data: blob:; media-src 'self' https: data: blob:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-inline' https:; frame-ancestors 'self';");
 }
 
 /** Session helpers **/
