@@ -249,24 +249,27 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <?php if (!$byPerson): ?>
           <p class="text-muted mb-0">No jobs yet.</p>
         <?php else: ?>
-          <?php foreach ($byPerson as $p): ?>
-            <?php
-              $pTotal = (int)$p['total'];
-              $pDone = (int)$p['done'];
-              $pPct = $pTotal > 0 ? (int)round($pDone / $pTotal * 100) : 0;
-              $pLink = $opsBase . '/index.php?assignee=' . ($p['assigned_to'] === null ? '0' : (int)$p['assigned_to']);
-            ?>
-            <div class="mb-3">
-              <div class="d-flex justify-content-between small mb-1">
-                <a href="<?= h($pLink) ?>" class="text-decoration-none fw-semibold"><?= h($p['person']) ?></a>
-                <span class="text-muted"><?= $pDone ?>/<?= $pTotal ?> done</span>
+          <?php /* The list is as long as the payroll, so it scrolls inside the
+                   card instead of pushing the whole dashboard down. */ ?>
+          <div class="ops-byperson">
+            <?php foreach ($byPerson as $p): ?>
+              <?php
+                $pTotal = (int)$p['total'];
+                $pDone = (int)$p['done'];
+                $pPct = $pTotal > 0 ? (int)round($pDone / $pTotal * 100) : 0;
+                $pProg = $pTotal ? (int)round((int)$p['in_progress'] / $pTotal * 100) : 0;
+                $pLink = $opsBase . '/index.php?assignee=' . ($p['assigned_to'] === null ? '0' : (int)$p['assigned_to']);
+              ?>
+              <div class="ops-byperson-row">
+                <a href="<?= h($pLink) ?>" class="ops-byperson-name text-decoration-none" title="<?= h($p['person']) ?>"><?= h($p['person']) ?></a>
+                <div class="progress ops-byperson-bar">
+                  <div class="progress-bar bg-success" style="width:<?= $pPct ?>%"></div>
+                  <div class="progress-bar bg-warning" style="width:<?= $pProg ?>%"></div>
+                </div>
+                <span class="ops-byperson-count text-muted small"><?= $pDone ?>/<?= $pTotal ?></span>
               </div>
-              <div class="progress" style="height:10px;">
-                <div class="progress-bar bg-success" style="width:<?= $pPct ?>%"></div>
-                <div class="progress-bar bg-warning" style="width:<?= $pTotal ? (int)round((int)$p['in_progress'] / $pTotal * 100) : 0 ?>%"></div>
-              </div>
-            </div>
-          <?php endforeach; ?>
+            <?php endforeach; ?>
+          </div>
         <?php endif; ?>
       </div>
     </div>

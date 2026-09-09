@@ -165,6 +165,82 @@ switch ($action) {
     // office cannot remove them, so what the staff member saw stays on the job.
 
     // -----------------------------------------------------------------------
+    // Materials handed out for this job.
+    //
+    // There is no material request table and no approval step — the ask comes
+    // in the conversation and this is the office answering it. One stock
+    // movement carries the whole story: what left the store, for which job,
+    // with the note the person types here.
+    // -----------------------------------------------------------------------
+    case 'use_stock':
+        $itemId = (int)($_POST['item_id'] ?? 0);
+        $qty    = abs((float)($_POST['qty'] ?? 0));
+        $note   = trim((string)($_POST['note'] ?? '')) ?: null;
+
+        // Photos or a clip of the handover, if any were attached. Voice is not
+        // offered here — see ops_store_stock_move_media().
+        $shots = ops_collect_comment_uploads($_FILES['media'] ?? null);
+
+        if ($itemId <= 0) {
+            ops_flash('Pick an item first.', 'warning');
+            $redirect($jobUrl);
+        }
+        if (count($shots) > OPS_STOCK_MOVE_MAX_ATTACHMENTS) {
+            ops_flash(
+                'A movement can carry at most ' . OPS_STOCK_MOVE_MAX_ATTACHMENTS . ' photos or clips.',
+                'warning'
+            );
+            $redirect($jobUrl);
+        }
+
+        $res = ops_move_stock($conn, $companyId, $itemId, -$qty, 'out', $jobId, $note, $userId);
+        if (empty($res['ok'])) {
+            ops_flash($res['error'], 'danger');
+            $redirect($jobUrl);
+        }
+
+        // The movement is the record and it is already written. A photo that
+        // will not save must not undo it — the material genuinely left the
+        // shelf — so each file is stored on its own and whatever failed is
+        // named, rather than the whole press being thrown away.
+        $shotFailures = [];
+        foreach ($shots as $file) {
+            $kind = ops_comment_media_kind_for_extension(
+                (string)pathinfo((string)($file['name'] ?? ''), PATHINFO_EXTENSION)
+            );
+            if ($kind !== 'photo' && $kind !== 'video') {
+                $shotFailures[] = ($file['name'] ?: 'A file') . ' — only photos and video can be attached here.';
+                continue;
+            }
+            $saved = ops_store_stock_move_media(
+                $conn, $companyId, (int)$res['move_id'], $jobId, $file, $kind, $userId
+            );
+            if (empty($saved['ok'])) {
+                $shotFailures[] = ($file['name'] ?: 'A file') . ' — ' . ($saved['error'] ?? 'could not be saved.');
+            }
+        }
+
+        // Handing the thing over is dealing with the ask, the same way a reply
+        // is — so the job comes off the materials waiting list.
+        $stmt = $conn->prepare("
+            UPDATE ops_jobs SET needs_materials = 0
+            WHERE id = ? AND company_id = ? AND needs_materials = 1
+        ");
+        $stmt->execute([$jobId, $companyId]);
+
+        $done = $stmt->rowCount() > 0
+            ? 'Taken out of stock for this job. The job is off the materials waiting list.'
+            : 'Taken out of stock for this job.';
+
+        if ($shotFailures) {
+            ops_flash($done . ' Some attachments did not go: ' . implode(' ', $shotFailures), 'warning');
+        } else {
+            ops_flash($done);
+        }
+        $redirect($jobUrl);
+        break;
+
+    // -----------------------------------------------------------------------
     // Comments
     // -----------------------------------------------------------------------
     case 'add_comment':

@@ -111,11 +111,9 @@ require __DIR__ . '/includes/ops_layout_header.php';
                value="<?= h($item['name'] ?? '') ?>" placeholder="e.g. Floor cleaner" required autofocus>
       </div>
 
-      <div class="col-md-6">
-        <label class="form-label fw-semibold">Counted in</label>
-        <input type="text" name="unit" class="form-control" value="<?= h($item['unit'] ?? '') ?>"
-               placeholder="litre, pcs, box, roll">
-      </div>
+      <?php // "Counted in" is hidden for now — kept in the table, and any value an
+            // item already has is carried through untouched. ?>
+      <input type="hidden" name="unit" value="<?= h($item['unit'] ?? '') ?>">
 
       <div class="col-md-6">
         <label class="form-label fw-semibold">Warn me at</label>

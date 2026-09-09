@@ -44,7 +44,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              ->execute([$itemId, $companyId]);
         ops_flash('Item restored.');
     }
-    header('Location: ' . $opsBase . '/stock.php' . (($_POST['show'] ?? '') === 'archived' ? '?show=archived' : ''));
+    // Come back to the same view — the tab AND whatever the movement list was
+    // filtered to, or a correction made while looking at one item throws you
+    // back to the unfiltered list.
+    $keep = array_filter([
+        'show' => ($_POST['show'] ?? '') === 'archived' ? 'archived' : '',
+        'item' => (string)($_POST['f_item'] ?? ''),
+        'from' => (string)($_POST['f_from'] ?? ''),
+        'to'   => (string)($_POST['f_to'] ?? ''),
+    ], static fn($v) => $v !== '' && $v !== '0');
+    header('Location: ' . $opsBase . '/stock.php' . ($keep ? '?' . http_build_query($keep) : ''));
     exit;
 }
 
@@ -55,21 +64,77 @@ if ($showArchived) {
 }
 $lowCount = ops_low_stock_count($conn, $companyId);
 
-// Recent movements, so you can see where things went.
+// Movements, so you can see where things went. Unfiltered it is the recent
+// forty; narrowed to an item or a date range it is the answer to "how much of
+// this did we get through", so it runs deeper and totals what it found.
+$filterItem = (int)($_GET['item'] ?? 0);
+
+/** Accept only a real Y-m-d — anything else is treated as "not set". */
+$validDate = static function (string $d): string {
+    $d = trim($d);
+    $dt = $d !== '' ? DateTime::createFromFormat('Y-m-d', $d) : false;
+    return ($dt && $dt->format('Y-m-d') === $d) ? $d : '';
+};
+$filterFrom = $validDate((string)($_GET['from'] ?? ''));
+$filterTo   = $validDate((string)($_GET['to'] ?? ''));
+
+// Backwards dates are a typo, not an empty result — swap them and carry on.
+if ($filterFrom !== '' && $filterTo !== '' && $filterFrom > $filterTo) {
+    [$filterFrom, $filterTo] = [$filterTo, $filterFrom];
+}
+
+$moveWhere  = ['m.company_id = ?'];
+$moveParams = [$companyId];
+if ($filterItem > 0) {
+    $moveWhere[]  = 'm.item_id = ?';
+    $moveParams[] = $filterItem;
+}
+if ($filterFrom !== '') {
+    $moveWhere[]  = 'm.created_at >= ?';
+    $moveParams[] = $filterFrom . ' 00:00:00';
+}
+if ($filterTo !== '') {
+    // Inclusive of the whole closing day, whatever time of day it was recorded.
+    $moveWhere[]  = 'm.created_at < ?';
+    $moveParams[] = (new DateTime($filterTo . ' 00:00:00'))->modify('+1 day')->format('Y-m-d H:i:s');
+}
+$moveFiltered = $filterItem > 0 || $filterFrom !== '' || $filterTo !== '';
+
 $movesStmt = $conn->prepare("
     SELECT m.*, i.name AS item_name, i.unit,
            COALESCE(NULLIF(u.fullname, ''), u.username) AS person,
-           j.title AS job_title
+           j.title AS job_title, j.location AS job_location, j.scheduled_date AS job_date
     FROM ops_stock_moves m
     JOIN ops_items i ON i.id = m.item_id
     LEFT JOIN user u ON u.id = m.created_by
     LEFT JOIN ops_jobs j ON j.id = m.job_id
-    WHERE m.company_id = ?
+    WHERE " . implode(' AND ', $moveWhere) . "
     ORDER BY m.created_at DESC
-    LIMIT 40
-");
-$movesStmt->execute([$companyId]);
+    LIMIT " . ($moveFiltered ? 500 : 40)
+);
+$movesStmt->execute($moveParams);
 $moves = $movesStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+$movedIn = $movedOut = 0.0;
+foreach ($moves as $m) {
+    $change = (float)$m['qty_change'];
+    if ($change > 0) {
+        $movedIn += $change;
+    } else {
+        $movedOut += abs($change);
+    }
+}
+
+// Every item ever moved can be filtered on, hidden ones included — their
+// history is kept, so it must stay reachable.
+$filterItems = ops_stock_items($conn, $companyId, false);
+
+/** Re-post the movement filter so a move or a hide comes back to the same list. */
+function ops_keep_move_filter(int $item, string $from, string $to): void {
+    echo '<input type="hidden" name="f_item" value="' . ($item > 0 ? (int)$item : '') . '">'
+       . '<input type="hidden" name="f_from" value="' . h($from) . '">'
+       . '<input type="hidden" name="f_to" value="' . h($to) . '">';
+}
 
 $pageTitle = 'Stock';
 require __DIR__ . '/includes/ops_layout_header.php';
@@ -90,15 +155,16 @@ require __DIR__ . '/includes/ops_layout_header.php';
   </div>
 <?php endif; ?>
 
-<ul class="nav nav-pills mb-3">
-  <li class="nav-item"><a class="nav-link <?= !$showArchived ? 'active' : '' ?>" href="?">In use</a></li>
-  <li class="nav-item"><a class="nav-link <?= $showArchived ? 'active' : '' ?>" href="?show=archived">Hidden</a></li>
-</ul>
+<?php // The In use / Hidden switch is off the page. The list still answers to
+      // ?show=archived, so hidden items stay reachable by link. ?>
+<?php if ($showArchived): ?>
+  <div class="mb-3"><a class="btn btn-sm btn-outline-secondary" href="?"><i class="bi bi-arrow-left"></i> Back to items in use</a></div>
+<?php endif; ?>
 
 <div class="card card-round mb-4">
   <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead class="table-light">
+    <table class="table ops-table table-hover align-middle">
+      <thead>
         <tr>
           <th>Item</th>
           <th>In stock</th>
@@ -113,7 +179,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
             <?php if ($showArchived): ?>
               Nothing hidden.
             <?php else: ?>
-              No items yet. <a href="<?= h($opsBase) ?>/item_form.php">Add your first one</a> — for example "Floor cleaner", unit "litre".
+              No items yet. <a href="<?= h($opsBase) ?>/item_form.php">Add your first one</a> — for example "Floor cleaner".
             <?php endif; ?>
           </td></tr>
         <?php endif; ?>
@@ -141,6 +207,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <?php csrf_field(); ?>
                 <input type="hidden" name="action" value="move">
                 <input type="hidden" name="item_id" value="<?= (int)$it['id'] ?>">
+                <?php ops_keep_move_filter($filterItem, $filterFrom, $filterTo); ?>
                 <div class="col-4">
                   <input type="number" step="0.001" min="0" name="qty" class="form-control form-control-sm" placeholder="Qty" required>
                 </div>
@@ -159,12 +226,17 @@ require __DIR__ . '/includes/ops_layout_header.php';
               <?php endif; ?>
             </td>
             <td class="text-end text-nowrap">
+              <a href="<?= h($opsBase) ?>/item_moves.php?id=<?= (int)$it['id'] ?>"
+                 class="btn btn-sm btn-outline-primary" title="Every movement of this item, with a date filter">
+                <i class="bi bi-clock-history"></i> History
+              </a>
               <a href="<?= h($opsBase) ?>/item_form.php?id=<?= (int)$it['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
               <form method="post" class="d-inline">
                 <?php csrf_field(); ?>
                 <input type="hidden" name="action" value="<?= (int)$it['is_active'] === 1 ? 'archive' : 'restore' ?>">
                 <input type="hidden" name="item_id" value="<?= (int)$it['id'] ?>">
                 <input type="hidden" name="show" value="<?= $showArchived ? 'archived' : '' ?>">
+                <?php ops_keep_move_filter($filterItem, $filterFrom, $filterTo); ?>
                 <button class="btn btn-sm btn-outline-<?= (int)$it['is_active'] === 1 ? 'danger' : 'success' ?>">
                   <?= (int)$it['is_active'] === 1 ? 'Hide' : 'Restore' ?>
                 </button>
@@ -177,29 +249,85 @@ require __DIR__ . '/includes/ops_layout_header.php';
   </div>
 </div>
 
-<h6 class="fw-bold mb-2">Recent movements</h6>
+<div class="d-flex flex-wrap justify-content-between align-items-end gap-2 mb-2">
+  <h6 class="fw-bold mb-0"><?= $moveFiltered ? 'Movements' : 'Recent movements' ?></h6>
+  <?php if ($moves): ?>
+    <div class="small text-muted">
+      <?= count($moves) ?> movement<?= count($moves) === 1 ? '' : 's' ?>
+      <?php if ($movedOut > 0): ?>
+        · <span class="text-danger fw-semibold">−<?= h(ops_qty($movedOut)) ?></span> out
+      <?php endif; ?>
+      <?php if ($movedIn > 0): ?>
+        · <span class="text-success fw-semibold">+<?= h(ops_qty($movedIn)) ?></span> in
+      <?php endif; ?>
+      <?php if ($filterItem <= 0 && ($movedIn > 0 || $movedOut > 0)): ?>
+        <span class="text-muted">(all items together)</span>
+      <?php endif; ?>
+    </div>
+  <?php endif; ?>
+</div>
+
+<?php // Filtering is a GET so the view can be linked, bookmarked and sent to
+      // somebody else — "what did we get through in August" is a question you
+      // ask twice. ?>
+<form method="get" class="row g-2 align-items-end mb-3">
+  <?php if ($showArchived): ?><input type="hidden" name="show" value="archived"><?php endif; ?>
+  <div class="col-md-4">
+    <label class="form-label small fw-semibold mb-1">Item</label>
+    <select name="item" class="form-select form-select-sm" data-search>
+      <option value="">All items</option>
+      <?php foreach ($filterItems as $fi): ?>
+        <option value="<?= (int)$fi['id'] ?>"<?= $filterItem === (int)$fi['id'] ? ' selected' : '' ?>>
+          <?= h($fi['name']) ?><?= (int)$fi['is_active'] === 0 ? ' (hidden)' : '' ?>
+        </option>
+      <?php endforeach; ?>
+    </select>
+  </div>
+  <div class="col-md-3">
+    <label class="form-label small fw-semibold mb-1">From</label>
+    <input type="date" name="from" value="<?= h($filterFrom) ?>" class="form-control form-control-sm">
+  </div>
+  <div class="col-md-3">
+    <label class="form-label small fw-semibold mb-1">To</label>
+    <input type="date" name="to" value="<?= h($filterTo) ?>" class="form-control form-control-sm">
+  </div>
+  <div class="col-md-2 d-flex gap-1">
+    <button class="btn btn-sm btn-outline-secondary flex-fill"><i class="bi bi-funnel"></i> Filter</button>
+    <?php if ($moveFiltered): ?>
+      <a href="?<?= $showArchived ? 'show=archived' : '' ?>" class="btn btn-sm btn-light" title="Clear the filter">Clear</a>
+    <?php endif; ?>
+  </div>
+</form>
+
 <div class="card card-round">
   <div class="table-responsive">
-    <table class="table table-sm align-middle mb-0">
-      <thead class="table-light">
+    <table class="table ops-table align-middle">
+      <thead>
         <tr><th>When</th><th>Item</th><th>Change</th><th>Why</th><th>By</th></tr>
       </thead>
       <tbody>
         <?php if (!$moves): ?>
-          <tr><td colspan="5" class="text-center text-muted py-4">No movements yet.</td></tr>
+          <tr><td colspan="5" class="text-center text-muted py-4"><?= $moveFiltered ? 'Nothing moved that matches this filter.' : 'No movements yet.' ?></td></tr>
         <?php endif; ?>
         <?php foreach ($moves as $m): ?>
           <?php $in = (float)$m['qty_change'] > 0; ?>
           <tr>
             <td class="small text-muted"><?= h(date('d M, g:i A', strtotime($m['created_at']))) ?></td>
-            <td><?= h($m['item_name']) ?></td>
-            <td class="fw-semibold <?= $in ? 'text-success' : 'text-danger' ?>">
-              <?= $in ? '+' : '−' ?><?= h(ops_qty(abs((float)$m['qty_change']))) ?>
-              <span class="text-muted fw-normal small"><?= h($m['unit'] ?: '') ?></span>
+            <td>
+              <a href="<?= h($opsBase) ?>/item_moves.php?id=<?= (int)$m['item_id'] ?>"
+                 class="text-decoration-none"><?= h($m['item_name']) ?></a>
+            </td>
+            <td class="text-nowrap">
+              <span class="ops-pill <?= $in ? 'ops-pill-in' : 'ops-pill-out' ?>">
+                <?= $in ? '+' : '−' ?><?= h(ops_qty(abs((float)$m['qty_change']))) ?><?= $m['unit'] ? ' ' . h($m['unit']) : '' ?>
+              </span>
             </td>
             <td class="small">
               <?php if (!empty($m['job_id']) && !empty($m['job_title'])): ?>
+                <?php // Nine jobs a day can share one title, so the link has to
+                      // say which one or it sends you to the wrong job. ?>
                 Used on <a href="<?= h($opsBase) ?>/job_view.php?id=<?= (int)$m['job_id'] ?>"><?= h($m['job_title']) ?></a>
+                <span class="text-muted"><?= h(ops_job_where($m)) ?></span>
               <?php elseif ($m['reason'] === 'in'): ?>
                 Added to stock
               <?php elseif ($m['reason'] === 'out'): ?>
