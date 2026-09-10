@@ -113,6 +113,9 @@ $leases = $conn->prepare("
            t.first_name, t.last_name, t.company_name, t.tenant_type, t.phone, t.email,
            MAX(rw_new.id) as renewal_workflow_id,
            MAX(rw_new.status) as renewal_workflow_status,
+           (SELECT rw_src.status FROM re_lease_renewal_workflows rw_src
+             WHERE rw_src.new_lease_id = l.id
+             ORDER BY rw_src.id DESC LIMIT 1) as source_renewal_status,
            COUNT(DISTINCT li.id) as installment_count,
            COALESCE(MAX(chq.cheque_count), 0) as cheque_count,
            COALESCE(MAX(chq.cleared_count), 0) as cleared_count,
@@ -281,7 +284,8 @@ function lease_payments_export_summary(array $lease): string {
 $leasesExportRows = [];
 foreach ($leases as $exportLease) {
     $isPendingRenewalStart = ($exportLease['status'] ?? '') === 'draft' && !empty($exportLease['renewal_workflow_id']);
-    $statusLabel = $isPendingRenewalStart ? 'Pending Start' : ucfirst((string)($exportLease['status'] ?? ''));
+    $isRejectedRenewalDraft = ($exportLease['status'] ?? '') === 'draft' && ($exportLease['source_renewal_status'] ?? '') === 'rejected';
+    $statusLabel = $isPendingRenewalStart ? 'Pending Start' : ($isRejectedRenewalDraft ? 'Renewal Rejected' : ucfirst((string)($exportLease['status'] ?? '')));
     $startTs = strtotime((string)($exportLease['start_date'] ?? ''));
     $endTs = strtotime((string)($exportLease['end_date'] ?? ''));
     $leasesExportRows[] = [
@@ -512,12 +516,15 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                             'has_legal_case' => 'dark',
                                         ];
                                         $isPendingRenewalStart = ($lease['status'] ?? '') === 'draft' && !empty($lease['renewal_workflow_id']);
-                                        $class = $isPendingRenewalStart ? 'info' : ($statusClass[$lease['status']] ?? 'secondary');
-                                        $statusLabel = $isPendingRenewalStart ? 'Pending Start' : re_lease_status_label((string)$lease['status']);
+                                        $isRejectedRenewalDraft = ($lease['status'] ?? '') === 'draft' && ($lease['source_renewal_status'] ?? '') === 'rejected';
+                                        $class = $isPendingRenewalStart ? 'info' : ($isRejectedRenewalDraft ? 'danger' : ($statusClass[$lease['status']] ?? 'secondary'));
+                                        $statusLabel = $isPendingRenewalStart ? 'Pending Start' : ($isRejectedRenewalDraft ? 'Renewal Rejected' : re_lease_status_label((string)$lease['status']));
                                         ?>
                                         <span class="badge bg-<?= $class ?>"><?= h($statusLabel) ?></span>
                                         <?php if ($isPendingRenewalStart): ?>
                                             <br><small class="text-muted">Renewal activates on <?= h($lease['start_date']) ?></small>
+                                        <?php elseif ($isRejectedRenewalDraft): ?>
+                                            <br><small class="text-muted">Draft not used</small>
                                         <?php endif; ?>
                                     </td>
                                     <td>
@@ -582,7 +589,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                             <a href="lease_view.php?id=<?= $lease['id'] ?>" class="btn btn-outline-primary" title="View Lease">
                                                 <i class="bi bi-eye"></i>
                                             </a>
-                                            <?php if ($lease['status'] === 'draft' && empty($lease['renewal_workflow_id'])): ?>
+                                            <?php if ($lease['status'] === 'draft' && empty($lease['renewal_workflow_id']) && !$isRejectedRenewalDraft): ?>
                                                 <button type="button" 
                                                         class="btn btn-outline-danger"
                                                         onclick="deleteLease(<?= (int)$lease['id'] ?>, '<?= h($lease['lease_number'] ?: 'L-' . $lease['id']) ?>', this)"

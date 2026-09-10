@@ -150,6 +150,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <a href="billing_cheques.php" class="btn btn-outline-secondary">
                                 <i class="bi bi-bank"></i> Post-Dated Cheques
                             </a>
+                            <a href="billing_bounced_cheques.php" class="btn btn-outline-danger">
+                                <i class="bi bi-x-octagon"></i> Bounced Cheques
+                            </a>
                             <a href="billing_items.php" class="btn btn-outline-success">
                                 <i class="bi bi-list-ul"></i> Billing Items
                             </a>

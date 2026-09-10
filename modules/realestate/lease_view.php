@@ -1781,8 +1781,19 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                         'has_legal_case' => 'dark',
                                     ];
                                     $class = $statusClass[$lease['status']] ?? 'secondary';
+                                    $statusLabel = re_lease_status_label((string)$lease['status']);
+                                    $isRejectedRenewalDraft = false;
+                                    if (($lease['status'] ?? '') === 'draft') {
+                                        $srcRwStmt = $conn->prepare("SELECT status FROM re_lease_renewal_workflows WHERE new_lease_id = ? ORDER BY id DESC LIMIT 1");
+                                        $srcRwStmt->execute([$leaseId]);
+                                        $isRejectedRenewalDraft = $srcRwStmt->fetchColumn() === 'rejected';
+                                    }
+                                    if ($isRejectedRenewalDraft) {
+                                        $class = 'danger';
+                                        $statusLabel = 'Renewal Rejected';
+                                    }
                                     ?>
-                                    <span class="badge bg-<?= $class ?> me-2"><?= h(re_lease_status_label((string)$lease['status'])) ?></span>
+                                    <span class="badge bg-<?= $class ?> me-2"><?= h($statusLabel) ?></span>
                                     <div class="btn-group btn-group-sm mt-1">
                                         <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
                                             Change Status
