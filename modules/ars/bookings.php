@@ -77,11 +77,59 @@ if ($view === 'arrivals') {
 }
 
 $sql .= $view === 'outstanding'
-    ? " ORDER BY b.balance_due DESC, b.check_in ASC LIMIT 200"
-    : " ORDER BY b.created_at DESC LIMIT 200";
+    ? " ORDER BY b.balance_due DESC, b.check_in ASC"
+    : " ORDER BY b.created_at DESC";
+$exportCsv = ($_GET['export'] ?? '') === 'csv';
+// The screen caps at 200 rows; the export returns every matching reservation.
+if (!$exportCsv) {
+    $sql .= " LIMIT 200";
+}
 $stmt = $conn->prepare($sql);
 $stmt->execute($params);
 $bookings = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$exportQuery = $_GET;
+$exportQuery['export'] = 'csv';
+$exportUrl = 'bookings.php?' . http_build_query($exportQuery);
+
+if ($exportCsv) {
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="ars-reservations-' . date('Ymd-His') . '.csv"');
+    $out = fopen('php://output', 'w');
+    fwrite($out, "\xEF\xBB\xBF");
+    fputcsv($out, ['Booking #', 'Guest', 'Phone', 'Email', 'Unit', 'Building', 'Check-in', 'Check-out', 'Nights', 'Days Left', 'Rate Type', 'Rate', 'Total', 'Paid', 'Balance', 'Status']);
+    foreach ($bookings as $b) {
+        $checkIn = !empty($b['check_in']) ? substr((string)$b['check_in'], 0, 10) : '';
+        $checkOut = !empty($b['check_out']) ? substr((string)$b['check_out'], 0, 10) : '';
+        $nights = ($checkIn !== '' && $checkOut !== '')
+            ? (int)(new DateTime($checkIn))->diff(new DateTime($checkOut))->format('%r%a')
+            : '';
+        $daysLeft = '';
+        if ($checkOut !== '' && !in_array($b['status'], ['checked_out', 'completed', 'cancelled', 'expired'], true)) {
+            $daysLeft = (int)(new DateTime($today))->diff(new DateTime($checkOut))->format('%r%a');
+        }
+        fputcsv($out, [
+            $b['booking_number'],
+            trim(($b['first_name'] ?? '') . ' ' . ($b['last_name'] ?? '')),
+            $b['guest_phone'] ?? '',
+            $b['guest_email'] ?? '',
+            $b['unit_number'] ?? '',
+            $b['building_name'] ?? '',
+            $checkIn,
+            $checkOut,
+            $nights,
+            $daysLeft,
+            !empty($b['display_rate_type']) ? ucfirst($b['display_rate_type']) : '',
+            isset($b['display_rate']) ? number_format((float)$b['display_rate'], 2, '.', '') : '',
+            number_format((float)($b['total_amount'] ?? 0), 2, '.', ''),
+            number_format((float)($b['paid_amount'] ?? 0), 2, '.', ''),
+            number_format(max(0, (float)($b['balance_due'] ?? 0)), 2, '.', ''),
+            ucfirst(str_replace('_', ' ', (string)$b['status'])),
+        ]);
+    }
+    fclose($out);
+    exit;
+}
 
 $subtitle = count($bookings) . ' shown · max 200';
 if ($view === 'outstanding') {
@@ -96,7 +144,8 @@ ars_shell_begin([
         ['label' => 'ARS', 'href' => 'index.php'],
         ['label' => 'Reservations'],
     ],
-    'actions_html' => ars_ui_button('New reservation', ['href' => 'booking_add.php', 'icon' => 'plus', 'class' => 'ars-btn-press']),
+    'actions_html' => ars_ui_button('Export CSV', ['href' => $exportUrl, 'variant' => 'secondary', 'icon' => 'download', 'class' => 'ars-btn-press'])
+        . ars_ui_button('New reservation', ['href' => 'booking_add.php', 'icon' => 'plus', 'class' => 'ars-btn-press']),
     'toolbar_html' => ars_ds_segment([
         ['id' => 'all', 'label' => 'All', 'icon' => 'list', 'href' => 'bookings.php', 'active' => $view === '' && $statusFilter === ''],
         ['id' => 'arrivals', 'label' => 'Arrivals', 'icon' => 'log-in', 'href' => 'bookings.php?view=arrivals', 'active' => $view === 'arrivals'],
