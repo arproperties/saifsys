@@ -437,6 +437,18 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
                     </div>
                     <div class="col-6 col-md-3"><strong class="text-muted d-block small">Nights</strong><?= (int)$booking['nights'] ?></div>
                     <div class="col-6 col-md-3"><strong class="text-muted d-block small">Guests</strong><?= (int)$booking['num_guests'] ?></div>
+                    <?php
+                    // Display-only rate entered on the booking wizard; not part of the booking total.
+                    $dispRateType = (string)($booking['display_rate_type'] ?? '');
+                    $dispRate = $booking['display_rate'] ?? null;
+                    if ($dispRateType !== '' || $dispRate !== null):
+                        $dispRateParts = array_filter([
+                            ucfirst($dispRateType),
+                            $dispRate !== null ? 'AED ' . number_format((float)$dispRate, 2) : '',
+                        ]);
+                    ?>
+                    <div class="col-6 col-md-3"><strong class="text-muted d-block small">Rate</strong><?= h(implode(' · ', $dispRateParts)) ?></div>
+                    <?php endif; ?>
                     <div class="col-6 col-md-3"><strong class="text-muted d-block small">Created</strong><?= h(date('M j, Y', strtotime($booking['created_at']))) ?></div>
                     <?php if ($revenueJournal): ?>
                     <div class="col-6 col-md-3"><strong class="text-muted d-block small">Revenue journal</strong>

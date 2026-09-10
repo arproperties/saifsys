@@ -37,6 +37,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $specialReqs  = trim($_POST['special_requests'] ?? '');
     $internalNote = trim($_POST['internal_notes'] ?? '');
 
+    // Display-only rate shown on the booking page; never passed to pricing.
+    $displayRateType = $_POST['display_rate_type'] ?? '';
+    if (!in_array($displayRateType, ['nightly', 'weekly', 'monthly'], true)) {
+        $displayRateType = '';
+    }
+    $displayRate = ($_POST['display_rate'] ?? '') !== '' ? max(0, (float)$_POST['display_rate']) : null;
+
     $pricingMode = $_POST['pricing_mode'] ?? 'nightly';
     if (!in_array($pricingMode, ['nightly', 'monthly_package', 'manual_total'], true)) {
         $pricingMode = 'nightly';
@@ -199,6 +206,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ars_increment_promo_usage($conn, $bPromoCodeId);
                     }
                     $newBookingId = (int) $conn->lastInsertId();
+                    if ($displayRateType !== '' || $displayRate !== null) {
+                        // Separate statement so the booking is still created if the display columns are missing.
+                        try {
+                            $conn->prepare("UPDATE ars_bookings SET display_rate_type = ?, display_rate = ? WHERE id = ? AND company_id = ?")
+                                ->execute([$displayRateType ?: null, $displayRate, $newBookingId, $arsCompanyId]);
+                        } catch (PDOException $e) {
+                            error_log('ARS display rate not saved: ' . $e->getMessage());
+                        }
+                    }
                     try {
                         require_once __DIR__ . '/../../includes/AuditService.php';
                         AuditService::logEvent([
@@ -364,6 +380,21 @@ ars_shell_begin([
         <div class="col-sm-6">
           <label class="form-label fw-semibold">Guests</label>
           <input type="number" name="num_guests" id="numGuests" class="form-control" min="1" value="<?= (int)($_POST['num_guests'] ?? 1) ?>">
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label fw-semibold">Rate type</label>
+          <?php $drtPost = $_POST['display_rate_type'] ?? ''; ?>
+          <select name="display_rate_type" id="displayRateType" class="form-select">
+            <option value="">—</option>
+            <option value="nightly" <?= $drtPost === 'nightly' ? 'selected' : '' ?>>Nightly</option>
+            <option value="weekly" <?= $drtPost === 'weekly' ? 'selected' : '' ?>>Weekly</option>
+            <option value="monthly" <?= $drtPost === 'monthly' ? 'selected' : '' ?>>Monthly</option>
+          </select>
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label fw-semibold">Rate (AED)</label>
+          <input type="number" step="0.01" min="0" name="display_rate" id="displayRate" class="form-control" value="<?= h($_POST['display_rate'] ?? '') ?>">
+          <small class="text-muted">Display only — does not change the booking total.</small>
         </div>
         <div class="col-12 text-muted small">Availability is re-validated on the server when you create the booking.</div>
       </div>

@@ -154,6 +154,9 @@ ars_shell_begin([
           <th>Guest / booking</th>
           <th>Unit</th>
           <th>Stay</th>
+          <th class="text-right">Days left</th>
+          <th>Rate type</th>
+          <th class="text-right">Rate</th>
           <th class="text-right">Total</th>
           <?php if ($view === 'outstanding'): ?><th class="text-right">Balance</th><?php endif; ?>
           <th>Status</th>
@@ -186,6 +189,22 @@ ars_shell_begin([
               <?php endif; ?>
             </td>
             <td class="text-ars-muted whitespace-nowrap"><?= h(ars_ds_format_stay($b['check_in'] ?? '', $b['check_out'] ?? '')) ?></td>
+            <td class="text-right ars-tabular whitespace-nowrap">
+              <?php
+              // Days until planned check-out; stays that have ended show a dash.
+              $daysLeft = null;
+              if (!empty($b['check_out']) && !in_array($b['status'], ['checked_out', 'completed', 'cancelled', 'expired'], true)) {
+                  $daysLeft = (int)(new DateTime(date('Y-m-d')))->diff(new DateTime(substr((string)$b['check_out'], 0, 10)))->format('%r%a');
+              }
+              if ($daysLeft === null): ?>—<?php
+              elseif ($daysLeft < 0): ?><span class="text-ars-danger font-semibold">Overdue <?= abs($daysLeft) ?>d</span><?php
+              elseif ($daysLeft === 0): ?><span class="font-semibold">Today</span><?php
+              else: ?><?= $daysLeft ?> <?= $daysLeft === 1 ? 'day' : 'days' ?><?php
+              endif; ?>
+            </td>
+            <?php // Display-only rate from the booking wizard; not part of the total. ?>
+            <td class="text-ars-muted whitespace-nowrap"><?= !empty($b['display_rate_type']) ? h(ucfirst($b['display_rate_type'])) : '—' ?></td>
+            <td class="text-right ars-tabular whitespace-nowrap"><?= isset($b['display_rate']) ? formatArsAmount($b['display_rate']) : '—' ?></td>
             <td class="text-right ars-tabular font-semibold whitespace-nowrap"><?= formatArsAmount($b['total_amount']) ?></td>
             <?php if ($view === 'outstanding'): ?>
             <td class="text-right ars-tabular font-semibold whitespace-nowrap text-ars-danger"><?= formatArsAmount($bal) ?></td>
