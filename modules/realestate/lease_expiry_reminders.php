@@ -92,6 +92,34 @@ $leases = $leases->fetchAll(PDO::FETCH_ASSOC);
 
 function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
+$exportQuery = $_GET;
+$exportQuery['export'] = 'csv';
+$exportUrl = 'lease_expiry_reminders.php?' . http_build_query($exportQuery);
+
+if (($_GET['export'] ?? '') === 'csv') {
+    $exportFilter = in_array($filter, ['upcoming', 'expired', 'all'], true) ? $filter : 'upcoming';
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="lease-expiry-' . $exportFilter . '-' . date('Ymd-His') . '.csv"');
+    $out = fopen('php://output', 'w');
+    fwrite($out, "\xEF\xBB\xBF");
+    fputcsv($out, ['Lease Number', 'Building', 'Unit', 'Tenant', 'Email', 'Phone', 'Start Date', 'End Date', 'Days Until Expiry', 'Reminders Sent']);
+    foreach ($leases as $lease) {
+        fputcsv($out, [
+            $lease['lease_number'] ?: 'L-' . $lease['id'],
+            $lease['building_name'],
+            $lease['unit_number'],
+            trim($lease['first_name'] . ' ' . $lease['last_name']),
+            $lease['email'],
+            $lease['phone'],
+            !empty($lease['start_date']) ? date('Y-m-d', strtotime($lease['start_date'])) : '',
+            !empty($lease['end_date']) ? date('Y-m-d', strtotime($lease['end_date'])) : '',
+            (int)$lease['days_until_expiry'],
+            (int)$lease['reminders_sent'],
+        ]);
+    }
+    exit;
+}
+
 // Set page title and include layout
 $pageTitle = 'Lease Expiry Reminders';
 require_once __DIR__ . '/includes/re_layout_header.php';
@@ -99,7 +127,10 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 
         <div class="d-flex justify-content-between align-items-center mb-4">
             <div class="page-header-label">Lease Expiry Reminders</div>
-            <div class="btn-group">
+            <div class="d-flex gap-2">
+                <a href="<?= h($exportUrl) ?>" class="btn btn-outline-success">
+                    <i class="bi bi-file-earmark-spreadsheet"></i> Export CSV
+                </a>
                 <form method="POST" style="display:inline;">
                     <?php csrf_field(); ?>
                     <input type="hidden" name="action" value="generate_reminders">

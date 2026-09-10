@@ -877,6 +877,39 @@ $renewalStatusColors = [
     'cancelled' => 'danger'
 ];
 
+$exportQuery = $_GET;
+$exportQuery['export'] = 'csv';
+$exportUrl = 'lease_renewal_workflow.php?' . http_build_query($exportQuery);
+
+if (($_GET['export'] ?? '') === 'csv') {
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="lease-renewals-' . date('Ymd-His') . '.csv"');
+    $out = fopen('php://output', 'w');
+    fwrite($out, "\xEF\xBB\xBF");
+    fputcsv($out, ['Lease', 'Building', 'Unit', 'Tenant', 'Email', 'Lease Expiry', 'Days to Expiry', 'Status', 'Initiated', 'Assigned To', 'Current Rent', 'Proposed Rent', 'Proposed Start', 'Proposed End', 'Tenant Response']);
+    foreach ($workflows as $wf) {
+        $wfStatus = $wf['status'] ?? $wf['workflow_step'] ?? 'initiated';
+        fputcsv($out, [
+            $wf['lease_number'] ?: 'L-' . $wf['lease_id'],
+            $wf['building_name'],
+            $wf['unit_number'],
+            trim($wf['first_name'] . ' ' . $wf['last_name']),
+            $wf['email'],
+            !empty($wf['lease_end_date']) ? date('Y-m-d', strtotime($wf['lease_end_date'])) : '',
+            $wf['days_to_expiry'],
+            $renewalStatusLabels[$wfStatus] ?? ucfirst(str_replace('_', ' ', $wfStatus)),
+            !empty($wf['initiated_date']) ? date('Y-m-d', strtotime($wf['initiated_date'])) : '',
+            $wf['assigned_to_name'] ?? '',
+            $wf['current_rent'],
+            $wf['proposed_rent'],
+            $wf['proposed_start_date'],
+            $wf['proposed_end_date'],
+            $wf['tenant_response'],
+        ]);
+    }
+    exit;
+}
+
 // Set page title and include layout
 $pageTitle = 'Lease Renewal Workflow';
 require_once __DIR__ . '/includes/re_layout_header.php';
@@ -1073,6 +1106,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <h5 class="mb-0">Renewal Workflows</h5>
                         <small class="text-muted">Showing <?= number_format(count($workflows)) ?> workflow(s)</small>
                     </div>
+                    <a href="<?= h($exportUrl) ?>" class="btn btn-sm btn-outline-success">
+                        <i class="bi bi-file-earmark-spreadsheet"></i> Export CSV
+                    </a>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-hover renewal-table">
