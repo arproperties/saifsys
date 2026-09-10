@@ -151,15 +151,19 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <strong>End Date:</strong><br>
                             <?= h($contract['end_date']) ?>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <strong>Contract Value:</strong><br>
                             <?= number_format($contract['contract_value'], 2) ?> AED
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <strong>VAT (<?= $contract['vat_percentage'] ?>%):</strong><br>
                             <?= number_format($contract['vat_amount'], 2) ?> AED
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
+                            <strong>Other Charges (No VAT):</strong><br>
+                            <?= number_format($contract['other_charges'] ?? 0, 2) ?> AED
+                        </div>
+                        <div class="col-md-3">
                             <strong>Total Amount:</strong><br>
                             <span class="h5"><?= number_format($contract['total_amount'], 2) ?> AED</span>
                         </div>
@@ -171,18 +175,6 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <strong>Visit Frequency:</strong><br>
                             <?= ucfirst(str_replace('_', ' ', $contract['visit_frequency'])) ?>
                         </div>
-                        <?php if ($contract['sla_response_time']): ?>
-                            <div class="col-md-6">
-                                <strong>SLA Response Time:</strong><br>
-                                <?= $contract['sla_response_time'] ?> hours
-                            </div>
-                        <?php endif; ?>
-                        <?php if ($contract['sla_resolution_time']): ?>
-                            <div class="col-md-6">
-                                <strong>SLA Resolution Time:</strong><br>
-                                <?= $contract['sla_resolution_time'] ?> hours
-                            </div>
-                        <?php endif; ?>
                         <?php if ($contract['notes']): ?>
                             <div class="col-12">
                                 <strong>Notes:</strong><br>

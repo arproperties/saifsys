@@ -69,7 +69,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $paymentTerms = trim($_POST['payment_terms'] ?? '');
         $scopeOfWork = trim($_POST['scope_of_work'] ?? '');
         $termsConditions = trim($_POST['terms_and_conditions'] ?? '');
-        $slaRequirements = trim($_POST['sla_requirements'] ?? '');
         $penaltyClauses = trim($_POST['penalty_clauses'] ?? '');
         $status = $_POST['status'] ?? 'draft';
         $signedDate = !empty($_POST['signed_date']) ? $_POST['signed_date'] : null;
@@ -92,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         SET agreement_number = ?, agreement_name = ?, vendor_id = ?, service_type = ?,
                             start_date = ?, end_date = ?, renewal_date = ?, auto_renew = ?,
                             billing_frequency = ?, contract_value = ?, currency = ?, payment_terms = ?,
-                            scope_of_work = ?, terms_and_conditions = ?, sla_requirements = ?,
+                            scope_of_work = ?, terms_and_conditions = ?,
                             penalty_clauses = ?, status = ?, signed_date = ?, signed_by = ?,
                             notes = ?, updated_at = NOW()
                         WHERE id = ? AND company_id = ?
@@ -101,7 +100,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $agreementNumber, $agreementName, $vendorId, $serviceType,
                         $startDate, $endDate, $renewalDate, $autoRenew,
                         $billingFrequency, $contractValue, $currency, $paymentTerms,
-                        $scopeOfWork, $termsConditions, $slaRequirements,
+                        $scopeOfWork, $termsConditions,
                         $penaltyClauses, $status, $signedDate, $signedBy,
                         $notes,
                         $agreement['id'], $currentCompanyId
@@ -113,16 +112,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         (company_id, vendor_id, agreement_number, agreement_name, service_type,
                          start_date, end_date, renewal_date, auto_renew,
                          billing_frequency, contract_value, currency, payment_terms,
-                         scope_of_work, terms_and_conditions, sla_requirements,
+                         scope_of_work, terms_and_conditions,
                          penalty_clauses, status, signed_date, signed_by,
                          notes, created_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ");
                     $stmt->execute([
                         $currentCompanyId, $vendorId, $agreementNumber, $agreementName, $serviceType,
                         $startDate, $endDate, $renewalDate, $autoRenew,
                         $billingFrequency, $contractValue, $currency, $paymentTerms,
-                        $scopeOfWork, $termsConditions, $slaRequirements,
+                        $scopeOfWork, $termsConditions,
                         $penaltyClauses, $status, $signedDate, $signedBy,
                         $notes, $userId
                     ]);
@@ -337,10 +336,6 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     <div class="mb-3">
                         <label class="form-label">Terms and Conditions</label>
                         <textarea name="terms_and_conditions" class="form-control" rows="4"><?= h($agreement['terms_and_conditions'] ?? '') ?></textarea>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">SLA Requirements</label>
-                        <textarea name="sla_requirements" class="form-control" rows="3"><?= h($agreement['sla_requirements'] ?? '') ?></textarea>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Penalty Clauses</label>

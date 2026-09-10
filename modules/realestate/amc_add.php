@@ -61,11 +61,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $endDate = $_POST['end_date'] ?? '';
     $contractValue = !empty($_POST['contract_value']) ? (float)$_POST['contract_value'] : 0;
     $vatPercentage = !empty($_POST['vat_percentage']) ? (float)$_POST['vat_percentage'] : 5;
+    $otherCharges = !empty($_POST['other_charges']) ? (float)$_POST['other_charges'] : 0;
     $paymentTerms = trim($_POST['payment_terms'] ?? '');
     $paymentSchedule = $_POST['payment_schedule'] ?? 'annual';
     $visitFrequency = $_POST['visit_frequency'] ?? 'monthly';
-    $slaResponseTime = !empty($_POST['sla_response_time']) ? (int)$_POST['sla_response_time'] : null;
-    $slaResolutionTime = !empty($_POST['sla_resolution_time']) ? (int)$_POST['sla_resolution_time'] : null;
     $status = $_POST['status'] ?? 'draft';
     $autoRenew = !empty($_POST['auto_renew']) ? 1 : 0;
     $notes = trim($_POST['notes'] ?? '');
@@ -101,24 +100,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     // Only proceed if no errors
     if (empty($error)) {
-        // Calculate VAT and total
+        // Calculate VAT and total (VAT on contract value only; other charges carry no VAT)
         $vatAmount = $contractValue * ($vatPercentage / 100);
-        $totalAmount = $contractValue + $vatAmount;
+        $totalAmount = $contractValue + $vatAmount + $otherCharges;
         
         if ($isEdit) {
         $stmt = $conn->prepare("
             UPDATE re_amc_contracts SET
                 building_id = ?, category_id = ?, vendor_id = ?, contract_number = ?, contract_title = ?,
                 start_date = ?, end_date = ?, contract_value = ?, vat_percentage = ?, vat_amount = ?,
-                total_amount = ?, payment_terms = ?, payment_schedule = ?, visit_frequency = ?,
-                sla_response_time = ?, sla_resolution_time = ?, status = ?, auto_renew = ?, notes = ?
+                other_charges = ?, total_amount = ?, payment_terms = ?, payment_schedule = ?, visit_frequency = ?,
+                status = ?, auto_renew = ?, notes = ?
             WHERE id = ? AND company_id = ?
         ");
         $stmt->execute([
             $buildingId, $categoryId, $vendorId, $contractNumber, $contractTitle,
             $startDate, $endDate, $contractValue, $vatPercentage, $vatAmount,
-            $totalAmount, $paymentTerms, $paymentSchedule, $visitFrequency,
-            $slaResponseTime, $slaResolutionTime, $status, $autoRenew, $notes,
+            $otherCharges, $totalAmount, $paymentTerms, $paymentSchedule, $visitFrequency,
+            $status, $autoRenew, $notes,
             $contractId, $currentCompanyId
         ]);
         $success = "AMC contract updated successfully!";
@@ -126,15 +125,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $conn->prepare("
             INSERT INTO re_amc_contracts (
                 company_id, building_id, category_id, vendor_id, contract_number, contract_title,
-                start_date, end_date, contract_value, vat_percentage, vat_amount, total_amount,
-                payment_terms, payment_schedule, visit_frequency, sla_response_time, sla_resolution_time,
+                start_date, end_date, contract_value, vat_percentage, vat_amount, other_charges, total_amount,
+                payment_terms, payment_schedule, visit_frequency,
                 status, auto_renew, notes, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $stmt->execute([
             $currentCompanyId, $buildingId, $categoryId, $vendorId, $contractNumber, $contractTitle,
-            $startDate, $endDate, $contractValue, $vatPercentage, $vatAmount, $totalAmount,
-            $paymentTerms, $paymentSchedule, $visitFrequency, $slaResponseTime, $slaResolutionTime,
+            $startDate, $endDate, $contractValue, $vatPercentage, $vatAmount, $otherCharges, $totalAmount,
+            $paymentTerms, $paymentSchedule, $visitFrequency,
             $status, $autoRenew, $notes, $userId
         ]);
             $contractId = $conn->lastInsertId();
@@ -249,19 +248,25 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             </div>
             <div class="card-body">
                 <div class="row g-3">
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                         <label class="form-label">Contract Value (Excl. VAT) <span class="text-danger">*</span></label>
-                        <input type="number" step="0.01" name="contract_value" class="form-control" 
+                        <input type="number" step="0.01" name="contract_value" class="form-control"
                             value="<?= h($contract['contract_value'] ?? '0') ?>" required id="contract_value">
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                         <label class="form-label">VAT Percentage (%)</label>
-                        <input type="number" step="0.01" name="vat_percentage" class="form-control" 
+                        <input type="number" step="0.01" name="vat_percentage" class="form-control"
                             value="<?= h($contract['vat_percentage'] ?? '5') ?>" id="vat_percentage">
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                         <label class="form-label">VAT Amount</label>
                         <input type="text" class="form-control" id="vat_amount" readonly>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Other Charges (No VAT)</label>
+                        <input type="number" step="0.01" min="0" name="other_charges" class="form-control"
+                            value="<?= h($contract['other_charges'] ?? '0') ?>" id="other_charges">
+                        <small class="text-muted">e.g. DCD charges</small>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label">Total Amount (Incl. VAT)</label>
@@ -303,16 +308,6 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <option value="annual" <?= ($contract['visit_frequency'] ?? '') == 'annual' ? 'selected' : '' ?>>Annual</option>
                         </select>
                     </div>
-                    <div class="col-md-4">
-                        <label class="form-label">SLA Response Time (Hours)</label>
-                        <input type="number" name="sla_response_time" class="form-control" 
-                            value="<?= h($contract['sla_response_time'] ?? '') ?>" placeholder="e.g., 24">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">SLA Resolution Time (Hours)</label>
-                        <input type="number" name="sla_resolution_time" class="form-control" 
-                            value="<?= h($contract['sla_resolution_time'] ?? '') ?>" placeholder="e.g., 48">
-                    </div>
                     <div class="col-md-6">
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" name="auto_renew" id="auto_renew" 
@@ -345,19 +340,22 @@ document.addEventListener('DOMContentLoaded', function() {
     const vatPercentage = document.getElementById('vat_percentage');
     const vatAmount = document.getElementById('vat_amount');
     const totalAmount = document.getElementById('total_amount');
-    
+    const otherCharges = document.getElementById('other_charges');
+
     function calculate() {
         const value = parseFloat(contractValue.value) || 0;
         const vat = parseFloat(vatPercentage.value) || 0;
+        const other = parseFloat(otherCharges.value) || 0;
         const vatAmt = value * (vat / 100);
-        const total = value + vatAmt;
-        
+        const total = value + vatAmt + other;
+
         vatAmount.value = vatAmt.toFixed(2);
         totalAmount.value = total.toFixed(2);
     }
-    
+
     contractValue.addEventListener('input', calculate);
     vatPercentage.addEventListener('input', calculate);
+    otherCharges.addEventListener('input', calculate);
     calculate();
 });
 </script>
