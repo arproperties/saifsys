@@ -54,7 +54,7 @@ Completing Operations admin side
 mobile app for operations
 check number showing correct in edit page same check number should show in lease view page.
 
-07 Sep 2026
+08 Sep 2026
 -----------
 
 complete previous task 
@@ -62,3 +62,30 @@ creating apk
 upload to production and testing
 
 
+09 Sep 2026
+-----------
+
+create inventory/stock module for item tracking (incomplete)
+remove limit from number of installement on lease add page.
+enabled back old cleaning module because they staff scheduled for units.
+recoveed legel module. it was not exist on live.
+
+
+10 Sep 2026
+-----------
+
+completed inventory/stock module for item tracking and uploaded to live
+discussed with mr jerry for hr module and mr mohammad for legal module
+export button for renewal workflow, lease expiry and bookings.
+add rate type and rate field on booking create and list page (readonly purpose).
+added column for days left for bookings page
+added button for bounced check with export button
+status syncing issue for renewl workflow and lease page
+
+
+11 Sep 2026
+-----------
+
+for amc fixed finacial calculation with added new column (other charges).
+started vehicle.
+created grocery store using claude

@@ -95,4 +95,6 @@ includes/email_config.php
 *.rar
 *.7z
 OPERATION-MOBILE-APP
+DRIVER-MOBILE-APP
 tasks.md
+agent-prompt.md
