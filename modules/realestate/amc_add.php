@@ -59,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $contractTitle = trim($_POST['contract_title'] ?? '');
     $startDate = $_POST['start_date'] ?? '';
     $endDate = $_POST['end_date'] ?? '';
-    $amountInclVat = !empty($_POST['amount_incl_vat']) ? (float)$_POST['amount_incl_vat'] : 0;
+    $contractValue = !empty($_POST['amount_excl_vat']) ? (float)$_POST['amount_excl_vat'] : 0;
     $vatPercentage = (isset($_POST['vat_percentage']) && $_POST['vat_percentage'] !== '') ? (float)$_POST['vat_percentage'] : 5;
     $otherCharges = !empty($_POST['other_charges']) ? (float)$_POST['other_charges'] : 0;
     $paymentTerms = trim($_POST['payment_terms'] ?? '');
@@ -100,20 +100,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     // Only proceed if no errors
     if (empty($error)) {
-        // The amount is entered VAT-inclusive: VAT is that percentage of it and the
-        // contract value is what remains. Other charges carry no VAT.
-        // Editing without touching the amount or VAT % keeps the stored split, so
-        // contracts saved under the old VAT-on-top method do not shift.
-        $keepStoredSplit = $isEdit
-            && abs($amountInclVat - ($contract['contract_value'] + $contract['vat_amount'])) < 0.005
-            && abs($vatPercentage - $contract['vat_percentage']) < 0.005;
-        if ($keepStoredSplit) {
-            $contractValue = (float)$contract['contract_value'];
-            $vatAmount = (float)$contract['vat_amount'];
-        } else {
-            $vatAmount = round($amountInclVat * $vatPercentage / 100, 2);
-            $contractValue = $amountInclVat - $vatAmount;
-        }
+        // Amount is entered excluding VAT and VAT is added on top (contract_value stores
+        // the excl. VAT amount). Other charges carry no VAT.
+        $vatAmount = round($contractValue * $vatPercentage / 100, 2);
         $totalAmount = $contractValue + $vatAmount + $otherCharges;
         
         if ($isEdit) {
@@ -261,9 +250,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             <div class="card-body">
                 <div class="row g-3">
                     <div class="col-md-3">
-                        <label class="form-label">Amount (Incl. VAT) <span class="text-danger">*</span></label>
-                        <input type="number" step="0.01" name="amount_incl_vat" class="form-control"
-                            value="<?= h($contract ? number_format($contract['contract_value'] + $contract['vat_amount'], 2, '.', '') : '0') ?>" required id="amount_incl_vat">
+                        <label class="form-label">Amount (Excl. VAT) <span class="text-danger">*</span></label>
+                        <input type="number" step="0.01" name="amount_excl_vat" class="form-control"
+                            value="<?= h($contract['contract_value'] ?? '0') ?>" required id="amount_excl_vat">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">VAT Percentage (%)</label>
@@ -275,8 +264,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <input type="text" class="form-control" id="vat_amount" readonly>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label">Contract Value (Excl. VAT)</label>
-                        <input type="text" class="form-control" id="contract_value" readonly>
+                        <label class="form-label">Contract Value (Incl. VAT)</label>
+                        <input type="text" class="form-control" id="contract_value_incl_vat" readonly>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Other Charges (No VAT)</label>
@@ -287,7 +276,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     <div class="col-md-3">
                         <label class="form-label">Total Amount</label>
                         <input type="text" class="form-control" id="total_amount" readonly>
-                        <small class="text-muted">Amount (Incl. VAT) + Other Charges</small>
+                        <small class="text-muted">Contract Value (Incl. VAT) + Other Charges</small>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Payment Schedule</label>
@@ -353,39 +342,26 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    const amountInclVat = document.getElementById('amount_incl_vat');
+    const amountExclVat = document.getElementById('amount_excl_vat');
     const vatPercentage = document.getElementById('vat_percentage');
     const vatAmount = document.getElementById('vat_amount');
-    const contractValue = document.getElementById('contract_value');
+    const contractValueInclVat = document.getElementById('contract_value_incl_vat');
     const totalAmount = document.getElementById('total_amount');
     const otherCharges = document.getElementById('other_charges');
-    // Stored split for an existing contract; kept while amount and VAT % are unchanged (mirrors the server)
-    const stored = <?= json_encode($contract ? [
-        'amount' => round($contract['contract_value'] + $contract['vat_amount'], 2),
-        'pct'    => (float)$contract['vat_percentage'],
-        'vat'    => (float)$contract['vat_amount'],
-        'value'  => (float)$contract['contract_value'],
-    ] : null) ?>;
 
     function calculate() {
-        const amount = parseFloat(amountInclVat.value) || 0;
+        const amount = parseFloat(amountExclVat.value) || 0;
         const pct = parseFloat(vatPercentage.value) || 0;
         const other = parseFloat(otherCharges.value) || 0;
-        let vatAmt, value;
-        if (stored && Math.abs(amount - stored.amount) < 0.005 && Math.abs(pct - stored.pct) < 0.005) {
-            vatAmt = stored.vat;
-            value = stored.value;
-        } else {
-            vatAmt = Math.round(amount * pct) / 100;
-            value = amount - vatAmt;
-        }
+        const vatAmt = Math.round(amount * pct) / 100;
+        const inclVat = amount + vatAmt;
 
         vatAmount.value = vatAmt.toFixed(2);
-        contractValue.value = value.toFixed(2);
-        totalAmount.value = (amount + other).toFixed(2);
+        contractValueInclVat.value = inclVat.toFixed(2);
+        totalAmount.value = (inclVat + other).toFixed(2);
     }
 
-    amountInclVat.addEventListener('input', calculate);
+    amountExclVat.addEventListener('input', calculate);
     vatPercentage.addEventListener('input', calculate);
     otherCharges.addEventListener('input', calculate);
     calculate();

@@ -151,19 +151,23 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <strong>End Date:</strong><br>
                             <?= h($contract['end_date']) ?>
                         </div>
-                        <div class="col-md-3">
-                            <strong>Contract Value:</strong><br>
+                        <div class="col-md-4">
+                            <strong>Amount (Excl. VAT):</strong><br>
                             <?= number_format($contract['contract_value'], 2) ?> AED
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-4">
                             <strong>VAT (<?= $contract['vat_percentage'] ?>%):</strong><br>
                             <?= number_format($contract['vat_amount'], 2) ?> AED
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-4">
+                            <strong>Contract Value (Incl. VAT):</strong><br>
+                            <?= number_format($contract['contract_value'] + $contract['vat_amount'], 2) ?> AED
+                        </div>
+                        <div class="col-md-6">
                             <strong>Other Charges (No VAT):</strong><br>
                             <?= number_format($contract['other_charges'] ?? 0, 2) ?> AED
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-6">
                             <strong>Total Amount:</strong><br>
                             <span class="h5"><?= number_format($contract['total_amount'], 2) ?> AED</span>
                         </div>
