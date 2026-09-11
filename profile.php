@@ -1002,6 +1002,9 @@ if (!in_array($activeTab, $validTabs)) {
       <i class="bi bi-chevron-left"></i>
     </div>
 
+    <?php require_once __DIR__ . '/includes/nav_search.php'; ?>
+    <?= nav_search_box() ?>
+
     <?php if (!$isWorkerSelfService): ?>
     <div class="nav-sect mt-3">Main</div>
     <a href="<?= get_base_path() ? get_base_path() . '/' : '/' ?>index" class="slink">

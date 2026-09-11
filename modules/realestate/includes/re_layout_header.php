@@ -293,6 +293,8 @@ $navBasePath = $isInAccounting ? '../' : '';
             <span class="brand ms-1"><?= h($brand['system_name']) ?></span>
         </div>
         <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
+        <?php require_once __DIR__ . '/../../../includes/nav_search.php'; ?>
+        <?= nav_search_box() ?>
 
         <?php
         require_once __DIR__ . '/../../../includes/rbac_department.php';

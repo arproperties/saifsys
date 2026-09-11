@@ -73,6 +73,8 @@ $counselPages = ['legal_counsel.php','legal_counsel_add.php','legal_counsel_edit
             <span class="sb-label">Legal Department</span>
         </div>
         <?php if ($hasLegal): ?>
+        <?php require_once dirname(__DIR__, 3) . '/includes/nav_search.php'; ?>
+        <?= nav_search_box() ?>
         <nav class="flex-grow-1 py-2">
             <div class="legal-nav-section">Overview</div>
             <a href="legal_dashboard.php" class="legal-nav-link <?= $currentPage === 'legal_dashboard.php' ? 'active' : '' ?>">

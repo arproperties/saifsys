@@ -161,6 +161,8 @@ if ($coUiV2) {
             <span class="fw-bold" style="color: var(--accent)"><?= h($brand['system_name']) ?></span>
         </div>
         <small class="<?= $coUiV2 ? 'text-muted' : 'text-white-50' ?> mb-2">Construction<?= $coUiV2 ? ' · Design System' : '' ?></small>
+        <?php require_once dirname(__DIR__, 3) . '/includes/nav_search.php'; ?>
+        <?= nav_search_box() ?>
 
         <?php
         $corePages = [

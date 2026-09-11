@@ -128,6 +128,9 @@ $groceryShowInventory = isset($conn) && $conn instanceof PDO && function_exists(
     </form>
     <?php endif; ?>
 
+    <?php require_once dirname(__DIR__, 3) . '/includes/nav_search.php'; ?>
+    <?= nav_search_box() ?>
+
     <div class="small text-uppercase opacity-75 mb-2">Store</div>
     <?php if ($groceryShowBackOffice): ?>
     <a class="slink <?= $currentPage === 'pos_dashboard.php' ? 'active' : '' ?>" href="<?= h($appBase) ?>/modules/grocery/pos_dashboard.php">

@@ -23,6 +23,9 @@ $activeNav = $activeNav ?? 'operation';
     </div>
     <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
 
+    <?php require_once dirname(__DIR__, 2) . '/includes/nav_search.php'; ?>
+    <?= nav_search_box() ?>
+
     <div class="nav-sect mt-3">Main</div>
     <a href="<?= h($root ?: '') ?>/index" class="slink <?= $activeNav === 'home' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-house"></i></span><span class="slabel">Home</span></a>
     <?php if (has_department_access(MODULE_CLEANING, DEPT_CLEANING_OPERATIONS, $conn)): ?>

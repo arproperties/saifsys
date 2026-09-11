@@ -188,6 +188,9 @@ $opsFlash = ops_take_flash();
       <div class="slabel small text-white-50 text-truncate mt-2 ms-1" title="<?= h($opsCompanyName) ?>"><?= h($opsCompanyName) ?></div>
     <?php endif; ?>
 
+    <?php require_once dirname(__DIR__, 3) . '/includes/nav_search.php'; ?>
+    <?= nav_search_box() ?>
+
     <div class="nav-sect mt-3">Operations</div>
       <a href="<?= h($opsBase) ?>/index.php" class="slink <?= in_array($currentPage, ['index.php', 'job_view.php', 'job_form.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-speedometer2"></i></span><span class="slabel">Jobs &amp; progress</span>

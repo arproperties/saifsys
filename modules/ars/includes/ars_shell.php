@@ -407,6 +407,9 @@ if (!function_exists('ars_shell_begin')) {
         echo '<button type="button" class="ars-shell-icon-ghost lg:hidden" data-ars-mobile-close aria-label="Close menu">' . ars_ui_icon('x', ['class' => 'h-5 w-5']) . '</button>' . "\n";
         echo '</div>' . "\n";
 
+        require_once dirname(__DIR__, 3) . '/includes/nav_search.php';
+        echo nav_search_box() . "\n";
+
         // Nav list
         echo '<nav class="ars-shell-nav flex-1 overflow-y-auto" aria-label="Module">' . "\n";
         echo '<ul class="m-0 flex list-none flex-col gap-0.5 p-0">' . "\n";

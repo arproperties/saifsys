@@ -665,6 +665,9 @@ $approvals = [
       <i class="bi bi-chevron-left"></i>
     </div>
 
+    <?php require_once __DIR__ . '/includes/nav_search.php'; ?>
+    <?= nav_search_box() ?>
+
     <div class="nav-sect mt-3">Main</div>
     <a href="/" class="slink active">
       <span class="sicon"><i class="bi bi-house"></i></span>

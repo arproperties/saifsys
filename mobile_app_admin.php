@@ -93,6 +93,9 @@ $action = $_GET['action'] ?? 'list';
                     <small>Admin Dashboard</small>
                 </div>
                 
+                <?php require_once __DIR__ . '/includes/nav_search.php'; ?>
+                <?= nav_search_box() ?>
+
                 <nav class="nav flex-column">
                     <a class="nav-link <?= $page === 'users' ? 'active' : '' ?>" href="?page=users">
                         <i class="fas fa-users"></i> Mobile Users

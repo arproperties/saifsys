@@ -120,6 +120,9 @@ $barberShowBackOffice = isset($conn) && $conn instanceof PDO ? has_barber_backof
     </form>
     <?php endif; ?>
 
+    <?php require_once dirname(__DIR__, 3) . '/includes/nav_search.php'; ?>
+    <?= nav_search_box() ?>
+
     <?php if ($barberShowPos && has_permission('barber_pos.view', MODULE_BARBER, $conn)): ?>
     <div class="small text-uppercase text-white-50 mb-2">POS</div>
     <a class="slink <?= $currentPage === 'pos.php' ? 'active' : '' ?>" href="<?= h($appBase) ?>/modules/barber/pos.php">

@@ -110,6 +110,9 @@ $invSwitchReturn = $_SERVER['REQUEST_URI'] ?? (($appBase !== '' ? $appBase : '')
     </form>
     <?php endif; ?>
 
+    <?php require_once dirname(__DIR__, 3) . '/includes/nav_search.php'; ?>
+    <?= nav_search_box() ?>
+
     <div class="small text-uppercase opacity-75 mb-2">Core</div>
     <a class="slink <?= $currentPage === 'index.php' ? 'active' : '' ?>" href="<?= h($appBase) ?>/modules/inventory/">
       <span class="sicon"><i class="bi bi-speedometer2"></i></span><span>Dashboard</span>

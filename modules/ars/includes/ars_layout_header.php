@@ -55,6 +55,9 @@ $hasArsOps  = has_department_access(MODULE_ARS, DEPT_ARS_OPERATIONS, $conn);
         </div>
         <div class="ars-collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
 
+        <?php require_once dirname(__DIR__, 3) . '/includes/nav_search.php'; ?>
+        <?= nav_search_box() ?>
+
         <nav class="ars-nav flex-grow-1">
             <?php if ($hasArsCore): ?>
             <div class="ars-nav-section">

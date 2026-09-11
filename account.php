@@ -235,6 +235,8 @@ $todayIso = date('Y-m-d');
       <span class="brand ms-1"><?= h($brand['system_name']) ?></span>
     </div>
     <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
+    <?php require_once __DIR__ . '/includes/nav_search.php'; ?>
+    <?= nav_search_box() ?>
     <div class="nav-sect mt-3">Main</div>
     <a href="/index"       class="slink"><span class="sicon"><i class="bi bi-house"></i></span><span class="slabel">Home</span></a>
     <?php if (has_department_access(MODULE_CLEANING, DEPT_CLEANING_OPERATIONS, $conn)): ?>
