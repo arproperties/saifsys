@@ -299,9 +299,10 @@ try {
                 $vatRate,
                 $discountParam,
                 [
-                    'pricing_mode'   => $pricingMode,
-                    'vat_mode'       => $vatMode,
-                    'entered_amount' => $manualTotalAmt,
+                    'pricing_mode'         => $pricingMode,
+                    'vat_mode'             => $vatMode,
+                    'entered_amount'       => $manualTotalAmt,
+                    'skip_length_discount' => true,
                 ]
             );
             if (!empty($pricing['calc_error'])) {

@@ -136,9 +136,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     (float) $settings['default_vat_rate'],
                     $discountParam,
                     [
-                        'pricing_mode'   => $pricingMode,
-                        'vat_mode'       => $vatMode,
-                        'entered_amount' => $manualTotalAmount,
+                        'pricing_mode'         => $pricingMode,
+                        'vat_mode'             => $vatMode,
+                        'entered_amount'       => $manualTotalAmount,
+                        'skip_length_discount' => true,
                     ]
                 );
 

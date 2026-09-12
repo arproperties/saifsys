@@ -6,7 +6,7 @@
  *   1. Per-night rate (seasonal rules → weekend rules → base rate)
  *   2. Manual rate override replaces ALL rules for ALL nights
  *   3. Subtotal = sum of per-night rates
- *   4. Length-of-stay discount (auto-applied)
+ *   4. Length-of-stay discount (auto-applied; skipped when opts.skip_length_discount is set)
  *   5. Extras
  *   6. VAT on (discounted subtotal + extras)
  *   7. Total
@@ -422,6 +422,10 @@ function ars_calculate_booking_price_v3(
     // carries whatever seasonal/weekend rule applied when it was booked. Re-running the
     // rules over that figure would layer the same adjustment a second time.
     $skipRateRules = !empty($opts['skip_rate_rules']);
+    // The staff booking wizard shows the discount the agent picked and nothing else, so it
+    // suppresses the automatic length-of-stay rule. Guest quotes and public booking requests
+    // leave this off and keep getting the rule applied for them.
+    $skipLengthDiscount = !empty($opts['skip_length_discount']);
 
     if ($pricingMode === 'manual_total' && $enteredAmount <= 0) {
         return [
@@ -468,7 +472,7 @@ function ars_calculate_booking_price_v3(
         $subtotal      = round($monthlyRate * ($nights / 30.0), 2);
         $effectiveRate = $nights > 0 ? round($subtotal / $nights, 2) : 0.0;
         $rulesApplied[] = 'Monthly package';
-        $lengthDiscount = ars_get_length_discount($conn, $companyId, $unitId, $nights);
+        $lengthDiscount = $skipLengthDiscount ? null : ars_get_length_discount($conn, $companyId, $unitId, $nights);
         if ($lengthDiscount) {
             $lengthDiscountAmount = round($subtotal * $lengthDiscount['discount_percent'] / 100, 2);
             $rulesApplied[]       = $lengthDiscount['rule_name'];
@@ -495,7 +499,7 @@ function ars_calculate_booking_price_v3(
                 $rulesApplied  = $ruleNames;
             }
 
-            $lengthDiscount = ars_get_length_discount($conn, $companyId, $unitId, $nights);
+            $lengthDiscount = $skipLengthDiscount ? null : ars_get_length_discount($conn, $companyId, $unitId, $nights);
             if ($lengthDiscount) {
                 $lengthDiscountAmount = round($subtotal * $lengthDiscount['discount_percent'] / 100, 2);
                 $rulesApplied[]       = $lengthDiscount['rule_name'];
