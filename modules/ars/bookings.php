@@ -10,6 +10,7 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/includes/ars_helpers.php';
 require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
+require_once __DIR__ . '/../../includes/table_sort.php';
 
 $arsCompanyId = arsPageAuth($conn);
 $brand = getBrandSettings($conn);
@@ -194,20 +195,21 @@ ars_shell_begin([
       'action_html' => ars_ui_button('New reservation', ['href' => 'booking_add.php', 'icon' => 'plus']),
   ]) ?>
 <?php else: ?>
+  <?= table_sort_assets() ?>
   <div class="hidden overflow-hidden rounded-ars-lg border border-ars-border bg-ars-surface shadow-ars-sm md:block">
     <div class="overflow-x-auto">
-    <table class="ars-data-table min-w-full text-left">
+    <table class="ars-data-table min-w-full text-left" data-sortable>
       <caption class="sr-only">Reservations</caption>
       <thead>
         <tr>
           <th>Guest / booking</th>
           <th>Unit</th>
-          <th>Stay</th>
-          <th class="text-right">Days left</th>
+          <th data-sort="date">Stay</th>
+          <th class="text-right" data-sort="number">Days left</th>
           <th>Rate type</th>
-          <th class="text-right">Rate</th>
-          <th class="text-right">Total</th>
-          <?php if ($view === 'outstanding'): ?><th class="text-right">Balance</th><?php endif; ?>
+          <th class="text-right" data-sort="number">Rate</th>
+          <th class="text-right" data-sort="number">Total</th>
+          <?php if ($view === 'outstanding'): ?><th class="text-right" data-sort="number">Balance</th><?php endif; ?>
           <th>Status</th>
         </tr>
       </thead>
@@ -217,9 +219,14 @@ ars_shell_begin([
             $phone = trim((string)($b['guest_phone'] ?? ''));
             $href = 'booking_view.php?id=' . (int)$b['id'];
             $bal = max(0, (float)($b['balance_due'] ?? 0));
+            // Days until planned check-out; stays that have ended show a dash.
+            $daysLeft = null;
+            if (!empty($b['check_out']) && !in_array($b['status'], ['checked_out', 'completed', 'cancelled', 'expired'], true)) {
+                $daysLeft = (int)(new DateTime($today))->diff(new DateTime(substr((string)$b['check_out'], 0, 10)))->format('%r%a');
+            }
         ?>
           <tr class="ars-row-clickable" onclick="location.href='<?= h($href) ?>'">
-            <td>
+            <td data-sort-value="<?= h($gName) ?>">
               <div class="flex items-center gap-3">
                 <?= ars_ds_avatar(ars_ds_guest_initials($b['first_name'] ?? '', $b['last_name'] ?? '')) ?>
                 <div class="min-w-0">
@@ -231,20 +238,15 @@ ars_shell_begin([
                 </div>
               </div>
             </td>
-            <td>
+            <td data-sort-value="<?= h($b['unit_number'] ?? '') ?>">
               <div class="font-medium text-ars-text"><?= h($b['unit_number'] ?? '—') ?></div>
               <?php if (!empty($b['building_name'])): ?>
                 <div class="mt-0.5 text-ars-xs text-ars-muted"><?= h($b['building_name']) ?></div>
               <?php endif; ?>
             </td>
-            <td class="text-ars-muted whitespace-nowrap"><?= h(ars_ds_format_stay($b['check_in'] ?? '', $b['check_out'] ?? '')) ?></td>
-            <td class="text-right ars-tabular whitespace-nowrap">
+            <td class="text-ars-muted whitespace-nowrap" data-sort-value="<?= h(substr((string)($b['check_in'] ?? ''), 0, 10)) ?>"><?= h(ars_ds_format_stay($b['check_in'] ?? '', $b['check_out'] ?? '')) ?></td>
+            <td class="text-right ars-tabular whitespace-nowrap" data-sort-value="<?= $daysLeft === null ? '' : (int)$daysLeft ?>">
               <?php
-              // Days until planned check-out; stays that have ended show a dash.
-              $daysLeft = null;
-              if (!empty($b['check_out']) && !in_array($b['status'], ['checked_out', 'completed', 'cancelled', 'expired'], true)) {
-                  $daysLeft = (int)(new DateTime(date('Y-m-d')))->diff(new DateTime(substr((string)$b['check_out'], 0, 10)))->format('%r%a');
-              }
               if ($daysLeft === null): ?>—<?php
               elseif ($daysLeft < 0): ?><span class="text-ars-danger font-semibold">Overdue <?= abs($daysLeft) ?>d</span><?php
               elseif ($daysLeft === 0): ?><span class="font-semibold">Today</span><?php
@@ -252,13 +254,13 @@ ars_shell_begin([
               endif; ?>
             </td>
             <?php // Display-only rate from the booking wizard; not part of the total. ?>
-            <td class="text-ars-muted whitespace-nowrap"><?= !empty($b['display_rate_type']) ? h(ucfirst($b['display_rate_type'])) : '—' ?></td>
-            <td class="text-right ars-tabular whitespace-nowrap"><?= isset($b['display_rate']) ? formatArsAmount($b['display_rate']) : '—' ?></td>
-            <td class="text-right ars-tabular font-semibold whitespace-nowrap"><?= formatArsAmount($b['total_amount']) ?></td>
+            <td class="text-ars-muted whitespace-nowrap" data-sort-value="<?= h($b['display_rate_type'] ?? '') ?>"><?= !empty($b['display_rate_type']) ? h(ucfirst($b['display_rate_type'])) : '—' ?></td>
+            <td class="text-right ars-tabular whitespace-nowrap" data-sort-value="<?= isset($b['display_rate']) ? h((string)(float)$b['display_rate']) : '' ?>"><?= isset($b['display_rate']) ? formatArsAmount($b['display_rate']) : '—' ?></td>
+            <td class="text-right ars-tabular font-semibold whitespace-nowrap" data-sort-value="<?= h((string)(float)($b['total_amount'] ?? 0)) ?>"><?= formatArsAmount($b['total_amount']) ?></td>
             <?php if ($view === 'outstanding'): ?>
-            <td class="text-right ars-tabular font-semibold whitespace-nowrap text-ars-danger"><?= formatArsAmount($bal) ?></td>
+            <td class="text-right ars-tabular font-semibold whitespace-nowrap text-ars-danger" data-sort-value="<?= h((string)$bal) ?>"><?= formatArsAmount($bal) ?></td>
             <?php endif; ?>
-            <td><?= ars_ui_status_badge('booking', $b['status']) ?></td>
+            <td data-sort-value="<?= h(ucfirst(str_replace('_', ' ', (string)$b['status']))) ?>"><?= ars_ui_status_badge('booking', $b['status']) ?></td>
           </tr>
         <?php endforeach; ?>
       </tbody>

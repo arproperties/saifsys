@@ -12,6 +12,7 @@ require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/includes/lease_vat_calculator.php';
 require_once __DIR__ . '/includes/lease_number_sequence.php';
 require_once __DIR__ . '/includes/lease_lifecycle_guard.php';
+require_once __DIR__ . '/../../includes/table_sort.php';
 
 require_login();
 require_module_access($conn, MODULE_REALESTATE);
@@ -1110,43 +1111,49 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <i class="bi bi-file-earmark-spreadsheet"></i> Export CSV
                     </a>
                 </div>
+                <?= table_sort_assets() ?>
                 <div class="table-responsive">
-                    <table class="table table-hover renewal-table">
+                    <table class="table table-hover renewal-table" data-sortable>
                         <thead>
                             <tr>
                                 <th>Lease</th>
                                 <th>Unit</th>
                                 <th>Tenant</th>
-                                <th>Expiry</th>
-                                <th>Current Status</th>
-                                <th>Initiated</th>
+                                <th data-sort="date">Expiry</th>
+                                <th data-sort="number">Current Status</th>
+                                <th data-sort="date">Initiated</th>
                                 <th>Assigned To</th>
-                                <th>Actions</th>
+                                <th data-sort="none">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php if (empty($workflows)): ?>
-                                <tr>
+                                <tr data-no-sort>
                                     <td colspan="8" class="text-center text-muted py-4">
                                         <i class="bi bi-search"></i> No renewal workflows match the selected filters.
                                     </td>
                                 </tr>
                             <?php else: ?>
-                                <?php foreach ($workflows as $wf): ?>
+                                <?php foreach ($workflows as $wf):
+                                    $wfStatus = $wf['status'] ?? $wf['workflow_step'] ?? 'initiated';
+                                    // Sort the status column by where it sits in the workflow, not alphabetically.
+                                    $statusRank = array_search($wfStatus, array_keys($renewalStatusLabels), true);
+                                    $statusRank = $statusRank === false ? 99 : $statusRank;
+                                ?>
                                     <tr>
-                                        <td>
+                                        <td data-sort-value="<?= h($wf['lease_number'] ?: 'L-' . $wf['lease_id']) ?>">
                                             <a href="lease_view.php?id=<?= $wf['lease_id'] ?>" class="renewal-lease-link">
                                                 <strong><?= h($wf['lease_number'] ?: 'L-' . $wf['lease_id']) ?></strong>
                                             </a>
                                         </td>
                                         <td><?= h($wf['building_name'] . ' - ' . $wf['unit_number']) ?></td>
-                                        <td>
+                                        <td data-sort-value="<?= h(trim($wf['first_name'] . ' ' . $wf['last_name'])) ?>">
                                             <strong><?= h($wf['first_name'] . ' ' . $wf['last_name']) ?></strong>
                                             <?php if (!empty($wf['email'])): ?>
                                                 <br><small class="text-muted"><?= h($wf['email']) ?></small>
                                             <?php endif; ?>
                                         </td>
-                                        <td>
+                                        <td data-sort-value="<?= h(date('Y-m-d', strtotime($wf['lease_end_date']))) ?>">
                                             <?= date('Y-m-d', strtotime($wf['lease_end_date'])) ?>
                                             <?php
                                                 $daysToExpiry = isset($wf['days_to_expiry']) ? (int)$wf['days_to_expiry'] : null;
@@ -1161,15 +1168,14 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                                 }
                                             ?>
                                         </td>
-                                        <td>
+                                        <td data-sort-value="<?= (int)$statusRank ?>">
                                             <?php
-                                            $wfStatus = $wf['status'] ?? $wf['workflow_step'] ?? 'initiated';
                                             $color = $renewalStatusColors[$wfStatus] ?? 'secondary';
                                             ?>
                                             <span class="badge bg-<?= $color ?>"><?= h($renewalStatusLabels[$wfStatus] ?? ucfirst(str_replace('_', ' ', $wfStatus))) ?></span>
                                         </td>
                                         <td><?= date('Y-m-d', strtotime($wf['initiated_date'])) ?></td>
-                                        <td><?= h($wf['assigned_to_name'] ?? '-') ?></td>
+                                        <td data-sort-value="<?= h($wf['assigned_to_name'] ?? '') ?>"><?= h($wf['assigned_to_name'] ?? '-') ?></td>
                                         <td>
                                             <a href="lease_renewal_workflow_view.php?id=<?= $wf['id'] ?>" class="btn btn-sm btn-outline-primary">
                                                 <i class="bi bi-eye"></i> View
