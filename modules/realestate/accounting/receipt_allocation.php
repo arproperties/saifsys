@@ -133,7 +133,7 @@ if (re_obligation_column_exists($conn, 're_leases', 'accounting_mode')) {
 $lockLeaseSelection = $chequeId > 0;
 
 $bankAccounts = [];
-$cashAccount = null;
+$cashAccounts = [];
 try {
     $stmt = $conn->prepare("
         SELECT ba.id, ba.account_name, ba.bank_name, ba.account_number
@@ -150,13 +150,13 @@ try {
     $stmt = $conn->prepare("
         SELECT id, account_code, account_name
         FROM re_chart_of_accounts
-        WHERE company_id = ? AND account_code = '1110' AND is_active = 1
-        LIMIT 1
+        WHERE company_id = ? AND account_code IN ('1110', '1141') AND is_active = 1
+        ORDER BY account_code
     ");
     $stmt->execute([$companyId]);
-    $cashAccount = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $cashAccounts = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 } catch (Throwable $e) {
-    $cashAccount = null;
+    $cashAccounts = [];
 }
 
 $receiptAccountType = null;
@@ -314,12 +314,12 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
                 <label class="form-label">Receipt Account</label>
                 <select name="receipt_account" class="form-select" required>
                     <option value="">-- Select receipt account --</option>
-                    <?php if ($cashAccount): ?>
+                    <?php foreach ($cashAccounts as $cashAccount): ?>
                         <?php $value = 'cash:' . (int)$cashAccount['id']; ?>
                         <option value="<?= h($value) ?>" <?= $receiptAccount === $value ? 'selected' : '' ?>>
                             Cash - <?= h($cashAccount['account_code'] . ' ' . $cashAccount['account_name']) ?>
                         </option>
-                    <?php endif; ?>
+                    <?php endforeach; ?>
                     <?php foreach ($bankAccounts as $account): ?>
                         <?php $value = 'bank:' . (int)$account['id']; ?>
                         <option value="<?= h($value) ?>" <?= $receiptAccount === $value ? 'selected' : '' ?>>
