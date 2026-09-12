@@ -126,13 +126,18 @@ function ops_late_sql(string $alias = ''): string
 {
     $p = $alias !== '' ? $alias . '.' : '';
     $grace = (int)OPS_LATE_GRACE_MINUTES;
+    // PHP's clock, not CURDATE()/NOW(): the live MySQL runs on UTC, which put
+    // this count four hours behind the badge. Both values come from date(),
+    // so inlining them is safe.
+    $today = date('Y-m-d');
+    $now = date('Y-m-d H:i:s');
 
     return "({$p}status IN ('open','in_progress') AND ("
-         . "{$p}scheduled_date < CURDATE()"
+         . "{$p}scheduled_date < '{$today}'"
          . " OR ({$p}status = 'open'"
          . " AND {$p}scheduled_time IS NOT NULL"
          . " AND TIMESTAMP({$p}scheduled_date, {$p}scheduled_time)"
-         . " < DATE_SUB(NOW(), INTERVAL {$grace} MINUTE))"
+         . " < DATE_SUB('{$now}', INTERVAL {$grace} MINUTE))"
          . "))";
 }
 
@@ -1268,4 +1273,53 @@ function ops_take_flash(): ?array {
     $flash = $_SESSION['ops_flash'];
     unset($_SESSION['ops_flash']);
     return $flash;
+}
+
+/**
+ * The units a stock item can be counted in, grouped for the dropdown.
+ *
+ * Stored as the short code ("kg", "pcs", "m³") in ops_items.unit, which is what
+ * every list and movement line prints next to the number.
+ */
+function ops_unit_options(): array {
+    return [
+        'Weight' => [
+            'kg'  => 'kg — kilograms',
+            'g'   => 'g — grams',
+            'mg'  => 'mg — milligrams',
+            'ton' => 'ton — tonnes',
+            'lb'  => 'lb — pounds',
+            'oz'  => 'oz — ounces',
+        ],
+        'Volume' => [
+            'L'   => 'L — litres',
+            'mL'  => 'mL — millilitres',
+            'm³'  => 'm³ — cubic metres',
+            'cm³' => 'cm³ — cubic centimetres',
+            'gal' => 'gallon (gal)',
+        ],
+        'Count' => [
+            'pcs'   => 'pcs — pieces / individual items',
+            'units' => 'units — individual units',
+            'box'   => 'box — boxes',
+            'pack'  => 'pack — packs',
+            'dozen' => 'dozen — 12 items',
+            'pair'  => 'pair — 2 items',
+            'set'   => 'set — grouped items',
+        ],
+        'Length' => [
+            'm'  => 'meter (m)',
+            'cm' => 'cm — centimetres',
+            'mm' => 'mm — millimetres',
+        ],
+    ];
+}
+
+/** Every valid unit code, flat. */
+function ops_unit_codes(): array {
+    $codes = [];
+    foreach (ops_unit_options() as $group) {
+        $codes = array_merge($codes, array_keys($group));
+    }
+    return $codes;
 }

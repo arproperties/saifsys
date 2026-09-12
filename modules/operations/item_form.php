@@ -49,6 +49,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($data['min_qty'] < 0) {
         $data['min_qty'] = 0;
     }
+    // Only a unit from the list, or the one this item already carries — an older
+    // item may hold a free-text unit from before the dropdown existed.
+    if ($data['unit'] !== ''
+        && !in_array($data['unit'], ops_unit_codes(), true)
+        && $data['unit'] !== (string)($item['unit'] ?? '')) {
+        $data['unit'] = '';
+    }
 
     if (!$errors) {
         if ($item) {
@@ -111,15 +118,23 @@ require __DIR__ . '/includes/ops_layout_header.php';
                value="<?= h($item['name'] ?? '') ?>" placeholder="e.g. Floor cleaner" required autofocus>
       </div>
 
-      <?php // "Counted in" is hidden for now — kept in the table, and any value an
-            // item already has is carried through untouched. ?>
-      <input type="hidden" name="unit" value="<?= h($item['unit'] ?? '') ?>">
-
       <div class="col-md-6">
-        <label class="form-label fw-semibold">Warn me at</label>
-        <input type="number" step="0.001" min="0" name="min_qty" class="form-control"
-               value="<?= h(ops_qty($item['min_qty'] ?? 0)) ?>">
-        <div class="form-text">Shows a "Low" warning at or below this.</div>
+        <label class="form-label fw-semibold">Counted in <span class="text-muted fw-normal small">(optional)</span></label>
+        <?php $curUnit = (string)($item['unit'] ?? ''); $known = in_array($curUnit, ops_unit_codes(), true); ?>
+        <select name="unit" class="form-select">
+          <option value="">— not counted in any unit —</option>
+          <?php if ($curUnit !== '' && !$known): ?>
+            <option value="<?= h($curUnit) ?>" selected><?= h($curUnit) ?> (current)</option>
+          <?php endif; ?>
+          <?php foreach (ops_unit_options() as $groupLabel => $units): ?>
+            <optgroup label="<?= h($groupLabel) ?>">
+              <?php foreach ($units as $code => $label): ?>
+                <option value="<?= h($code) ?>"<?= $curUnit === $code ? ' selected' : '' ?>><?= h($label) ?></option>
+              <?php endforeach; ?>
+            </optgroup>
+          <?php endforeach; ?>
+        </select>
+        <div class="form-text">Shown next to the quantity everywhere.</div>
       </div>
 
       <?php if (!$id): ?>
@@ -138,6 +153,13 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <div class="form-text">Change this from the Stock page, so the history stays correct.</div>
       </div>
       <?php endif; ?>
+
+      <div class="col-12">
+        <label class="form-label fw-semibold">Warn me at</label>
+        <input type="number" step="0.001" min="0" name="min_qty" class="form-control"
+               value="<?= h(ops_qty($item['min_qty'] ?? 0)) ?>">
+        <div class="form-text">Shows a "Low" warning at or below this.</div>
+      </div>
 
       <div class="col-12">
         <label class="form-label fw-semibold">Notes <span class="text-muted fw-normal small">(optional)</span></label>
