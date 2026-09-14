@@ -3,6 +3,8 @@
  * HR module sidebar IA (manager + worker self-service).
  */
 
+require_once __DIR__ . '/hr_fleet.php';
+
 /**
  * @return list<array{label:string,items:list<array{key:string,label:string,icon:string,href:string,pages:list<string>}>}>
  */
@@ -76,6 +78,56 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'href' => $hrBase . '/org_units',
                     'pages' => ['org_units.php'],
                 ],
+            ],
+        ],
+        [
+            'label' => 'Fleet',
+            'items' => [
+                [
+                    'key' => 'fleet_live',
+                    'label' => 'Live Map',
+                    'icon' => 'map',
+                    'href' => $hrBase . '/fleet_live',
+                    'pages' => ['fleet_live.php'],
+                ],
+                [
+                    'key' => 'fleet_history',
+                    'label' => 'Trip History',
+                    'icon' => 'route',
+                    'href' => $hrBase . '/fleet_history',
+                    'pages' => ['fleet_history.php'],
+                ],
+                // Pickup points and routes are hidden for now — see fleet_routes_enabled().
+                ...(fleet_routes_enabled() ? [[
+                    'key' => 'fleet_pickup_report',
+                    'label' => 'Pickup Report',
+                    'icon' => 'clipboard-check',
+                    'href' => $hrBase . '/fleet_pickup_report',
+                    'pages' => ['fleet_pickup_report.php'],
+                ]] : []),
+                [
+                    'key' => 'vehicles',
+                    'label' => 'Vehicles',
+                    'icon' => 'car',
+                    'href' => $hrBase . '/vehicles',
+                    'pages' => ['vehicles.php', 'vehicle_view.php'],
+                ],
+                ...(fleet_routes_enabled() ? [
+                    [
+                        'key' => 'fleet_routes',
+                        'label' => 'Routes',
+                        'icon' => 'signpost',
+                        'href' => $hrBase . '/fleet_routes',
+                        'pages' => ['fleet_routes.php'],
+                    ],
+                    [
+                        'key' => 'fleet_points',
+                        'label' => 'Pickup Points',
+                        'icon' => 'map-pin',
+                        'href' => $hrBase . '/fleet_points',
+                        'pages' => ['fleet_points.php'],
+                    ],
+                ] : []),
             ],
         ],
         [
@@ -181,6 +233,13 @@ function hr_nav_page_title(string $currentPage): string
         'employee_view.php' => 'Employee profile',
         'employee_edit.php' => 'Edit employee',
         'org_units.php' => 'Organization',
+        'fleet_live.php' => 'Live Map',
+        'fleet_history.php' => 'Trip History',
+        'vehicles.php' => 'Vehicles',
+        'vehicle_view.php' => 'Vehicle',
+        'fleet_pickup_report.php' => 'Pickup Report',
+        'fleet_routes.php' => 'Routes',
+        'fleet_points.php' => 'Pickup Points',
         'attendance.php' => 'Attendance',
         'attendance_bulk.php' => 'Bulk attendance',
         'attendance_summary.php' => 'Attendance summary',

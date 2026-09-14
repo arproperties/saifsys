@@ -486,20 +486,23 @@ function ops_api_company_in(array $companyIds): string
 }
 
 /**
- * Load one job that belongs to this company set AND is assigned to this user.
+ * Load one job assigned to this user.
  *
  * NOTE: ops_load_job() in modules/operations/includes/ops_helper.php scopes by
  * company only — despite the comment in modules/operations/photo.php claiming
  * it re-applies a field-staff "own jobs only" rule, it does not. The API layer
  * therefore applies `assigned_to` itself, here, and nowhere else. Every route
  * in this module goes through this function.
+ *
+ * `assigned_to` is the whole access rule, and it is enough: it narrows to one
+ * person, and a job only reaches it because a supervisor put that person on it.
+ * There is deliberately no company_id condition — ops_assignable_users() hands
+ * out work across the whole group (one pool of staff, nine companies), so a
+ * company check here rejected the assignment the office had just made and the
+ * job vanished from the phone with no error anywhere.
  */
 function ops_api_load_own_job(PDO $conn, int $jobId, array $user): ?array
 {
-    $companyIds = $user['company_ids'];
-    if ($companyIds === []) {
-        return null;
-    }
     $sql = "
         SELECT j.*,
                COALESCE(NULLIF(u.fullname, ''), u.username) AS assignee_name,
@@ -509,13 +512,34 @@ function ops_api_load_own_job(PDO $conn, int $jobId, array $user): ?array
         LEFT JOIN user u ON u.id = j.assigned_to
         WHERE j.id = ?
           AND j.assigned_to = ?
-          AND j.company_id IN (" . ops_api_company_in($companyIds) . ")
         LIMIT 1
     ";
     $stmt = $conn->prepare($sql);
-    $stmt->execute(array_merge([$jobId, $user['id']], $companyIds));
+    $stmt->execute([$jobId, $user['id']]);
     $job = $stmt->fetch(PDO::FETCH_ASSOC);
     return $job ?: null;
+}
+
+/**
+ * Companies this person holds a daily-repeat series in.
+ *
+ * The app generates the day's repeating jobs on sign-in, and that has to be
+ * keyed off where their series actually live rather than their user_companies
+ * rows — staff are shared across the group, so a cleaner on one payroll
+ * routinely holds a series under a sister company.
+ */
+function ops_api_user_series_company_ids(PDO $conn, int $userId): array
+{
+    $stmt = $conn->prepare("
+        SELECT DISTINCT company_id
+        FROM ops_jobs
+        WHERE assigned_to = ?
+          AND repeat_daily = 1
+          AND series_id = id
+          AND status <> 'cancelled'
+    ");
+    $stmt->execute([$userId]);
+    return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN) ?: []);
 }
 
 /**

@@ -1,0 +1,13 @@
+# Driver app API. Sign-in and scoping: see fleet_api.php.
+RewriteEngine On
+
+# Pass the Authorization header through to PHP. Without this the bearer
+# token never reaches ops_api_bearer_token() and every request answers 401.
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+
+# /api/mobile/fleet/<anything> -> index.php, which does the routing.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php [L,QSA]

@@ -23,11 +23,12 @@ if (is_file($root . $path)) {
 }
 
 /**
- * Mirrors api/mobile/ops/.htaccess: everything under that prefix that is not a
- * real file goes to the front controller, which does its own routing.
+ * Mirrors api/mobile/{ops,fleet}/.htaccess: everything under those prefixes that
+ * is not a real file goes to that API's front controller, which does its own
+ * routing.
  */
-if (preg_match('#^/api/mobile/ops(/|$)#', $path)) {
-    $script = '/api/mobile/ops/index.php';
+if (preg_match('#^/api/mobile/(ops|fleet)(/|$)#', $path, $apiMatch)) {
+    $script = '/api/mobile/' . $apiMatch[1] . '/index.php';
     $_SERVER['SCRIPT_NAME'] = $script;
     $_SERVER['SCRIPT_FILENAME'] = $root . $script;
     $_SERVER['PHP_SELF'] = $script;

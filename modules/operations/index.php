@@ -83,6 +83,9 @@ $whereSql = implode(' AND ', $where);
 // ---------------------------------------------------------------------------
 // Headline numbers — always for today / overall, not affected by the filters
 // ---------------------------------------------------------------------------
+// PHP's date, not CURDATE(): the live MySQL runs on UTC, so between midnight
+// and 4 AM its "today" is still yesterday.
+$todayDate = date('Y-m-d');
 $lateSql = ops_late_sql();
 $statsStmt = $conn->prepare("
     SELECT
@@ -91,9 +94,9 @@ $statsStmt = $conn->prepare("
         SUM(status = 'in_progress') AS in_progress_count,
         SUM(status = 'done') AS done_count,
         SUM({$lateSql}) AS overdue_count,
-        SUM(scheduled_date = CURDATE() AND status <> 'cancelled') AS today_count,
+        SUM(scheduled_date = '{$todayDate}' AND status <> 'cancelled') AS today_count,
         SUM(needs_materials = 1 AND status <> 'cancelled') AS materials_count,
-        SUM(assigned_to IS NULL AND scheduled_date = CURDATE() AND status IN ('open','in_progress')) AS unassigned_today
+        SUM(assigned_to IS NULL AND scheduled_date = '{$todayDate}' AND status IN ('open','in_progress')) AS unassigned_today
     FROM ops_jobs
     WHERE company_id = ? AND status <> 'cancelled'
 ");
@@ -118,7 +121,7 @@ $byPersonStmt = $conn->prepare("
     FROM ops_jobs j
     LEFT JOIN user u ON u.id = j.assigned_to
     WHERE j.company_id = ? AND j.status <> 'cancelled'
-      AND j.scheduled_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      AND j.scheduled_date >= DATE_SUB('{$todayDate}', INTERVAL 30 DAY)
     GROUP BY j.assigned_to, person
     ORDER BY total DESC
 ");
@@ -141,11 +144,11 @@ $listStmt = $conn->prepare("
     ORDER BY
         (j.status IN ('done','cancelled')),
         CASE
-            WHEN j.scheduled_date = CURDATE() THEN 0
-            WHEN j.scheduled_date <  CURDATE() THEN 1
+            WHEN j.scheduled_date = '{$todayDate}' THEN 0
+            WHEN j.scheduled_date <  '{$todayDate}' THEN 1
             ELSE 2
         END,
-        CASE WHEN j.scheduled_date < CURDATE() THEN j.scheduled_date END DESC,
+        CASE WHEN j.scheduled_date < '{$todayDate}' THEN j.scheduled_date END DESC,
         j.scheduled_date ASC,
         FIELD(j.status, 'in_progress', 'open', 'done', 'cancelled'),
         FIELD(j.priority, 'high', 'normal', 'low')

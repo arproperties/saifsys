@@ -80,10 +80,11 @@ switch ($action) {
         $stmt = $conn->prepare("
             UPDATE ops_jobs
             SET status = ?,
-                finished_at = CASE WHEN ? = 'done' THEN COALESCE(finished_at, NOW()) ELSE finished_at END
+                finished_at = CASE WHEN ? = 'done' THEN COALESCE(finished_at, ?) ELSE finished_at END
             WHERE id = ? AND company_id = ?
         ");
-        $stmt->execute([$status, $status, $jobId, $companyId]);
+        // PHP's clock — the live MySQL runs on UTC.
+        $stmt->execute([$status, $status, date('Y-m-d H:i:s'), $jobId, $companyId]);
         ops_flash('Status changed to "' . ops_status_label($status) . '".');
         $redirect($jobUrl);
         break;

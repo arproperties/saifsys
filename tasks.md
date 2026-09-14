@@ -89,3 +89,4 @@ status syncing issue for renewl workflow and lease page
 for amc fixed finacial calculation with added new column (other charges).
 started vehicle.
 created grocery store using claude
+(chart of account) 1141 pioneer cash integrated with reciept allocation.

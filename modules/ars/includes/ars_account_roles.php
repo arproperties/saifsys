@@ -255,10 +255,17 @@ function ars_receipt_bank_account_codes(): array {
 }
 
 /**
+ * Methods whose receipt picker lists bank accounts (card / online settle into a bank).
+ */
+function ars_receipt_method_uses_bank(string $method): bool {
+    return in_array($method, ['bank_transfer', 'card', 'online'], true);
+}
+
+/**
  * Parent COA code for receipt pickers on the RE GL company.
  */
 function ars_receipt_parent_code_for_method(string $method): string {
-    return ($method === 'bank_transfer') ? '1200' : '1100';
+    return ars_receipt_method_uses_bank($method) ? '1200' : '1100';
 }
 
 /**
@@ -271,13 +278,13 @@ function ars_receipt_excluded_account_codes(): array {
 }
 
 /**
- * Allow-list for method: bank_transfer → banks; otherwise cash (incl. card/online desk).
+ * Allow-list for method: bank_transfer / card / online → banks; otherwise cash.
  * Prefer ars_receipt_account_options() / ars_resolve_receipt_account() which read live COA.
  *
  * @return list<string>
  */
 function ars_receipt_allowlist_for_method(string $method): array {
-    return ($method === 'bank_transfer')
+    return ars_receipt_method_uses_bank($method)
         ? ars_receipt_bank_account_codes()
         : ars_receipt_cash_account_codes();
 }
@@ -319,7 +326,7 @@ function ars_receipt_account_options(PDO $conn, int $glCompanyId, string $method
 
     // Fallback if parent_id linkage missing on older COA rows: code-range filter.
     if ($rows === []) {
-        if ($method === 'bank_transfer') {
+        if (ars_receipt_method_uses_bank($method)) {
             $rangeSql = "AND c.account_code REGEXP '^[0-9]+$' AND CAST(c.account_code AS UNSIGNED) BETWEEN 1210 AND 1299";
         } else {
             $rangeSql = "AND c.account_code REGEXP '^[0-9]+$' AND CAST(c.account_code AS UNSIGNED) BETWEEN 1110 AND 1199";
@@ -389,7 +396,7 @@ function ars_resolve_receipt_account(
     $options = ars_receipt_account_options($conn, $glCompanyId, $method);
     $allowedCodes = array_column($options, 'account_code');
     if (!in_array($code, $allowedCodes, true)) {
-        $kind = ($method === 'bank_transfer') ? 'bank' : 'cash';
+        $kind = ars_receipt_method_uses_bank($method) ? 'bank' : 'cash';
         return [
             'success' => false,
             'account' => null,

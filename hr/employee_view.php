@@ -14,6 +14,7 @@ require_once __DIR__ . '/includes/employee_view/load_employee.php';
 require_once __DIR__ . '/includes/employee_view/load_payroll.php';
 require_once __DIR__ . '/../modules/operations/includes/ops_pin.php';
 require_once __DIR__ . '/includes/hr_employee_login.php';
+require_once __DIR__ . '/includes/hr_fleet.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
@@ -3800,8 +3801,8 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                         <div class="card-body">
                             <div class="d-flex justify-content-between align-items-start mb-3">
                                 <div>
-                                    <h6 class="card-title mb-1">Operations App PIN</h6>
-                                    <div class="stat-meta">The <?= (int)ops_pin_length() ?> digits this employee types to sign in to the Operations app on their phone.</div>
+                                    <h6 class="card-title mb-1">Mobile App PIN</h6>
+                                    <div class="stat-meta">The <?= (int)ops_pin_length() ?> digits this employee types to sign in to the company mobile apps — one PIN for all of them.</div>
                                 </div>
                                 <span class="stat-icon mb-0"><i class="bi bi-phone"></i></span>
                             </div>
@@ -3846,7 +3847,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle px-3 py-2">
                                         <i class="bi bi-dash-circle me-1"></i>No PIN yet
                                     </span>
-                                    <span class="stat-meta">This employee cannot sign in to the Operations app.</span>
+                                    <span class="stat-meta">This employee cannot sign in to the company mobile apps.</span>
                                     <div class="ms-auto">
                                         <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#opsPinModal">
                                             <i class="bi bi-key me-1"></i>Set PIN
@@ -3860,6 +3861,39 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                 </div>
                                 <?php endif; ?>
                             <?php endif; ?>
+
+                            <?php if (fleet_tables_ready($conn)):
+                                /* Which apps the PIN opens. The Operations app needs no
+                                   switch; the Driver app does. */
+                                $driverAccess = fleet_app_access_has($conn, $opsPinUserId); ?>
+                                <hr class="my-3">
+                                <div class="d-flex flex-wrap align-items-center gap-3">
+                                    <div>
+                                        <div class="fw-semibold">Driver app
+                                            <?php if ($driverAccess): ?>
+                                                <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1">On</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Off</span>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="stat-meta">Lets them sign in to the Driver app with this PIN and record vehicle trips.</div>
+                                    </div>
+                                    <div class="ms-auto">
+                                        <?php if ($opsPinNeedsLogin): ?>
+                                            <span class="stat-meta">Set a PIN first.</span>
+                                        <?php else: ?>
+                                            <form method="post" action="employee_app_access_save" class="m-0">
+                                                <?php csrf_field(); ?>
+                                                <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
+                                                <input type="hidden" name="allowed" value="<?= $driverAccess ? '0' : '1' ?>">
+                                                <button class="btn btn-sm <?= $driverAccess ? 'btn-outline-danger' : 'btn-outline-primary' ?>">
+                                                    <i class="bi <?= $driverAccess ? 'bi-x-circle' : 'bi-truck' ?> me-1"></i><?= $driverAccess ? 'Turn off' : 'Turn on' ?>
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
@@ -3872,7 +3906,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                   <?php csrf_field(); ?>
                   <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
                   <div class="modal-header">
-                    <h5 class="modal-title"><?= $opsPinStatus ? 'Change' : 'Set' ?> Operations App PIN</h5>
+                    <h5 class="modal-title"><?= $opsPinStatus ? 'Change' : 'Set' ?> Mobile App PIN</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                   </div>
                   <div class="modal-body">

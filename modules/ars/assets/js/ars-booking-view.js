@@ -54,7 +54,8 @@
 
   function receiptOptionsForMethod(method) {
     var cat = receiptAccountCatalog();
-    return method === 'bank_transfer' ? cat.bank_transfer : cat.cash;
+    var usesBank = method === 'bank_transfer' || method === 'card' || method === 'online';
+    return usesBank ? cat.bank_transfer : cat.cash;
   }
 
   function fillReceiptAccountSelect(selectEl, method, preferredCode) {

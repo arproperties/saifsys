@@ -159,8 +159,6 @@ function ops_api_tab_order(string $tab): string
 
 function ops_api_handle_jobs_list(PDO $conn, array $user): void
 {
-    $companyIds = $user['company_ids'];
-    $companyIn = ops_api_company_in($companyIds);
     $today = date('Y-m-d');
 
     // Daily repeating jobs are created on the way in, exactly as the supervisor
@@ -168,15 +166,22 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
     // six in the morning is often the first thing to touch the module all day,
     // so if this did not run here their Today tab would be empty until somebody
     // in the office logged in.
-    foreach ($companyIds as $cid) {
+    //
+    // Driven by the companies this person actually has series in, not by their
+    // user_companies rows: staff are shared across the group, so a cleaner on
+    // the Heroes Zone payroll routinely holds an Ain Al Reem series. Keying the
+    // generation off their company links skipped exactly those.
+    foreach (ops_api_user_series_company_ids($conn, (int)$user['id']) as $cid) {
         ops_generate_daily_jobs($conn, (int)$cid, $today);
     }
 
-    // Scope first, filter second. These two conditions are never optional.
+    // Assignment is the scope. `assigned_to` already narrows to one person, so
+    // an extra company_id filter protects nothing and only hides a job from the
+    // person who has to do it — see ops_assignable_users(), which hands out
+    // work group-wide on purpose.
     $base = " FROM ops_jobs j
-              WHERE j.assigned_to = ?
-                AND j.company_id IN (" . $companyIn . ")";
-    $baseArgs = array_merge([$user['id']], $companyIds);
+              WHERE j.assigned_to = ?";
+    $baseArgs = [$user['id']];
 
     $tab = (string)($_GET['tab'] ?? 'today');
     if (!in_array($tab, ['today', 'overdue', 'upcoming', 'done'], true)) {
@@ -326,13 +331,15 @@ function ops_api_handle_job_start(PDO $conn, array $user, int $jobId): void
         customer_api_send_error('job_closed', 'This job is already closed.', 409);
     }
 
+    // PHP's clock, not MySQL's NOW(): the live MySQL runs on UTC while PHP and
+    // every page that displays these times run on Dubai time.
     $stmt = $conn->prepare("
         UPDATE ops_jobs
         SET status = 'in_progress',
-            started_at = COALESCE(started_at, NOW())
+            started_at = COALESCE(started_at, ?)
         WHERE id = ? AND company_id = ? AND assigned_to = ?
     ");
-    $stmt->execute([$jobId, (int)$job['company_id'], $user['id']]);
+    $stmt->execute([date('Y-m-d H:i:s'), $jobId, (int)$job['company_id'], $user['id']]);
 
     $fresh = ops_api_job_or_404($conn, $jobId, $user);
     customer_api_send_ok(['job' => ops_api_job_detail($conn, $fresh, $user)]);
@@ -381,19 +388,21 @@ function ops_api_handle_job_finish(PDO $conn, array $user, int $jobId): void
     $notes = trim((string)(ops_api_param('completion_notes', '') ?? ''));
     // A job finished without ever being started counts as zero minutes
     // rather than failing.
-    $startedAt = $job['started_at'] ?: date('Y-m-d H:i:s');
-    $minutes = max(0, (int)round((time() - strtotime((string)$startedAt)) / 60));
+    // PHP's clock for both ends, same reason as start.
+    $now = date('Y-m-d H:i:s');
+    $startedAt = $job['started_at'] ?: $now;
+    $minutes = max(0, (int)round((strtotime($now) - strtotime((string)$startedAt)) / 60));
 
     $stmt = $conn->prepare("
         UPDATE ops_jobs
         SET status = 'done',
-            started_at = COALESCE(started_at, NOW()),
-            finished_at = NOW(),
+            started_at = COALESCE(started_at, ?),
+            finished_at = ?,
             duration_minutes = ?,
             completion_notes = COALESCE(NULLIF(?, ''), completion_notes)
         WHERE id = ? AND company_id = ? AND assigned_to = ?
     ");
-    $stmt->execute([$minutes, $notes, $jobId, (int)$job['company_id'], $user['id']]);
+    $stmt->execute([$now, $now, $minutes, $notes, $jobId, (int)$job['company_id'], $user['id']]);
 
     $fresh = ops_api_job_or_404($conn, $jobId, $user);
     customer_api_send_ok([
@@ -503,15 +512,16 @@ function ops_api_handle_job_photo(PDO $conn, array $user, int $jobId): void
  */
 function ops_api_handle_photo_serve(PDO $conn, array $user, int $photoId): void
 {
-    $companyIds = $user['company_ids'];
-    $sql = "
+    // No company filter here: the own-job check below is the access rule, and
+    // scoping the row by the viewer's user_companies only hid evidence on their
+    // own jobs when the job sat under a sister company.
+    $stmt = $conn->prepare("
         SELECT p.file_path, p.job_id
         FROM ops_job_photos p
-        WHERE p.id = ? AND p.company_id IN (" . ops_api_company_in($companyIds) . ")
+        WHERE p.id = ?
         LIMIT 1
-    ";
-    $stmt = $conn->prepare($sql);
-    $stmt->execute(array_merge([$photoId], $companyIds));
+    ");
+    $stmt->execute([$photoId]);
     $photo = $stmt->fetch(PDO::FETCH_ASSOC);
 
     // Own-job check applied here, not assumed from ops_load_job().
@@ -779,15 +789,14 @@ function ops_api_find_or_create_comment(
  */
 function ops_api_handle_comment_media_serve(PDO $conn, array $user, int $mediaId): void
 {
-    $companyIds = $user['company_ids'];
-    $sql = "
+    // Same as ops_api_handle_photo_serve(): own-job is the check, company is not.
+    $stmt = $conn->prepare("
         SELECT m.file_path, m.job_id
         FROM ops_job_comment_media m
-        WHERE m.id = ? AND m.company_id IN (" . ops_api_company_in($companyIds) . ")
+        WHERE m.id = ?
         LIMIT 1
-    ";
-    $stmt = $conn->prepare($sql);
-    $stmt->execute(array_merge([$mediaId], $companyIds));
+    ");
+    $stmt->execute([$mediaId]);
     $media = $stmt->fetch(PDO::FETCH_ASSOC);
 
     // Own-job check applied here, not assumed from ops_load_job().
