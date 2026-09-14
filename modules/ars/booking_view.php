@@ -898,6 +898,11 @@ echo $arsWsLifecycleHtml;
                                         <?php if ($item['download_url'] !== '' && $item['available']): ?>
                                         <a class="btn btn-sm btn-ars-outline" href="<?= h($item['download_url']) ?>" target="_blank" rel="noopener"><?= $item['kind'] === 'upload' ? 'Download' : 'PDF' ?></a>
                                         <?php endif; ?>
+                                        <?php if ($item['attachment_id'] !== null): ?>
+                                        <button type="button" class="btn btn-sm btn-outline-danger"
+                                                data-ars-attachment-delete="<?= (int)$item['attachment_id'] ?>"
+                                                data-ars-attachment-name="<?= h($item['title']) ?>">Delete</button>
+                                        <?php endif; ?>
                                         <?php if ($item['can_send']): ?>
                                         <button type="button" class="btn btn-sm btn-ars-outline"
                                                 data-ars-doc-send="<?= h($item['doc_type']) ?>"

@@ -266,6 +266,45 @@ function ars_booking_attachment_set_category(
 }
 
 /**
+ * Remove a staff upload: the row first, then the file on disk. A file that
+ * will not unlink is only logged — the document is already gone from the booking.
+ *
+ * @return array{success:bool,error:?string,original_name:?string,doc_category:?string}
+ */
+function ars_booking_attachment_delete(PDO $conn, int $companyId, int $bookingId, int $attachmentId): array {
+    ars_booking_attachments_ensure_schema($conn);
+    $stmt = $conn->prepare("
+        SELECT * FROM ars_booking_attachments
+        WHERE id = ? AND company_id = ? AND booking_id = ?
+        LIMIT 1
+    ");
+    $stmt->execute([$attachmentId, $companyId, $bookingId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return ['success' => false, 'error' => 'Attachment not found.', 'original_name' => null, 'doc_category' => null];
+    }
+
+    $conn->prepare("DELETE FROM ars_booking_attachments WHERE id = ? AND company_id = ? AND booking_id = ?")
+        ->execute([$attachmentId, $companyId, $bookingId]);
+
+    // Only unlink inside this booking's own folder.
+    $dir = realpath(ars_booking_attachments_storage_root() . '/' . $companyId . '/' . $bookingId);
+    $abs = realpath(dirname(__DIR__, 3) . '/' . ltrim((string)$row['relative_path'], '/'));
+    if ($dir !== false && $abs !== false && str_starts_with($abs, $dir . DIRECTORY_SEPARATOR) && is_file($abs)) {
+        if (!@unlink($abs)) {
+            error_log('ars_booking_attachment_delete: could not unlink ' . $abs);
+        }
+    }
+
+    return [
+        'success' => true,
+        'error' => null,
+        'original_name' => (string)$row['original_name'],
+        'doc_category' => (string)$row['doc_category'],
+    ];
+}
+
+/**
  * @return array{success:bool,error:?string,path:?string,filename:?string,mime:?string}
  */
 function ars_booking_attachment_resolve(PDO $conn, int $companyId, int $bookingId, int $attachmentId): array {

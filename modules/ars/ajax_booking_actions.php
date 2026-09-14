@@ -1235,6 +1235,39 @@ try {
             break;
         }
 
+        case 'delete_attachment': {
+            require_once __DIR__ . '/includes/ars_booking_attachments.php';
+            $attachmentId = (int)($_POST['attachment_id'] ?? 0);
+            if ($attachmentId <= 0) {
+                echo json_encode(['success' => false, 'error' => 'Missing attachment.']);
+                exit;
+            }
+            $res = ars_booking_attachment_delete($conn, $arsCompanyId, $bookingId, $attachmentId);
+            if (!$res['success']) {
+                echo json_encode(['success' => false, 'error' => $res['error']]);
+                exit;
+            }
+            try {
+                ars_booking_activity_log($conn, [
+                    'company_id' => $arsCompanyId,
+                    'booking_id' => $bookingId,
+                    'booking_number' => $booking['booking_number'] ?? null,
+                    'event_category' => 'documents',
+                    'event_type' => 'attachment_deleted',
+                    'title' => 'Document deleted — ' . ars_booking_doc_category_label($res['doc_category']),
+                    'description' => (string)$res['original_name'],
+                    'related_entity_type' => 'ars_booking_attachment',
+                    'related_entity_id' => $attachmentId,
+                    'created_by' => $userId,
+                    'source' => 'user',
+                ]);
+            } catch (Throwable $ignored) {
+            }
+            $arsAudit('delete', 'Deleted uploaded document: ' . (string)$res['original_name']);
+            echo json_encode(['success' => true]);
+            break;
+        }
+
         case 'create_service_invoice': {
             require_once __DIR__ . '/includes/ars_accounting.php';
             require_once __DIR__ . '/includes/ars_financial_adapter.php';

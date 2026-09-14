@@ -14,7 +14,7 @@ function ars_core_actions(): array {
         'preview_stay_dates', 'apply_stay_dates',
         'approve_lifecycle_request', 'reject_lifecycle_request', 'reapply_lifecycle_request',
         'list_booking_documents', 'send_booking_document',
-        'list_attachments', 'upload_attachment', 'set_attachment_category',
+        'list_attachments', 'upload_attachment', 'set_attachment_category', 'delete_attachment',
         'create_service_invoice', 'create_extension_invoice', 'create_credit_note',
         'create_adjustment_invoice',
     ];
@@ -26,7 +26,7 @@ function ars_ops_actions(): array {
         'checkin', 'checkout',
         'approve_lifecycle_request', 'reject_lifecycle_request', 'reapply_lifecycle_request',
         'list_booking_documents', 'send_booking_document', 'list_attachments', 'upload_attachment',
-        'set_attachment_category',
+        'set_attachment_category', 'delete_attachment',
     ];
 }
 

@@ -1359,6 +1359,32 @@
           });
       });
     });
+
+    document.querySelectorAll('[data-ars-attachment-delete]').forEach(function (btn) {
+      if (btn._arsBound) return;
+      btn._arsBound = true;
+      btn.addEventListener('click', function () {
+        var name = btn.getAttribute('data-ars-attachment-name') || 'this file';
+        if (!window.confirm('Delete "' + name + '"?\n\nThe file is removed from this booking and cannot be recovered.')) return;
+        btn.disabled = true;
+        ajaxPost('delete_attachment', {
+          attachment_id: btn.getAttribute('data-ars-attachment-delete')
+        })
+          .then(function (d) {
+            if (d.success) {
+              location.hash = 'ws-docs';
+              location.reload();
+            } else {
+              btn.disabled = false;
+              showAlert(d.error || 'Could not delete the document.', 'danger');
+            }
+          })
+          .catch(function () {
+            btn.disabled = false;
+            showAlert('Network error deleting the document.', 'danger');
+          });
+      });
+    });
   }
 
   function initAttachmentModal() {
