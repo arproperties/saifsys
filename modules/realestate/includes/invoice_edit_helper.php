@@ -6,7 +6,7 @@
  * new figures (same invoice date). If the invoice was already paid beyond the
  * new total, the excess moves from the invoice to tenant credit:
  * receipt allocations shift invoice → tenant_credit, and Dr AR / Cr 2410.
- * Text-only changes (item name, description, notes) touch no accounting.
+ * Income account changes also repost. Text-only changes (description, notes) touch no accounting.
  */
 declare(strict_types=1);
 
@@ -29,7 +29,7 @@ if (!function_exists('re_invoice_edit_load')) {
         $lock = $forUpdate ? 'FOR UPDATE' : '';
         $stmt = $conn->prepare("
             SELECT i.*, l.tenant_id, l.lease_number, COALESCE(l.accounting_mode, 'legacy') AS accounting_mode,
-                   t.first_name, t.last_name, u.unit_number, b.name AS building_name
+                   t.first_name, t.last_name, u.unit_number, u.unit_type, b.name AS building_name
             FROM re_invoices i
             JOIN re_leases l ON l.id = i.lease_id AND l.company_id = i.company_id
             JOIN re_tenants t ON t.id = l.tenant_id
@@ -126,13 +126,117 @@ if (!function_exists('re_invoice_edit_blocker')) {
     }
 }
 
+if (!function_exists('re_invoice_edit_parse_line')) {
+    /**
+     * Validate one posted line and compute its totals.
+     *
+     * @return array<string,mixed>
+     */
+    function re_invoice_edit_parse_line(array $posted): array
+    {
+        $name = trim((string)($posted['item_name'] ?? ''));
+        $qty = re_invoice_edit_money($posted['quantity'] ?? 0);
+        $price = re_invoice_edit_money($posted['unit_price'] ?? 0);
+        $taxRate = re_invoice_edit_money($posted['tax_rate'] ?? 0);
+        $taxAmount = re_invoice_edit_money($posted['tax_amount'] ?? 0);
+
+        if ($name === '') {
+            throw new RuntimeException('Description is required for each new line.');
+        }
+        if ($qty <= 0) {
+            throw new RuntimeException('Quantity must be greater than zero.');
+        }
+        if ($price < 0 || $taxAmount < 0) {
+            throw new RuntimeException('Price and VAT cannot be negative.');
+        }
+        if ($taxRate < 0 || $taxRate > 100) {
+            throw new RuntimeException('VAT % must be between 0 and 100.');
+        }
+
+        $base = re_invoice_edit_money($qty * $price);
+        return [
+            'item_name' => $name,
+            'item_description' => trim((string)($posted['item_description'] ?? '')),
+            'quantity' => $qty,
+            'unit_price' => $price,
+            'base' => $base,
+            'tax_rate' => $taxRate,
+            'tax_amount' => $taxAmount,
+            'line_total' => re_invoice_edit_money($base + $taxAmount),
+        ];
+    }
+}
+
+if (!function_exists('re_invoice_edit_income_accounts')) {
+    /**
+     * @return list<array<string,mixed>>
+     */
+    function re_invoice_edit_income_accounts(PDO $conn, int $companyId): array
+    {
+        $stmt = $conn->prepare("
+            SELECT id, account_code, account_name
+            FROM re_chart_of_accounts
+            WHERE company_id = ? AND account_type = 'Income' AND is_active = 1 AND COALESCE(is_header, 0) = 0
+            ORDER BY account_code
+        ");
+        $stmt->execute([$companyId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+}
+
+if (!function_exists('re_invoice_edit_current_income_account_id')) {
+    /**
+     * The income account a line posts to today. Older invoices were posted under
+     * earlier mapping rules, so the live recognition journal wins when it has a
+     * single income account; otherwise resolve the way post_invoice_to_accounting does.
+     */
+    function re_invoice_edit_current_income_account_id(PDO $conn, int $companyId, array $invoice, array $item): int
+    {
+        if (!empty($item['income_account_id'])) {
+            return (int)$item['income_account_id'];
+        }
+        $journalId = re_invoice_edit_recognition_journal_id($conn, $companyId, (int)$invoice['id']);
+        if ($journalId > 0) {
+            $stmt = $conn->prepare("
+                SELECT DISTINCT jl.account_id
+                FROM re_journal_lines jl
+                JOIN re_chart_of_accounts a ON a.id = jl.account_id
+                WHERE jl.journal_id = ? AND a.account_type = 'Income' AND jl.credit_amount > 0
+            ");
+            $stmt->execute([$journalId]);
+            $accounts = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            if (count($accounts) === 1) {
+                return (int)$accounts[0];
+            }
+        }
+
+        $obligation = [];
+        $obligationId = (int)($item['obligation_id'] ?? 0);
+        if ($obligationId > 0) {
+            $stmt = $conn->prepare("SELECT obligation_type, accounting_class FROM re_obligations WHERE id = ? AND company_id = ? LIMIT 1");
+            $stmt->execute([$obligationId, $companyId]);
+            $obligation = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        }
+        $resolved = re_resolve_income_account_for_line($conn, $companyId, [
+            'income_account_id' => $item['income_account_id'] ?? null,
+            'obligation_type' => $obligation['obligation_type'] ?? null,
+            'accounting_class' => $obligation['accounting_class'] ?? null,
+            'unit_type' => (string)($invoice['unit_type'] ?? ''),
+            'item_name' => (string)($item['item_name'] ?? ''),
+        ]);
+        return (int)($resolved['account']['id'] ?? 0);
+    }
+}
+
 if (!function_exists('re_invoice_edit_apply')) {
     /**
      * @param array<int,array<string,mixed>> $postedLines keyed by re_invoice_items.id:
-     *        item_name, item_description, quantity, unit_price, tax_rate, tax_amount
+     *        item_description, quantity, unit_price, tax_rate, tax_amount
+     * @param array<int|string,array<string,mixed>> $addedLines new lines, same fields plus income_account_id;
+     *        their description becomes the line name
      * @return array<string,mixed>
      */
-    function re_invoice_edit_apply(PDO $conn, int $companyId, int $invoiceId, array $postedLines, string $notes, string $reason, ?int $userId): array
+    function re_invoice_edit_apply(PDO $conn, int $companyId, int $invoiceId, array $postedLines, string $notes, string $reason, ?int $userId, array $addedLines = []): array
     {
         $reason = trim($reason);
         if ($reason === '') {
@@ -162,59 +266,71 @@ if (!function_exists('re_invoice_edit_apply')) {
             $amountsChanged = false;
             $textChanged = trim((string)($invoice['notes'] ?? '')) !== trim($notes);
 
+            $incomeAccountCheck = $conn->prepare("
+                SELECT id FROM re_chart_of_accounts
+                WHERE id = ? AND company_id = ? AND account_type = 'Income' AND is_active = 1 AND COALESCE(is_header, 0) = 0
+                LIMIT 1
+            ");
+            $accountsChanged = false;
+
             foreach ($items as $item) {
                 $itemId = (int)$item['id'];
                 $posted = $postedLines[$itemId] ?? null;
                 if (!is_array($posted)) {
                     throw new RuntimeException('Line items changed while editing. Reload and try again.');
                 }
-                $name = trim((string)($posted['item_name'] ?? ''));
-                $description = trim((string)($posted['item_description'] ?? ''));
-                $qty = re_invoice_edit_money($posted['quantity'] ?? 0);
-                $price = re_invoice_edit_money($posted['unit_price'] ?? 0);
-                $taxRate = re_invoice_edit_money($posted['tax_rate'] ?? 0);
-                $taxAmount = re_invoice_edit_money($posted['tax_amount'] ?? 0);
+                // Item name is not editable; only the description is.
+                $line = re_invoice_edit_parse_line(['item_name' => (string)$item['item_name']] + $posted);
+                $subtotal += $line['base'];
+                $taxTotal += $line['tax_amount'];
 
-                if ($name === '') {
-                    throw new RuntimeException('Item name is required.');
-                }
-                if ($qty <= 0) {
-                    throw new RuntimeException('Quantity must be greater than zero.');
-                }
-                if ($price < 0 || $taxAmount < 0) {
-                    throw new RuntimeException('Price and VAT cannot be negative.');
-                }
-                if ($taxRate < 0 || $taxRate > 100) {
-                    throw new RuntimeException('VAT % must be between 0 and 100.');
-                }
-
-                $base = re_invoice_edit_money($qty * $price);
-                $lineTotal = re_invoice_edit_money($base + $taxAmount);
-                $subtotal += $base;
-                $taxTotal += $taxAmount;
-
-                if (abs($qty - (float)$item['quantity']) > 0.004
-                    || abs($price - (float)$item['unit_price']) > 0.004
-                    || abs($taxRate - (float)$item['tax_rate']) > 0.004
-                    || abs($taxAmount - (float)$item['tax_amount']) > 0.004
-                    || abs($lineTotal - (float)$item['line_total']) > 0.004) {
+                if (abs($line['quantity'] - (float)$item['quantity']) > 0.004
+                    || abs($line['unit_price'] - (float)$item['unit_price']) > 0.004
+                    || abs($line['tax_rate'] - (float)$item['tax_rate']) > 0.004
+                    || abs($line['tax_amount'] - (float)$item['tax_amount']) > 0.004
+                    || abs($line['line_total'] - (float)$item['line_total']) > 0.004) {
                     $amountsChanged = true;
                 }
-                if ($name !== (string)$item['item_name'] || $description !== (string)($item['item_description'] ?? '')) {
+                if ($line['item_name'] !== (string)$item['item_name'] || $line['item_description'] !== (string)($item['item_description'] ?? '')) {
                     $textChanged = true;
                 }
 
-                $newLines[$itemId] = [
-                    'item' => $item,
-                    'item_name' => $name,
-                    'item_description' => $description,
-                    'quantity' => $qty,
-                    'unit_price' => $price,
-                    'base' => $base,
-                    'tax_rate' => $taxRate,
-                    'tax_amount' => $taxAmount,
-                    'line_total' => $lineTotal,
-                ];
+                // Pin the chosen account on the line so a repost never drifts to a newer mapping rule.
+                $line['income_account_id'] = null;
+                $postedAccountId = (int)($posted['income_account_id'] ?? 0);
+                if ($postedAccountId > 0) {
+                    $incomeAccountCheck->execute([$postedAccountId, $companyId]);
+                    if (!$incomeAccountCheck->fetchColumn()) {
+                        throw new RuntimeException('Choose a valid income account for "' . $line['item_name'] . '".');
+                    }
+                    $line['income_account_id'] = $postedAccountId;
+                    if ($postedAccountId !== re_invoice_edit_current_income_account_id($conn, $companyId, $invoice, $item)) {
+                        $accountsChanged = true;
+                        $amountsChanged = true;
+                    }
+                }
+
+                $newLines[$itemId] = ['item' => $item] + $line;
+            }
+
+            $addLines = [];
+            foreach ($addedLines as $posted) {
+                if (!is_array($posted)) {
+                    continue;
+                }
+                // New lines have a single description box, stored as the line name.
+                $line = re_invoice_edit_parse_line(['item_name' => (string)($posted['item_description'] ?? '')] + $posted);
+                $line['item_description'] = '';
+                $incomeAccountId = (int)($posted['income_account_id'] ?? 0);
+                $incomeAccountCheck->execute([$incomeAccountId, $companyId]);
+                if (!$incomeAccountCheck->fetchColumn()) {
+                    throw new RuntimeException('Choose an income account for "' . $line['item_name'] . '".');
+                }
+                $line['income_account_id'] = $incomeAccountId;
+                $subtotal += $line['base'];
+                $taxTotal += $line['tax_amount'];
+                $addLines[] = $line;
+                $amountsChanged = true;
             }
 
             if (!$amountsChanged && !$textChanged) {
@@ -236,7 +352,8 @@ if (!function_exists('re_invoice_edit_apply')) {
             $updateItem = $conn->prepare("
                 UPDATE re_invoice_items
                 SET item_name = ?, item_description = ?, quantity = ?, unit_price = ?,
-                    tax_rate = ?, tax_amount = ?, line_total = ?
+                    tax_rate = ?, tax_amount = ?, line_total = ?,
+                    income_account_id = COALESCE(?, income_account_id)
                 WHERE id = ? AND company_id = ?
             ");
             foreach ($newLines as $itemId => $line) {
@@ -248,20 +365,50 @@ if (!function_exists('re_invoice_edit_apply')) {
                     $line['tax_rate'],
                     $line['tax_amount'],
                     $line['line_total'],
+                    $line['income_account_id'],
                     $itemId,
                     $companyId,
                 ]);
             }
 
+            if ($addLines) {
+                $orderStmt = $conn->prepare("SELECT COALESCE(MAX(display_order), 0) FROM re_invoice_items WHERE invoice_id = ? AND company_id = ?");
+                $orderStmt->execute([$invoiceId, $companyId]);
+                $displayOrder = (int)$orderStmt->fetchColumn();
+                $insertItem = $conn->prepare("
+                    INSERT INTO re_invoice_items (
+                        company_id, invoice_id, billing_item_id, obligation_id,
+                        item_name, item_description, quantity, unit_price,
+                        tax_rate, tax_amount, line_total, display_order, income_account_id
+                    ) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                foreach ($addLines as $line) {
+                    $insertItem->execute([
+                        $companyId,
+                        $invoiceId,
+                        $line['item_name'],
+                        $line['item_description'] !== '' ? $line['item_description'] : null,
+                        $line['quantity'],
+                        $line['unit_price'],
+                        $line['tax_rate'],
+                        $line['tax_amount'],
+                        $line['line_total'],
+                        ++$displayOrder,
+                        $line['income_account_id'],
+                    ]);
+                }
+            }
+
             $invoiceNumber = (string)$invoice['invoice_number'];
             $userName = (string)($_SESSION['user']['username'] ?? $_SESSION['username'] ?? '');
             $auditNote = 'Edited ' . date('Y-m-d H:i') . ($userName !== '' ? ' by ' . $userName : '')
-                . ($amountsChanged ? ': total ' . number_format($oldTotal, 2) . ' → ' . number_format($newTotal, 2) : '')
+                . ($amountsChanged && abs($newTotal - $oldTotal) > 0.004 ? ': total ' . number_format($oldTotal, 2) . ' → ' . number_format($newTotal, 2) : '')
+                . ($accountsChanged ? ($amountsChanged && abs($newTotal - $oldTotal) > 0.004 ? ', ' : ': ') . 'income account changed' : '')
                 . '. Reason: ' . $reason;
             $finalNotes = trim($notes);
             $finalNotes = trim($finalNotes . ($finalNotes !== '' ? "\n" : '') . $auditNote);
 
-            $result = ['success' => true, 'amounts_changed' => $amountsChanged, 'old_total' => $oldTotal, 'new_total' => $newTotal, 'credited' => 0.0];
+            $result = ['success' => true, 'amounts_changed' => $amountsChanged, 'accounts_changed' => $accountsChanged, 'old_total' => $oldTotal, 'new_total' => $newTotal, 'credited' => 0.0];
 
             if (!$amountsChanged) {
                 $conn->prepare("UPDATE re_invoices SET notes = ? WHERE id = ? AND company_id = ?")
@@ -393,6 +540,7 @@ if (!function_exists('re_invoice_edit_apply')) {
                 ")->execute([$paid, $outstanding, $status, $invoiceId, $companyId]);
 
                 // 4. Keep the source obligation in step with its invoice line.
+                $paidLeft = $paid;
                 foreach ($newLines as $line) {
                     $obligationId = (int)($line['item']['obligation_id'] ?? 0);
                     if ($obligationId <= 0) {
@@ -404,11 +552,9 @@ if (!function_exists('re_invoice_edit_apply')) {
                     if (!$obligation) {
                         continue;
                     }
-                    $share = $newTotal > 0 ? $line['line_total'] / $newTotal : 0;
-                    $allocated = count($newLines) === 1
-                        ? $paid
-                        : re_invoice_edit_money($paid * $share);
-                    $allocated = re_invoice_edit_money(min($allocated, $line['line_total']));
+                    // Paid money settles the generated lines first; manually added lines carry the rest.
+                    $allocated = re_invoice_edit_money(min($paidLeft, $line['line_total']));
+                    $paidLeft = re_invoice_edit_money($paidLeft - $allocated);
                     $obStatus = (string)$obligation['status'];
                     if (!in_array($obStatus, ['cancelled', 'waived'], true)) {
                         $obStatus = $allocated >= $line['line_total'] - 0.005 ? 'settled' : ($allocated > 0.005 ? 'partially_allocated' : 'open');
@@ -440,6 +586,13 @@ if (!function_exists('re_invoice_edit_apply')) {
                     'tax_rate' => $l['item']['tax_rate'],
                     'tax_amount' => $l['item']['tax_amount'],
                 ], array_values($newLines)),
+                'added_items' => array_map(static fn($l) => [
+                    'item_name' => $l['item_name'],
+                    'quantity' => $l['quantity'],
+                    'unit_price' => $l['unit_price'],
+                    'tax_amount' => $l['tax_amount'],
+                    'income_account_id' => $l['income_account_id'],
+                ], $addLines),
             ]));
 
             if ($startedHere) {

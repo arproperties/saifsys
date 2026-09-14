@@ -45,13 +45,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $blocker === null) {
         is_array($_POST['items'] ?? null) ? $_POST['items'] : [],
         (string)($_POST['notes'] ?? ''),
         (string)($_POST['reason'] ?? ''),
-        current_user_id()
+        current_user_id(),
+        is_array($_POST['new_items'] ?? null) ? $_POST['new_items'] : []
     );
     if (!empty($result['success'])) {
         if (!empty($result['no_change'])) {
             $msg = 'Nothing was changed.';
         } elseif (!empty($result['amounts_changed'])) {
-            $msg = 'Invoice updated: total ' . number_format($result['old_total'], 2) . ' → ' . number_format($result['new_total'], 2) . ' AED. Accounting entry reposted.';
+            $msg = abs($result['new_total'] - $result['old_total']) > 0.004
+                ? 'Invoice updated: total ' . number_format($result['old_total'], 2) . ' → ' . number_format($result['new_total'], 2) . ' AED. Accounting entry reposted.'
+                : 'Invoice updated. Accounting entry reposted.';
             if ($result['credited'] > 0.005) {
                 $msg .= ' ' . number_format($result['credited'], 2) . ' AED already paid moved to tenant credit.';
             }
@@ -68,6 +71,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $blocker === null) {
 function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
 $formItems = is_array($_POST['items'] ?? null) ? $_POST['items'] : [];
+$formNewItems = is_array($_POST['new_items'] ?? null) ? $_POST['new_items'] : [];
+$incomeAccounts = re_invoice_edit_income_accounts($conn, $currentCompanyId);
+$currentAccountIds = [];
+foreach ($items as $item) {
+    $currentAccountIds[(int)$item['id']] = re_invoice_edit_current_income_account_id($conn, $currentCompanyId, $invoice, $item);
+}
+$defaultIncomeAccountId = (int)(reset($currentAccountIds) ?: 0);
+
+function re_invoice_edit_account_options(array $incomeAccounts, int $selected): string
+{
+    $options = '<option value="">Income account…</option>';
+    foreach ($incomeAccounts as $acc) {
+        $options .= '<option value="' . (int)$acc['id'] . '"' . ((int)$acc['id'] === $selected ? ' selected' : '') . '>'
+            . h($acc['account_code'] . ' - ' . $acc['account_name']) . '</option>';
+    }
+    return $options;
+}
+
+/** One manually added line; $key is replaced client-side for rows added in the browser. */
+function re_invoice_edit_new_row(string $key, array $v, array $incomeAccounts, int $defaultIncomeAccountId): string
+{
+    $options = re_invoice_edit_account_options($incomeAccounts, (int)($v['income_account_id'] ?? $defaultIncomeAccountId));
+    $num = static fn($field, $default) => h(number_format((float)($v[$field] ?? $default), 2, '.', ''));
+    $name = 'new_items[' . h($key) . ']';
+    return '<tr class="edit-line new-line table-success-subtle">'
+        . '<td><input type="text" name="' . $name . '[item_description]" class="form-control mb-1" value="' . h($v['item_description'] ?? '') . '" placeholder="Description" required>'
+        . '<select name="' . $name . '[income_account_id]" class="form-select form-select-sm" required>' . $options . '</select></td>'
+        . '<td><input type="number" step="0.01" min="0.01" name="' . $name . '[quantity]" class="form-control text-end js-qty" value="' . $num('quantity', 1) . '" required></td>'
+        . '<td><input type="number" step="0.01" min="0" name="' . $name . '[unit_price]" class="form-control text-end js-price" value="' . $num('unit_price', 0) . '" required></td>'
+        . '<td><input type="number" step="0.01" min="0" max="100" name="' . $name . '[tax_rate]" class="form-control text-end js-rate" value="' . $num('tax_rate', 0) . '"></td>'
+        . '<td><input type="number" step="0.01" min="0" name="' . $name . '[tax_amount]" class="form-control text-end js-tax" value="' . $num('tax_amount', 0) . '"></td>'
+        . '<td class="text-end fw-semibold"><span class="js-line-total">0.00</span>'
+        . '<button type="button" class="btn btn-sm btn-outline-danger ms-2 js-remove-line" title="Remove line"><i class="bi bi-x-lg"></i></button></td>'
+        . '</tr>';
+}
 $paid = (float)($invoice['paid_amount'] ?? 0);
 
 $pageTitle = 'Edit Invoice #' . h($invoice['invoice_number']);
@@ -132,8 +170,11 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     ?>
                         <tr class="edit-line">
                             <td>
-                                <input type="text" name="items[<?= $id ?>][item_name]" class="form-control mb-1" value="<?= h($v['item_name'] ?? '') ?>" required>
-                                <input type="text" name="items[<?= $id ?>][item_description]" class="form-control form-control-sm" value="<?= h($v['item_description'] ?? '') ?>" placeholder="Description">
+                                <div class="fw-semibold mb-1"><?= h($item['item_name']) ?></div>
+                                <input type="text" name="items[<?= $id ?>][item_description]" class="form-control mb-1" value="<?= h($v['item_description'] ?? '') ?>" placeholder="Description">
+                                <select name="items[<?= $id ?>][income_account_id]" class="form-select form-select-sm">
+                                    <?= re_invoice_edit_account_options($incomeAccounts, (int)($v['income_account_id'] ?? $currentAccountIds[$id] ?? 0)) ?>
+                                </select>
                             </td>
                             <td><input type="number" step="0.01" min="0.01" name="items[<?= $id ?>][quantity]" class="form-control text-end js-qty" value="<?= h(number_format((float)($v['quantity'] ?? 0), 2, '.', '')) ?>" required></td>
                             <td><input type="number" step="0.01" min="0" name="items[<?= $id ?>][unit_price]" class="form-control text-end js-price" value="<?= h(number_format((float)($v['unit_price'] ?? 0), 2, '.', '')) ?>" required></td>
@@ -141,6 +182,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <td><input type="number" step="0.01" min="0" name="items[<?= $id ?>][tax_amount]" class="form-control text-end js-tax" value="<?= h(number_format((float)($v['tax_amount'] ?? 0), 2, '.', '')) ?>"></td>
                             <td class="text-end fw-semibold js-line-total"><?= number_format((float)$item['line_total'], 2) ?></td>
                         </tr>
+                    <?php endforeach; ?>
+                    <?php foreach ($formNewItems as $key => $v): ?>
+                        <?= is_array($v) ? re_invoice_edit_new_row((string)$key, $v, $incomeAccounts, $defaultIncomeAccountId) : '' ?>
                     <?php endforeach; ?>
                     </tbody>
                     <tfoot>
@@ -165,7 +209,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     </tfoot>
                 </table>
             </div>
-            <div class="small text-muted js-balance-hint"></div>
+            <button type="button" class="btn btn-outline-success btn-sm js-add-line"><i class="bi bi-plus-lg"></i> Add Line</button>
+            <template id="newLineTemplate"><?= re_invoice_edit_new_row('__KEY__', [], $incomeAccounts, $defaultIncomeAccountId) ?></template>
+            <div class="small text-muted js-balance-hint mt-2"></div>
         </div>
     </div>
 
@@ -221,7 +267,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
         }
     }
 
-    form.querySelectorAll('.edit-line').forEach(row => {
+    function bindRow(row) {
         const syncTax = () => {
             const base = num(row.querySelector('.js-qty')) * num(row.querySelector('.js-price'));
             row.querySelector('.js-tax').value = r2(base * num(row.querySelector('.js-rate')) / 100).toFixed(2);
@@ -231,6 +277,23 @@ require_once __DIR__ . '/includes/re_layout_header.php';
         row.querySelector('.js-price').addEventListener('input', syncTax);
         row.querySelector('.js-rate').addEventListener('input', syncTax);
         row.querySelector('.js-tax').addEventListener('input', recalc);
+        const remove = row.querySelector('.js-remove-line');
+        if (remove) {
+            remove.addEventListener('click', () => { row.remove(); recalc(); });
+        }
+    }
+
+    form.querySelectorAll('.edit-line').forEach(bindRow);
+
+    let newKey = Date.now();
+    form.querySelector('.js-add-line').addEventListener('click', () => {
+        const html = document.getElementById('newLineTemplate').innerHTML.replaceAll('__KEY__', 'n' + (newKey++));
+        const tbody = form.querySelector('tbody');
+        tbody.insertAdjacentHTML('beforeend', html);
+        const row = tbody.lastElementChild;
+        bindRow(row);
+        recalc();
+        row.querySelector('input').focus();
     });
     recalc();
 })();
