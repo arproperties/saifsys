@@ -271,7 +271,13 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 }
 </style>
 <?php
+$editFlash = (string)($_SESSION['re_invoice_edit_flash'] ?? '');
+unset($_SESSION['re_invoice_edit_flash']);
 ?>
+
+        <?php if ($editFlash !== ''): ?>
+            <div class="alert alert-success no-print"><?= h($editFlash) ?></div>
+        <?php endif; ?>
 
         <div class="d-flex justify-content-between align-items-center mb-4 no-print">
             <div class="page-header-label">Invoice #<?= h($invoice['invoice_number']) ?></div>
@@ -288,6 +294,11 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     <?php endif; ?>
                     <a href="accounting/credit_note_add.php?invoice_id=<?= $invoiceId ?>" class="btn btn-outline-warning me-2">
                         <i class="bi bi-arrow-counterclockwise"></i> Credit Note
+                    </a>
+                <?php endif; ?>
+                <?php if ($invoice['status'] !== 'cancelled' && ($invoice['accounting_mode'] ?? 'legacy') === 'invoice'): ?>
+                    <a href="billing_invoice_edit.php?id=<?= $invoiceId ?>" class="btn btn-outline-primary me-2">
+                        <i class="bi bi-pencil"></i> Edit
                     </a>
                 <?php endif; ?>
                 <a href="?id=<?= $invoiceId ?>&export=pdf" target="_blank" class="btn btn-primary">
