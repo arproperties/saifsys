@@ -4,6 +4,11 @@
  * table, flash messages. Rules and queries live in hr_fleet.php.
  */
 
+// Same clock as the Driver app's API (see ops_helper.php): the live PHP runs on
+// UTC. Set here rather than in hr_fleet.php, which hr_nav.php loads on every HR
+// page.
+date_default_timezone_set('Asia/Dubai');
+
 const HR_FLEET_ROLES = ['Owner', 'Admin', 'HR'];
 
 function hr_fleet_palette(): array

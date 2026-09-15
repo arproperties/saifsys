@@ -9,6 +9,11 @@ require_once dirname(__DIR__, 3) . '/includes/module_access.php';
 require_once dirname(__DIR__, 3) . '/includes/rbac_department.php';
 require_once dirname(__DIR__, 3) . '/includes/company_helper.php';
 
+// Every ops and fleet time is stamped with PHP's date(), and the live PHP runs
+// on UTC — trips and jobs came out 4 hours early. Loaded by the Operations
+// pages and by both mobile APIs (api/mobile/ops, api/mobile/fleet).
+date_default_timezone_set('Asia/Dubai');
+
 if (!function_exists('h')) {
     function h($s) {
         return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
