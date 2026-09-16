@@ -47,6 +47,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'repeat_daily' => !empty($_POST['repeat_daily']) ? 1 : 0,
     ];
 
+    // Who does it is not asked for on the way in any more — it moves around too
+    // often to be worth setting here. A new job is always made unassigned and
+    // picked up on the edit screen.
+    if (!$job) {
+        $data['assigned_to'] = null;
+    }
+
     // A generated day is not where the rule lives — the head job is. Editing
     // Tuesday's copy must not quietly start a second series off the same days.
     $isGeneratedCopy = $job && ops_job_in_series($job) && !ops_job_is_repeat_head($job);
@@ -148,7 +155,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $job = array_merge($job ?? [], $data);
 }
 
-$people = ops_assignable_users($conn, $companyId);
+// Only the edit screen asks who does it, so only the edit screen needs the list.
+$people = $jobId ? ops_assignable_users($conn, $companyId) : [];
 $pageTitle = $jobId ? 'Edit job' : 'New job';
 require __DIR__ . '/includes/ops_layout_header.php';
 ?>
@@ -222,6 +230,11 @@ require __DIR__ . '/includes/ops_layout_header.php';
                value="<?= h($job['location'] ?? '') ?>" placeholder="Building, unit, site or area">
       </div>
 
+<?php // Who does it is an edit-screen question. Assignments change often enough
+      // that fixing one at creation only means coming back to change it. New jobs
+      // go out unassigned; the field is still here on edit for whoever picks it up.
+      $dateCol = $jobId ? 'col-md-3' : 'col-md-6'; ?>
+      <?php if ($jobId): ?>
       <div class="col-md-6">
         <label class="form-label fw-semibold">Who does it?</label>
         <select name="assigned_to" class="form-select">
@@ -237,14 +250,15 @@ require __DIR__ . '/includes/ops_layout_header.php';
           <?php endforeach; ?>
         </select>
       </div>
+      <?php endif; ?>
 
-      <div class="col-md-3">
+      <div class="<?= $dateCol ?>">
         <label class="form-label fw-semibold">Due date</label>
         <input type="date" name="scheduled_date" class="form-control"
                value="<?= h($job['scheduled_date'] ?? date('Y-m-d')) ?>" required>
       </div>
 
-      <div class="col-md-3">
+      <div class="<?= $dateCol ?>">
         <label class="form-label fw-semibold">Time <span class="text-muted fw-normal small">(optional)</span></label>
         <input type="time" name="scheduled_time" class="form-control"
                value="<?= h($job['scheduled_time'] ?? '') ?>">
@@ -277,7 +291,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
               <span class="fw-semibold d-block">Repeat this job every day</span>
               <span class="text-muted small d-block">
                 For work that comes round daily — the morning clean, the bin run.
-                The same job is created again each day, for the same person.
+                The same job is created again each day<?= $jobId ? ', for the same person' : '' ?>.
               </span>
             </label>
           </div>
