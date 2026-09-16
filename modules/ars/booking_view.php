@@ -215,6 +215,7 @@ if ($booking['status'] === 'pending') {
           <?= ars_ui_status_badge('booking', $booking['status']) ?>
           <?php if ($finLocked): ?><?= ars_ui_lock_indicator() ?><?php endif; ?>
           <?= ars_ui_badge(ucfirst(str_replace('_', ' ', $finStatus)), ['tone' => 'info', 'icon' => 'file-text']) ?>
+          <?php if (($booking['booking_source'] ?? 'direct') === 'airbnb'): ?><?= ars_ui_badge('Airbnb ' . ($booking['channel_ref'] ?? ''), ['tone' => 'danger', 'icon' => 'home']) ?><?php endif; ?>
         </div>
         <div class="ars-ws-identity-meta small text-muted">
           <span class="fw-semibold text-ars-ink"><?= h($booking['booking_number']) ?></span>

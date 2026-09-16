@@ -155,6 +155,36 @@ $accounts = $conn->prepare($query);
 $accounts->execute($params);
 $accounts = $accounts->fetchAll(PDO::FETCH_ASSOC);
 
+if (!empty($_GET['export'])) {
+    require_once __DIR__ . '/export_excel_helper.php';
+    $exportRows = [];
+    foreach ($accounts as $acc) {
+        $exportRows[] = [
+            'account_code' => $acc['account_code'],
+            'account_name' => $acc['account_name'],
+            'account_type' => $acc['account_type'],
+            'parent' => $acc['parent_code'] ? $acc['parent_code'] . ' - ' . $acc['parent_name'] : '',
+            'normal_balance' => ucfirst($acc['normal_balance']),
+            'is_header' => $acc['is_header'] ? 'Yes' : 'No',
+            'transaction_count' => (int)$acc['transaction_count'],
+            'status' => $acc['is_active'] ? 'Active' : 'Inactive',
+            'description' => $acc['description'] ?? '',
+        ];
+    }
+    $cols = [
+        'account_code' => 'Code', 'account_name' => 'Account Name', 'account_type' => 'Type',
+        'parent' => 'Parent Account', 'normal_balance' => 'Normal Balance', 'is_header' => 'Header',
+        'transaction_count' => 'Transactions', 'status' => 'Status', 'description' => 'Description',
+    ];
+    $filename = 'chart_of_accounts' . ($filterType ? '_' . strtolower(preg_replace('/[^a-z]/i', '', $filterType)) : '') . '_' . date('Y-m-d');
+    $title = 'Chart of Accounts' . ($filterType ? ' - ' . $filterType : '');
+    if ($_GET['export'] === 'excel') {
+        accounting_export_excel_or_csv($exportRows, $cols, $filename, $title);
+    } else {
+        accounting_export_csv($exportRows, $cols, $filename);
+    }
+}
+
 // Get parent accounts (for dropdown)
 $parentAccounts = $conn->prepare("
     SELECT id, account_code, account_name, account_type
@@ -188,9 +218,14 @@ coa_require_header($coaLayout);
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h1><i class="bi bi-list-columns-reverse"></i> Chart of Accounts</h1>
-    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
-        <i class="bi bi-plus-circle"></i> Add Account
-    </button>
+    <div class="d-flex gap-2">
+        <?php $exportQs = $filterType ? 'type=' . urlencode($filterType) . '&' : ''; ?>
+        <a href="?<?= h($exportQs) ?>export=csv" class="btn btn-outline-primary"><i class="bi bi-download"></i> CSV</a>
+        <a href="?<?= h($exportQs) ?>export=excel" class="btn btn-outline-success"><i class="bi bi-file-earmark-excel"></i> Excel</a>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
+            <i class="bi bi-plus-circle"></i> Add Account
+        </button>
+    </div>
 </div>
 
 <?php if (!empty($_SESSION['success'])): ?>

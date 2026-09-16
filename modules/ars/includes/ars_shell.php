@@ -220,7 +220,7 @@ if (!function_exists('ars_shell_nav_items')) {
                 'label' => 'Settings',
                 'icon' => 'settings',
                 'href' => 'settings.php',
-                'active' => $is(['settings.php', 'pricing.php', 'document_branding.php']),
+                'active' => $is(['settings.php', 'pricing.php', 'document_branding.php', 'airbnb_sync.php']),
                 'visible' => true,
                 'children' => [
                     [
@@ -243,6 +243,13 @@ if (!function_exists('ars_shell_nav_items')) {
                         'icon' => 'tags',
                         'href' => 'pricing.php',
                         'active' => $is(['pricing.php']),
+                    ],
+                    [
+                        'id' => 'set-airbnb',
+                        'label' => 'Airbnb Sync',
+                        'icon' => 'refresh-cw',
+                        'href' => 'airbnb_sync.php',
+                        'active' => $is(['airbnb_sync.php']),
                     ],
                 ],
             ];
