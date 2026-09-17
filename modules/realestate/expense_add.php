@@ -438,6 +438,8 @@ $pageTitle = in_array($sourceModule, ['realestate', 'construction'], true) ? 'Ad
 $erpExpenseLayout = erp_expense_resolve_layout($sourceModule);
 $erpChartOfAccountsUrl = erp_expense_chart_of_accounts_href($erpExpenseLayout);
 erp_expense_require_header($erpExpenseLayout);
+require_once __DIR__ . '/../../includes/searchable_select.php';
+searchable_select_assets();
 ?>
 <?php if (($sourceModule ?? 'realestate') === 'realestate'): ?>
 <div class="alert alert-warning mx-3 mt-3">
@@ -474,14 +476,14 @@ erp_expense_require_header($erpExpenseLayout);
                     <div class="col-md-5">
                         <label class="form-label"><?= $sourceModule === 'construction' ? 'Supplier (Construction)' : 'Supplier' ?></label>
                         <?php if ($sourceModule === 'construction'): ?>
-                        <select name="co_supplier_id" class="form-select">
+                        <select name="co_supplier_id" class="form-select" data-search>
                             <option value="0">— none —</option>
                             <?php foreach ($vendors as $v): ?>
                             <option value="<?= (int)$v['id'] ?>"><?= h($v['vendor_name']) ?></option>
                             <?php endforeach; ?>
                         </select>
                         <?php else: ?>
-                        <select name="vendor_id" class="form-select">
+                        <select name="vendor_id" class="form-select" data-search>
                             <option value="0">— none —</option>
                             <?php foreach ($vendors as $v): ?>
                             <option value="<?= (int)$v['id'] ?>"><?= h($v['vendor_name']) ?></option>
@@ -496,7 +498,7 @@ erp_expense_require_header($erpExpenseLayout);
                     <?php if ($sourceModule === 'construction' && $hasExpenseProjectColumn): ?>
                     <div class="col-md-4">
                         <label class="form-label">Project <span class="text-muted fw-normal">(optional)</span></label>
-                        <select name="project_id" class="form-select">
+                        <select name="project_id" class="form-select" data-search>
                             <option value="0">— Overhead (no project) —</option>
                             <?php foreach ($constructionProjects as $p): ?>
                             <option value="<?= (int)$p['id'] ?>">
@@ -524,7 +526,7 @@ erp_expense_require_header($erpExpenseLayout);
                     </div>
                     <div class="col-md-4" id="payWrap">
                         <label class="form-label" id="payLabel">Payment / settlement account *</label>
-                        <select name="pay_account_id" class="form-select" id="pay_account_id">
+                        <select name="pay_account_id" class="form-select" id="pay_account_id" data-search>
                             <?php
                             $payAccounts = [];
                             foreach ($bankAccounts as $b) {
@@ -666,7 +668,7 @@ erp_expense_require_header($erpExpenseLayout);
         <template id="lineTpl">
             <tr class="line-row">
                 <td>
-                    <select name="line_account_id[]" class="form-select form-select-sm line-acc" required>
+                    <select name="line_account_id[]" class="form-select form-select-sm line-acc" data-search required>
                         <option value="">— Account —</option>
                         <?php
                         $lastType = null;
@@ -687,7 +689,7 @@ erp_expense_require_header($erpExpenseLayout);
                 <td><input type="text" name="line_desc[]" class="form-control form-control-sm line-desc" placeholder="Description"></td>
                 <?php if ($sourceModule === 'realestate' && $hasBuildingCol): ?>
                 <td>
-                    <select name="line_building_id[]" class="form-select form-select-sm line-bldg">
+                    <select name="line_building_id[]" class="form-select form-select-sm line-bldg" data-search>
                         <option value="0">— Unassigned —</option>
                         <?php foreach ($buildings as $b): ?>
                         <option value="<?= (int)$b['id'] ?>"><?= h($b['name']) ?></option>
