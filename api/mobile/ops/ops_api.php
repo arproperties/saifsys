@@ -522,6 +522,34 @@ function ops_api_prune_requests(PDO $conn): void
  * One id for the whole life of a queued item, so a retry is recognisable as
  * the same attempt rather than a second one.
  */
+/**
+ * When the person actually tapped, for work queued with no signal.
+ *
+ * The app keeps every tap on the phone until it can send it, and each one
+ * carries `client_at` — the phone's clock at the tap, in epoch milliseconds. A
+ * Finish tapped in a basement and delivered forty minutes later must record the
+ * finish, not the delivery: the duration is what an invoice is built from.
+ *
+ * The phone's clock is only believed inside a window: no more than five minutes
+ * ahead of the server, and no further back than $maxAgeSeconds. Outside it, or
+ * when nothing is sent (an older app), the answer is the server's own now —
+ * exactly what every route did before this existed.
+ *
+ * Returns 'Y-m-d H:i:s' in PHP's timezone, like date() everywhere else here.
+ */
+function ops_api_client_time(int $maxAgeSeconds = 7 * 86400): string
+{
+    $now = time();
+    $raw = ops_api_param('client_at');
+    if (is_numeric($raw)) {
+        $at = (int)floor((float)$raw / 1000);
+        if ($at <= $now + 300 && $at >= $now - $maxAgeSeconds) {
+            return date('Y-m-d H:i:s', min($at, $now));
+        }
+    }
+    return date('Y-m-d H:i:s', $now);
+}
+
 function ops_api_request_id(): string
 {
     $requestId = trim((string)($_SERVER['HTTP_X_OPS_REQUEST_ID'] ?? ''));
@@ -720,7 +748,7 @@ function ops_api_job_row(array $job): array
         'is_paused' => $job['status'] === 'in_progress' && !empty($job['paused_at']),
         'paused_at' => !empty($job['paused_at']) ? (string)$job['paused_at'] : null,
         'pause_reason' => !empty($job['pause_reason']) ? (string)$job['pause_reason'] : null,
-        // 'staff', 'tenant_maintenance', 'tenant_cleaning', 'cleaner_report', 'ars_checkout' or 'tenant_move_out'. The card marks a
+        // 'staff', 'tenant_maintenance', 'tenant_cleaning', 'cleaner_report', 'ars_checkout', 'tenant_move_out' or 'customer_booking'. The card marks a
         // tenant's job, and the Requests tab needs the tenant's own words on
         // it: "AC not cooling" is how somebody decides whether it is theirs.
         'source_type' => (string)($job['source_type'] ?? 'staff'),

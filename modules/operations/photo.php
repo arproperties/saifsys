@@ -20,16 +20,19 @@ $companyId = ops_company_id($conn);
 $photoId = (int)($_GET['id'] ?? 0);
 
 $stmt = $conn->prepare("
-    SELECT p.file_path, p.job_id
+    SELECT p.file_path, p.job_id, p.company_id
     FROM ops_job_photos p
-    WHERE p.id = ? AND p.company_id = ?
+    WHERE p.id = ?
     LIMIT 1
 ");
-$stmt->execute([$photoId, $companyId]);
+$stmt->execute([$photoId]);
 $photo = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // ops_load_job re-applies the field-staff "only my jobs" rule.
-if (!$photo || !ops_load_job($conn, (int)$photo['job_id'], $companyId)) {
+// The job decides who may see it (ops_load_job), and the file must belong to
+// that job's company.
+$owningJob = $photo ? ops_load_job($conn, (int)$photo['job_id'], $companyId) : null;
+if (!$photo || !$owningJob || (int)$photo['company_id'] !== (int)$owningJob['company_id']) {
     http_response_code(404);
     exit('Not found');
 }

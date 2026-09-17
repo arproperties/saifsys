@@ -60,7 +60,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ops_flash('That building could not be found.', 'danger');
     } elseif ($clientId <= 0) {
         $conn->prepare("DELETE FROM ops_building_clients WHERE building_id = ?")->execute([$buildingId]);
-        ops_flash('Cleaning in ' . $buildingName . ' will no longer be invoiced.', 'info');
+        $landlord = ops_bill_landlord_client($conn, $buildingId);
+        ops_flash($landlord
+            ? $buildingName . ' is billed to its landlord, ' . $landlord['client_name'] . '.'
+            : 'Cleaning in ' . $buildingName . ' will no longer be invoiced.', 'info');
     } else {
         $client = $conn->prepare("SELECT client_name, rate FROM client WHERE id = ?");
         $client->execute([$clientId]);
@@ -120,6 +123,18 @@ $buildings = $conn->prepare("
 $buildings->execute([date('Y-m-d', strtotime('-30 days')), $companyId]);
 $buildings = $buildings->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
+// With no client chosen, a building bills its landlord when the landlord is a
+// client — see ops_bill_client_for_building(). Show who that is.
+foreach ($buildings as &$b) {
+    $b['landlord_client'] = $b['client_id'] ? null : ops_bill_landlord_client($conn, (int)$b['id']);
+    if ($b['landlord_client']) {
+        $b['rate'] = $b['landlord_client']['rate'];
+        $b['default_vat_rate'] = $b['landlord_client']['default_vat_rate'];
+        $b['terms'] = $b['landlord_client']['terms'];
+    }
+}
+unset($b);
+
 // The clients worth choosing from: anyone billed in the last year, plus
 // whoever is already set. The full client list is over ten thousand names,
 // almost all one-off customers, and a dropdown of those helps nobody.
@@ -145,8 +160,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
   <div class="text-muted small">
     A cleaning job finished in a building invoices that building's client automatically —
     app time rounded up to the half hour, at most <?= (int)OPS_BILL_MAX_HOURS ?> hours,
-    at the client's own rate and VAT. Tenant maintenance requests bill the same client,
-    at most <?= (int)OPS_BILL_MAX_HOURS_TENANT ?> hours. Tenant cleaning bookings (already paid)
+    at the client's own rate and VAT. With no client chosen, the building's landlord is billed
+    when the landlord is a client. Maintenance requests bill the same client,
+    at most <?= (int)OPS_BILL_MAX_HOURS_TENANT ?> hours. ARS checkouts and customer-app bookings
+    invoice at their own price. Tenant cleaning bookings (already paid), move-outs
     and maintenance jobs staff raise themselves are not invoiced.
   </div>
 </div>
@@ -182,7 +199,9 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <?php csrf_field(); ?>
                 <input type="hidden" name="building_id" value="<?= (int)$b['id'] ?>">
                 <select name="client_id" class="form-select form-select-sm">
-                  <option value="">Not invoiced</option>
+                  <option value=""><?= $b['landlord_client']
+                      ? 'Landlord — ' . h($b['landlord_client']['client_name'])
+                      : 'Not invoiced' ?></option>
                   <?php foreach ($clients as $c): ?>
                     <option value="<?= (int)$c['id'] ?>" <?= (int)$b['client_id'] === (int)$c['id'] ? 'selected' : '' ?>>
                       <?= h($c['client_name']) ?><?= (float)$c['rate'] > 0 ? ' — AED ' . h(number_format((float)$c['rate'], 2)) . '/h' : ' — no rate' ?>
@@ -193,7 +212,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
               </form>
             </td>
             <td class="small text-nowrap">
-              <?php if ($b['client_id']): ?>
+              <?php if ($b['client_id'] || $b['landlord_client']): ?>
                 <?php if ((float)$b['rate'] > 0): ?>
                   AED <?= h(number_format((float)$b['rate'], 2)) ?>/h
                   + <?= h(rtrim(rtrim(number_format((float)($b['default_vat_rate'] ?? 5), 2), '0'), '.')) ?>% VAT

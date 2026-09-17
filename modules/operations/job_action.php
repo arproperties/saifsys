@@ -11,7 +11,6 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/ops_helper.php';
 require_once __DIR__ . '/includes/ops_billing.php';
-require_once __DIR__ . '/includes/ops_sources.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -68,6 +67,11 @@ if (!$job) {
 
 $jobUrl = $opsBase . '/job_view.php?id=' . $jobId;
 
+// The job's own company, for everything written to the job itself. Usually the
+// selected company; not for a customer booking, which every company can open
+// (ops_job_open_to_all_sql). Stock still moves from the selected company's store.
+$jobCompanyId = (int)$job['company_id'];
+
 switch ($action) {
 
     // -----------------------------------------------------------------------
@@ -102,7 +106,7 @@ switch ($action) {
             WHERE id = ? AND company_id = ?
         ");
         // PHP's clock — the live MySQL runs on UTC.
-        $stmt->execute([$status, $status, date('Y-m-d H:i:s'), $jobId, $companyId]);
+        $stmt->execute([$status, $status, date('Y-m-d H:i:s'), $jobId, $jobCompanyId]);
         // A pause only means something on a running job. Any other status the
         // office sets ends it, so the board never shows a closed job as paused.
         if ($status !== 'in_progress' && !empty($job['paused_at'])) {
@@ -112,50 +116,12 @@ switch ($action) {
         $redirect($jobUrl);
         break;
 
-    // -----------------------------------------------------------------------
-    // Reassigning — someone is off, hand their work to another person.
-    // -----------------------------------------------------------------------
-    case 'assign':
-        $assignTo = ($_POST['assigned_to'] ?? '') !== '' ? (int)$_POST['assigned_to'] : null;
-
-        // Only current staff — the list is group-wide, but someone who has
-        // left must not be given work.
-        if ($assignTo !== null) {
-            $allowed = false;
-            foreach (ops_assignable_users($conn, $companyId) as $p) {
-                if ((int)$p['id'] === $assignTo) {
-                    $allowed = true;
-                    break;
-                }
-            }
-            if (!$allowed) {
-                ops_flash('That person is not on the staff list and cannot be given jobs.', 'danger');
-                $redirect($jobUrl);
-            }
-        }
-
-        $conn->prepare("UPDATE ops_jobs SET assigned_to = ? WHERE id = ? AND company_id = ?")
-             ->execute([$assignTo, $jobId, $companyId]);
-
-        // Same name on the old module's ARS work order while both run.
-        if (($job['source_type'] ?? '') === 'ars_checkout') {
-            ops_ars_order_show_person($conn, (int)$job['source_id'], $assignTo);
-        }
-
-        $who = 'Nobody';
-        if ($assignTo !== null) {
-            $nameStmt = $conn->prepare("SELECT COALESCE(NULLIF(fullname, ''), username) FROM user WHERE id = ?");
-            $nameStmt->execute([$assignTo]);
-            $who = (string)($nameStmt->fetchColumn() ?: 'Someone');
-        }
-
-        ops_flash($who . ' now has this job.');
-        $redirect($jobUrl);
-        break;
+    // No 'assign' action. Nobody in the office hands out work: a staff member
+    // raises their own job or takes one from the Requests pool in the app.
 
     case 'delete_job':
         $stmt = $conn->prepare("DELETE FROM ops_jobs WHERE id = ? AND company_id = ?");
-        $stmt->execute([$jobId, $companyId]);
+        $stmt->execute([$jobId, $jobCompanyId]);
         ops_flash('Job deleted.');
         $redirect($opsBase . '/index.php');
         break;
@@ -225,7 +191,7 @@ switch ($action) {
             UPDATE ops_jobs SET needs_materials = 0
             WHERE id = ? AND company_id = ? AND needs_materials = 1
         ");
-        $stmt->execute([$jobId, $companyId]);
+        $stmt->execute([$jobId, $jobCompanyId]);
 
         $done = $stmt->rowCount() > 0
             ? 'Taken out of stock for this job. The job is off the materials waiting list.'
@@ -265,7 +231,7 @@ switch ($action) {
             INSERT INTO ops_job_comments (job_id, company_id, user_id, comment)
             VALUES (?, ?, ?, ?)
         ");
-        $stmt->execute([$jobId, $companyId, $userId, $comment]);
+        $stmt->execute([$jobId, $jobCompanyId, $userId, $comment]);
         $commentId = (int)$conn->lastInsertId();
 
         // One file failing does not lose the others or the words: each is
@@ -286,7 +252,7 @@ switch ($action) {
                 ? (int)$durations[$i]
                 : null;
             $result = ops_store_comment_media(
-                $conn, $companyId, $jobId, $commentId, $file, $kind, $userId, $seconds
+                $conn, $jobCompanyId, $jobId, $commentId, $file, $kind, $userId, $seconds
             );
             if (!empty($result['ok'])) {
                 $stored++;
@@ -299,7 +265,7 @@ switch ($action) {
         // is an empty row nobody wants in the thread.
         if ($comment === '' && $stored === 0) {
             $conn->prepare("DELETE FROM ops_job_comments WHERE id = ? AND company_id = ?")
-                 ->execute([$commentId, $companyId]);
+                 ->execute([$commentId, $jobCompanyId]);
             ops_flash('Nothing was sent. ' . implode(' ', $failures), 'danger');
             $redirect($jobUrl);
         }
@@ -315,7 +281,7 @@ switch ($action) {
             UPDATE ops_jobs SET needs_materials = 0
             WHERE id = ? AND company_id = ? AND needs_materials = 1
         ");
-        $stmt->execute([$jobId, $companyId]);
+        $stmt->execute([$jobId, $jobCompanyId]);
         $wasWaiting = $stmt->rowCount() > 0;
 
         if ($failures) {

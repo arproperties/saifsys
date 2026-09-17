@@ -68,7 +68,7 @@ if ($comments) {
         WHERE job_id = ? AND company_id = ?
         ORDER BY id ASC
     ");
-    $mediaStmt->execute([$jobId, $companyId]);
+    $mediaStmt->execute([$jobId, (int)$job['company_id']]);
     foreach ($mediaStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
         $commentMedia[(int)$row['comment_id']][] = $row;
     }
@@ -247,35 +247,6 @@ require __DIR__ . '/includes/ops_layout_header.php';
   <!-- ==================== Details ==================== -->
   <div class="tab-pane fade <?= $tab === 'details' ? 'show active' : '' ?>"
        id="opsPane-details" role="tabpanel" aria-labelledby="opsTab-details">
-
-    <!-- Assignment -->
-    <div class="card card-round mb-3">
-      <div class="card-body">
-        <h6 class="fw-bold mb-3"><i class="bi bi-person-check"></i> Who does it</h6>
-        <?php $jobPeople = ops_assignable_users($conn, $companyId); ?>
-        <form method="post" action="<?= h($opsBase) ?>/job_action.php">
-          <?php csrf_field(); ?>
-          <input type="hidden" name="action" value="assign">
-          <input type="hidden" name="job_id" value="<?= (int)$job['id'] ?>">
-          <input type="hidden" name="return_to" value="<?= h($returnTo) ?>">
-          <div class="d-flex gap-2 align-items-center">
-            <select name="assigned_to" class="form-select" style="flex:0 1 320px; width:auto; min-width:0">
-              <option value="">Nobody yet</option>
-              <?php foreach (ops_people_by_company($jobPeople) as $companyName => $group): ?>
-                <optgroup label="<?= h($companyName) ?>">
-                  <?php foreach ($group as $p): ?>
-                    <option value="<?= (int)$p['id'] ?>" <?= (int)$job['assigned_to'] === (int)$p['id'] ? 'selected' : '' ?>>
-                      <?= h($p['fullname'] ?: $p['username']) ?>
-                    </option>
-                  <?php endforeach; ?>
-                </optgroup>
-              <?php endforeach; ?>
-            </select>
-            <button class="btn btn-outline-secondary flex-shrink-0">Save</button>
-          </div>
-        </form>
-      </div>
-    </div>
 
     <!-- Details and time. The clock is read-only; the field app runs it. -->
     <div class="card card-round mb-3">

@@ -16,12 +16,15 @@
  * unique key on (employee_id, work_date) is HR's, and a second check in the
  * same day is answered with the first rather than moving the time.
  *
- * THE SERVER'S CLOCK, AND ONLY WITH A CONNECTION
- * ----------------------------------------------
- * These times are pay. The phone's clock can be set to anything, and a tap
- * queued offline arrives with whatever time the phone claims — so neither the
- * app's time nor a queue is trusted here. The time recorded is the moment the
- * server receives the tap, which is the one nobody on site can move.
+ * THE TAP, WITHIN LIMITS
+ * ----------------------
+ * These times are pay. A check in tapped with no signal is kept on the phone
+ * and sent later, so the time recorded is when it was tapped — the moment the
+ * server received it would pay somebody from when they walked out of the
+ * basement. The phone's clock is only believed within a day and a half back and
+ * five minutes ahead (ops_api_client_time); outside that the server's own time
+ * is used. A row whose time came from the phone rather than the moment it
+ * arrived says so in its notes, so HR can always tell.
  *
  * HR STILL DECIDES
  * ----------------
@@ -54,9 +57,9 @@ function ops_attendance_employee(PDO $conn, int $userId): ?array
  * The attendance row the app should be showing: today's, or — for somebody who
  * checked in last night and has not checked out — yesterday's, still open.
  */
-function ops_attendance_current(PDO $conn, int $employeeId): ?array
+function ops_attendance_current(PDO $conn, int $employeeId, ?string $today = null): ?array
 {
-    $today = date('Y-m-d');
+    $today = $today ?? date('Y-m-d');
     $stmt = $conn->prepare("SELECT * FROM attendance WHERE employee_id = ? AND work_date = ? LIMIT 1");
     $stmt->execute([$employeeId, $today]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -72,7 +75,7 @@ function ops_attendance_current(PDO $conn, int $employeeId): ?array
           AND check_in IS NOT NULL AND check_out IS NULL AND source = 'self'
         LIMIT 1
     ");
-    $stmt->execute([$employeeId, date('Y-m-d', strtotime('-1 day'))]);
+    $stmt->execute([$employeeId, date('Y-m-d', strtotime($today . ' -1 day'))]);
     $open = $stmt->fetch(PDO::FETCH_ASSOC);
     return $open ?: null;
 }
@@ -117,13 +120,15 @@ function ops_attendance_status_words(string $status): string
  *
  * @return array{ok:bool, error?:string, message?:string, row?:?array}
  */
-function ops_attendance_check_in(PDO $conn, array $employee, int $userId): array
+function ops_attendance_check_in(PDO $conn, array $employee, int $userId, ?string $at = null): array
 {
     $employeeId = (int)$employee['id'];
-    $today = date('Y-m-d');
-    $now = date('H:i:00');
+    $at = $at ?? date('Y-m-d H:i:s');
+    $today = substr($at, 0, 10);
+    $now = date('H:i:00', strtotime($at));
+    $notes = ops_attendance_note('Checked in on the operations app', $at);
 
-    $existing = ops_attendance_current($conn, $employeeId);
+    $existing = ops_attendance_current($conn, $employeeId, $today);
 
     // Already in — today, or still open from last night. Answer with it rather
     // than moving the time: the first tap is the one that counts.
@@ -151,9 +156,9 @@ function ops_attendance_check_in(PDO $conn, array $employee, int $userId): array
                 INSERT INTO attendance
                     (employee_id, work_date, check_in, check_out, hours, status, source, notes,
                      created_at, updated_at, created_by, updated_by, company_id)
-                VALUES (?, ?, ?, NULL, NULL, 'approved', 'self', 'Checked in on the operations app', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, NULL, NULL, 'approved', 'self', ?, ?, ?, ?, ?, ?)
             ")->execute([
-                $employeeId, $today, $now,
+                $employeeId, $today, $now, $notes,
                 date('Y-m-d H:i:s'), date('Y-m-d H:i:s'), $userId, $userId,
                 (int)($employee['company_id'] ?? 1),
             ]);
@@ -166,8 +171,8 @@ function ops_attendance_check_in(PDO $conn, array $employee, int $userId): array
         }
     }
 
-    $row = ops_attendance_current($conn, $employeeId);
-    ops_attendance_audit($conn, 'attendance_recorded', $employee, $row, 'Checked in on the operations app', $userId);
+    $row = ops_attendance_current($conn, $employeeId, $today);
+    ops_attendance_audit($conn, 'attendance_recorded', $employee, $row, $notes, $userId);
     return ['ok' => true, 'row' => $row];
 }
 
@@ -177,10 +182,11 @@ function ops_attendance_check_in(PDO $conn, array $employee, int $userId): array
  *
  * @return array{ok:bool, error?:string, message?:string, row?:?array}
  */
-function ops_attendance_check_out(PDO $conn, array $employee, int $userId): array
+function ops_attendance_check_out(PDO $conn, array $employee, int $userId, ?string $at = null): array
 {
     $employeeId = (int)$employee['id'];
-    $row = ops_attendance_current($conn, $employeeId);
+    $at = $at ?? date('Y-m-d H:i:s');
+    $row = ops_attendance_current($conn, $employeeId, substr($at, 0, 10));
 
     if (!$row || empty($row['check_in'])) {
         return ['ok' => false, 'error' => 'not_checked_in', 'message' => 'Check in first.'];
@@ -190,7 +196,8 @@ function ops_attendance_check_out(PDO $conn, array $employee, int $userId): arra
     }
 
     $in = strtotime($row['work_date'] . ' ' . $row['check_in']);
-    $outTs = strtotime(date('Y-m-d H:i:00'));
+    // Never before the check in it closes.
+    $outTs = max((int)strtotime(date('Y-m-d H:i:00', strtotime($at))), (int)$in);
     $hours = $in !== false ? round(max(0, $outTs - $in) / 3600, 2) : null;
     // decimal(5,2), and no shift is longer than a day. Anything beyond it is a
     // forgotten check out, and HR corrects that — the column must not overflow.
@@ -210,8 +217,20 @@ function ops_attendance_check_out(PDO $conn, array $employee, int $userId): arra
     $stmt->execute([(int)$row['id']]);
     $fresh = $stmt->fetch(PDO::FETCH_ASSOC) ?: $row;
 
-    ops_attendance_audit($conn, 'attendance_updated', $employee, $fresh, 'Checked out on the operations app', $userId);
+    ops_attendance_audit($conn, 'attendance_updated', $employee, $fresh, ops_attendance_note('Checked out on the operations app', $at), $userId);
     return ['ok' => true, 'row' => $fresh];
+}
+
+/** "Checked in on the operations app", plus when it reached the server if that was later. */
+function ops_attendance_note(string $what, string $at): string
+{
+    $arrived = time();
+    $tapped = strtotime($at);
+    if ($tapped !== false && $arrived - $tapped >= 120) {
+        return $what . ' — tapped with no signal at ' . date('H:i', $tapped)
+             . ', received ' . date('j M H:i', $arrived);
+    }
+    return $what;
 }
 
 /** The same audit trail HR's own attendance page writes. Never allowed to fail the tap. */

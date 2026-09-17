@@ -30,15 +30,18 @@ $companyId = ops_company_id($conn);
 $mediaId = (int)($_GET['id'] ?? 0);
 
 $stmt = $conn->prepare("
-    SELECT m.file_path, m.job_id
+    SELECT m.file_path, m.job_id, m.company_id
     FROM ops_job_comment_media m
-    WHERE m.id = ? AND m.company_id = ?
+    WHERE m.id = ?
     LIMIT 1
 ");
-$stmt->execute([$mediaId, $companyId]);
+$stmt->execute([$mediaId]);
 $media = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if (!$media || !ops_load_job($conn, (int)$media['job_id'], $companyId)) {
+// The job decides who may see it (ops_load_job), and the file must belong to
+// that job's company.
+$owningJob = $media ? ops_load_job($conn, (int)$media['job_id'], $companyId) : null;
+if (!$media || !$owningJob || (int)$media['company_id'] !== (int)$owningJob['company_id']) {
     http_response_code(404);
     exit('Not found');
 }

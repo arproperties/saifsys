@@ -231,6 +231,26 @@ function ops_checklist_raise_maintenance(PDO $conn, array $job, array $checklist
 }
 
 /**
+ * The checklist and the problem list, as the app reads them, with no job and
+ * nothing saved.
+ */
+function ops_checklist_definition_for_app(): array {
+    $sections = [];
+    foreach (ops_cleaning_checklist() as $section) {
+        $items = [];
+        foreach ($section['items'] as $key => $label) {
+            $items[] = ['key' => $key, 'label' => $label];
+        }
+        $sections[] = ['key' => $section['key'], 'title' => $section['title'], 'items' => $items];
+    }
+    $problems = [];
+    foreach (ops_cleaning_problems() as $key => $label) {
+        $problems[] = ['key' => $key, 'label' => $label];
+    }
+    return ['sections' => $sections, 'problems' => $problems];
+}
+
+/**
  * The checklist as the app reads it, or null when the job has none.
  */
 function ops_checklist_for_app(PDO $conn, array $job): ?array {

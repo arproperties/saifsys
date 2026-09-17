@@ -59,18 +59,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'title' => trim((string)($_POST['title'] ?? '')),
         'location' => trim((string)($_POST['location'] ?? '')),
         'description' => trim((string)($_POST['description'] ?? '')),
-        'assigned_to' => ($_POST['assigned_to'] ?? '') !== '' ? (int)$_POST['assigned_to'] : null,
         'scheduled_date' => (string)($_POST['scheduled_date'] ?? ''),
         'scheduled_time' => trim((string)($_POST['scheduled_time'] ?? '')),
         'priority' => (string)($_POST['priority'] ?? 'normal'),
     ];
 
-    // Who does it is not asked for on the way in any more — it moves around too
-    // often to be worth setting here. A new job is always made unassigned and
-    // picked up on the edit screen.
-    if (!$job) {
-        $data['assigned_to'] = null;
-    }
+    // Who does it is never set here. The person on site raises the job or takes
+    // it from the pool in the app; editing a job leaves that alone.
+    $data['assigned_to'] = $job['assigned_to'] ?? null;
 
     if ($data['title'] === '') {
         $errors[] = 'Give the job a short name, e.g. "Deep clean — Office 4".';
@@ -89,14 +85,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($job) {
             $stmt = $conn->prepare("
                 UPDATE ops_jobs
-                SET job_type = ?, title = ?, location = ?, description = ?, assigned_to = ?,
+                SET job_type = ?, title = ?, location = ?, description = ?,
                     scheduled_date = ?, scheduled_time = ?, priority = ?
                 WHERE id = ? AND company_id = ?
             ");
             $stmt->execute([
                 $data['job_type'], $data['title'], $data['location'] ?: null, $data['description'] ?: null,
-                $data['assigned_to'], $data['scheduled_date'], $data['scheduled_time'] ?: null,
-                $data['priority'], $jobId, $companyId,
+                $data['scheduled_date'], $data['scheduled_time'] ?: null,
+                $data['priority'], $jobId, (int)$job['company_id'],
             ]);
             ops_flash('Job updated.');
             header('Location: ' . $opsBase . '/job_view.php?id=' . $jobId);
@@ -126,7 +122,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Only the edit screen asks who does it, so only the edit screen needs the list.
-$people = $jobId ? ops_assignable_users($conn, $companyId) : [];
 $pageTitle = $jobId ? 'Edit job' : 'New job';
 require __DIR__ . '/includes/ops_layout_header.php';
 ?>
@@ -177,28 +172,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
                value="<?= h($job['location'] ?? '') ?>" placeholder="Building, unit, site or area">
       </div>
 
-<?php // Who does it is an edit-screen question. Assignments change often enough
-      // that fixing one at creation only means coming back to change it. New jobs
-      // go out unassigned; the field is still here on edit for whoever picks it up.
-      $dateCol = $jobId ? 'col-md-3' : 'col-md-6'; ?>
-      <?php if ($jobId): ?>
-      <div class="col-md-6">
-        <label class="form-label fw-semibold">Who does it?</label>
-        <select name="assigned_to" class="form-select">
-          <option value="">Decide later</option>
-          <?php foreach (ops_people_by_company($people) as $companyName => $group): ?>
-            <optgroup label="<?= h($companyName) ?>">
-              <?php foreach ($group as $p): ?>
-                <option value="<?= (int)$p['id'] ?>" <?= (int)($job['assigned_to'] ?? 0) === (int)$p['id'] ? 'selected' : '' ?>>
-                  <?= h($p['fullname'] ?: $p['username']) ?>
-                </option>
-              <?php endforeach; ?>
-            </optgroup>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <?php endif; ?>
-
+<?php $dateCol = 'col-md-6'; ?>
       <div class="<?= $dateCol ?>">
         <label class="form-label fw-semibold">Due date</label>
         <input type="date" name="scheduled_date" class="form-control"

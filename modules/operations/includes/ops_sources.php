@@ -2,14 +2,18 @@
 /**
  * Operations — jobs that start as a tenant's request.
  *
- * A job begins one of two ways. Staff raise their own on the phone, or a tenant
- * asks for something:
+ * A job begins one of two ways. Staff raise their own on the phone, or somebody
+ * asks for something somewhere else in the system:
  *
- *   - a maintenance request, from tenant_portal/maintenance.php or the tenant
- *     app (api/customer/v1/tenant_services_endpoints.php), into
- *     re_maintenance_requests;
- *   - a cleaning booking, from tenant_portal/cleaning.php, into
- *     tenant_cleaning_requests — which the office still approves first.
+ *   - a maintenance request, from the tenant portal, the tenant app, the Real
+ *     Estate or ARS pages, into re_maintenance_requests;
+ *   - a tenant cleaning booking, from the tenant portal or app, into
+ *     tenant_cleaning_requests — straight away, no office approval;
+ *   - an ARS guest checkout, and a tenant move-out;
+ *   - a cleaning booking from the customer app, into online_bookings.
+ *
+ * None of these waits for the office. Nobody approves, schedules or assigns:
+ * the job lands in the pool and the person who takes it is the dispatch.
  *
  * NOTHING IN THE OLD MODULE WAS CHANGED FOR THIS
  * ----------------------------------------------
@@ -54,6 +58,15 @@ const OPS_TENANT_SYNC_FROM = '2026-09-16';
  */
 const OPS_CHECKOUT_SYNC_FROM = '2026-09-17';
 
+/**
+ * The company a customer-app booking's work order and job belong to.
+ *
+ * online_bookings has no company column. The office converted them under
+ * whichever company it was switched to, and that was always the cleaning
+ * company — the same one ARS checkouts bill through.
+ */
+const OPS_CUSTOMER_BOOKING_COMPANY_ID = 1;
+
 // ---------------------------------------------------------------------------
 // Copy requests in
 // ---------------------------------------------------------------------------
@@ -80,8 +93,12 @@ function ops_sync_tenant_requests(PDO $conn, array $companyIds): void
         ops_sync_tenant_cleaning($conn, $companyIds);
         ops_sync_ars_checkouts($conn, $companyIds);
         ops_sync_tenant_move_outs($conn, $companyIds);
+        ops_sync_customer_bookings($conn, $companyIds);
         ops_withdraw_tenant_requests($conn, $companyIds);
         ops_withdraw_checkouts($conn, $companyIds);
+        ops_withdraw_customer_bookings($conn, $companyIds);
+        ops_finalize_old_module_checkouts($conn, $companyIds);
+        ops_escalate_unclaimed($conn, $companyIds);
     } catch (Throwable $e) {
         // Most often a database without migrations/ops_job_sources.sql yet.
         error_log('ops_sync_tenant_requests failed: ' . $e->getMessage());
@@ -89,12 +106,13 @@ function ops_sync_tenant_requests(PDO $conn, array $companyIds): void
 }
 
 /**
- * Maintenance requests a tenant raised that nobody has picked up.
+ * Maintenance requests nobody has picked up — whoever raised them.
  *
- * "A tenant raised it" is `tenant_id` with no `created_by`: both tenant routes
- * write exactly that, and the office page always records who typed it. Only
- * pending and unassigned — once the office has put someone on a request in the
- * old module, it is theirs, and copying it would send a second person.
+ * A tenant from the portal or app, the office on the Real Estate page, ARS for
+ * a guest unit: all the same work, so all go to the pool. Only pending and
+ * unassigned — a request that already has somebody on it in the old module
+ * (a preventive maintenance task with its technician, say) is theirs, and
+ * copying it would send a second person.
  */
 function ops_sync_tenant_maintenance(PDO $conn, array $companyIds): void
 {
@@ -108,8 +126,6 @@ function ops_sync_tenant_maintenance(PDO $conn, array $companyIds): void
         WHERE m.company_id IN ($in)
           AND m.status = 'pending'
           AND m.assigned_to IS NULL
-          AND m.tenant_id IS NOT NULL
-          AND m.created_by IS NULL
           AND m.request_date >= ?
           AND j.id IS NULL
         ORDER BY m.id ASC
@@ -148,13 +164,15 @@ function ops_sync_tenant_maintenance(PDO $conn, array $companyIds): void
 }
 
 /**
- * Cleaning bookings the office has approved.
+ * Tenant cleaning bookings, the moment the tenant makes them.
  *
- * Approval stays in modules/realestate/cleaning_requests.php, because that is
- * where the date is confirmed and the payment is dealt with — a booking still
- * pending may never happen, and one rejected must never reach a cleaner. Only
- * bookings for today or later: an approved booking whose day has already gone
- * is not a job anybody can still do.
+ * No office approval first: a pending booking goes to the pool, and taking it
+ * is what approves it — see ops_source_on_claim(). The office can still reject
+ * one on modules/realestate/cleaning_requests.php, and a rejected booking
+ * leaves the pool. A booking with no date asked for is today's. Only bookings
+ * for today or later: one whose day has gone is not a job anybody can still do.
+ * Pending bookings raised before the go-live date are the old backlog and stay
+ * where they are.
  */
 function ops_sync_tenant_cleaning(PDO $conn, array $companyIds): void
 {
@@ -168,13 +186,19 @@ function ops_sync_tenant_cleaning(PDO $conn, array $companyIds): void
         LEFT JOIN ops_jobs j
                ON j.source_type = 'tenant_cleaning' AND j.source_id = c.id
         WHERE c.company_id IN ($in)
-          AND c.status = 'approved'
-          AND c.service_date >= ?
           AND j.id IS NULL
+          AND (
+                (c.status = 'approved' AND c.service_date >= ?)
+             OR (c.status = 'pending' AND c.created_at >= ?
+                 AND (c.service_date IS NULL OR c.service_date >= ?))
+          )
         ORDER BY c.id ASC
         LIMIT 100
     ");
-    $stmt->execute(array_merge($companyIds, [max(date('Y-m-d'), OPS_TENANT_SYNC_FROM)]));
+    $today = date('Y-m-d');
+    $stmt->execute(array_merge($companyIds, [
+        max($today, OPS_TENANT_SYNC_FROM), OPS_TENANT_SYNC_FROM, $today,
+    ]));
 
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $booking) {
         $place = ops_source_place($conn, 'unit', (int)$booking['unit_id']);
@@ -204,7 +228,7 @@ function ops_sync_tenant_cleaning(PDO $conn, array $companyIds): void
             'title' => 'Cleaning booking',
             'description' => $description,
             'priority' => 'normal',
-            'scheduled_date' => (string)$booking['service_date'],
+            'scheduled_date' => (string)($booking['service_date'] ?: $today),
             'scheduled_time' => $time !== '' ? $time : null,
             'source_type' => 'tenant_cleaning',
             'source_id' => (int)$booking['id'],
@@ -361,9 +385,10 @@ function ops_withdraw_checkouts(PDO $conn, array $companyIds): void
           AND b.status NOT IN ('checked_out', 'completed')
     ")->execute(array_merge([$now], $companyIds));
 
-    // The old module has it: the office put a worker on the ARS work order, or
-    // it is already completed there. While both modules run side by side this
-    // is what stops two people going to the same flat.
+    // Already cleaned through the old module: its work order is completed or
+    // invoiced. A worker put on the order there does not take the job away —
+    // nobody assigns work any more, and the old module's default worker would
+    // otherwise pull every checkout out of the pool.
     $conn->prepare("
         UPDATE ops_jobs j
         SET j.status = 'cancelled', j.updated_at = ?
@@ -403,17 +428,207 @@ function ops_withdraw_checkouts(PDO $conn, array $companyIds): void
 }
 
 /**
- * SQL: the old module is already dealing with this checkout's work order —
- * a worker is on it there, or it is completed or invoiced.
+ * Cleaning bookings customers make in the customer app.
+ *
+ * The office used to confirm each one, pick workers and turn it into a work
+ * order (operation/ajax_online_bookings.php). Now a booking goes to the pool as
+ * it is made. It has no unit — it is somebody's home — so the address is the
+ * job's location. Only bookings made since go-live, for today or later, that
+ * the office has not already turned into a work order. A repeating booking
+ * becomes one job, for its first date: nothing here makes jobs on a schedule.
+ */
+function ops_sync_customer_bookings(PDO $conn, array $companyIds): void
+{
+    // Not gated on the caller's companies: these jobs are open to every
+    // company (ops_job_open_to_all_sql), so any list load may copy them.
+    if (!ops_source_type_ready($conn, 'customer_booking')) {
+        return;
+    }
+
+    $stmt = $conn->prepare("
+        SELECT ob.*, s.name AS service_name
+        FROM online_bookings ob
+        LEFT JOIN services s ON s.id = ob.service_id
+        LEFT JOIN ops_jobs j
+               ON j.source_type = 'customer_booking' AND j.source_id = ob.id
+        WHERE ob.status IN ('pending', 'confirmed')
+          AND ob.work_order_id IS NULL
+          AND ob.created_at >= ?
+          AND ob.scheduled_date >= ?
+          AND j.id IS NULL
+        ORDER BY ob.id ASC
+        LIMIT 100
+    ");
+    $stmt->execute([OPS_TENANT_SYNC_FROM, date('Y-m-d')]);
+
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $booking) {
+        $people = max(1, (int)$booking['professionals']);
+        $hours = rtrim(rtrim(number_format((float)$booking['hours'], 2, '.', ''), '0'), '.');
+        $lines = [
+            implode(' · ', [
+                $people . ($people === 1 ? ' cleaner' : ' cleaners'),
+                $hours . ($hours === '1' ? ' hour' : ' hours'),
+                (int)$booking['materials_included'] === 1 ? 'bring materials' : 'no materials',
+            ]),
+            trim((string)$booking['customer_name']) . ' · ' . trim((string)$booking['customer_phone']),
+        ];
+        if (($booking['frequency'] ?? 'one_time') !== 'one_time' && trim((string)$booking['frequency']) !== '') {
+            $lines[] = 'Booked as ' . str_replace('_', ' ', (string)$booking['frequency']) . ' — this job is the first visit only.';
+        }
+        foreach (['instructions', 'notes'] as $field) {
+            if (trim((string)$booking[$field]) !== '') {
+                $lines[] = trim((string)$booking[$field]);
+            }
+        }
+
+        ops_insert_source_job($conn, [
+            'company_id' => OPS_CUSTOMER_BOOKING_COMPANY_ID,
+            'job_type' => 'cleaning',
+            'title' => trim((string)($booking['service_name'] ?? '')) ?: 'Customer booking',
+            'location' => mb_substr(trim((string)$booking['address']) ?: 'Address not given', 0, 255),
+            'description' => implode("\n", $lines),
+            'priority' => 'normal',
+            'scheduled_date' => (string)$booking['scheduled_date'],
+            'scheduled_time' => (string)$booking['scheduled_time'] ?: null,
+            'source_type' => 'customer_booking',
+            'source_id' => (int)$booking['id'],
+        ], []);
+    }
+}
+
+/**
+ * Whether ops_jobs.source_type can hold this value yet.
+ *
+ * The inserts here are INSERT IGNORE, and IGNORE turns a value the enum does
+ * not have into an empty string instead of an error — a job with no source,
+ * which billing would then treat as a staff job. So a source whose migration
+ * has not run is not copied at all.
+ */
+function ops_source_type_ready(PDO $conn, string $sourceType): bool
+{
+    static $types = null;
+    if ($types === null) {
+        $row = $conn->query("SHOW COLUMNS FROM ops_jobs LIKE 'source_type'")->fetch(PDO::FETCH_ASSOC);
+        $types = (string)($row['Type'] ?? '');
+    }
+    return strpos($types, "'" . $sourceType . "'") !== false;
+}
+
+/**
+ * Take back unclaimed customer-booking jobs the customer cancelled, or the
+ * office turned into a work order in the old module — and put them back if
+ * that is undone.
+ */
+function ops_withdraw_customer_bookings(PDO $conn, array $companyIds): void
+{
+    $now = date('Y-m-d H:i:s');
+
+    $conn->prepare("
+        UPDATE ops_jobs j
+        JOIN online_bookings ob ON ob.id = j.source_id
+        SET j.status = 'cancelled', j.updated_at = ?
+        WHERE j.source_type = 'customer_booking'
+          AND j.assigned_to IS NULL
+          AND j.status = 'open'
+          AND (ob.status IN ('cancelled', 'no_show') OR ob.work_order_id IS NOT NULL)
+    ")->execute([$now]);
+
+    $conn->prepare("
+        UPDATE ops_jobs j
+        JOIN online_bookings ob ON ob.id = j.source_id
+        SET j.status = 'open', j.updated_at = ?
+        WHERE j.source_type = 'customer_booking'
+          AND j.assigned_to IS NULL
+          AND j.status = 'cancelled'
+          AND j.started_at IS NULL
+          AND ob.status IN ('pending', 'confirmed')
+          AND ob.work_order_id IS NULL
+    ")->execute([$now]);
+}
+
+/**
+ * Invoice checkouts that were cleaned through the old module instead.
+ *
+ * Their job left the pool when the old work order was marked completed, and
+ * the old module would then wait for somebody to press Finalize. This does it,
+ * the same way Finish does. Only checkouts that had a job here — go-live
+ * onwards — and a few per page load.
+ */
+function ops_finalize_old_module_checkouts(PDO $conn, array $companyIds): void
+{
+    require_once __DIR__ . '/ops_billing.php';
+
+    $in = implode(',', array_fill(0, count($companyIds), '?'));
+    $stmt = $conn->prepare("
+        SELECT o.id AS order_id, j.id AS job_id
+        FROM ops_jobs j
+        JOIN make_order o ON o.ars_booking_id = j.source_id
+        WHERE j.source_type = 'ars_checkout'
+          AND j.status = 'cancelled'
+          AND j.company_id IN ($in)
+          AND o.status = 'completed'
+          AND o.invoice_id IS NULL
+          AND COALESCE(j.billing_status, '') <> 'failed'
+        ORDER BY o.id ASC
+        LIMIT 5
+    ");
+    $stmt->execute($companyIds);
+
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $orderId = (int)$row['order_id'];
+        $jobId = (int)$row['job_id'];
+        try {
+            $invoiceId = ops_bill_finalize_order(
+                $conn, $orderId, null,
+                "ARS work order #{$orderId} completed in the old module — finalized and invoiced automatically"
+            );
+            ops_bill_link($conn, $jobId, $orderId, 'billed', null, $invoiceId);
+        } catch (Throwable $e) {
+            // Said once, on the job, and not retried on every page load: the
+            // query above skips a job already marked failed.
+            ops_bill_link($conn, $jobId, $orderId, 'failed',
+                mb_substr('Invoice not created from ARS work order #' . $orderId . ': ' . $e->getMessage(), 0, 255), null);
+            error_log('ops_finalize_old_module_checkouts #' . $orderId . ' failed: ' . $e->getMessage());
+        }
+    }
+}
+
+/**
+ * How long a request may wait in the pool before it is pushed up.
+ *
+ * Nobody in the office watches the pool, so a request nobody takes has to get
+ * louder by itself. After this long it goes to high priority, which puts the
+ * Urgent tag on it on every phone and sorts it with the urgent work.
+ */
+const OPS_UNCLAIMED_ESCALATE_HOURS = 2;
+
+function ops_escalate_unclaimed(PDO $conn, array $companyIds): void
+{
+    $in = implode(',', array_fill(0, count($companyIds), '?'));
+    $cutoff = date('Y-m-d H:i:s', time() - OPS_UNCLAIMED_ESCALATE_HOURS * 3600);
+    $conn->prepare("
+        UPDATE ops_jobs
+        SET priority = 'high', updated_at = ?
+        WHERE assigned_to IS NULL
+          AND status = 'open'
+          AND source_type <> 'staff'
+          AND priority <> 'high'
+          AND (company_id IN ($in) OR " . ops_job_open_to_all_sql('') . ")
+          AND scheduled_date <= ?
+          AND GREATEST(created_at, CAST(CONCAT(scheduled_date, ' ', COALESCE(scheduled_time, '00:00:00')) AS DATETIME)) <= ?
+    ")->execute(array_merge([date('Y-m-d H:i:s')], $companyIds, [date('Y-m-d'), $cutoff]));
+}
+
+/**
+ * SQL: this checkout was already cleaned through the old module — its work
+ * order is completed or invoiced there.
  */
 function ops_ars_order_handled_sql(string $jobAlias): string
 {
     return "EXISTS (
               SELECT 1 FROM make_order o
               WHERE o.ars_booking_id = {$jobAlias}.source_id
-                AND o.status <> 'cancelled'
-                AND (o.status IN ('completed', 'invoiced')
-                     OR EXISTS (SELECT 1 FROM order_workers ow WHERE ow.order_id = o.id))
+                AND o.status IN ('completed', 'invoiced')
           )";
 }
 
@@ -482,7 +697,7 @@ function ops_withdraw_tenant_requests(PDO $conn, array $companyIds): void
           AND j.assigned_to IS NULL
           AND j.status = 'open'
           AND j.company_id IN ($in)
-          AND c.status <> 'approved'
+          AND c.status = 'rejected'
     ")->execute(array_merge([$now], $companyIds));
 
     // And the other way. A request is only ever copied once — the unique key
@@ -511,8 +726,8 @@ function ops_withdraw_tenant_requests(PDO $conn, array $companyIds): void
           AND j.status = 'cancelled'
           AND j.started_at IS NULL
           AND j.company_id IN ($in)
-          AND c.status = 'approved'
-          AND c.service_date >= ?
+          AND c.status IN ('pending', 'approved')
+          AND (c.service_date IS NULL OR c.service_date >= ?)
     ")->execute(array_merge([$now], $companyIds, [date('Y-m-d')]));
 }
 
@@ -531,13 +746,13 @@ function ops_insert_source_job(PDO $conn, array $job, array $places): void
 
     $stmt = $conn->prepare("
         INSERT IGNORE INTO ops_jobs
-            (company_id, job_type, title, description, assigned_to,
+            (company_id, job_type, title, location, description, assigned_to,
              scheduled_date, scheduled_time, priority, status, created_by,
              source_type, source_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 'open', NULL, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'open', NULL, ?, ?, ?, ?)
     ");
     $stmt->execute([
-        $job['company_id'], $job['job_type'], mb_substr($job['title'], 0, 255), $job['description'],
+        $job['company_id'], $job['job_type'], mb_substr($job['title'], 0, 255), $job['location'] ?? null, $job['description'],
         $job['scheduled_date'], $job['scheduled_time'], $job['priority'],
         $job['source_type'], $job['source_id'], $now, $now,
     ]);
@@ -635,19 +850,64 @@ function ops_source_priority(string $priority): string
 /**
  * Somebody took a pool job. Tell the request.
  *
- * Maintenance only: the request goes In progress with that person's name in
- * the old page's Assigned column. `assigned_to` there is an employees.id, not
- * a user id, so the claimer is looked up through employees.user_id. Guarded on
- * status = 'pending' so a change the office made in the meantime is not
- * overwritten.
+ *   - Maintenance: the request goes In progress with that person's name in
+ *     the old page's Assigned column, and the tenant hears somebody is on it.
+ *     `assigned_to` there is an employees.id, not a user id, so the claimer is
+ *     looked up through employees.user_id.
+ *   - Tenant cleaning: taking it is the approval — the booking goes Approved,
+ *     dated today if the tenant gave no date, and the tenant is told.
+ *   - Customer booking: confirmed, as the office used to.
+ *   - ARS checkout: the name shows on the old work order.
+ *
+ * Every write is guarded on the state it expects, so a change the office made
+ * in the meantime is not overwritten.
  */
 function ops_source_on_claim(PDO $conn, array $job, int $userId): void
 {
-    if (($job['source_type'] ?? 'staff') === 'ars_checkout') {
-        ops_ars_order_show_person($conn, (int)$job['source_id'], $userId);
+    $sourceType = (string)($job['source_type'] ?? 'staff');
+    $sourceId = (int)($job['source_id'] ?? 0);
+
+    if ($sourceType === 'ars_checkout') {
+        ops_ars_order_show_person($conn, $sourceId, $userId);
         return;
     }
-    if (($job['source_type'] ?? 'staff') !== 'tenant_maintenance') {
+
+    if ($sourceType === 'customer_booking') {
+        try {
+            $conn->prepare("
+                UPDATE online_bookings
+                SET status = 'confirmed', confirmed_at = COALESCE(confirmed_at, ?), updated_at = ?
+                WHERE id = ? AND status = 'pending'
+            ")->execute([date('Y-m-d H:i:s'), date('Y-m-d H:i:s'), $sourceId]);
+        } catch (Throwable $e) {
+            error_log('ops_source_on_claim customer booking failed: ' . $e->getMessage());
+        }
+        return;
+    }
+
+    if ($sourceType === 'tenant_cleaning') {
+        try {
+            $stmt = $conn->prepare("
+                UPDATE tenant_cleaning_requests
+                SET status = 'approved', approved_at = ?, service_date = COALESCE(service_date, ?)
+                WHERE id = ? AND status = 'pending'
+            ");
+            $stmt->execute([date('Y-m-d H:i:s'), (string)$job['scheduled_date'], $sourceId]);
+            if ($stmt->rowCount() > 0) {
+                ops_source_notify_tenant($conn, 'tenant_cleaning_requests', $sourceId, [
+                    'type' => 'cleaning_status',
+                    'entity_type' => 'cleaning',
+                    'title' => 'Cleaning request approved',
+                    'body' => 'Your cleaning request has been approved.',
+                ]);
+            }
+        } catch (Throwable $e) {
+            error_log('ops_source_on_claim tenant cleaning failed: ' . $e->getMessage());
+        }
+        return;
+    }
+
+    if ($sourceType !== 'tenant_maintenance') {
         return;
     }
 
@@ -668,6 +928,12 @@ function ops_source_on_claim(PDO $conn, array $job, int $userId): void
             date('Y-m-d H:i:s'),
             date('Y-m-d H:i:s'),
             (int)$job['source_id'],
+        ]);
+        ops_source_notify_tenant($conn, 're_maintenance_requests', $sourceId, [
+            'type' => 'maintenance_status',
+            'entity_type' => 'maintenance',
+            'title' => 'Maintenance in progress',
+            'body' => 'Someone is on the way for your maintenance request.',
         ]);
     } catch (Throwable $e) {
         error_log('ops_source_on_claim failed: ' . $e->getMessage());
@@ -713,13 +979,9 @@ function ops_source_on_finish(PDO $conn, array $job): void
             // Only when this finish is what closed it — a replayed finish, or a
             // request the office had already closed, must not notify twice.
             if ($done->rowCount() > 0) {
-                tenant_notification_create($conn, [
-                    'company_id' => (int)$request['company_id'],
-                    'lease_id' => (int)($request['lease_id'] ?? 0),
-                    'tenant_id' => (int)($request['tenant_id'] ?? 0),
+                ops_source_notify_tenant($conn, 're_maintenance_requests', $sourceId, [
                     'type' => 'maintenance_status',
                     'entity_type' => 'maintenance',
-                    'entity_id' => $sourceId,
                     'title' => 'Maintenance completed',
                     'body' => 'Your maintenance request is now completed.',
                 ]);
@@ -751,6 +1013,35 @@ function ops_source_on_finish(PDO $conn, array $job): void
 }
 
 /**
+ * Tell the tenant behind a request, the way the Real Estate pages do. Nothing
+ * for a request with no tenant or lease on it — one the office raised for a
+ * common area, say.
+ */
+function ops_source_notify_tenant(PDO $conn, string $table, int $id, array $message): void
+{
+    if (!in_array($table, ['re_maintenance_requests', 'tenant_cleaning_requests'], true)) {
+        return;
+    }
+    try {
+        $stmt = $conn->prepare("SELECT company_id, lease_id, tenant_id FROM {$table} WHERE id = ?");
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row || ((int)($row['lease_id'] ?? 0) <= 0 && (int)($row['tenant_id'] ?? 0) <= 0)) {
+            return;
+        }
+        require_once dirname(__DIR__, 3) . '/includes/tenant_notifications.php';
+        tenant_notification_create($conn, $message + [
+            'company_id' => (int)$row['company_id'],
+            'lease_id' => (int)($row['lease_id'] ?? 0),
+            'tenant_id' => (int)($row['tenant_id'] ?? 0),
+            'entity_id' => $id,
+        ]);
+    } catch (Throwable $e) {
+        error_log('ops_source_notify_tenant failed: ' . $e->getMessage());
+    }
+}
+
+/**
  * Where the office can see the original request, for the web badge. Null for
  * a job staff raised themselves.
  */
@@ -760,7 +1051,7 @@ function ops_source_link(string $appBase, array $job): ?array
     switch ((string)($job['source_type'] ?? 'staff')) {
         case 'tenant_maintenance':
             return [
-                'label' => 'Tenant maintenance request #' . $id,
+                'label' => 'Maintenance request #' . $id,
                 'url' => $appBase . '/modules/realestate/maintenance_view.php?id=' . $id,
             ];
         case 'cleaner_report':
@@ -777,6 +1068,11 @@ function ops_source_link(string $appBase, array $job): ?array
             return [
                 'label' => 'ARS guest checkout',
                 'url' => $appBase . '/modules/ars/booking_view.php?id=' . $id,
+            ];
+        case 'customer_booking':
+            return [
+                'label' => 'Customer app booking #' . $id,
+                'url' => $appBase . '/operation/online_bookings.php',
             ];
         case 'tenant_move_out':
             return [

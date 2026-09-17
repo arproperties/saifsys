@@ -36,7 +36,7 @@ $fSearch = trim((string)($_GET['q'] ?? ''));
 // headline number is a place you can go, not just a number you can read.
 $fWaiting = ($_GET['waiting'] ?? '') === '1';
 
-$where = ['j.company_id = ?'];
+$where = ['(j.company_id = ? OR ' . ops_job_open_to_all_sql('j') . ')'];
 $params = [$companyId];
 
 if (array_key_exists($fType, ops_job_types())) {
@@ -96,7 +96,7 @@ $statsStmt = $conn->prepare("
         SUM(assigned_to IS NULL AND source_type = 'staff' AND scheduled_date = '{$todayDate}' AND status IN ('open','in_progress')) AS unassigned_today,
         SUM(assigned_to IS NULL AND source_type <> 'staff' AND status = 'open') AS pool_count
     FROM ops_jobs
-    WHERE company_id = ? AND status <> 'cancelled'
+    WHERE (company_id = ? OR " . ops_job_open_to_all_sql('') . ") AND status <> 'cancelled'
 ");
 $statsStmt->execute([$companyId]);
 $stats = $statsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
@@ -118,7 +118,7 @@ $byPersonStmt = $conn->prepare("
         SUM(j.status = 'open') AS open_count
     FROM ops_jobs j
     LEFT JOIN user u ON u.id = j.assigned_to
-    WHERE j.company_id = ? AND j.status <> 'cancelled'
+    WHERE (j.company_id = ? OR " . ops_job_open_to_all_sql('j') . ") AND j.status <> 'cancelled'
       AND j.scheduled_date >= DATE_SUB('{$todayDate}', INTERVAL 30 DAY)
     GROUP BY j.assigned_to, person
     ORDER BY total DESC
@@ -434,10 +434,12 @@ require __DIR__ . '/includes/ops_layout_header.php';
                     <span class="badge bg-info text-dark"><i class="bi bi-brush"></i> Found by cleaner</span>
                   <?php elseif ($j['source_type'] === 'ars_checkout'): ?>
                     <span class="badge bg-info text-dark"><i class="bi bi-box-arrow-right"></i> Guest checkout</span>
+                  <?php elseif ($j['source_type'] === 'customer_booking'): ?>
+                    <span class="badge bg-info text-dark"><i class="bi bi-phone"></i> Customer booking</span>
                   <?php elseif ($j['source_type'] === 'tenant_move_out'): ?>
                     <span class="badge bg-info text-dark"><i class="bi bi-box-arrow-right"></i> Move-out</span>
                   <?php else: ?>
-                    <span class="badge bg-info text-dark"><i class="bi bi-person-badge"></i> Tenant request</span>
+                    <span class="badge bg-info text-dark"><i class="bi bi-person-badge"></i> Request</span>
                   <?php endif; ?>
                   <?php if ($j['assigned_to'] === null && $j['status'] === 'open'): ?>
                     <span class="badge bg-warning text-dark">Waiting to be claimed</span>

@@ -282,6 +282,18 @@ function ops_job_places(PDO $conn, array $jobIds): array {
 /**
  * Load one job scoped to the current company. Null when it does not exist there.
  */
+/**
+ * SQL: the job is listed under every company, not only its own.
+ *
+ * Customer-app bookings. They are Heroes Zone work on paper, but the office
+ * must see them whichever company it has selected, so they are never hidden
+ * behind a company switch. Every other job keeps its company scope.
+ */
+function ops_job_open_to_all_sql(string $alias = 'j'): string {
+    $prefix = $alias === '' ? '' : $alias . '.';
+    return "{$prefix}source_type = 'customer_booking'";
+}
+
 function ops_load_job(PDO $conn, int $jobId, int $companyId): ?array {
     $stmt = $conn->prepare("
         SELECT j.*,
@@ -290,7 +302,7 @@ function ops_load_job(PDO $conn, int $jobId, int $companyId): ?array {
         FROM ops_jobs j
         LEFT JOIN user u  ON u.id  = j.assigned_to
         LEFT JOIN user cu ON cu.id = j.created_by
-        WHERE j.id = ? AND j.company_id = ?
+        WHERE j.id = ? AND (j.company_id = ? OR " . ops_job_open_to_all_sql('j') . ")
         LIMIT 1
     ");
     $stmt->execute([$jobId, $companyId]);

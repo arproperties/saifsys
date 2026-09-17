@@ -179,12 +179,13 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
     // The pool is the one list that is not one person's: tenant jobs nobody
     // has claimed yet. With no assignee to scope by, the person's companies
     // do it instead — that is the only thing that keeps another company's
-    // tenants off this phone.
+    // tenants off this phone. Customer-app bookings are the exception: open to
+    // everyone, see ops_job_open_to_all_sql().
     $companyIn = ops_api_company_in($user['company_ids']);
     $poolBase = " FROM ops_jobs j
                   WHERE j.assigned_to IS NULL
                     AND j.source_type <> 'staff'
-                    AND j.company_id IN ($companyIn)";
+                    AND (j.company_id IN ($companyIn) OR " . ops_job_open_to_all_sql('j') . ")";
     $poolArgs = $user['company_ids'];
 
     $tab = (string)($_GET['tab'] ?? 'today');
@@ -392,7 +393,12 @@ function ops_api_handle_places(PDO $conn, array $user): void
         ];
     }
 
-    customer_api_send_ok(['buildings' => array_values($buildings)]);
+    // The cleaning checklist travels with the places, so a unit clean raised
+    // with no signal can show it before the server has ever seen the job.
+    customer_api_send_ok([
+        'buildings' => array_values($buildings),
+        'cleaning_checklist' => ops_checklist_definition_for_app(),
+    ]);
 }
 
 /** `pump_room` is not a word. Make the enum readable without a lookup table. */
@@ -506,10 +512,12 @@ function ops_api_handle_attendance(PDO $conn, array $user, string $action): void
         );
     }
 
+    // A check in or out queued with no signal carries when it was tapped. Only
+    // believed within a day and a half — see ops_attendance.php.
     if ($action === 'check-in') {
-        $result = ops_attendance_check_in($conn, $employee, (int)$user['id']);
+        $result = ops_attendance_check_in($conn, $employee, (int)$user['id'], ops_api_client_time(36 * 3600));
     } elseif ($action === 'check-out') {
-        $result = ops_attendance_check_out($conn, $employee, (int)$user['id']);
+        $result = ops_attendance_check_out($conn, $employee, (int)$user['id'], ops_api_client_time(36 * 3600));
     } else {
         $result = ['ok' => true, 'row' => ops_attendance_current($conn, (int)$employee['id'])];
     }
@@ -561,6 +569,31 @@ function ops_api_handle_attendance(PDO $conn, array $user, string $action): void
  * from the picker the office adds it once in the real estate module, and it is
  * there for everyone from then on.
  */
+/**
+ * The company of the first place sent, when it is one of this person's
+ * companies; otherwise 0.
+ */
+function ops_api_places_company_id(PDO $conn, array $user, $input): int
+{
+    if (!is_array($input)) {
+        return 0;
+    }
+    foreach ($input as $entry) {
+        $kind = is_array($entry) ? (string)($entry['kind'] ?? '') : '';
+        $id = is_array($entry) ? (int)($entry['id'] ?? 0) : 0;
+        if ($id <= 0 || !in_array($kind, ['unit', 'common_area'], true)) {
+            continue;
+        }
+        $stmt = $conn->prepare($kind === 'unit'
+            ? "SELECT b.company_id FROM re_units u JOIN re_buildings b ON b.id = u.building_id WHERE u.id = ?"
+            : "SELECT b.company_id FROM re_building_common_areas a JOIN re_buildings b ON b.id = a.building_id WHERE a.id = ?");
+        $stmt->execute([$id]);
+        $companyId = (int)$stmt->fetchColumn();
+        return in_array($companyId, $user['company_ids'], true) ? $companyId : 0;
+    }
+    return 0;
+}
+
 function ops_api_handle_job_create(PDO $conn, array $user): void
 {
     $title = trim((string)(ops_api_param('title', '') ?? ''));
@@ -583,7 +616,12 @@ function ops_api_handle_job_create(PDO $conn, array $user): void
 
     // The company is settled before the places are, because a place is only
     // valid relative to it — see ops_api_job_company_id().
-    $companyId = ops_api_job_company_id($conn, $user);
+    // The place decides first: a job at a building belongs to that building's
+    // company. Their last job's company is only the answer when the place does
+    // not say — otherwise somebody whose last job was an ARS checkout could not
+    // raise one in a Real Estate building at all.
+    $companyId = ops_api_places_company_id($conn, $user, ops_api_param('places', []))
+        ?: ops_api_job_company_id($conn, $user);
     if ($companyId <= 0) {
         customer_api_send_error('no_company', 'This account is not set up for jobs.', 409);
     }
@@ -617,7 +655,9 @@ function ops_api_handle_job_create(PDO $conn, array $user): void
     // time. A job raised late in the evening would otherwise be filed as
     // tomorrow's and drop off today's list on the phone that made it.
     $now = date('Y-m-d H:i:s');
-    $today = date('Y-m-d');
+    // The day it was raised on the phone, which is not the day it arrived when
+    // it was raised offline late in the evening.
+    $today = substr(ops_api_client_time(2 * 86400), 0, 10);
 
     $stmt = $conn->prepare("
         INSERT INTO ops_jobs
@@ -681,7 +721,7 @@ function ops_api_handle_job_claim(PDO $conn, array $user, int $jobId): void
     $companyIn = ops_api_company_in($user['company_ids']);
     $load = $conn->prepare("
         SELECT * FROM ops_jobs
-        WHERE id = ? AND source_type <> 'staff' AND company_id IN ($companyIn)
+        WHERE id = ? AND source_type <> 'staff' AND (company_id IN ($companyIn) OR " . ops_job_open_to_all_sql('') . ")
         LIMIT 1
     ");
     $load->execute(array_merge([$jobId], $user['company_ids']));
@@ -776,7 +816,8 @@ function ops_api_handle_job_start(PDO $conn, array $user, int $jobId): void
             started_at = COALESCE(started_at, ?)
         WHERE id = ? AND company_id = ? AND assigned_to = ?
     ");
-    $stmt->execute([date('Y-m-d H:i:s'), $jobId, (int)$job['company_id'], $user['id']]);
+    // When Start was tapped, not when it arrived — see ops_api_client_time().
+    $stmt->execute([ops_api_client_time(), $jobId, (int)$job['company_id'], $user['id']]);
 
     $fresh = ops_api_job_or_404($conn, $jobId, $user);
     customer_api_send_ok(['job' => ops_api_job_detail($conn, $fresh, $user)]);
@@ -819,7 +860,8 @@ function ops_api_handle_job_pause(PDO $conn, array $user, int $jobId): void
         customer_api_send_ok(['job' => ops_api_job_detail($conn, $job, $user)]);
     }
 
-    $now = date('Y-m-d H:i:s');
+    // The tap, never earlier than the start it pauses.
+    $now = max(ops_api_client_time(), (string)($job['started_at'] ?? ''));
     $stmt = $conn->prepare("
         UPDATE ops_jobs SET paused_at = ?, pause_reason = ?
         WHERE id = ? AND assigned_to = ? AND status = 'in_progress' AND paused_at IS NULL
@@ -848,7 +890,7 @@ function ops_api_handle_job_resume(PDO $conn, array $user, int $jobId): void
         customer_api_send_ok(['job' => ops_api_job_detail($conn, $job, $user)]);
     }
 
-    ops_job_close_pause($conn, $jobId, date('Y-m-d H:i:s'));
+    ops_job_close_pause($conn, $jobId, max(ops_api_client_time(), (string)$job['paused_at']));
 
     $fresh = ops_api_job_or_404($conn, $jobId, $user);
     customer_api_send_ok(['job' => ops_api_job_detail($conn, $fresh, $user)]);
@@ -909,18 +951,20 @@ function ops_api_handle_job_finish(PDO $conn, array $user, int $jobId): void
         customer_api_send_error('job_closed', 'This job is already completed.', 409);
     }
 
+    // When Finish was tapped, not when it arrived — the duration, and so the
+    // invoice, is built from it. Never before the start or an open pause.
+    $now = max(ops_api_client_time(), (string)($job['started_at'] ?? ''), (string)($job['paused_at'] ?? ''));
+
     // Finishing a paused job is allowed — people forget to resume — and it
     // closes the pause at the same moment, so the history has no pause that
     // never ended.
     if (!empty($job['paused_at'])) {
-        ops_job_close_pause($conn, $jobId, date('Y-m-d H:i:s'));
+        ops_job_close_pause($conn, $jobId, $now);
     }
 
     $notes = trim((string)(ops_api_param('completion_notes', '') ?? ''));
     // A job finished without ever being started counts as zero minutes
     // rather than failing.
-    // PHP's clock for both ends, same reason as start.
-    $now = date('Y-m-d H:i:s');
     $startedAt = $job['started_at'] ?: $now;
     $minutes = max(0, (int)round((strtotime($now) - strtotime((string)$startedAt)) / 60));
 

@@ -27,21 +27,28 @@
  *
  * WHAT GETS INVOICED
  * ------------------
- *   - Cleaning jobs a staff member raised in a building that has a client set
- *     (modules/operations/billing.php). Billed to that client, at that client's
- *     hourly rate and VAT, for the time the app measured, up to 10 hours.
- *   - Tenant maintenance requests, the same way — the building's client, its
+ *   - Cleaning jobs a staff member raised in a building. Billed to the building's
+ *     client, at that client's hourly rate and VAT, for the time the app
+ *     measured, up to 10 hours. The client is the one set on
+ *     modules/operations/billing.php, or, when none is set, the client whose
+ *     name is the building's landlord — see ops_bill_client_for_building().
+ *   - Maintenance requests, the same way — the building's client, its
  *     rate and VAT — but never more than 2 hours. A tenant callout is a visit
  *     to one flat, and the owner is not billed a day because a technician left
  *     the job open.
+ *   - ARS checkouts, from the work order the checkout already made in the old
+ *     module. Finish completes that order and finalizes it — its own fee, its
+ *     own client — so there is one invoice, never a second order
+ *     (ops_bill_ars_checkout). A checkout cleaned through the old module and
+ *     marked completed there is finalized the same way — see
+ *     ops_finalize_old_module_checkouts().
+ *   - Customer-app bookings, at the price the customer booked
+ *     (ops_bill_customer_booking).
  *   - Nothing else, deliberately:
  *       maintenance jobs staff raise themselves — the old cleaning module only
  *                           ever billed cleaning;
  *       tenant cleaning   — the tenant paid for the booking when they made it,
  *                           so invoicing it again would charge the work twice;
- *       ARS checkout      — its work order already exists in the old module.
- *                           Finish completes that order and the invoice comes
- *                           from it, once (ops_bill_ars_checkout);
  *       move-out cleaning — never billed.
  *
  * A job that is not invoiced still says why, on the job, in words — so "why is
@@ -58,6 +65,7 @@
 
 require_once dirname(__DIR__, 3) . '/includes/work_order_financial_guard.php';
 require_once dirname(__DIR__, 3) . '/includes/ar_helpers.php';
+require_once __DIR__ . '/ops_sources.php';
 
 /** Measured time is billed in half hours, always rounded up. */
 const OPS_BILL_STEP_MINUTES = 30;
@@ -109,7 +117,11 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
         return ['status' => 'failed', 'note' => 'Job not found.', 'invoice_id' => null];
     }
 
-    if ((int)($job['order_id'] ?? 0) > 0) {
+    // An ARS checkout or customer booking can be linked to its order before
+    // that order is invoiced, so for them a link is not the end: their own
+    // function decides, and is safe to run again.
+    $sourceType = (string)($job['source_type'] ?? 'staff');
+    if ((int)($job['order_id'] ?? 0) > 0 && !in_array($sourceType, ['ars_checkout', 'customer_booking'], true)) {
         return ['status' => 'billed', 'note' => null, 'invoice_id' => (int)$job['invoice_id'] ?: null];
     }
     if ($job['status'] !== 'done') {
@@ -117,14 +129,16 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
     }
 
     // --- Not billable, by the same rules the old modules followed ----------
-    $sourceType = (string)($job['source_type'] ?? 'staff');
     if ($sourceType === 'tenant_cleaning') {
         return ops_bill_record($conn, $jobId, 'not_billable', 'Tenant cleaning — paid by the tenant when booked.');
     }
-    // ARS checkout already has its work order in the old module; the job is
-    // tied to that one rather than writing a second.
+    // ARS checkout already has its work order in the old module; that one is
+    // finalized rather than writing a second.
     if ($sourceType === 'ars_checkout') {
         return ops_bill_ars_checkout($conn, $job);
+    }
+    if ($sourceType === 'customer_booking') {
+        return ops_bill_customer_booking($conn, $job);
     }
     // Move-out cleaning has never been billed to anyone.
     if ($sourceType === 'tenant_move_out') {
@@ -312,56 +326,298 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
 }
 
 /**
- * An ARS checkout job is invoiced once — on the ARS work order, never here.
+ * Finalize a work order that already exists — the steps of
+ * wo_finalize_work_order(), without its Admin/Accountant check, for the reason
+ * in the header. The amount is the order's own; nothing here prices it.
+ *
+ * Returns the invoice id. An order that already has an invoice returns that
+ * one untouched, so this is safe to call again. Throws when the order cannot be
+ * finalized (not completed, zero total), with Finalize's own reason.
+ */
+function ops_bill_finalize_order(PDO $conn, int $orderId, ?int $userId, string $auditNote): int
+{
+    $order = wo_load_order($conn, $orderId);
+    if (!$order) {
+        throw new RuntimeException('Work order #' . $orderId . ' not found.');
+    }
+    if ((int)($order['invoice_id'] ?? 0) > 0) {
+        return (int)$order['invoice_id'];
+    }
+
+    $ownsTxn = !$conn->inTransaction();
+    if ($ownsTxn) {
+        $conn->beginTransaction();
+    }
+
+    try {
+        wo_sync_order_totals_from_services($conn, $orderId);
+        $order = wo_load_order($conn, $orderId) ?: [];
+        [$ok, $reason] = wo_can_finalize($conn, $order);
+        if (!$ok) {
+            throw new RuntimeException($reason);
+        }
+
+        $sub = round((float)($order['total'] ?? 0), 2);
+        $vat = round((float)($order['vat_amount'] ?? 0), 2);
+        $grand = round((float)($order['grand_total'] ?? ($sub + $vat)), 2);
+
+        if (wo_column_exists($conn, 'frozen_subtotal')) {
+            $conn->prepare("
+                UPDATE make_order
+                SET frozen_subtotal = ?, frozen_vat_amount = ?, frozen_grand_total = ?, ops_status = 'completed'
+                WHERE id = ?
+            ")->execute([$sub, $vat, $grand, $orderId]);
+        }
+
+        $invoiceId = (int)ar_ensure_invoice_for_order($conn, $orderId, $userId);
+        if ($invoiceId <= 0) {
+            throw new RuntimeException('The invoice could not be created.');
+        }
+        $conn->prepare('UPDATE make_order SET invoice_id = ? WHERE id = ?')->execute([$invoiceId, $orderId]);
+
+        if (wo_column_exists($conn, 'is_finalized')) {
+            $conn->prepare("
+                UPDATE make_order
+                SET is_finalized = 1, finalized_at = ?, finalized_by = ?,
+                    status = IF(status = 'cancelled', status, 'invoiced'), ops_status = 'completed'
+                WHERE id = ?
+            ")->execute([date('Y-m-d H:i:s'), $userId, $orderId]);
+        } else {
+            $conn->prepare("UPDATE make_order SET status = 'invoiced' WHERE id = ? AND status <> 'cancelled'")
+                 ->execute([$orderId]);
+        }
+
+        require_once dirname(__DIR__, 3) . '/includes/AuditService.php';
+        AuditService::logUpdate('make_order', $orderId, $order, [
+            'is_finalized' => 1,
+            'invoice_id' => $invoiceId,
+            'frozen_grand_total' => $grand,
+        ], $auditNote, $userId);
+
+        if ($ownsTxn) {
+            $conn->commit();
+        }
+    } catch (Throwable $e) {
+        if ($ownsTxn && $conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        throw $e;
+    }
+
+    try {
+        require_once dirname(__DIR__, 3) . '/includes/service_accounting_service.php';
+        (new ServiceAccountingService($conn))->invalidateFinancialCache();
+    } catch (Throwable $e) {
+        error_log('ops billing cache refresh failed: ' . $e->getMessage());
+    }
+
+    return $invoiceId;
+}
+
+/** Mark an old-module work order done, only forward. */
+function ops_bill_complete_order(PDO $conn, int $orderId): void
+{
+    $conn->prepare("
+        UPDATE make_order SET status = 'completed', updated_at = NOW()
+        WHERE id = ? AND status IN ('draft', 'scheduled', 'confirmed', 'in_progress')
+    ")->execute([$orderId]);
+    wo_sync_ops_status_column($conn, $orderId, 'completed');
+}
+
+/**
+ * Tie a job to the order it was invoiced from, or failed to be.
+ *
+ * @return array{status:string, note:?string, invoice_id:?int}
+ */
+function ops_bill_link(PDO $conn, int $jobId, int $orderId, string $status, ?string $note, ?int $invoiceId): array
+{
+    $conn->prepare("
+        UPDATE ops_jobs
+        SET billing_status = ?, billing_note = ?, order_id = ?, invoice_id = ?
+        WHERE id = ? AND (order_id IS NULL OR order_id = ?)
+    ")->execute([$status, $note, $orderId, $invoiceId, $jobId, $orderId]);
+    return ['status' => $status, 'note' => $note, 'invoice_id' => $invoiceId];
+}
+
+/**
+ * An ARS checkout job is invoiced once — from the ARS work order, never a new one.
  *
  * Checkout still makes its make_order in the old module (ars_cleaning_trigger),
- * and that order carries the fee. Writing a second order from the job would
- * mean two invoices for one clean. So Finish only marks that same order
- * completed, which is what the old module shows as done, and links the job to
- * it. The invoice comes from Finalize on that order, as it always did, and
- * invoices.order_id is unique, so there can only ever be one.
+ * and that order carries the fee and the client. Writing a second order from
+ * the job would mean two invoices for one clean. So Finish marks that same
+ * order completed and finalizes it. Safe to run again, which is what makes
+ * Retry work: an order already finalized is only linked, and
+ * invoices.order_id is unique, so there can only ever be one invoice.
  */
 function ops_bill_ars_checkout(PDO $conn, array $job): array
 {
     $jobId = (int)$job['id'];
 
-    $stmt = $conn->prepare("
-        SELECT id, status, invoice_id FROM make_order
-        WHERE ars_booking_id = ? AND status <> 'cancelled'
-        ORDER BY id DESC LIMIT 1
-    ");
-    $stmt->execute([(int)$job['source_id']]);
-    $order = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$order) {
+    // The order this job is already tied to, on a retry; otherwise the
+    // checkout's live one.
+    if ((int)($job['order_id'] ?? 0) > 0) {
+        $stmt = $conn->prepare("SELECT id FROM make_order WHERE id = ?");
+        $stmt->execute([(int)$job['order_id']]);
+    } else {
+        $stmt = $conn->prepare("
+            SELECT id FROM make_order
+            WHERE ars_booking_id = ? AND status <> 'cancelled'
+            ORDER BY id DESC LIMIT 1
+        ");
+        $stmt->execute([(int)$job['source_id']]);
+    }
+    $orderId = (int)$stmt->fetchColumn();
+    if ($orderId <= 0) {
         return ops_bill_record($conn, $jobId, 'not_billable', 'No ARS work order for this checkout, so nothing to invoice.');
     }
-    $orderId = (int)$order['id'];
 
-    // Only forward. An order the office already completed or invoiced is left
-    // exactly as it is.
-    $open = ['draft', 'scheduled', 'confirmed', 'in_progress'];
-    if (in_array((string)$order['status'], $open, true)) {
-        $conn->prepare("
-            UPDATE make_order SET status = 'completed', updated_at = NOW()
-            WHERE id = ? AND status IN ('draft', 'scheduled', 'confirmed', 'in_progress')
-        ")->execute([$orderId]);
-        wo_sync_ops_status_column($conn, $orderId, 'completed');
+    // The clean is done whatever happens to the invoice, so this stands even
+    // when finalizing fails.
+    ops_bill_complete_order($conn, $orderId);
+
+    try {
+        $invoiceId = ops_bill_finalize_order(
+            $conn, $orderId, $job['assigned_to'] ? (int)$job['assigned_to'] : null,
+            "Operations job #{$jobId} finished — ARS work order #{$orderId} finalized and invoiced automatically"
+        );
+    } catch (Throwable $e) {
+        error_log('ops_bill_ars_checkout #' . $jobId . ' failed: ' . $e->getMessage());
+        return ops_bill_link($conn, $jobId, $orderId, 'failed',
+            mb_substr('Invoice not created from ARS work order #' . $orderId . ': ' . $e->getMessage(), 0, 255), null);
+    }
+    return ops_bill_link($conn, $jobId, $orderId, 'billed', null, $invoiceId);
+}
+
+/**
+ * A customer-app booking is invoiced at the price the customer was shown.
+ *
+ * The booking already carries it: total_price with its VAT, after any coupon
+ * or wallet discount. Finish writes the work order the office used to make
+ * from the booking (operation/ajax_online_bookings.php), already completed, at
+ * those amounts rather than re-pricing it, then finalizes it. If the office did
+ * convert the booking in the old module meanwhile, that order is used instead,
+ * so there is still only one.
+ */
+function ops_bill_customer_booking(PDO $conn, array $job): array
+{
+    $jobId = (int)$job['id'];
+    $bookingId = (int)$job['source_id'];
+
+    $stmt = $conn->prepare("SELECT * FROM online_bookings WHERE id = ?");
+    $stmt->execute([$bookingId]);
+    $booking = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$booking) {
+        return ops_bill_record($conn, $jobId, 'failed', 'Customer booking #' . $bookingId . ' no longer exists.');
     }
 
-    $invoiceId = (int)($order['invoice_id'] ?? 0);
-    $conn->prepare("
-        UPDATE ops_jobs
-        SET billing_status = ?, billing_note = ?, order_id = ?, invoice_id = ?
-        WHERE id = ? AND order_id IS NULL
-    ")->execute([
-        $invoiceId > 0 ? 'billed' : 'not_billable',
-        $invoiceId > 0 ? null : 'Invoiced once from ARS work order #' . $orderId . ', when it is finalized in the old module.',
-        $orderId, $invoiceId > 0 ? $invoiceId : null, $jobId,
-    ]);
+    $userId = $job['assigned_to'] ? (int)$job['assigned_to'] : null;
+    $orderId = (int)($job['order_id'] ?? 0) ?: (int)($booking['work_order_id'] ?? 0);
 
-    return $invoiceId > 0
-        ? ['status' => 'billed', 'note' => null, 'invoice_id' => $invoiceId]
-        : ['status' => 'not_billable', 'note' => null, 'invoice_id' => null];
+    try {
+        if ($orderId <= 0) {
+            $orderId = ops_bill_write_booking_order($conn, $job, $booking);
+            $conn->prepare("UPDATE online_bookings SET work_order_id = ? WHERE id = ? AND work_order_id IS NULL")
+                 ->execute([$orderId, $bookingId]);
+        } else {
+            ops_bill_complete_order($conn, $orderId);
+        }
+        $conn->prepare("UPDATE ops_jobs SET order_id = ? WHERE id = ? AND order_id IS NULL")->execute([$orderId, $jobId]);
+
+        $invoiceId = ops_bill_finalize_order(
+            $conn, $orderId, $userId,
+            "Operations job #{$jobId} finished — customer booking #{$bookingId}, work order #{$orderId} invoiced automatically"
+        );
+    } catch (Throwable $e) {
+        error_log('ops_bill_customer_booking #' . $jobId . ' failed: ' . $e->getMessage());
+        $note = mb_substr('Invoice not created for customer booking #' . $bookingId . ': ' . $e->getMessage(), 0, 255);
+        return $orderId > 0
+            ? ops_bill_link($conn, $jobId, $orderId, 'failed', $note, null)
+            : ops_bill_record($conn, $jobId, 'failed', $note);
+    }
+
+    $conn->prepare("UPDATE online_bookings SET status = 'completed', updated_at = NOW() WHERE id = ? AND status NOT IN ('cancelled', 'no_show')")
+         ->execute([$bookingId]);
+    return ops_bill_link($conn, $jobId, $orderId, 'billed', null, $invoiceId);
+}
+
+/** The completed work order for a finished customer booking. Returns its id. */
+function ops_bill_write_booking_order(PDO $conn, array $job, array $booking): int
+{
+    // The client, the way the office conversion finds or makes one.
+    $clientId = (int)($booking['client_id'] ?? 0);
+    if ($clientId <= 0) {
+        $find = $conn->prepare("SELECT id FROM client WHERE mobile_num = ? LIMIT 1");
+        $find->execute([(string)$booking['customer_phone']]);
+        $clientId = (int)$find->fetchColumn();
+    }
+    if ($clientId <= 0) {
+        $conn->prepare("
+            INSERT INTO client (client_name, mobile_num, cell_num, email, address, rate, payment, terms, default_vat_rate, is_active, currency, client_status)
+            VALUES (?, ?, '', ?, ?, 0.00, 'D', 'cash', 5.00, 1, 'AED', 'active')
+        ")->execute([
+            (string)$booking['customer_name'], (string)$booking['customer_phone'],
+            (string)($booking['customer_email'] ?? ''), (string)($booking['address'] ?? ''),
+        ]);
+        $clientId = (int)$conn->lastInsertId();
+    }
+    $client = $conn->prepare("SELECT client_name, terms FROM client WHERE id = ?");
+    $client->execute([$clientId]);
+    $clientRow = $client->fetch(PDO::FETCH_ASSOC) ?: ['client_name' => $booking['customer_name'], 'terms' => 'cash'];
+
+    // The customer's price, as booked.
+    $grand = round((float)$booking['total_price'], 2);
+    $vat = round((float)($booking['vat'] ?? 0), 2);
+    $net = round($grand - $vat, 2);
+    $vatRate = $net > 0 ? round($vat / $net * 100, 2) : 0.0;
+    $hours = max(0.5, (float)($booking['hours'] ?? 0) * max(1, (int)($booking['professionals'] ?? 1)));
+    $rate = round($net / $hours, 2);
+
+    $startedAt = (string)($job['started_at'] ?: $job['finished_at']);
+    $finishedAt = (string)$job['finished_at'];
+    $serviceDate = substr($startedAt, 0, 10) ?: date('Y-m-d');
+    $startClock = substr($startedAt, 11, 5);
+    $endClock = substr($finishedAt, 11, 5);
+    $userId = $job['assigned_to'] ? (int)$job['assigned_to'] : null;
+
+    $conn->prepare("
+        INSERT INTO make_order
+            (company_id, client_id, client_name, worker_name, email_o, address_o, mobile_num_o,
+             fee_charged, hourly_rate, payment, date, service_date, time, start_time, end_time,
+             hours, total, balance, need_materials, remark, notes, driver_name,
+             net_hours, net_amount, amount_afc, discount_amount,
+             vat_rate, vat_amount, grand_total, status, payment_status,
+             created_at, created_by)
+        VALUES
+            (?, ?, ?, ?, ?, ?, ?,
+             ?, ?, ?, ?, ?, ?, ?, ?,
+             ?, ?, 0.00, ?, ?, ?, '',
+             ?, ?, ?, 0.00,
+             ?, ?, ?, 'completed', 'unpaid',
+             ?, ?)
+    ")->execute([
+        OPS_CUSTOMER_BOOKING_COMPANY_ID, $clientId, (string)$clientRow['client_name'],
+        mb_substr(ops_bill_person_name($conn, (int)$userId), 0, 50),
+        (string)($booking['customer_email'] ?? ''), (string)($booking['address'] ?? ''),
+        mb_substr((string)$booking['customer_phone'], 0, 50),
+        $rate, $rate, mb_substr((string)($clientRow['terms'] ?: 'cash'), 0, 15),
+        $serviceDate, $serviceDate,
+        mb_substr($startClock . ' To ' . $endClock, 0, 50),
+        $startClock !== '' ? $startClock . ':00' : null,
+        $endClock !== '' ? $endClock . ':00' : null,
+        $hours, $net, (int)($booking['materials_included'] ?? 0),
+        mb_substr('From Operations job #' . (int)$job['id'] . ' — customer booking #' . (int)$booking['id'], 0, 900),
+        'Created from online booking #' . (int)$booking['id'],
+        $hours, $net, $net,
+        $vatRate, $vat, $grand,
+        date('Y-m-d H:i:s'), $userId,
+    ]);
+    $orderId = (int)$conn->lastInsertId();
+
+    $workerId = ops_bill_worker_id($conn, (int)$userId);
+    if ($workerId > 0) {
+        $conn->prepare("INSERT INTO order_workers (order_id, worker_id) VALUES (?, ?)")->execute([$orderId, $workerId]);
+    }
+    return $orderId;
 }
 
 /** Write why a job was, or was not, invoiced. */
@@ -378,7 +634,17 @@ function ops_bill_record(PDO $conn, int $jobId, string $status, ?string $note): 
     return ['status' => $status, 'note' => $note, 'invoice_id' => null];
 }
 
-/** The client set for a building, with the fields billing needs, or null. */
+/**
+ * Who a building's work is billed to, with the fields billing needs, or null.
+ *
+ * The client set on the Billing page wins. With none set, the building's
+ * landlord: the one active client whose name is the landlord's name, compared
+ * without case, spacing, punctuation or a trailing "LLC" — so "Ain Al Reem
+ * Properties LLC" on the building finds "AIN AL REEM PROPERTIES L.L.C". That is
+ * who the old module billed for these buildings, and it means a building needs
+ * no set-up at all unless its landlord is not a client, or is the wrong payer.
+ * Two clients with the same name are no answer, and neither is a guess.
+ */
 function ops_bill_client_for_building(PDO $conn, int $buildingId): ?array
 {
     if ($buildingId <= 0) {
@@ -393,7 +659,37 @@ function ops_bill_client_for_building(PDO $conn, int $buildingId): ?array
     ");
     $stmt->execute([$buildingId]);
     $client = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $client ?: null;
+    if ($client) {
+        return $client;
+    }
+
+    return ops_bill_landlord_client($conn, $buildingId);
+}
+
+/** The client matching a building's landlord name, or null — see above. */
+function ops_bill_landlord_client(PDO $conn, int $buildingId): ?array
+{
+    $stmt = $conn->prepare("SELECT landlord_name FROM re_buildings WHERE id = ?");
+    $stmt->execute([$buildingId]);
+    $landlord = ops_bill_name_key((string)$stmt->fetchColumn());
+    if ($landlord === '') {
+        return null;
+    }
+
+    $matches = [];
+    foreach ($conn->query("SELECT * FROM client WHERE is_active = 1")->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        if (ops_bill_name_key((string)$row['client_name']) === $landlord) {
+            $matches[] = $row;
+        }
+    }
+    return count($matches) === 1 ? $matches[0] : null;
+}
+
+/** "Ain Al Reem Properties L.L.C." → "ainalreemproperties". */
+function ops_bill_name_key(string $name): string
+{
+    $key = preg_replace('/[^a-z0-9]/', '', strtolower($name)) ?? '';
+    return (string)preg_replace('/llc$/', '', $key);
 }
 
 function ops_bill_building_name(PDO $conn, int $buildingId): string
