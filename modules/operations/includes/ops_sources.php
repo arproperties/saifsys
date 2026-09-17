@@ -511,6 +511,11 @@ function ops_source_link(string $appBase, array $job): ?array
                 'label' => 'Tenant maintenance request #' . $id,
                 'url' => $appBase . '/modules/realestate/maintenance_view.php?id=' . $id,
             ];
+        case 'cleaner_report':
+            return [
+                'label' => 'Found during cleaning job #' . $id,
+                'url' => $appBase . '/modules/operations/job_view.php?id=' . $id,
+            ];
         case 'tenant_cleaning':
             return [
                 'label' => 'Tenant cleaning booking #' . $id,

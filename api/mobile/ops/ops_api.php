@@ -37,6 +37,7 @@ require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_pin.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_sources.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_billing.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_attendance.php';
+require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_checklist.php';
 
 // ops_helper -> auth.php opens a session at include time. This API is
 // stateless, so drop it straight away: no session file is written and no
@@ -741,7 +742,7 @@ function ops_api_job_row(array $job): array
         'is_paused' => $job['status'] === 'in_progress' && !empty($job['paused_at']),
         'paused_at' => !empty($job['paused_at']) ? (string)$job['paused_at'] : null,
         'pause_reason' => !empty($job['pause_reason']) ? (string)$job['pause_reason'] : null,
-        // 'staff', 'tenant_maintenance' or 'tenant_cleaning'. The card marks a
+        // 'staff', 'tenant_maintenance', 'tenant_cleaning' or 'cleaner_report'. The card marks a
         // tenant's job, and the Requests tab needs the tenant's own words on
         // it: "AC not cooling" is how somebody decides whether it is theirs.
         'source_type' => (string)($job['source_type'] ?? 'staff'),
@@ -926,6 +927,9 @@ function ops_api_job_detail(PDO $conn, array $job, array $user): array
     $detail['materials'] = [];
 
     $detail['places'] = ops_api_job_places($conn, $jobId);
+
+    // Unit cleaning jobs only; null everywhere else. See ops_checklist.php.
+    $detail['checklist'] = ops_checklist_for_app($conn, $job);
 
     $commentRows = $comments->fetchAll(PDO::FETCH_ASSOC) ?: [];
     $mediaByComment = ops_api_comment_media(

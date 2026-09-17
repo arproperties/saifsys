@@ -437,7 +437,11 @@ require __DIR__ . '/includes/ops_layout_header.php';
                   <span class="badge bg-warning text-dark" title="<?= h($j['billing_note'] ?? '') ?>"><i class="bi bi-exclamation-triangle"></i> Not invoiced</span>
                 <?php endif; ?>
                 <?php if (($j['source_type'] ?? 'staff') !== 'staff'): ?>
-                  <span class="badge bg-info text-dark"><i class="bi bi-person-badge"></i> Tenant request</span>
+                  <?php if ($j['source_type'] === 'cleaner_report'): ?>
+                    <span class="badge bg-info text-dark"><i class="bi bi-brush"></i> Found by cleaner</span>
+                  <?php else: ?>
+                    <span class="badge bg-info text-dark"><i class="bi bi-person-badge"></i> Tenant request</span>
+                  <?php endif; ?>
                   <?php if ($j['assigned_to'] === null && $j['status'] === 'open'): ?>
                     <span class="badge bg-warning text-dark">Waiting to be claimed</span>
                   <?php endif; ?>

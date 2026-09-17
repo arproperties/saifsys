@@ -730,7 +730,7 @@ function ops_api_handle_job_claim(PDO $conn, array $user, int $jobId): void
         UPDATE ops_jobs
         SET assigned_to = ?,
             scheduled_date = CASE
-                WHEN source_type = 'tenant_maintenance' AND scheduled_date < ? THEN ?
+                WHEN source_type IN ('tenant_maintenance', 'cleaner_report') AND scheduled_date < ? THEN ?
                 ELSE scheduled_date
             END,
             updated_at = ?
@@ -903,6 +903,21 @@ function ops_api_handle_job_finish(PDO $conn, array $user, int $jobId): void
         );
     }
 
+    // A unit clean closes on its checklist: every item Done or N/A. Checked
+    // before the replay guard for the same reason as the photo — the cleaner
+    // can fix it and try again.
+    $checklist = null;
+    if ($job['status'] !== 'done' && ops_job_needs_checklist($conn, $job)) {
+        $checklist = ops_checklist_parse(ops_api_param('checklist'));
+        if ($checklist === null) {
+            customer_api_send_error(
+                'checklist_required',
+                'Tick every checklist item Done or N/A before finishing this job.',
+                409
+            );
+        }
+    }
+
     ops_api_guard_replay($conn, $user, $jobId, "jobs/$jobId/finish");
 
     if ($job['status'] === 'done') {
@@ -942,6 +957,9 @@ function ops_api_handle_job_finish(PDO $conn, array $user, int $jobId): void
     if ($stmt->rowCount() > 0) {
         ops_source_on_finish($conn, $job);
         ops_bill_finished_job($conn, $jobId);
+        if ($checklist !== null) {
+            ops_checklist_save($conn, $job, (int)$user['id'], $checklist);
+        }
     }
 
     $fresh = ops_api_job_or_404($conn, $jobId, $user);

@@ -18,6 +18,7 @@ require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/ops_helper.php';
 require_once __DIR__ . '/includes/ops_sources.php';
 require_once __DIR__ . '/includes/ops_billing.php';
+require_once __DIR__ . '/includes/ops_checklist.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -409,6 +410,55 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <?php endif; ?>
       </div>
     </div>
+
+    <?php // Unit cleaning jobs: the checklist the cleaner answered on Finish. ?>
+    <?php if (ops_job_needs_checklist($conn, $job)): ?>
+      <?php $checklist = ops_checklist_load($conn, (int)$job['id']); ?>
+      <div class="card card-round mb-3">
+        <div class="card-body">
+          <h6 class="fw-bold mb-3"><i class="bi bi-list-check"></i> Cleaning checklist</h6>
+          <?php if (!$checklist): ?>
+            <p class="text-muted small mb-0">The cleaner ticks this in the field app. It is saved when the job is finished.</p>
+          <?php else: ?>
+            <div class="row g-3">
+              <?php foreach (ops_cleaning_checklist() as $section): ?>
+                <div class="col-md-6">
+                  <div class="small text-muted fw-semibold mb-1"><?= h($section['title']) ?></div>
+                  <?php foreach ($section['items'] as $key => $label): ?>
+                    <?php $state = $checklist['items'][$key] ?? null; ?>
+                    <div class="small">
+                      <?php if ($state === 'done'): ?>
+                        <i class="bi bi-check-circle-fill text-success"></i> <?= h($label) ?>
+                      <?php elseif ($state === 'na'): ?>
+                        <i class="bi bi-dash-circle text-muted"></i> <span class="text-muted"><?= h($label) ?> (N/A)</span>
+                      <?php else: ?>
+                        <i class="bi bi-circle text-muted"></i> <span class="text-muted"><?= h($label) ?></span>
+                      <?php endif; ?>
+                    </div>
+                  <?php endforeach; ?>
+                </div>
+              <?php endforeach; ?>
+            </div>
+            <?php if ($checklist['problems'] || $checklist['problem_note']): ?>
+              <div class="alert alert-warning mt-3 mb-0">
+                <div class="fw-semibold mb-1"><i class="bi bi-exclamation-triangle"></i> Problems found</div>
+                <?php foreach ($checklist['problems'] as $key): ?>
+                  <div><?= h(ops_cleaning_problems()[$key] ?? $key) ?></div>
+                <?php endforeach; ?>
+                <?php if ($checklist['problem_note']): ?>
+                  <div class="mt-1"><?= nl2br(h($checklist['problem_note'])) ?></div>
+                <?php endif; ?>
+                <?php if ($checklist['maintenance_job_id']): ?>
+                  <a class="d-inline-block mt-2" href="<?= h($opsBase) ?>/job_view.php?id=<?= (int)$checklist['maintenance_job_id'] ?>">
+                    Maintenance job #<?= (int)$checklist['maintenance_job_id'] ?>
+                  </a>
+                <?php endif; ?>
+              </div>
+            <?php endif; ?>
+          <?php endif; ?>
+        </div>
+      </div>
+    <?php endif; ?>
 
     <!-- Photos -->
     <div class="card card-round mb-3">
