@@ -361,8 +361,9 @@ function ops_withdraw_checkouts(PDO $conn, array $companyIds): void
           AND b.status NOT IN ('checked_out', 'completed')
     ")->execute(array_merge([$now], $companyIds));
 
-    // Already cleaned through the old module: its work order is completed or
-    // invoiced. Nobody should be sent to do it again.
+    // The old module has it: the office put a worker on the ARS work order, or
+    // it is already completed there. While both modules run side by side this
+    // is what stops two people going to the same flat.
     $conn->prepare("
         UPDATE ops_jobs j
         SET j.status = 'cancelled', j.updated_at = ?
@@ -370,11 +371,7 @@ function ops_withdraw_checkouts(PDO $conn, array $companyIds): void
           AND j.assigned_to IS NULL
           AND j.status = 'open'
           AND j.company_id IN ($in)
-          AND EXISTS (
-              SELECT 1 FROM make_order o
-              WHERE o.ars_booking_id = j.source_id
-                AND o.status IN ('completed', 'invoiced')
-          )
+          AND " . ops_ars_order_handled_sql('j') . "
     ")->execute(array_merge([$now], $companyIds));
 
     // And back again, for a job only this withdrawal cancelled: nobody on it,
@@ -401,12 +398,55 @@ function ops_withdraw_checkouts(PDO $conn, array $companyIds): void
           AND j.started_at IS NULL
           AND j.company_id IN ($in)
           AND b.status IN ('checked_out', 'completed')
-          AND NOT EXISTS (
-              SELECT 1 FROM make_order o
-              WHERE o.ars_booking_id = j.source_id
-                AND o.status IN ('completed', 'invoiced')
-          )
+          AND NOT " . ops_ars_order_handled_sql('j') . "
     ")->execute(array_merge([$now], $companyIds));
+}
+
+/**
+ * SQL: the old module is already dealing with this checkout's work order —
+ * a worker is on it there, or it is completed or invoiced.
+ */
+function ops_ars_order_handled_sql(string $jobAlias): string
+{
+    return "EXISTS (
+              SELECT 1 FROM make_order o
+              WHERE o.ars_booking_id = {$jobAlias}.source_id
+                AND o.status <> 'cancelled'
+                AND (o.status IN ('completed', 'invoiced')
+                     OR EXISTS (SELECT 1 FROM order_workers ow WHERE ow.order_id = o.id))
+          )";
+}
+
+/**
+ * Show on the ARS work order who took the job in the app.
+ *
+ * Written to make_order.worker_name only, which the old work-order list shows
+ * when no worker is assigned there. Not order_workers: that feeds worker
+ * availability, HR performance and the per-worker split of hours, and this
+ * person may not be on the old workers list at all. The " (app)" suffix is how
+ * a later release knows the name is ours to clear. Never touches an order the
+ * office has put a worker on.
+ */
+function ops_ars_order_show_person(PDO $conn, int $bookingId, ?int $userId): void
+{
+    try {
+        $name = '';
+        if ($userId) {
+            $stmt = $conn->prepare("SELECT COALESCE(NULLIF(fullname, ''), username) FROM user WHERE id = ?");
+            $stmt->execute([$userId]);
+            $name = mb_substr((string)$stmt->fetchColumn() . ' (app)', 0, 50);
+        }
+        $conn->prepare("
+            UPDATE make_order o
+            SET o.worker_name = ?
+            WHERE o.ars_booking_id = ?
+              AND o.status NOT IN ('cancelled', 'invoiced')
+              AND NOT EXISTS (SELECT 1 FROM order_workers ow WHERE ow.order_id = o.id)
+              AND (COALESCE(o.worker_name, '') = '' OR o.worker_name LIKE '% (app)')
+        ")->execute([$name, $bookingId]);
+    } catch (Throwable $e) {
+        error_log('ops_ars_order_show_person failed: ' . $e->getMessage());
+    }
 }
 
 /**
@@ -603,6 +643,10 @@ function ops_source_priority(string $priority): string
  */
 function ops_source_on_claim(PDO $conn, array $job, int $userId): void
 {
+    if (($job['source_type'] ?? 'staff') === 'ars_checkout') {
+        ops_ars_order_show_person($conn, (int)$job['source_id'], $userId);
+        return;
+    }
     if (($job['source_type'] ?? 'staff') !== 'tenant_maintenance') {
         return;
     }

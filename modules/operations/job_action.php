@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/ops_helper.php';
 require_once __DIR__ . '/includes/ops_billing.php';
+require_once __DIR__ . '/includes/ops_sources.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -135,6 +136,11 @@ switch ($action) {
 
         $conn->prepare("UPDATE ops_jobs SET assigned_to = ? WHERE id = ? AND company_id = ?")
              ->execute([$assignTo, $jobId, $companyId]);
+
+        // Same name on the old module's ARS work order while both run.
+        if (($job['source_type'] ?? '') === 'ars_checkout') {
+            ops_ars_order_show_person($conn, (int)$job['source_id'], $assignTo);
+        }
 
         $who = 'Nobody';
         if ($assignTo !== null) {
