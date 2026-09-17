@@ -639,28 +639,6 @@ function ops_api_load_own_job(PDO $conn, int $jobId, array $user): ?array
 }
 
 /**
- * Companies this person holds a daily-repeat series in.
- *
- * The app generates the day's repeating jobs on sign-in, and that has to be
- * keyed off where their series actually live rather than their user_companies
- * rows — staff are shared across the group, so a cleaner on one payroll
- * routinely holds a series under a sister company.
- */
-function ops_api_user_series_company_ids(PDO $conn, int $userId): array
-{
-    $stmt = $conn->prepare("
-        SELECT DISTINCT company_id
-        FROM ops_jobs
-        WHERE assigned_to = ?
-          AND repeat_daily = 1
-          AND series_id = id
-          AND status <> 'cancelled'
-    ");
-    $stmt->execute([$userId]);
-    return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN) ?: []);
-}
-
-/**
  * The Before-photo count, as a subquery on `j` rather than a second round trip.
  *
  * A job cannot be started until at least one Before photo or clip is on it, so
@@ -742,17 +720,13 @@ function ops_api_job_row(array $job): array
         'is_paused' => $job['status'] === 'in_progress' && !empty($job['paused_at']),
         'paused_at' => !empty($job['paused_at']) ? (string)$job['paused_at'] : null,
         'pause_reason' => !empty($job['pause_reason']) ? (string)$job['pause_reason'] : null,
-        // 'staff', 'tenant_maintenance', 'tenant_cleaning' or 'cleaner_report'. The card marks a
+        // 'staff', 'tenant_maintenance', 'tenant_cleaning', 'cleaner_report', 'ars_checkout' or 'tenant_move_out'. The card marks a
         // tenant's job, and the Requests tab needs the tenant's own words on
         // it: "AC not cooling" is how somebody decides whether it is theirs.
         'source_type' => (string)($job['source_type'] ?? 'staff'),
         'request_note' => ($job['source_type'] ?? 'staff') !== 'staff' && !empty($job['description'])
             ? mb_substr((string)$job['description'], 0, 160)
             : null,
-        // A daily job. The app shows it as a small repeat mark so a cleaner can
-        // tell "this comes round again tomorrow" from a one-off callout — it
-        // changes nothing about how the job is worked.
-        'is_repeating' => ops_job_in_series($job),
         'before_photo_count' => $beforePhotos,
         // The app greys out Start on this flag; the start route enforces the
         // same rule again, because a queued start written offline arrives

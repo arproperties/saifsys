@@ -19,14 +19,7 @@ $companyId = ops_company_id($conn);
 $appBase = get_application_web_root();
 $opsBase = $appBase . '/modules/operations';
 
-// Daily repeating jobs are made here, on the way in, rather than by a cron job
-// somebody has to install and nobody would notice had stopped. Whoever opens
-// the module first that morning is what puts the day's work on the board — and
-// the field app's job list does the same, so a cleaner opening the app before
-// the office does still sees their day.
-ops_generate_daily_jobs($conn, $companyId);
-
-// Tenant requests into the pool, on the same trigger — see includes/ops_sources.php.
+// Tenant requests and checkouts into the pool, on the way in — see includes/ops_sources.php.
 ops_sync_tenant_requests($conn, [$companyId]);
 
 // ---------------------------------------------------------------------------
@@ -439,6 +432,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <?php if (($j['source_type'] ?? 'staff') !== 'staff'): ?>
                   <?php if ($j['source_type'] === 'cleaner_report'): ?>
                     <span class="badge bg-info text-dark"><i class="bi bi-brush"></i> Found by cleaner</span>
+                  <?php elseif ($j['source_type'] === 'ars_checkout'): ?>
+                    <span class="badge bg-info text-dark"><i class="bi bi-box-arrow-right"></i> Guest checkout</span>
+                  <?php elseif ($j['source_type'] === 'tenant_move_out'): ?>
+                    <span class="badge bg-info text-dark"><i class="bi bi-box-arrow-right"></i> Move-out</span>
                   <?php else: ?>
                     <span class="badge bg-info text-dark"><i class="bi bi-person-badge"></i> Tenant request</span>
                   <?php endif; ?>
@@ -466,9 +463,6 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <?php endif; ?>
                 <?php if ((int)$j['needs_materials'] === 1): ?>
                   <span class="badge bg-warning text-dark ms-2"><i class="bi bi-box-seam"></i> Needs materials</span>
-                <?php endif; ?>
-                <?php if (ops_job_in_series($j)): ?>
-                  <span class="ms-2" title="Part of a job that repeats every day"><i class="bi bi-arrow-repeat"></i> Daily</span>
                 <?php endif; ?>
               </div>
             </td>

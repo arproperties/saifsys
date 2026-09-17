@@ -110,26 +110,6 @@ $isOpen = in_array($job['status'], ['open', 'in_progress'], true);
 $pageTitle = $job['title'];
 $jobIsLate = ops_job_is_late($job);
 
-// Repeating work: the rule lives on the head job, so a generated day shows the
-// same badge but sends "stop" to the job it came from.
-$jobRepeats = ops_job_in_series($job);
-$jobIsRepeatHead = ops_job_is_repeat_head($job);
-$jobHeadId = ops_repeat_head_id($job);
-$jobRepeatOn = !empty($job['repeat_daily']);
-$jobHeadTitle = (string)$job['title'];
-if ($jobRepeats && !$jobIsRepeatHead) {
-    // A generated day carries no rule of its own — read it off the head so the
-    // page can say "still repeating" or "stopped" without lying.
-    $headStmt = $conn->prepare("
-        SELECT title, repeat_daily
-        FROM ops_jobs WHERE id = ? AND company_id = ? LIMIT 1
-    ");
-    $headStmt->execute([$jobHeadId, $companyId]);
-    $headRow = $headStmt->fetch(PDO::FETCH_ASSOC) ?: [];
-    $jobRepeatOn = !empty($headRow['repeat_daily']);
-    $jobHeadTitle = (string)($headRow['title'] ?? $job['title']);
-}
-
 require __DIR__ . '/includes/ops_layout_header.php';
 ?>
 
@@ -174,11 +154,6 @@ require __DIR__ . '/includes/ops_layout_header.php';
       <?php if ($jobIsLate): ?>
         <span class="badge bg-danger"><i class="bi bi-exclamation-triangle"></i> Late</span>
       <?php endif; ?>
-      <?php if ($jobRepeats): ?>
-        <span class="badge bg-primary-subtle text-primary-emphasis border border-primary-subtle">
-          <i class="bi bi-arrow-repeat"></i> Daily
-        </span>
-      <?php endif; ?>
       <?php // Raised when somebody on site asks for something in the
             // conversation. Handing it over from Materials used, or replying,
             // takes it back down. ?>
@@ -210,9 +185,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
   </div>
   <div class="d-flex gap-2">
     <a href="<?= h($opsBase) ?>/job_form.php?id=<?= (int)$job['id'] ?>" class="btn btn-outline-secondary"><i class="bi bi-pencil"></i> Edit</a>
-    <form method="post" action="<?= h($opsBase) ?>/job_action.php" onsubmit="return confirm(<?= $jobIsRepeatHead && $jobRepeatOn
-        ? "'Delete this job and everything attached to it? It is the job the daily copies are made from, so the repeat stops too.'"
-        : "'Delete this job and everything attached to it?'" ?>);">
+    <form method="post" action="<?= h($opsBase) ?>/job_action.php" onsubmit="return confirm('Delete this job and everything attached to it?');">
       <?php csrf_field(); ?>
       <input type="hidden" name="action" value="delete_job">
       <input type="hidden" name="job_id" value="<?= (int)$job['id'] ?>">
@@ -303,48 +276,6 @@ require __DIR__ . '/includes/ops_layout_header.php';
         </form>
       </div>
     </div>
-
-    <!-- Repeating work. Only shown when there is a series to say something about. -->
-    <?php if ($jobRepeats): ?>
-    <div class="card card-round mb-3">
-      <div class="card-body">
-        <h6 class="fw-bold mb-3"><i class="bi bi-arrow-repeat"></i> Repeats</h6>
-        <?php if ($jobIsRepeatHead): ?>
-          <p class="mb-3">
-            <?php if ($jobRepeatOn): ?>
-              This job is created again <strong>every day</strong>, until somebody stops it
-              with the button below. Each day copies this job as it stands, so edit it here
-              to change tomorrow onwards — days already created keep what they were given.
-            <?php else: ?>
-              This job used to repeat daily. It has been stopped, so no new days are being created.
-            <?php endif; ?>
-          </p>
-          <form method="post" action="<?= h($opsBase) ?>/job_action.php"
-                <?= $jobRepeatOn ? 'onsubmit="return confirm(\'Stop creating this job every day? Days already created stay where they are.\');"' : '' ?>>
-            <?php csrf_field(); ?>
-            <input type="hidden" name="action" value="set_repeat">
-            <input type="hidden" name="job_id" value="<?= (int)$job['id'] ?>">
-            <input type="hidden" name="repeat_daily" value="<?= $jobRepeatOn ? '0' : '1' ?>">
-            <input type="hidden" name="return_to" value="<?= h($returnTo) ?>">
-            <button class="btn btn-sm <?= $jobRepeatOn ? 'btn-outline-danger' : 'btn-outline-secondary' ?>">
-              <i class="bi bi-<?= $jobRepeatOn ? 'stop-circle' : 'play-circle' ?>"></i>
-              <?= $jobRepeatOn ? 'Stop repeating' : 'Start repeating again' ?>
-            </button>
-          </form>
-        <?php else: ?>
-          <p class="mb-2">
-            One day of a daily job. It was created automatically from
-            <a href="<?= h($opsBase) ?>/job_view.php?id=<?= (int)$jobHeadId ?>"><?= h($jobHeadTitle) ?></a>.
-          </p>
-          <p class="text-muted small mb-0">
-            <?= $jobRepeatOn
-                ? 'Still repeating — anything changed here applies to this day only.'
-                : 'The repeat has been stopped; no further days will be created.' ?>
-          </p>
-        <?php endif; ?>
-      </div>
-    </div>
-    <?php endif; ?>
 
     <!-- Details and time. The clock is read-only; the field app runs it. -->
     <div class="card card-round mb-3">

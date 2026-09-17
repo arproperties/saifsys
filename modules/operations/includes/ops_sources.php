@@ -15,8 +15,8 @@
  * ----------------------------------------------
  * The tenant portal, the tenant API and the Real Estate pages carry on exactly
  * as they were. Instead of hooking every place a request is written, this side
- * reads those tables and makes its own copy — the same pull the daily repeat
- * generator already does, run from the same places. The unique key on
+ * reads those tables and makes its own copy on every job list load, from the
+ * office's list and the field app's. The unique key on
  * (source_type, source_id) is what makes running it on every page load safe:
  * one request becomes one job, ever. See migrations/ops_job_sources.sql.
  *
@@ -46,6 +46,14 @@
  */
 const OPS_TENANT_SYNC_FROM = '2026-09-16';
 
+/**
+ * Checkouts and move-outs before this date are not copied.
+ *
+ * The day this went live. There are close to a hundred ARS bookings already
+ * checked out; their units were cleaned, or not, weeks ago.
+ */
+const OPS_CHECKOUT_SYNC_FROM = '2026-09-17';
+
 // ---------------------------------------------------------------------------
 // Copy requests in
 // ---------------------------------------------------------------------------
@@ -70,7 +78,10 @@ function ops_sync_tenant_requests(PDO $conn, array $companyIds): void
     try {
         ops_sync_tenant_maintenance($conn, $companyIds);
         ops_sync_tenant_cleaning($conn, $companyIds);
+        ops_sync_ars_checkouts($conn, $companyIds);
+        ops_sync_tenant_move_outs($conn, $companyIds);
         ops_withdraw_tenant_requests($conn, $companyIds);
+        ops_withdraw_checkouts($conn, $companyIds);
     } catch (Throwable $e) {
         // Most often a database without migrations/ops_job_sources.sql yet.
         error_log('ops_sync_tenant_requests failed: ' . $e->getMessage());
@@ -199,6 +210,203 @@ function ops_sync_tenant_cleaning(PDO $conn, array $companyIds): void
             'source_id' => (int)$booking['id'],
         ], [$place]);
     }
+}
+
+/**
+ * A cleaning job for every ARS guest who has checked out.
+ *
+ * Pressing Check out on the booking is what sets status 'checked_out' and
+ * actual_check_out, so reading the table catches it whichever page or script
+ * did it. The job is dated the day the guest actually left. Yesterday's is
+ * still copied: a guest who checks out late at night is only picked up when
+ * somebody opens a job list the next morning, and the unit still needs doing.
+ *
+ * ARS checkout still makes its old make_order work order as well. The two are
+ * the same clean: finishing this job completes that order, and the invoice
+ * comes from that order only — see ops_bill_ars_checkout().
+ */
+function ops_sync_ars_checkouts(PDO $conn, array $companyIds): void
+{
+    $in = implode(',', array_fill(0, count($companyIds), '?'));
+    $from = max(date('Y-m-d', strtotime('-1 day')), OPS_CHECKOUT_SYNC_FROM);
+    $stmt = $conn->prepare("
+        SELECT b.id, b.company_id, b.unit_id, b.booking_number, b.check_out,
+               COALESCE(b.actual_check_out, b.check_out) AS left_on
+        FROM ars_bookings b
+        LEFT JOIN ops_jobs j
+               ON j.source_type = 'ars_checkout' AND j.source_id = b.id
+        WHERE b.company_id IN ($in)
+          AND b.status IN ('checked_out', 'completed')
+          AND COALESCE(b.actual_check_out, b.check_out) >= ?
+          AND j.id IS NULL
+        ORDER BY b.id ASC
+        LIMIT 100
+    ");
+    $stmt->execute(array_merge($companyIds, [$from]));
+
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $booking) {
+        $place = ops_source_place($conn, 'unit', (int)$booking['unit_id']);
+        if (!$place) {
+            continue;
+        }
+
+        $description = 'Guest checked out — booking ' . $booking['booking_number'] . '.';
+        if ((string)$booking['left_on'] < (string)$booking['check_out']) {
+            $description .= ' Early checkout, was due ' . date('j M', strtotime((string)$booking['check_out'])) . '.';
+        }
+
+        ops_insert_source_job($conn, [
+            'company_id' => (int)$booking['company_id'],
+            'job_type' => 'cleaning',
+            'title' => 'Checkout cleaning',
+            'description' => $description,
+            'priority' => 'normal',
+            'scheduled_date' => (string)$booking['left_on'],
+            'scheduled_time' => null,
+            'source_type' => 'ars_checkout',
+            'source_id' => (int)$booking['id'],
+        ], [$place]);
+    }
+}
+
+/**
+ * A cleaning job for every tenant move-out, on the move-out date.
+ *
+ * Copied as soon as the move-out is recorded, so it can sit in Upcoming until
+ * the day. Waiting for the move-out to be marked Completed would be too late:
+ * that only happens once the deposit is settled, often weeks after the keys
+ * come back.
+ */
+function ops_sync_tenant_move_outs(PDO $conn, array $companyIds): void
+{
+    $in = implode(',', array_fill(0, count($companyIds), '?'));
+    $from = max(date('Y-m-d', strtotime('-1 day')), OPS_CHECKOUT_SYNC_FROM);
+    $stmt = $conn->prepare("
+        SELECT m.id, m.company_id, m.actual_move_out_date, l.unit_id
+        FROM re_move_outs m
+        JOIN re_leases l ON l.id = m.lease_id
+        LEFT JOIN ops_jobs j
+               ON j.source_type = 'tenant_move_out' AND j.source_id = m.id
+        WHERE m.company_id IN ($in)
+          AND m.status <> 'cancelled'
+          AND m.actual_move_out_date >= ?
+          AND j.id IS NULL
+        ORDER BY m.id ASC
+        LIMIT 100
+    ");
+    $stmt->execute(array_merge($companyIds, [$from]));
+
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $moveOut) {
+        $place = ops_source_place($conn, 'unit', (int)$moveOut['unit_id']);
+        if (!$place) {
+            continue;
+        }
+
+        ops_insert_source_job($conn, [
+            'company_id' => (int)$moveOut['company_id'],
+            'job_type' => 'cleaning',
+            'title' => 'Move-out cleaning',
+            'description' => 'Tenant moving out — move-out #' . (int)$moveOut['id'] . '.',
+            'priority' => 'normal',
+            'scheduled_date' => (string)$moveOut['actual_move_out_date'],
+            'scheduled_time' => null,
+            'source_type' => 'tenant_move_out',
+            'source_id' => (int)$moveOut['id'],
+        ], [$place]);
+    }
+}
+
+/**
+ * Keep unclaimed checkout jobs true to their booking or move-out.
+ *
+ * Same rule as ops_withdraw_tenant_requests(): only jobs nobody has claimed.
+ * A move-out that is cancelled takes its job back, one whose date moves takes
+ * the job with it, and a checkout undone on the booking cancels its job.
+ */
+function ops_withdraw_checkouts(PDO $conn, array $companyIds): void
+{
+    $in = implode(',', array_fill(0, count($companyIds), '?'));
+    $now = date('Y-m-d H:i:s');
+
+    $conn->prepare("
+        UPDATE ops_jobs j
+        JOIN re_move_outs m ON m.id = j.source_id
+        SET j.status = 'cancelled', j.updated_at = ?
+        WHERE j.source_type = 'tenant_move_out'
+          AND j.assigned_to IS NULL
+          AND j.status = 'open'
+          AND j.company_id IN ($in)
+          AND m.status = 'cancelled'
+    ")->execute(array_merge([$now], $companyIds));
+
+    $conn->prepare("
+        UPDATE ops_jobs j
+        JOIN re_move_outs m ON m.id = j.source_id
+        SET j.scheduled_date = m.actual_move_out_date, j.updated_at = ?
+        WHERE j.source_type = 'tenant_move_out'
+          AND j.assigned_to IS NULL
+          AND j.status = 'open'
+          AND j.company_id IN ($in)
+          AND j.scheduled_date <> m.actual_move_out_date
+    ")->execute(array_merge([$now], $companyIds));
+
+    $conn->prepare("
+        UPDATE ops_jobs j
+        JOIN ars_bookings b ON b.id = j.source_id
+        SET j.status = 'cancelled', j.updated_at = ?
+        WHERE j.source_type = 'ars_checkout'
+          AND j.assigned_to IS NULL
+          AND j.status = 'open'
+          AND j.company_id IN ($in)
+          AND b.status NOT IN ('checked_out', 'completed')
+    ")->execute(array_merge([$now], $companyIds));
+
+    // Already cleaned through the old module: its work order is completed or
+    // invoiced. Nobody should be sent to do it again.
+    $conn->prepare("
+        UPDATE ops_jobs j
+        SET j.status = 'cancelled', j.updated_at = ?
+        WHERE j.source_type = 'ars_checkout'
+          AND j.assigned_to IS NULL
+          AND j.status = 'open'
+          AND j.company_id IN ($in)
+          AND EXISTS (
+              SELECT 1 FROM make_order o
+              WHERE o.ars_booking_id = j.source_id
+                AND o.status IN ('completed', 'invoiced')
+          )
+    ")->execute(array_merge([$now], $companyIds));
+
+    // And back again, for a job only this withdrawal cancelled: nobody on it,
+    // nothing started.
+    $conn->prepare("
+        UPDATE ops_jobs j
+        JOIN re_move_outs m ON m.id = j.source_id
+        SET j.status = 'open', j.updated_at = ?
+        WHERE j.source_type = 'tenant_move_out'
+          AND j.assigned_to IS NULL
+          AND j.status = 'cancelled'
+          AND j.started_at IS NULL
+          AND j.company_id IN ($in)
+          AND m.status <> 'cancelled'
+    ")->execute(array_merge([$now], $companyIds));
+
+    $conn->prepare("
+        UPDATE ops_jobs j
+        JOIN ars_bookings b ON b.id = j.source_id
+        SET j.status = 'open', j.updated_at = ?
+        WHERE j.source_type = 'ars_checkout'
+          AND j.assigned_to IS NULL
+          AND j.status = 'cancelled'
+          AND j.started_at IS NULL
+          AND j.company_id IN ($in)
+          AND b.status IN ('checked_out', 'completed')
+          AND NOT EXISTS (
+              SELECT 1 FROM make_order o
+              WHERE o.ars_booking_id = j.source_id
+                AND o.status IN ('completed', 'invoiced')
+          )
+    ")->execute(array_merge([$now], $companyIds));
 }
 
 /**
@@ -520,6 +728,16 @@ function ops_source_link(string $appBase, array $job): ?array
             return [
                 'label' => 'Tenant cleaning booking #' . $id,
                 'url' => $appBase . '/modules/realestate/cleaning_requests.php',
+            ];
+        case 'ars_checkout':
+            return [
+                'label' => 'ARS guest checkout',
+                'url' => $appBase . '/modules/ars/booking_view.php?id=' . $id,
+            ];
+        case 'tenant_move_out':
+            return [
+                'label' => 'Tenant move-out #' . $id,
+                'url' => $appBase . '/modules/realestate/move_out_view.php?id=' . $id,
             ];
         default:
             return null;

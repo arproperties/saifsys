@@ -38,7 +38,11 @@
  *       maintenance jobs staff raise themselves — the old cleaning module only
  *                           ever billed cleaning;
  *       tenant cleaning   — the tenant paid for the booking when they made it,
- *                           so invoicing it again would charge the work twice.
+ *                           so invoicing it again would charge the work twice;
+ *       ARS checkout      — its work order already exists in the old module.
+ *                           Finish completes that order and the invoice comes
+ *                           from it, once (ops_bill_ars_checkout);
+ *       move-out cleaning — never billed.
  *
  * A job that is not invoiced still says why, on the job, in words — so "why is
  * there no invoice for yesterday's lobby" has an answer without anybody
@@ -116,6 +120,15 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
     $sourceType = (string)($job['source_type'] ?? 'staff');
     if ($sourceType === 'tenant_cleaning') {
         return ops_bill_record($conn, $jobId, 'not_billable', 'Tenant cleaning — paid by the tenant when booked.');
+    }
+    // ARS checkout already has its work order in the old module; the job is
+    // tied to that one rather than writing a second.
+    if ($sourceType === 'ars_checkout') {
+        return ops_bill_ars_checkout($conn, $job);
+    }
+    // Move-out cleaning has never been billed to anyone.
+    if ($sourceType === 'tenant_move_out') {
+        return ops_bill_record($conn, $jobId, 'not_billable', 'Move-out cleaning — not invoiced.');
     }
     $isTenant = $sourceType === 'tenant_maintenance';
     if (!$isTenant && $job['job_type'] !== 'cleaning') {
@@ -298,6 +311,59 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
     }
 }
 
+/**
+ * An ARS checkout job is invoiced once — on the ARS work order, never here.
+ *
+ * Checkout still makes its make_order in the old module (ars_cleaning_trigger),
+ * and that order carries the fee. Writing a second order from the job would
+ * mean two invoices for one clean. So Finish only marks that same order
+ * completed, which is what the old module shows as done, and links the job to
+ * it. The invoice comes from Finalize on that order, as it always did, and
+ * invoices.order_id is unique, so there can only ever be one.
+ */
+function ops_bill_ars_checkout(PDO $conn, array $job): array
+{
+    $jobId = (int)$job['id'];
+
+    $stmt = $conn->prepare("
+        SELECT id, status, invoice_id FROM make_order
+        WHERE ars_booking_id = ? AND status <> 'cancelled'
+        ORDER BY id DESC LIMIT 1
+    ");
+    $stmt->execute([(int)$job['source_id']]);
+    $order = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$order) {
+        return ops_bill_record($conn, $jobId, 'not_billable', 'No ARS work order for this checkout, so nothing to invoice.');
+    }
+    $orderId = (int)$order['id'];
+
+    // Only forward. An order the office already completed or invoiced is left
+    // exactly as it is.
+    $open = ['draft', 'scheduled', 'confirmed', 'in_progress'];
+    if (in_array((string)$order['status'], $open, true)) {
+        $conn->prepare("
+            UPDATE make_order SET status = 'completed', updated_at = NOW()
+            WHERE id = ? AND status IN ('draft', 'scheduled', 'confirmed', 'in_progress')
+        ")->execute([$orderId]);
+        wo_sync_ops_status_column($conn, $orderId, 'completed');
+    }
+
+    $invoiceId = (int)($order['invoice_id'] ?? 0);
+    $conn->prepare("
+        UPDATE ops_jobs
+        SET billing_status = ?, billing_note = ?, order_id = ?, invoice_id = ?
+        WHERE id = ? AND order_id IS NULL
+    ")->execute([
+        $invoiceId > 0 ? 'billed' : 'not_billable',
+        $invoiceId > 0 ? null : 'Invoiced once from ARS work order #' . $orderId . ', when it is finalized in the old module.',
+        $orderId, $invoiceId > 0 ? $invoiceId : null, $jobId,
+    ]);
+
+    return $invoiceId > 0
+        ? ['status' => 'billed', 'note' => null, 'invoice_id' => $invoiceId]
+        : ['status' => 'not_billable', 'note' => null, 'invoice_id' => null];
+}
+
 /** Write why a job was, or was not, invoiced. */
 function ops_bill_record(PDO $conn, int $jobId, string $status, ?string $note): array
 {
@@ -383,16 +449,26 @@ function ops_bill_summary(PDO $conn, string $appBase, array $job): ?array
         return null;
     }
 
-    if ($status === 'billed' && (int)($job['invoice_id'] ?? 0) > 0) {
+    $invoiceId = (int)($job['invoice_id'] ?? 0);
+    // A job tied to an order finalized later in the old module (ARS checkout)
+    // shows that order's invoice — the same one, not a copy.
+    if ($invoiceId <= 0 && (int)($job['order_id'] ?? 0) > 0) {
+        $stmt = $conn->prepare("SELECT invoice_id FROM make_order WHERE id = ?");
+        $stmt->execute([(int)$job['order_id']]);
+        $invoiceId = (int)$stmt->fetchColumn();
+    }
+
+    if ($invoiceId > 0) {
         $stmt = $conn->prepare("SELECT invoice_no, total FROM invoices WHERE id = ?");
-        $stmt->execute([(int)$job['invoice_id']]);
+        $stmt->execute([$invoiceId]);
         $inv = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        $hours = (float)($job['billed_hours'] ?? 0);
         return [
             'tone' => 'success',
-            'text' => 'Invoiced ' . ($inv['invoice_no'] ?? '#' . (int)$job['invoice_id'])
+            'text' => 'Invoiced ' . ($inv['invoice_no'] ?? '#' . $invoiceId)
                     . ' — AED ' . number_format((float)($inv['total'] ?? 0), 2)
-                    . ' (' . rtrim(rtrim(number_format((float)$job['billed_hours'], 2), '0'), '.') . ' h)',
-            'url' => $appBase . '/accounts/invoice_view.php?id=' . (int)$job['invoice_id'],
+                    . ($hours > 0 ? ' (' . rtrim(rtrim(number_format($hours, 2), '0'), '.') . ' h)' : ''),
+            'url' => $appBase . '/accounts/invoice_view.php?id=' . $invoiceId,
         ];
     }
 

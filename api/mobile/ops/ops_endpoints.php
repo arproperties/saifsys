@@ -164,21 +164,7 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
 {
     $today = date('Y-m-d');
 
-    // Daily repeating jobs are created on the way in, exactly as the supervisor
-    // list does it — there is no cron behind this. A cleaner opening the app at
-    // six in the morning is often the first thing to touch the module all day,
-    // so if this did not run here their Today tab would be empty until somebody
-    // in the office logged in.
-    //
-    // Driven by the companies this person actually has series in, not by their
-    // user_companies rows: staff are shared across the group, so a cleaner on
-    // the Heroes Zone payroll routinely holds an Ain Al Reem series. Keying the
-    // generation off their company links skipped exactly those.
-    foreach (ops_api_user_series_company_ids($conn, (int)$user['id']) as $cid) {
-        ops_generate_daily_jobs($conn, (int)$cid, $today);
-    }
-
-    // Tenant requests are copied into the pool the same way, on the way in —
+    // Tenant requests and checkouts are copied into the pool on the way in —
     // see modules/operations/includes/ops_sources.php.
     ops_sync_tenant_requests($conn, $user['company_ids']);
 
@@ -563,9 +549,8 @@ function ops_api_handle_attendance(PDO $conn, array $user, string $action): void
  * still enforces that. The clock belongs to the person on site, and it begins
  * when they say so.
  *
- * Priority and the daily repeat are absent on purpose. Both are the office's to
- * set, and both are the sort of standing decision this change exists to stop
- * making in advance.
+ * Priority is absent on purpose. It is the office's to set, and the sort of
+ * standing decision this change exists to stop making in advance.
  *
  * WHERE, AS A FACT RATHER THAN A SENTENCE
  * ---------------------------------------
