@@ -9,6 +9,7 @@ require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/ops_helper.php';
+require_once __DIR__ . '/includes/ops_sources.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -24,6 +25,9 @@ $opsBase = $appBase . '/modules/operations';
 // the field app's job list does the same, so a cleaner opening the app before
 // the office does still sees their day.
 ops_generate_daily_jobs($conn, $companyId);
+
+// Tenant requests into the pool, on the same trigger — see includes/ops_sources.php.
+ops_sync_tenant_requests($conn, [$companyId]);
 
 // ---------------------------------------------------------------------------
 // Filters
@@ -96,7 +100,8 @@ $statsStmt = $conn->prepare("
         SUM({$lateSql}) AS overdue_count,
         SUM(scheduled_date = '{$todayDate}' AND status <> 'cancelled') AS today_count,
         SUM(needs_materials = 1 AND status <> 'cancelled') AS materials_count,
-        SUM(assigned_to IS NULL AND scheduled_date = '{$todayDate}' AND status IN ('open','in_progress')) AS unassigned_today
+        SUM(assigned_to IS NULL AND source_type = 'staff' AND scheduled_date = '{$todayDate}' AND status IN ('open','in_progress')) AS unassigned_today,
+        SUM(assigned_to IS NULL AND source_type <> 'staff' AND status = 'open') AS pool_count
     FROM ops_jobs
     WHERE company_id = ? AND status <> 'cancelled'
 ");
@@ -168,11 +173,34 @@ require __DIR__ . '/includes/ops_layout_header.php';
     <div class="page-header-label">Jobs &amp; progress</div>
     <div class="text-muted small">Cleaning and maintenance work for <?= h($opsCompanyName ?: 'this company') ?></div>
   </div>
-  <a href="<?= h($opsBase) ?>/job_form.php" class="btn btn-lg text-white" style="background:var(--primary)">
-    <i class="bi bi-plus-lg"></i> New job
-  </a>
+  <?php // Jobs are raised on the phone now, by whoever is standing at the site.
+        // Scheduling them here in advance is what this replaced: staff move
+        // between sites all week, so a roster entered on Monday was wrong by
+        // Tuesday and somebody had to come back and fix it. Nothing creates a
+        // job on this screen any more — the form is still here for editing one
+        // that exists. ?>
+  <div class="text-muted small text-md-end">
+    <i class="bi bi-phone"></i> Staff create their own jobs in the app.
+  </div>
 </div>
 
+<?php $poolCount = (int)($stats['pool_count'] ?? 0); ?>
+<?php if ($poolCount > 0): ?>
+  <!-- Tenant requests waiting in the pool. Not a job for the office to hand
+       out — any field phone can claim them — so this says how many, and lets
+       someone see which, but offers no Assign button. -->
+  <div class="alert alert-info d-flex flex-wrap align-items-center gap-2">
+    <i class="bi bi-inbox"></i>
+    <span>
+      <strong><?= $poolCount ?></strong> tenant request<?= $poolCount > 1 ? 's' : '' ?>
+      waiting for someone to claim <?= $poolCount > 1 ? 'them' : 'it' ?> in the app.
+    </span>
+    <a href="<?= h($opsBase) ?>/index.php?assignee=0&amp;status=open"
+       class="btn btn-sm btn-outline-dark ms-auto">See them</a>
+  </div>
+<?php endif; ?>
+
+<?php // Staff jobs only: a pool job with nobody on it is waiting by design. ?>
 <?php $unassignedToday = (int)($stats['unassigned_today'] ?? 0); ?>
 <?php if ($unassignedToday > 0): ?>
   <!-- A job with nobody on it is the one thing a supervisor has to fix each
@@ -389,9 +417,11 @@ require __DIR__ . '/includes/ops_layout_header.php';
       <tbody>
         <?php if (!$jobs): ?>
           <tr><td colspan="7" class="text-center text-muted py-5">
-            No jobs match. <a href="<?= h($opsBase) ?>/job_form.php">Create one</a>.
+            No jobs match. Jobs appear here as staff create them in the app.
           </td></tr>
         <?php endif; ?>
+        <?php // Every place on this page in one query — see ops_job_places(). ?>
+        <?php $placesByJob = ops_job_places($conn, array_column($jobs, 'id')); ?>
         <?php foreach ($jobs as $j): ?>
           <?php $isLate = ops_job_is_late($j); ?>
           <tr>
@@ -401,9 +431,26 @@ require __DIR__ . '/includes/ops_layout_header.php';
               </a>
               <div class="small text-muted">
                 <span class="badge bg-light text-dark border"><?= h(ops_job_types()[$j['job_type']] ?? $j['job_type']) ?></span>
+                <?php if (($j['billing_status'] ?? '') === 'billed'): ?>
+                  <span class="badge bg-success-subtle text-success-emphasis border"><i class="bi bi-receipt"></i> Invoiced</span>
+                <?php elseif (in_array($j['billing_status'] ?? '', ['no_client', 'failed'], true)): ?>
+                  <span class="badge bg-warning text-dark" title="<?= h($j['billing_note'] ?? '') ?>"><i class="bi bi-exclamation-triangle"></i> Not invoiced</span>
+                <?php endif; ?>
+                <?php if (($j['source_type'] ?? 'staff') !== 'staff'): ?>
+                  <span class="badge bg-info text-dark"><i class="bi bi-person-badge"></i> Tenant request</span>
+                  <?php if ($j['assigned_to'] === null && $j['status'] === 'open'): ?>
+                    <span class="badge bg-warning text-dark">Waiting to be claimed</span>
+                  <?php endif; ?>
+                <?php endif; ?>
                 <?php if ($j['priority'] === 'high'): ?>
                   <span class="badge bg-danger">High</span>
                 <?php endif; ?>
+                <?php foreach ($placesByJob[(int)$j['id']] ?? [] as $place): ?>
+                  <span class="badge bg-light text-dark border fw-normal">
+                    <i class="bi <?= $place['place_kind'] === 'unit' ? 'bi-door-closed' : 'bi-building' ?>"></i>
+                    <?= h($place['label']) ?>
+                  </span>
+                <?php endforeach; ?>
                 <?php if (!empty($j['location'])): ?>
                   <i class="bi bi-geo-alt"></i> <?= h($j['location']) ?>
                 <?php endif; ?>
@@ -435,7 +482,15 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <span class="badge bg-danger mt-1">Late</span>
               <?php endif; ?>
             </td>
-            <td><span class="badge bg-<?= h(ops_status_color($j['status'])) ?>"><?= h(ops_status_label($j['status'])) ?></span></td>
+            <td>
+              <span class="badge bg-<?= h(ops_status_color($j['status'])) ?>"><?= h(ops_status_label($j['status'])) ?></span>
+              <?php if ($j['status'] === 'in_progress' && !empty($j['paused_at'])): ?>
+                <div class="small text-warning-emphasis mt-1">
+                  <i class="bi bi-pause-circle"></i> Paused — <?= h(ops_pause_reasons()[$j['pause_reason']] ?? 'Other') ?>
+                  <span class="text-muted">since <?= h(date('g:i A', strtotime((string)$j['paused_at']))) ?></span>
+                </div>
+              <?php endif; ?>
+            </td>
             <td class="small text-muted"><?= h(ops_format_duration($j['duration_minutes'] !== null ? (int)$j['duration_minutes'] : null)) ?></td>
             <td class="text-end">
               <a href="<?= h($opsBase) ?>/job_view.php?id=<?= (int)$j['id'] ?>" class="btn btn-sm btn-outline-secondary">Open</a>

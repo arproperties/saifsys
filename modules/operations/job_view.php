@@ -16,6 +16,8 @@ require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/ops_helper.php';
+require_once __DIR__ . '/includes/ops_sources.php';
+require_once __DIR__ . '/includes/ops_billing.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -140,6 +142,33 @@ require __DIR__ . '/includes/ops_layout_header.php';
     <div class="text-muted">
       <span class="badge bg-light text-dark border"><?= h(ops_job_types()[$job['job_type']] ?? $job['job_type']) ?></span>
       <span class="badge bg-<?= h(ops_status_color($job['status'])) ?>"><?= h(ops_status_label($job['status'])) ?></span>
+      <?php // Paused, why, and every earlier pause — so "why did this take all
+            // morning" is answered on the page rather than by phoning somebody. ?>
+      <?php if ($job['status'] === 'in_progress' && !empty($job['paused_at'])): ?>
+        <span class="badge bg-warning text-dark ms-1">
+          <i class="bi bi-pause-circle"></i> Paused — <?= h(ops_pause_reasons()[$job['pause_reason']] ?? 'Other') ?>
+          since <?= h(date('g:i A', strtotime((string)$job['paused_at']))) ?>
+        </span>
+      <?php endif; ?>
+      <?php
+        $pauseHistory = [];
+        try {
+            $ph = $conn->prepare("SELECT reason, paused_at, resumed_at FROM ops_job_pauses WHERE job_id = ? ORDER BY paused_at ASC");
+            $ph->execute([(int)$job['id']]);
+            $pauseHistory = $ph->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            $pauseHistory = [];
+        }
+      ?>
+      <?php if ($pauseHistory): ?>
+        <div class="small text-muted mt-1">
+          <i class="bi bi-pause-circle"></i>
+          <?php foreach ($pauseHistory as $i => $p): ?>
+            <?= $i ? ' · ' : '' ?><?= h(ops_pause_reasons()[$p['reason']] ?? 'Other') ?>
+            <?= h(date('g:i A', strtotime((string)$p['paused_at']))) ?>–<?= $p['resumed_at'] ? h(date('g:i A', strtotime((string)$p['resumed_at']))) : 'now' ?>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
       <span class="badge bg-<?= h(ops_priority_color($job['priority'])) ?>"><?= h(ops_priorities()[$job['priority']]) ?> priority</span>
       <?php if ($jobIsLate): ?>
         <span class="badge bg-danger"><i class="bi bi-exclamation-triangle"></i> Late</span>
@@ -155,6 +184,24 @@ require __DIR__ . '/includes/ops_layout_header.php';
       <?php if ((int)($job['needs_materials'] ?? 0) === 1): ?>
         <span class="badge bg-warning text-dark"><i class="bi bi-box-seam"></i> Needs materials</span>
       <?php endif; ?>
+      <?php // Where the work actually was. Free text is still shown when a job
+            // carries it — every job raised before places existed does, and a
+            // newer one may add a note on top of the places it named. ?>
+      <?php // A tenant's job links back to the request it came from, which is
+            // still the office's record and the tenant's page. ?>
+      <?php $sourceLink = ops_source_link($appBase, $job); ?>
+      <?php if ($sourceLink): ?>
+        <a href="<?= h($sourceLink['url']) ?>" class="badge bg-info text-dark text-decoration-none ms-2">
+          <i class="bi bi-person-badge"></i> <?= h($sourceLink['label']) ?>
+        </a>
+      <?php endif; ?>
+      <?php $jobPlaces = ops_job_places($conn, [(int)$job['id']])[(int)$job['id']] ?? []; ?>
+      <?php foreach ($jobPlaces as $place): ?>
+        <span class="badge bg-light text-dark border ms-2">
+          <i class="bi <?= $place['place_kind'] === 'unit' ? 'bi-door-closed' : 'bi-building' ?>"></i>
+          <?= h($place['label']) ?>
+        </span>
+      <?php endforeach; ?>
       <?php if (!empty($job['location'])): ?>
         <span class="ms-2"><i class="bi bi-geo-alt"></i> <?= h($job['location']) ?></span>
       <?php endif; ?>
@@ -172,6 +219,29 @@ require __DIR__ . '/includes/ops_layout_header.php';
     </form>
   </div>
 </div>
+
+<?php // Money, once the job has finished: the invoice it produced, or why it
+      // produced none. Retry only where retrying can change the answer — a
+      // building that now has a client, or an error — never on a job that is
+      // not billable by rule. ?>
+<?php $bill = ops_bill_summary($conn, $appBase, $job); ?>
+<?php if ($bill): ?>
+  <div class="alert alert-<?= h($bill['tone']) ?> d-flex flex-wrap align-items-center gap-2 py-2">
+    <i class="bi <?= $bill['tone'] === 'success' ? 'bi-receipt' : 'bi-info-circle' ?>"></i>
+    <span><?= h($bill['text']) ?></span>
+    <?php if ($bill['url']): ?>
+      <a href="<?= h($bill['url']) ?>" class="btn btn-sm btn-outline-dark ms-auto">View invoice</a>
+    <?php elseif (in_array($job['billing_status'], ['no_client', 'failed'], true)): ?>
+      <a href="<?= h($opsBase) ?>/billing.php" class="btn btn-sm btn-outline-dark ms-auto">Billing</a>
+      <form method="post" action="<?= h($opsBase) ?>/job_action.php" class="m-0">
+        <?php csrf_field(); ?>
+        <input type="hidden" name="action" value="retry_billing">
+        <input type="hidden" name="job_id" value="<?= (int)$job['id'] ?>">
+        <button class="btn btn-sm btn-dark">Retry invoice</button>
+      </form>
+    <?php endif; ?>
+  </div>
+<?php endif; ?>
 
 <?php // Bootstrap's own tabs: switching is instant, and the URL is rewritten
       // as you go so a refresh or a copied link opens the same tab. ?>

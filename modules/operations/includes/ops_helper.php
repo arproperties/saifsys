@@ -41,6 +41,37 @@ function ops_priorities(): array {
     return ['low' => 'Low', 'normal' => 'Normal', 'high' => 'High'];
 }
 
+/**
+ * End a job's current pause: clear the flag on the job and close its row in
+ * the history. Shared by Resume, by Finish on a paused job, and by anything the
+ * office does that ends the job.
+ */
+function ops_job_close_pause(PDO $conn, int $jobId, string $at): void {
+    try {
+        $conn->prepare("UPDATE ops_jobs SET paused_at = NULL, pause_reason = NULL WHERE id = ?")
+             ->execute([$jobId]);
+        $conn->prepare("UPDATE ops_job_pauses SET resumed_at = ? WHERE job_id = ? AND resumed_at IS NULL")
+             ->execute([$at, $jobId]);
+    } catch (PDOException $e) {
+        // A database without migrations/ops_job_pauses.sql has nothing to close.
+        error_log('ops_job_close_pause failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Why a job was paused. Four answers, each one tap on the phone — nobody on
+ * site types a reason. The keys are what is stored; the words are what the
+ * office reads.
+ */
+function ops_pause_reasons(): array {
+    return [
+        'break' => 'Break',
+        'materials' => 'Waiting for materials',
+        'tenant' => 'Tenant not available',
+        'other' => 'Other',
+    ];
+}
+
 function ops_status_label(string $status): string {
     return ops_statuses()[$status] ?? ucfirst($status);
 }
@@ -203,6 +234,49 @@ function ops_company_id(PDO $conn): int {
         return $cid;
     }
     return 0;
+}
+
+/**
+ * The real places one or more jobs cover — see migrations/ops_job_places.sql.
+ *
+ * Takes a list of job ids and answers for all of them in one query, because
+ * the job list renders a page of jobs at a time and a query per row is how
+ * that page gets slow.
+ *
+ * The stored label is used rather than a join back to re_units and
+ * re_building_common_areas: it is what the place was called when the work
+ * happened, and renaming a corridor next year must not rewrite history.
+ *
+ * @param int[] $jobIds
+ * @return array<int, array<int, array>> job id => its place rows, in order
+ */
+function ops_job_places(PDO $conn, array $jobIds): array {
+    $jobIds = array_values(array_unique(array_filter(array_map('intval', $jobIds))));
+    if (!$jobIds) {
+        return [];
+    }
+
+    try {
+        $in = implode(',', array_fill(0, count($jobIds), '?'));
+        $stmt = $conn->prepare("
+            SELECT job_id, place_kind, place_id, building_id, label
+            FROM ops_job_places
+            WHERE job_id IN ($in)
+            ORDER BY building_id ASC, place_kind ASC, label ASC
+        ");
+        $stmt->execute($jobIds);
+    } catch (PDOException $e) {
+        // A database that has not run the migration. Jobs still render; they
+        // just show the free-text location they always did.
+        error_log('ops_job_places failed: ' . $e->getMessage());
+        return [];
+    }
+
+    $grouped = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $grouped[(int)$row['job_id']][] = $row;
+    }
+    return $grouped;
 }
 
 /**

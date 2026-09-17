@@ -41,16 +41,48 @@ if ($route === 'auth/me' && $method === 'GET') {
     ops_api_handle_me($conn, $user);
 }
 
+// Attendance — the day's first and last entry, into HR's attendance table.
+if ($route === 'attendance' && $method === 'GET') {
+    ops_api_handle_attendance($conn, $user, 'status');
+}
+if ($method === 'POST' && preg_match('#^attendance/(check-in|check-out)$#', $route, $m)) {
+    ops_api_handle_attendance($conn, $user, $m[1]);
+}
+
+// Everywhere a job can be. One fetch, cached on the phone, searched locally.
+if ($route === 'places' && $method === 'GET') {
+    ops_api_handle_places($conn, $user);
+}
+
 if ($route === 'jobs' && $method === 'GET') {
     ops_api_handle_jobs_list($conn, $user);
+}
+
+// The person on site raises their own job. Before jobs/{id} routes, so the
+// bare "jobs" never falls through to them.
+if ($route === 'jobs' && $method === 'POST') {
+    ops_api_handle_job_create($conn, $user);
 }
 
 if ($method === 'GET' && preg_match('#^jobs/(\d+)$#', $route, $m)) {
     ops_api_handle_job_detail($conn, $user, (int)$m[1]);
 }
 
+// "I'll do it" on a tenant request in the pool.
+if ($method === 'POST' && preg_match('#^jobs/(\d+)/claim$#', $route, $m)) {
+    ops_api_handle_job_claim($conn, $user, (int)$m[1]);
+}
+
 if ($method === 'POST' && preg_match('#^jobs/(\d+)/start$#', $route, $m)) {
     ops_api_handle_job_start($conn, $user, (int)$m[1]);
+}
+
+if ($method === 'POST' && preg_match('#^jobs/(\d+)/pause$#', $route, $m)) {
+    ops_api_handle_job_pause($conn, $user, (int)$m[1]);
+}
+
+if ($method === 'POST' && preg_match('#^jobs/(\d+)/resume$#', $route, $m)) {
+    ops_api_handle_job_resume($conn, $user, (int)$m[1]);
 }
 
 if ($method === 'POST' && preg_match('#^jobs/(\d+)/finish$#', $route, $m)) {

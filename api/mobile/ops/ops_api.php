@@ -34,6 +34,9 @@ require_once dirname(__DIR__, 3) . '/includes/url_helper.php';
 require_once dirname(__DIR__, 3) . '/includes/customer_api.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_helper.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_pin.php';
+require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_sources.php';
+require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_billing.php';
+require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_attendance.php';
 
 // ops_helper -> auth.php opens a session at include time. This API is
 // stateless, so drop it straight away: no session file is written and no
@@ -222,6 +225,67 @@ function ops_api_user_company_ids(PDO $conn, int $userId): array
 }
 
 /**
+ * Which company a job this person raises belongs to.
+ *
+ * This matters more than it looks. Reading a job back does not care which
+ * company it is under — `assigned_to` is the whole access rule, see
+ * ops_api_load_own_job() — but modules/operations/index.php lists one company
+ * at a time, so a job filed under the wrong one is invisible to the office
+ * that has to act on it. It would not error. It would just never appear.
+ *
+ * `is_primary` is the obvious answer and it is the wrong one. Staff here are a
+ * single pool shared across nine companies, and their primary flag records who
+ * pays them, not where the work is: on this data every existing job belongs to
+ * one company, while two of the seven staff with a PIN are primary to two
+ * others. Those two would have filed straight into a list nobody reads.
+ *
+ * So ask the question that is actually being asked — where does this person
+ * get their work — and answer it from the work itself. Their most recent job
+ * says it exactly, and it keeps saying it as the group changes, with nothing
+ * to maintain.
+ *
+ * Only somebody who has never had a job falls through to the payroll answer.
+ */
+function ops_api_job_company_id(PDO $conn, array $user): int
+{
+    try {
+        // Where their work actually comes from.
+        $stmt = $conn->prepare("
+            SELECT company_id
+            FROM ops_jobs
+            WHERE assigned_to = ?
+            ORDER BY id DESC
+            LIMIT 1
+        ");
+        $stmt->execute([$user['id']]);
+        $companyId = (int)$stmt->fetchColumn();
+        if ($companyId > 0) {
+            return $companyId;
+        }
+
+        // Nobody has ever given them a job. Fall back to who they work for.
+        $stmt = $conn->prepare("
+            SELECT company_id
+            FROM user_companies
+            WHERE user_id = ?
+            ORDER BY is_primary DESC, company_id ASC
+            LIMIT 1
+        ");
+        $stmt->execute([$user['id']]);
+        $companyId = (int)$stmt->fetchColumn();
+        if ($companyId > 0) {
+            return $companyId;
+        }
+    } catch (Throwable $e) {
+        error_log('ops_api_job_company_id failed: ' . $e->getMessage());
+    }
+
+    // ops_api_current_user() refuses anyone with no companies at all, so this
+    // list is never empty by the time we are here.
+    return (int)($user['company_ids'][0] ?? 0);
+}
+
+/**
  * The bearer token as sent, or '' — no validation, just the string.
  */
 function ops_api_bearer_token(): string
@@ -407,8 +471,8 @@ function ops_api_current_user(PDO $conn): array
  */
 function ops_api_claim_request(PDO $conn, array $user, string $route): bool
 {
-    $requestId = trim((string)($_SERVER['HTTP_X_OPS_REQUEST_ID'] ?? ''));
-    if ($requestId === '' || strlen($requestId) > 64) {
+    $requestId = ops_api_request_id();
+    if ($requestId === '') {
         // No usable key: behave exactly as before rather than refusing work.
         return true;
     }
@@ -448,6 +512,59 @@ function ops_api_prune_requests(PDO $conn): void
         $conn->exec("DELETE FROM ops_api_requests WHERE created_at < (NOW() - INTERVAL 7 DAY)");
     } catch (Throwable $e) {
         error_log('ops_api_prune_requests failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * The client's id for this write, or '' if it did not send a usable one.
+ *
+ * One id for the whole life of a queued item, so a retry is recognisable as
+ * the same attempt rather than a second one.
+ */
+function ops_api_request_id(): string
+{
+    $requestId = trim((string)($_SERVER['HTTP_X_OPS_REQUEST_ID'] ?? ''));
+    return strlen($requestId) > 64 ? '' : $requestId;
+}
+
+/**
+ * Remember which job a create produced.
+ *
+ * Only creates call this. Start and finish do not need it: they name a job
+ * that already exists, so a replay can simply reload it. A create's whole
+ * output is the new id, and if nothing keeps it, the replay has nothing to
+ * answer with — see migrations/ops_job_created_in_app.sql.
+ */
+function ops_api_record_request_job(PDO $conn, string $requestId, int $jobId): void
+{
+    if ($requestId === '') {
+        return;
+    }
+    try {
+        $stmt = $conn->prepare("UPDATE ops_api_requests SET job_id = ? WHERE request_id = ?");
+        $stmt->execute([$jobId, $requestId]);
+    } catch (Throwable $e) {
+        // The column is missing on a server that has not run the migration.
+        // The job is already made; losing the replay answer is the smaller loss.
+        error_log('ops_api_record_request_job failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * The job an earlier attempt at this same request created, if any.
+ */
+function ops_api_request_job_id(PDO $conn, string $requestId): int
+{
+    if ($requestId === '') {
+        return 0;
+    }
+    try {
+        $stmt = $conn->prepare("SELECT job_id FROM ops_api_requests WHERE request_id = ?");
+        $stmt->execute([$requestId]);
+        return (int)$stmt->fetchColumn();
+    } catch (Throwable $e) {
+        error_log('ops_api_request_job_id failed: ' . $e->getMessage());
+        return 0;
     }
 }
 
@@ -619,6 +736,18 @@ function ops_api_job_row(array $job): array
             ? ops_format_duration((int)$job['duration_minutes'])
             : null,
         'needs_materials' => (bool)(int)$job['needs_materials'],
+        // Paused is not a status of its own: the job is still in progress and
+        // its clock still runs. See migrations/ops_job_pauses.sql.
+        'is_paused' => $job['status'] === 'in_progress' && !empty($job['paused_at']),
+        'paused_at' => !empty($job['paused_at']) ? (string)$job['paused_at'] : null,
+        'pause_reason' => !empty($job['pause_reason']) ? (string)$job['pause_reason'] : null,
+        // 'staff', 'tenant_maintenance' or 'tenant_cleaning'. The card marks a
+        // tenant's job, and the Requests tab needs the tenant's own words on
+        // it: "AC not cooling" is how somebody decides whether it is theirs.
+        'source_type' => (string)($job['source_type'] ?? 'staff'),
+        'request_note' => ($job['source_type'] ?? 'staff') !== 'staff' && !empty($job['description'])
+            ? mb_substr((string)$job['description'], 0, 160)
+            : null,
         // A daily job. The app shows it as a small repeat mark so a cleaner can
         // tell "this comes round again tomorrow" from a one-off callout — it
         // changes nothing about how the job is worked.
@@ -796,6 +925,8 @@ function ops_api_job_detail(PDO $conn, array $job, array $user): array
     // as an empty list so an older build of the app has something to render.
     $detail['materials'] = [];
 
+    $detail['places'] = ops_api_job_places($conn, $jobId);
+
     $commentRows = $comments->fetchAll(PDO::FETCH_ASSOC) ?: [];
     $mediaByComment = ops_api_comment_media(
         $conn,
@@ -812,6 +943,28 @@ function ops_api_job_detail(PDO $conn, array $job, array $user): array
     );
 
     return $detail;
+}
+
+/**
+ * The real places a job covers, in the shape the app reads.
+ *
+ * The query itself is ops_job_places() in the web module's helper, shared so
+ * the office and the phone cannot disagree about where a job was.
+ */
+function ops_api_job_places(PDO $conn, int $jobId): array
+{
+    return array_map('ops_api_place_row', ops_job_places($conn, [$jobId])[$jobId] ?? []);
+}
+
+/** One ops_job_places row, as the app reads it. */
+function ops_api_place_row(array $row): array
+{
+    return [
+        'kind' => (string)$row['place_kind'],
+        'id' => (int)$row['place_id'],
+        'building_id' => $row['building_id'] === null ? null : (int)$row['building_id'],
+        'label' => (string)$row['label'],
+    ];
 }
 
 /**

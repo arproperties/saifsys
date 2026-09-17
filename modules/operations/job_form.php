@@ -20,6 +20,25 @@ $companyId = ops_company_id($conn);
 $userId = (int)current_user_id();
 
 $jobId = (int)($_GET['id'] ?? 0);
+
+// CREATING A JOB HERE IS CLOSED — EDITING ONE IS NOT
+// --------------------------------------------------
+// Jobs are raised on the phone now, by whoever is standing at the site. The
+// office used to enter them in advance and hand them out, and that only works
+// if you know on Monday where each person will be on Thursday: staff get moved
+// between sites all week, so the schedule was wrong by Tuesday and somebody
+// had to go and correct it. POST ops/jobs in api/mobile/ops/index.php is where
+// a job begins now.
+//
+// The create path below is left intact rather than deleted. Nothing reaches
+// it while this guard stands, and removing these five lines is all it takes to
+// have the office able to enter a job again.
+if ($jobId <= 0) {
+    ops_flash('Staff create their own jobs in the app now. This page edits a job that already exists.', 'info');
+    header('Location: ' . $opsBase . '/index.php');
+    exit;
+}
+
 $job = null;
 if ($jobId > 0) {
     $job = ops_load_job($conn, $jobId, $companyId);

@@ -137,6 +137,9 @@ function ops_api_tab_filter(string $tab, string $today): array
             return [" AND j.scheduled_date > ? AND j.status IN ('open','in_progress')", [$today]];
         case 'done':
             return [" AND j.status = 'done'", []];
+        // The pool. Scoped by its own base query — see ops_api_handle_jobs_list().
+        case 'requests':
+            return [" AND j.status = 'open'", []];
         case 'today':
         default:
             return [
@@ -175,6 +178,10 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
         ops_generate_daily_jobs($conn, (int)$cid, $today);
     }
 
+    // Tenant requests are copied into the pool the same way, on the way in —
+    // see modules/operations/includes/ops_sources.php.
+    ops_sync_tenant_requests($conn, $user['company_ids']);
+
     // Assignment is the scope. `assigned_to` already narrows to one person, so
     // an extra company_id filter protects nothing and only hides a job from the
     // person who has to do it — see ops_assignable_users(), which hands out
@@ -183,9 +190,24 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
               WHERE j.assigned_to = ?";
     $baseArgs = [$user['id']];
 
+    // The pool is the one list that is not one person's: tenant jobs nobody
+    // has claimed yet. With no assignee to scope by, the person's companies
+    // do it instead — that is the only thing that keeps another company's
+    // tenants off this phone.
+    $companyIn = ops_api_company_in($user['company_ids']);
+    $poolBase = " FROM ops_jobs j
+                  WHERE j.assigned_to IS NULL
+                    AND j.source_type <> 'staff'
+                    AND j.company_id IN ($companyIn)";
+    $poolArgs = $user['company_ids'];
+
     $tab = (string)($_GET['tab'] ?? 'today');
-    if (!in_array($tab, ['today', 'overdue', 'upcoming', 'done'], true)) {
+    if (!in_array($tab, ['today', 'overdue', 'upcoming', 'done', 'requests'], true)) {
         $tab = 'today';
+    }
+    if ($tab === 'requests') {
+        $base = $poolBase;
+        $baseArgs = $poolArgs;
     }
 
     $where = '';
@@ -239,13 +261,24 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
     $stmt->execute(array_merge($baseArgs, $args));
     $jobs = array_map('ops_api_job_row', $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
 
+    // The places on every card, in one query for the whole list. The card is
+    // where somebody decides which job to walk to, so "where" belongs on it.
+    $placesByJob = ops_job_places($conn, array_column($jobs, 'id'));
+    foreach ($jobs as &$job) {
+        $job['places'] = array_map('ops_api_place_row', $placesByJob[(int)$job['id']] ?? []);
+    }
+    unset($job);
+
     // Tab badges in one round trip. Each badge counts exactly what its tab
     // shows, so the number and the list can never disagree.
     $counts = [];
-    foreach (['today', 'overdue', 'upcoming', 'done'] as $name) {
+    foreach (['today', 'overdue', 'upcoming', 'done', 'requests'] as $name) {
         [$tabSql, $tabArgs] = ops_api_tab_filter($name, $today);
-        $countStmt = $conn->prepare('SELECT COUNT(*)' . $base . $tabSql);
-        $countStmt->execute(array_merge($baseArgs, $tabArgs));
+        [$countBase, $countArgs] = $name === 'requests'
+            ? [$poolBase, $poolArgs]
+            : [" FROM ops_jobs j WHERE j.assigned_to = ?", [$user['id']]];
+        $countStmt = $conn->prepare('SELECT COUNT(*)' . $countBase . $tabSql);
+        $countStmt->execute(array_merge($countArgs, $tabArgs));
         $counts[$name] = (int)$countStmt->fetchColumn();
     }
 
@@ -298,6 +331,425 @@ function ops_api_handle_dev_log(): void
 }
 
 // ---------------------------------------------------------------------------
+// GET ops/places — everywhere a job can be, for the picker
+// ---------------------------------------------------------------------------
+
+/**
+ * Every unit and common area, grouped by building.
+ *
+ * SENT WHOLE, ONCE, ON PURPOSE
+ * ----------------------------
+ * Around nine hundred rows and well under a tenth of a megabyte. Sending the
+ * lot means the app searches its own copy: instant on every keystroke, and it
+ * still works in the basement where the search-as-you-type endpoint this
+ * replaces would have returned nothing. A cleaner picking a corridor should
+ * not need a connection to find out what the corridors are called.
+ *
+ * Scoped to the same company ops_api_job_company_id() files the job under, so
+ * the picker cannot offer a place the create route would then reject.
+ */
+function ops_api_handle_places(PDO $conn, array $user): void
+{
+    $companyId = ops_api_job_company_id($conn, $user);
+
+    $buildings = [];
+    $stmt = $conn->prepare("SELECT id, name FROM re_buildings WHERE company_id = ? ORDER BY name ASC");
+    $stmt->execute([$companyId]);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $buildings[(int)$row['id']] = [
+            'id' => (int)$row['id'],
+            'name' => (string)$row['name'],
+            'places' => [],
+        ];
+    }
+
+    if ($buildings === []) {
+        customer_api_send_ok(['buildings' => []]);
+    }
+
+    $in = implode(',', array_fill(0, count($buildings), '?'));
+    $ids = array_keys($buildings);
+
+    // Common areas first: they are what most jobs are about, and a short list
+    // above a long one is the difference between scrolling and searching.
+    $stmt = $conn->prepare("
+        SELECT id, building_id, area_name, area_type
+        FROM re_building_common_areas
+        WHERE building_id IN ($in) AND is_active = 1
+        ORDER BY area_name ASC
+    ");
+    $stmt->execute($ids);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $buildings[(int)$row['building_id']]['places'][] = [
+            'kind' => 'common_area',
+            'id' => (int)$row['id'],
+            'label' => (string)$row['area_name'],
+            // The type reads as a plain word under the name, so two areas with
+            // similar names are still tellable apart.
+            'note' => ops_api_place_type_label((string)$row['area_type']),
+        ];
+    }
+
+    $stmt = $conn->prepare("
+        SELECT id, building_id, unit_number, unit_type
+        FROM re_units
+        WHERE building_id IN ($in)
+        ORDER BY unit_number ASC
+    ");
+    $stmt->execute($ids);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $buildings[(int)$row['building_id']]['places'][] = [
+            'kind' => 'unit',
+            'id' => (int)$row['id'],
+            'label' => (string)$row['unit_number'],
+            'note' => (string)($row['unit_type'] ?? ''),
+        ];
+    }
+
+    customer_api_send_ok(['buildings' => array_values($buildings)]);
+}
+
+/** `pump_room` is not a word. Make the enum readable without a lookup table. */
+function ops_api_place_type_label(string $type): string
+{
+    return ucwords(str_replace('_', ' ', $type));
+}
+
+/**
+ * Turn what the app sent into place rows, refusing anything that is not real.
+ *
+ * Every job must name at least one actual unit or common area — no more free
+ * text standing in for a location. So this is a gate, not a filter: an id that
+ * does not exist, or belongs to another company's building, fails the whole
+ * create rather than quietly dropping one place off a job the person believes
+ * they described correctly.
+ *
+ * The label is read from the database here, never from the request. The app
+ * could send anything; what goes on the record is what the place is actually
+ * called.
+ *
+ * @return array<int, array{kind:string,id:int,building_id:?int,label:string}>
+ */
+function ops_api_resolve_places(PDO $conn, int $companyId, $input): array
+{
+    if (!is_array($input) || $input === []) {
+        customer_api_send_error('place_required', 'Choose where the job is.', 422);
+    }
+
+    $wanted = ['unit' => [], 'common_area' => []];
+    foreach ($input as $entry) {
+        $kind = is_array($entry) ? (string)($entry['kind'] ?? '') : '';
+        $id = is_array($entry) ? (int)($entry['id'] ?? 0) : 0;
+        if (!array_key_exists($kind, $wanted) || $id <= 0) {
+            customer_api_send_error('place_unknown', 'That place is not on the system.', 422);
+        }
+        $wanted[$kind][$id] = $id;
+    }
+
+    $resolved = [];
+
+    if ($wanted['unit']) {
+        $in = implode(',', array_fill(0, count($wanted['unit']), '?'));
+        $stmt = $conn->prepare("
+            SELECT u.id, u.building_id, u.unit_number, b.name AS building_name
+            FROM re_units u
+            JOIN re_buildings b ON b.id = u.building_id
+            WHERE u.id IN ($in) AND b.company_id = ?
+        ");
+        $stmt->execute(array_merge(array_values($wanted['unit']), [$companyId]));
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $resolved[] = [
+                'kind' => 'unit',
+                'id' => (int)$row['id'],
+                'building_id' => (int)$row['building_id'],
+                // Qualified by its building: "101" on its own is four different
+                // flats, and the office reads this on a list covering all of them.
+                'label' => trim((string)$row['building_name'] . ' — ' . (string)$row['unit_number']),
+            ];
+        }
+    }
+
+    if ($wanted['common_area']) {
+        $in = implode(',', array_fill(0, count($wanted['common_area']), '?'));
+        $stmt = $conn->prepare("
+            SELECT a.id, a.building_id, a.area_name, b.name AS building_name
+            FROM re_building_common_areas a
+            JOIN re_buildings b ON b.id = a.building_id
+            WHERE a.id IN ($in) AND b.company_id = ?
+        ");
+        $stmt->execute(array_merge(array_values($wanted['common_area']), [$companyId]));
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $resolved[] = [
+                'kind' => 'common_area',
+                'id' => (int)$row['id'],
+                'building_id' => (int)$row['building_id'],
+                'label' => trim((string)$row['building_name'] . ' — ' . (string)$row['area_name']),
+            ];
+        }
+    }
+
+    // Fewer came back than went in: at least one id is invented, inactive, or
+    // another company's. Say so rather than creating a job that covers less
+    // than the person thinks it does.
+    if (count($resolved) !== count($wanted['unit']) + count($wanted['common_area'])) {
+        customer_api_send_error('place_unknown', 'That place is not on the system.', 422);
+    }
+
+    return $resolved;
+}
+
+// ---------------------------------------------------------------------------
+// GET ops/attendance, POST ops/attendance/check-in and /check-out
+// ---------------------------------------------------------------------------
+
+/**
+ * The day's attendance, and the two taps that record it — into HR's own
+ * attendance table. See modules/operations/includes/ops_attendance.php.
+ *
+ * Never queued and never timed by the phone: the time written is the server's,
+ * at the moment the tap arrives, because it is pay.
+ */
+function ops_api_handle_attendance(PDO $conn, array $user, string $action): void
+{
+    $employee = ops_attendance_employee($conn, (int)$user['id']);
+    if (!$employee) {
+        customer_api_send_error(
+            'no_employee',
+            'You are not set up in HR yet, so attendance cannot be recorded. Ask HR.',
+            409
+        );
+    }
+
+    if ($action === 'check-in') {
+        $result = ops_attendance_check_in($conn, $employee, (int)$user['id']);
+    } elseif ($action === 'check-out') {
+        $result = ops_attendance_check_out($conn, $employee, (int)$user['id']);
+    } else {
+        $result = ['ok' => true, 'row' => ops_attendance_current($conn, (int)$employee['id'])];
+    }
+
+    if (!$result['ok']) {
+        customer_api_send_error($result['error'], $result['message'], 409);
+    }
+
+    customer_api_send_ok(['attendance' => ops_attendance_payload($result['row'] ?? null)]);
+}
+
+// ---------------------------------------------------------------------------
+// POST ops/jobs — the person on site raises their own job
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a job for the person who is signed in.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * The office used to enter every job in advance and hand it to somebody. That
+ * only works if you know on Monday where each person will be on Thursday, and
+ * you do not — staff get moved between sites all week, so the schedule was
+ * wrong by Tuesday and somebody had to go and fix it. This turns the order
+ * round: whoever is standing at the site raises the job, does it, and submits
+ * it. Nothing has to be predicted, so nothing has to be corrected.
+ *
+ * WHAT THE REQUEST MAY NOT DECIDE
+ * -------------------------------
+ * `assigned_to` is the entire access rule in this module — ops_api_load_own_job()
+ * has no other condition — so it is set from the token here and read from the
+ * body nowhere. A staff member can create work for themselves and for nobody
+ * else, and no request body can say otherwise.
+ *
+ * `status` is always 'open' rather than 'in_progress'. Creating a job is not
+ * starting it: the Before photos still have to go on first, and the start route
+ * still enforces that. The clock belongs to the person on site, and it begins
+ * when they say so.
+ *
+ * Priority and the daily repeat are absent on purpose. Both are the office's to
+ * set, and both are the sort of standing decision this change exists to stop
+ * making in advance.
+ *
+ * WHERE, AS A FACT RATHER THAN A SENTENCE
+ * ---------------------------------------
+ * Every job must name at least one real unit or common area. The old free-text
+ * location is still written for anything worth adding on top ("bin store round
+ * the back"), but it can no longer BE the answer — see
+ * migrations/ops_job_places.sql for what that text cost. If a place is missing
+ * from the picker the office adds it once in the real estate module, and it is
+ * there for everyone from then on.
+ */
+function ops_api_handle_job_create(PDO $conn, array $user): void
+{
+    $title = trim((string)(ops_api_param('title', '') ?? ''));
+    if ($title === '') {
+        customer_api_send_error('title_required', 'Give the job a short name.', 422);
+    }
+
+    $jobType = (string)(ops_api_param('job_type', 'cleaning') ?? 'cleaning');
+    if (!array_key_exists($jobType, ops_job_types())) {
+        $jobType = 'cleaning';
+    }
+
+    $location = trim((string)(ops_api_param('location', '') ?? ''));
+    $description = trim((string)(ops_api_param('description', '') ?? ''));
+
+    // Cut to what the columns hold rather than letting MySQL truncate or, in
+    // strict mode, refuse the whole insert over a long address.
+    $title = mb_substr($title, 0, 255);
+    $location = mb_substr($location, 0, 255);
+
+    // The company is settled before the places are, because a place is only
+    // valid relative to it — see ops_api_job_company_id().
+    $companyId = ops_api_job_company_id($conn, $user);
+    if ($companyId <= 0) {
+        customer_api_send_error('no_company', 'This account is not set up for jobs.', 409);
+    }
+
+    $places = ops_api_resolve_places($conn, $companyId, ops_api_param('places', []));
+
+    // Validation first, replay guard second — same order as start and finish,
+    // and for the same reason: a refusal the person can fix must not burn the
+    // request id, or their corrected retry comes back "duplicate" and they are
+    // told their empty job was created.
+    $requestId = ops_api_request_id();
+    if (!ops_api_claim_request($conn, $user, 'jobs')) {
+        ops_api_log('replay ignored jobs create');
+
+        // The id the first attempt made. This is the whole reason the request
+        // row carries one: without it the phone is told nothing useful and the
+        // person taps Create again on a job that already exists.
+        $priorId = ops_api_request_job_id($conn, $requestId);
+        $prior = $priorId > 0 ? ops_api_load_own_job($conn, $priorId, $user) : null;
+        if (!$prior) {
+            customer_api_send_ok(['duplicate' => true]);
+        }
+        customer_api_send_ok([
+            'job' => ops_api_job_detail($conn, $prior, $user),
+            'duplicate' => true,
+        ]);
+    }
+
+    // PHP's clock, not MySQL's, for the date and the stamp both: the live MySQL
+    // runs on UTC while PHP and every page that shows these times run on Dubai
+    // time. A job raised late in the evening would otherwise be filed as
+    // tomorrow's and drop off today's list on the phone that made it.
+    $now = date('Y-m-d H:i:s');
+    $today = date('Y-m-d');
+
+    $stmt = $conn->prepare("
+        INSERT INTO ops_jobs
+            (company_id, job_type, title, location, description, assigned_to,
+             scheduled_date, priority, status, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'normal', 'open', ?, ?, ?)
+    ");
+    $stmt->execute([
+        $companyId, $jobType, $title, $location ?: null, $description ?: null,
+        $user['id'], $today, $user['id'], $now, $now,
+    ]);
+
+    $jobId = (int)$conn->lastInsertId();
+
+    // The places, with the labels read from the database rather than the
+    // request. IGNORE covers the one way this can collide — the same place
+    // sent twice — which is a picker slip, not an error worth failing a job
+    // that is already inserted.
+    $insPlace = $conn->prepare("
+        INSERT IGNORE INTO ops_job_places
+            (job_id, company_id, place_kind, place_id, building_id, label, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ");
+    foreach ($places as $place) {
+        $insPlace->execute([
+            $jobId, $companyId, $place['kind'], $place['id'],
+            $place['building_id'], $place['label'], $now,
+        ]);
+    }
+
+    ops_api_record_request_job($conn, $requestId, $jobId);
+
+    $job = ops_api_load_own_job($conn, $jobId, $user);
+    if (!$job) {
+        // Nothing should be able to reach this: it was just inserted with this
+        // person's id on it, which is exactly what the loader matches on.
+        customer_api_send_error('server_error', 'The job could not be opened.', 500);
+    }
+
+    customer_api_send_ok(['job' => ops_api_job_detail($conn, $job, $user)]);
+}
+
+// ---------------------------------------------------------------------------
+// POST ops/jobs/{id}/claim — "I'll do it" on a tenant request in the pool
+// ---------------------------------------------------------------------------
+
+/**
+ * Take a job from the pool.
+ *
+ * Several phones see the same request, so two people can tap at once. The
+ * claim is one conditional UPDATE — nobody on it yet, still open, one of this
+ * person's companies — and the database decides who was first. The loser is
+ * told plainly, rather than both people driving to the same flat.
+ *
+ * Straight to the server, never queued: whether you got the job is the whole
+ * answer, and a queued claim would let somebody walk to a door believing it
+ * was theirs while it went to someone else.
+ */
+function ops_api_handle_job_claim(PDO $conn, array $user, int $jobId): void
+{
+    $companyIn = ops_api_company_in($user['company_ids']);
+    $load = $conn->prepare("
+        SELECT * FROM ops_jobs
+        WHERE id = ? AND source_type <> 'staff' AND company_id IN ($companyIn)
+        LIMIT 1
+    ");
+    $load->execute(array_merge([$jobId], $user['company_ids']));
+    $job = $load->fetch(PDO::FETCH_ASSOC);
+    if (!$job) {
+        customer_api_send_error('not_found', 'That request is no longer available.', 404);
+    }
+
+    // A retry of a claim that worked. Answer with the job, as a success.
+    if ((int)$job['assigned_to'] === (int)$user['id']) {
+        $own = ops_api_job_or_404($conn, $jobId, $user);
+        customer_api_send_ok(['job' => ops_api_job_detail($conn, $own, $user)]);
+    }
+
+    if ($job['assigned_to'] !== null || $job['status'] !== 'open') {
+        customer_api_send_error(
+            'already_claimed',
+            $job['status'] === 'cancelled'
+                ? 'This request was withdrawn.'
+                : 'Someone else already took this job.',
+            409
+        );
+    }
+
+    // In the pool a maintenance job is dated the day it was copied. Claimed a
+    // day later, that date would put it straight onto the Late tab of the
+    // person who just volunteered for it. A cleaning booking keeps its date:
+    // that one is the tenant's appointment.
+    $today = date('Y-m-d');
+    $stmt = $conn->prepare("
+        UPDATE ops_jobs
+        SET assigned_to = ?,
+            scheduled_date = CASE
+                WHEN source_type = 'tenant_maintenance' AND scheduled_date < ? THEN ?
+                ELSE scheduled_date
+            END,
+            updated_at = ?
+        WHERE id = ? AND assigned_to IS NULL AND status = 'open'
+    ");
+    $stmt->execute([$user['id'], $today, $today, date('Y-m-d H:i:s'), $jobId]);
+
+    if ($stmt->rowCount() === 0) {
+        // Somebody's UPDATE landed between our read and ours.
+        customer_api_send_error('already_claimed', 'Someone else already took this job.', 409);
+    }
+
+    ops_source_on_claim($conn, $job, (int)$user['id']);
+
+    $own = ops_api_job_or_404($conn, $jobId, $user);
+    customer_api_send_ok(['job' => ops_api_job_detail($conn, $own, $user)]);
+}
+
+// ---------------------------------------------------------------------------
 // POST ops/jobs/{id}/start — the only way a job starts; the web module has
 // no start button, the clock belongs to the person on site.
 // ---------------------------------------------------------------------------
@@ -346,6 +798,78 @@ function ops_api_handle_job_start(PDO $conn, array $user, int $jobId): void
 }
 
 // ---------------------------------------------------------------------------
+// POST ops/jobs/{id}/pause and /resume — stopping for a while, not for good
+// ---------------------------------------------------------------------------
+
+/**
+ * Pause a started job, with a reason.
+ *
+ * The job stays in progress and its clock keeps running — time paused counts
+ * in the duration and in what the job bills. What a pause adds is the fact,
+ * visible to the office at once: this job has stopped, since when, and why.
+ * Every pause is also kept in ops_job_pauses, so a job that stopped three times
+ * waiting for materials says so afterwards.
+ *
+ * Queued like start and finish, so it works with no signal. The reason is
+ * checked before the replay guard — a refusal the person can fix must not burn
+ * the request id — and the state after it, so a retry of a pause that already
+ * landed answers with the paused job rather than an error.
+ */
+function ops_api_handle_job_pause(PDO $conn, array $user, int $jobId): void
+{
+    $job = ops_api_job_or_404($conn, $jobId, $user);
+
+    $reason = (string)(ops_api_param('reason', '') ?? '');
+    if (!array_key_exists($reason, ops_pause_reasons())) {
+        customer_api_send_error('reason_required', 'Choose why you are pausing.', 422);
+    }
+
+    ops_api_guard_replay($conn, $user, $jobId, "jobs/$jobId/pause");
+
+    if ($job['status'] !== 'in_progress') {
+        customer_api_send_error('not_started', 'Only a started job can be paused.', 409);
+    }
+    if (!empty($job['paused_at'])) {
+        // Already paused: the answer is the job as it is.
+        customer_api_send_ok(['job' => ops_api_job_detail($conn, $job, $user)]);
+    }
+
+    $now = date('Y-m-d H:i:s');
+    $stmt = $conn->prepare("
+        UPDATE ops_jobs SET paused_at = ?, pause_reason = ?
+        WHERE id = ? AND assigned_to = ? AND status = 'in_progress' AND paused_at IS NULL
+    ");
+    $stmt->execute([$now, $reason, $jobId, $user['id']]);
+
+    if ($stmt->rowCount() > 0) {
+        $conn->prepare("
+            INSERT INTO ops_job_pauses (job_id, company_id, user_id, reason, paused_at)
+            VALUES (?, ?, ?, ?, ?)
+        ")->execute([$jobId, (int)$job['company_id'], $user['id'], $reason, $now]);
+    }
+
+    $fresh = ops_api_job_or_404($conn, $jobId, $user);
+    customer_api_send_ok(['job' => ops_api_job_detail($conn, $fresh, $user)]);
+}
+
+function ops_api_handle_job_resume(PDO $conn, array $user, int $jobId): void
+{
+    $job = ops_api_job_or_404($conn, $jobId, $user);
+
+    ops_api_guard_replay($conn, $user, $jobId, "jobs/$jobId/resume");
+
+    if (empty($job['paused_at'])) {
+        // Not paused — most likely a retried resume that already landed.
+        customer_api_send_ok(['job' => ops_api_job_detail($conn, $job, $user)]);
+    }
+
+    ops_job_close_pause($conn, $jobId, date('Y-m-d H:i:s'));
+
+    $fresh = ops_api_job_or_404($conn, $jobId, $user);
+    customer_api_send_ok(['job' => ops_api_job_detail($conn, $fresh, $user)]);
+}
+
+// ---------------------------------------------------------------------------
 // POST ops/jobs/{id}/finish — the only way a job finishes. The office can
 // still force a status with "Change status", but that records no duration.
 // ---------------------------------------------------------------------------
@@ -385,6 +909,13 @@ function ops_api_handle_job_finish(PDO $conn, array $user, int $jobId): void
         customer_api_send_error('job_closed', 'This job is already completed.', 409);
     }
 
+    // Finishing a paused job is allowed — people forget to resume — and it
+    // closes the pause at the same moment, so the history has no pause that
+    // never ended.
+    if (!empty($job['paused_at'])) {
+        ops_job_close_pause($conn, $jobId, date('Y-m-d H:i:s'));
+    }
+
     $notes = trim((string)(ops_api_param('completion_notes', '') ?? ''));
     // A job finished without ever being started counts as zero minutes
     // rather than failing.
@@ -403,6 +934,15 @@ function ops_api_handle_job_finish(PDO $conn, array $user, int $jobId): void
         WHERE id = ? AND company_id = ? AND assigned_to = ?
     ");
     $stmt->execute([$now, $now, $minutes, $notes, $jobId, (int)$job['company_id'], $user['id']]);
+
+    // A tenant's job closes their request too, and tells them. Then the job
+    // invoices itself — see modules/operations/includes/ops_billing.php. Both
+    // only on the finish that actually closed it, and neither can undo it: the
+    // work is done whatever happens to the paperwork.
+    if ($stmt->rowCount() > 0) {
+        ops_source_on_finish($conn, $job);
+        ops_bill_finished_job($conn, $jobId);
+    }
 
     $fresh = ops_api_job_or_404($conn, $jobId, $user);
     customer_api_send_ok([

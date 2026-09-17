@@ -10,6 +10,7 @@ require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/ops_helper.php';
+require_once __DIR__ . '/includes/ops_billing.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -71,6 +72,22 @@ switch ($action) {
     // -----------------------------------------------------------------------
     // Supervisor-only status changes
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Invoice a finished job that did not invoice itself
+    // -----------------------------------------------------------------------
+    // The only billing button in the module, and it is a retry, not a step:
+    // normally Finish on the phone already did this. It exists for the job
+    // that finished before its building had a client, or hit an error.
+    case 'retry_billing':
+        $result = ops_bill_finished_job($conn, $jobId);
+        if ($result['status'] === 'billed') {
+            ops_flash('Invoice created.');
+        } else {
+            ops_flash($result['note'] ?: 'The invoice was not created.', $result['status'] === 'not_billable' ? 'info' : 'warning');
+        }
+        $redirect($jobUrl);
+        break;
+
     case 'set_status':
         $status = (string)($_POST['status'] ?? '');
         if (!array_key_exists($status, ops_statuses())) {
@@ -85,6 +102,11 @@ switch ($action) {
         ");
         // PHP's clock — the live MySQL runs on UTC.
         $stmt->execute([$status, $status, date('Y-m-d H:i:s'), $jobId, $companyId]);
+        // A pause only means something on a running job. Any other status the
+        // office sets ends it, so the board never shows a closed job as paused.
+        if ($status !== 'in_progress' && !empty($job['paused_at'])) {
+            ops_job_close_pause($conn, $jobId, date('Y-m-d H:i:s'));
+        }
         ops_flash('Status changed to "' . ops_status_label($status) . '".');
         $redirect($jobUrl);
         break;

@@ -205,6 +205,10 @@ $opsFlash = ops_take_flash();
         </span>
       </a>
 
+      <a href="<?= h($opsBase) ?>/billing.php" class="slink <?= $currentPage === 'billing.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-receipt"></i></span><span class="slabel">Billing</span>
+      </a>
+
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>
   </aside>
