@@ -163,7 +163,7 @@ function ops_checklist_save(PDO $conn, array $job, int $userId, array $checklist
 
         $maintenanceJobId = null;
         if ($checklist['problems'] || $checklist['problem_note'] !== '') {
-            $maintenanceJobId = ops_checklist_raise_maintenance($conn, $job, $checklist);
+            $maintenanceJobId = ops_checklist_raise_maintenance($conn, $job, $checklist, $userId);
         }
 
         $conn->prepare("
@@ -189,11 +189,16 @@ function ops_checklist_save(PDO $conn, array $job, int $userId, array $checklist
  * One maintenance job in the Requests pool for what the cleaner found, at the
  * same units. Returns its id.
  */
-function ops_checklist_raise_maintenance(PDO $conn, array $job, array $checklist): ?int {
+function ops_checklist_raise_maintenance(PDO $conn, array $job, array $checklist, int $userId): ?int {
     $labels = ops_cleaning_problems();
     $lines = array_map(static fn(string $key): string => '- ' . $labels[$key], $checklist['problems']);
     if ($checklist['problem_note'] !== '') {
         $lines[] = $checklist['problem_note'];
+    } elseif (in_array('other', $checklist['problems'], true)) {
+        // The app now asks for a note with "Other", but a phone on an older
+        // build can still send it bare. Say so, rather than leave "Other
+        // problem" looking like the whole story.
+        $lines[] = 'No details given — ask the cleaner what they saw.';
     }
 
     $places = [];
@@ -222,6 +227,7 @@ function ops_checklist_raise_maintenance(PDO $conn, array $job, array $checklist
         'priority' => 'normal',
         'source_type' => 'cleaner_report',
         'source_id' => (int)$job['id'],
+        'created_by' => $userId > 0 ? $userId : null,
     ], $places);
 
     $stmt = $conn->prepare("SELECT id FROM ops_jobs WHERE source_type = 'cleaner_report' AND source_id = ? LIMIT 1");

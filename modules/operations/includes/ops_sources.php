@@ -67,6 +67,18 @@ const OPS_CHECKOUT_SYNC_FROM = '2026-09-17';
  */
 const OPS_CUSTOMER_BOOKING_COMPANY_ID = 1;
 
+/**
+ * Whether requests raised elsewhere are copied into the pool at all.
+ *
+ * Off. A job is made by the person who wants it done — staff on the ops page
+ * or in the field app, a cleaner reporting what they found on a checklist —
+ * and by nobody else. Copying maintenance requests, checkouts, move-outs and
+ * bookings in filled the phones with work the office had never looked at.
+ *
+ * Everything below still works; turn this back to true to have it run again.
+ */
+const OPS_SYNC_SOURCES = false;
+
 // ---------------------------------------------------------------------------
 // Copy requests in
 // ---------------------------------------------------------------------------
@@ -83,12 +95,17 @@ const OPS_CUSTOMER_BOOKING_COMPANY_ID = 1;
  */
 function ops_sync_tenant_requests(PDO $conn, array $companyIds): void
 {
+    if (!OPS_SYNC_SOURCES) {
+        return;
+    }
+
     $companyIds = array_values(array_unique(array_filter(array_map('intval', $companyIds))));
     if (!$companyIds) {
         return;
     }
 
     try {
+        ops_fix_copied_maintenance($conn, $companyIds);
         ops_sync_tenant_maintenance($conn, $companyIds);
         ops_sync_tenant_cleaning($conn, $companyIds);
         ops_sync_ars_checkouts($conn, $companyIds);
@@ -124,7 +141,9 @@ function ops_sync_tenant_maintenance(PDO $conn, array $companyIds): void
         LEFT JOIN ops_jobs j
                ON j.source_type = 'tenant_maintenance' AND j.source_id = m.id
         WHERE m.company_id IN ($in)
-          AND m.status = 'pending'
+          -- In progress with nobody assigned is how the Real Estate page saves
+          -- a request the office typed: still nobody's, so still the pool's.
+          AND m.status IN ('pending', 'in_progress')
           AND m.assigned_to IS NULL
           AND m.request_date >= ?
           AND j.id IS NULL
@@ -149,7 +168,9 @@ function ops_sync_tenant_maintenance(PDO $conn, array $companyIds): void
 
         ops_insert_source_job($conn, [
             'company_id' => (int)$request['company_id'],
-            'job_type' => 'maintenance',
+            // A tenant who picked Cleaning asked for a clean: a cleaning job,
+            // with the unit checklist. Everything else is maintenance.
+            'job_type' => ops_source_job_type((string)$request['category']),
             'title' => $title,
             'description' => trim((string)$request['description']) ?: null,
             'priority' => ops_source_priority((string)$request['priority']),
@@ -160,6 +181,35 @@ function ops_sync_tenant_maintenance(PDO $conn, array $companyIds): void
             'source_type' => 'tenant_maintenance',
             'source_id' => (int)$request['id'],
         ], [$place]);
+    }
+}
+
+/**
+ * Put right maintenance jobs copied before the category rules above: a
+ * Cleaning request copied as maintenance, a title with an underscore in it.
+ * Only jobs nobody has started, so nothing under anybody's hands changes.
+ */
+function ops_fix_copied_maintenance(PDO $conn, array $companyIds): void
+{
+    $in = implode(',', array_fill(0, count($companyIds), '?'));
+    $stmt = $conn->prepare("
+        SELECT j.id, j.job_type, j.title, m.category
+        FROM ops_jobs j
+        JOIN re_maintenance_requests m ON m.id = j.source_id
+        WHERE j.source_type = 'tenant_maintenance'
+          AND j.status = 'open'
+          AND j.started_at IS NULL
+          AND j.company_id IN ($in)
+          AND (LOWER(m.category) = 'cleaning' OR j.title LIKE '%\_%')
+    ");
+    $stmt->execute($companyIds);
+    $update = $conn->prepare("UPDATE ops_jobs SET job_type = ?, title = ?, updated_at = ? WHERE id = ?");
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $type = ops_source_job_type((string)$row['category']);
+        $title = ops_source_category_title((string)$row['category']);
+        if ($type !== $row['job_type'] || $title !== $row['title']) {
+            $update->execute([$type, $title, date('Y-m-d H:i:s'), (int)$row['id']]);
+        }
     }
 }
 
@@ -686,7 +736,7 @@ function ops_withdraw_tenant_requests(PDO $conn, array $companyIds): void
           AND j.assigned_to IS NULL
           AND j.status = 'open'
           AND j.company_id IN ($in)
-          AND (m.status <> 'pending' OR m.assigned_to IS NOT NULL)
+          AND (m.status NOT IN ('pending', 'in_progress') OR m.assigned_to IS NOT NULL)
     ")->execute(array_merge([$now], $companyIds));
 
     $conn->prepare("
@@ -714,7 +764,7 @@ function ops_withdraw_tenant_requests(PDO $conn, array $companyIds): void
           AND j.status = 'cancelled'
           AND j.started_at IS NULL
           AND j.company_id IN ($in)
-          AND m.status = 'pending' AND m.assigned_to IS NULL
+          AND m.status IN ('pending', 'in_progress') AND m.assigned_to IS NULL
     ")->execute(array_merge([$now], $companyIds));
 
     $conn->prepare("
@@ -749,11 +799,13 @@ function ops_insert_source_job(PDO $conn, array $job, array $places): void
             (company_id, job_type, title, location, description, assigned_to,
              scheduled_date, scheduled_time, priority, status, created_by,
              source_type, source_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'open', NULL, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
     ");
     $stmt->execute([
         $job['company_id'], $job['job_type'], mb_substr($job['title'], 0, 255), $job['location'] ?? null, $job['description'],
         $job['scheduled_date'], $job['scheduled_time'], $job['priority'],
+        // A person who raised it (a cleaner's checklist); NULL for a copied request.
+        $job['created_by'] ?? null,
         $job['source_type'], $job['source_id'], $now, $now,
     ]);
 
@@ -819,18 +871,25 @@ function ops_source_place(PDO $conn, string $kind, int $id): ?array
  * A request category as a job name.
  *
  * The categories are typed by people and arrive as "ac", "HVAC", "plumbing",
- * "GENERAL MAITENANCE". Short ones are initialisms and go upper case — "ac" as
- * "Ac" reads like a typo — and the rest become one capital letter.
+ * "pest_control", "GENERAL MAITENANCE". Underscores are spaces. Short ones are
+ * initialisms and go upper case — "ac" as "Ac" reads like a typo — and the rest
+ * become words with capitals: "Pest Control".
  */
 function ops_source_category_title(string $category): string
 {
-    $category = trim($category);
+    $category = trim(str_replace('_', ' ', $category));
     if ($category === '') {
         return 'Maintenance request';
     }
     return mb_strlen($category) <= 4
         ? mb_strtoupper($category)
-        : ucfirst(mb_strtolower($category));
+        : mb_convert_case(mb_strtolower($category), MB_CASE_TITLE);
+}
+
+/** The job type a maintenance request's category asks for. */
+function ops_source_job_type(string $category): string
+{
+    return strtolower(trim($category)) === 'cleaning' ? 'cleaning' : 'maintenance';
 }
 
 /** Four request priorities into the three a job has. Urgent and high both mean go first. */
@@ -922,7 +981,7 @@ function ops_source_on_claim(PDO $conn, array $job, int $userId): void
                 assigned_to = COALESCE(?, assigned_to),
                 responded_at = COALESCE(responded_at, ?),
                 updated_at = ?
-            WHERE id = ? AND status = 'pending'
+            WHERE id = ? AND status IN ('pending', 'in_progress') AND assigned_to IS NULL
         ")->execute([
             $employeeId > 0 ? $employeeId : null,
             date('Y-m-d H:i:s'),
@@ -1039,6 +1098,61 @@ function ops_source_notify_tenant(PDO $conn, string $table, int $id, array $mess
     } catch (Throwable $e) {
         error_log('ops_source_notify_tenant failed: ' . $e->getMessage());
     }
+}
+
+/**
+ * The photos the tenant attached to the maintenance request a job came from,
+ * oldest first. Images only — the tenant app accepts nothing else, and nothing
+ * else is shown. Empty for every other kind of job.
+ *
+ * @return array<int, array{id:int, file_path:string, mime_type:?string, created_at:string}>
+ */
+function ops_request_photos(PDO $conn, array $job): array
+{
+    if (($job['source_type'] ?? '') !== 'tenant_maintenance' || (int)($job['source_id'] ?? 0) <= 0) {
+        return [];
+    }
+    try {
+        $stmt = $conn->prepare("
+            SELECT id, file_path, mime_type, created_at
+            FROM re_maintenance_photos
+            WHERE maintenance_request_id = ?
+              AND (mime_type IS NULL OR mime_type LIKE 'image/%')
+            ORDER BY created_at ASC, id ASC
+        ");
+        $stmt->execute([(int)$job['source_id']]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (Throwable $e) {
+        error_log('ops_request_photos failed: ' . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Send one of those photos, after the caller has decided the viewer may see
+ * the job. Only from uploads/realestate/maintenance, and only as an image.
+ */
+function ops_serve_request_photo(array $photo): bool
+{
+    $appRoot = dirname(__DIR__, 3);
+    $baseDir = realpath($appRoot . '/uploads/realestate/maintenance');
+    $absPath = realpath($appRoot . '/' . ltrim((string)$photo['file_path'], '/'));
+    if ($baseDir === false || $absPath === false
+        || strpos($absPath, $baseDir . DIRECTORY_SEPARATOR) !== 0 || !is_file($absPath)) {
+        return false;
+    }
+    $types = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'gif' => 'image/gif', 'webp' => 'image/webp'];
+    $ext = strtolower(pathinfo($absPath, PATHINFO_EXTENSION));
+    if (!isset($types[$ext])) {
+        return false;
+    }
+    header('Content-Type: ' . $types[$ext]);
+    header('Content-Length: ' . filesize($absPath));
+    header('Content-Disposition: inline; filename="' . basename($absPath) . '"');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: private, max-age=600');
+    readfile($absPath);
+    return true;
 }
 
 /**

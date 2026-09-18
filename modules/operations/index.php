@@ -185,7 +185,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
   <div class="alert alert-info d-flex flex-wrap align-items-center gap-2">
     <i class="bi bi-inbox"></i>
     <span>
-      <strong><?= $poolCount ?></strong> tenant request<?= $poolCount > 1 ? 's' : '' ?>
+      <strong><?= $poolCount ?></strong> job<?= $poolCount > 1 ? 's' : '' ?>
       waiting for someone to claim <?= $poolCount > 1 ? 'them' : 'it' ?> in the app.
     </span>
     <a href="<?= h($opsBase) ?>/index.php?assignee=0&amp;status=open"
@@ -431,7 +431,11 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <?php endif; ?>
                 <?php if (($j['source_type'] ?? 'staff') !== 'staff'): ?>
                   <?php if ($j['source_type'] === 'cleaner_report'): ?>
-                    <span class="badge bg-info text-dark"><i class="bi bi-brush"></i> Found by cleaner</span>
+                    <a href="<?= h($opsBase) ?>/job_view.php?id=<?= (int)$j['source_id'] ?>"
+                       class="badge bg-info text-dark text-decoration-none"
+                       title="Open the cleaning job this was found on">
+                      <i class="bi bi-brush"></i> Found by cleaner on job #<?= (int)$j['source_id'] ?>
+                    </a>
                   <?php elseif ($j['source_type'] === 'ars_checkout'): ?>
                     <span class="badge bg-info text-dark"><i class="bi bi-box-arrow-right"></i> Guest checkout</span>
                   <?php elseif ($j['source_type'] === 'customer_booking'): ?>
@@ -467,6 +471,17 @@ require __DIR__ . '/includes/ops_layout_header.php';
                   <span class="badge bg-warning text-dark ms-2"><i class="bi bi-box-seam"></i> Needs materials</span>
                 <?php endif; ?>
               </div>
+              <?php // What the cleaner reported, so the office sees it without opening
+                    // the job. The first line only repeats the badge. ?>
+              <?php if (($j['source_type'] ?? '') === 'cleaner_report' && trim((string)$j['description']) !== ''): ?>
+                <?php $found = array_slice(array_filter(array_map('trim', explode("\n", (string)$j['description']))), 1); ?>
+                <?php if ($found): ?>
+                  <div class="small mt-1 text-body-secondary">
+                    <i class="bi bi-exclamation-circle"></i>
+                    <?= h(mb_strimwidth(implode(' · ', array_map(static fn($l) => ltrim($l, '- '), $found)), 0, 160, '…')) ?>
+                  </div>
+                <?php endif; ?>
+              <?php endif; ?>
             </td>
             <td><?= h($j['assignee_name'] ?: '—') ?></td>
             <td class="small">
