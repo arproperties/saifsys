@@ -394,6 +394,50 @@ try {
             echo json_encode(['success' => true]);
             break;
 
+        case 'void_booking': {
+            // Wrong entry: remove payments, reverse invoice journals, mark cancelled. No guest message.
+            require_once __DIR__ . '/includes/ars_booking_void.php';
+            $reason = trim((string)($_POST['reason'] ?? ''));
+            if ($reason === '') {
+                echo json_encode(['success' => false, 'error' => 'A reason is required.']);
+                exit;
+            }
+            $blockers = ars_booking_void_blockers($conn, $booking);
+            if ($blockers) {
+                echo json_encode(['success' => false, 'error' => 'Cannot void: ' . implode(' ', $blockers)]);
+                exit;
+            }
+            $conn->beginTransaction();
+            try {
+                ars_booking_void($conn, $booking, $userId, $reason);
+                $conn->commit();
+            } catch (Throwable $e) {
+                if ($conn->inTransaction()) {
+                    $conn->rollBack();
+                }
+                echo json_encode(['success' => false, 'error' => 'Nothing was changed. ' . $e->getMessage()]);
+                exit;
+            }
+            $arsAudit('booking_cancelled', 'Voided booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)) . ' (wrong entry): ' . $reason, [
+                'old_data' => ['status' => $booking['status'], 'total_amount' => $booking['total_amount'], 'paid_amount' => $booking['paid_amount']],
+                'new_data' => ['status' => 'cancelled'],
+            ]);
+            ars_booking_activity_log($conn, [
+                'company_id' => $arsCompanyId,
+                'booking_id' => $bookingId,
+                'booking_number' => $booking['booking_number'] ?? null,
+                'event_category' => 'operational',
+                'event_type' => 'booking_voided',
+                'title' => 'Booking voided (wrong entry)',
+                'description' => $reason,
+                'previous_value' => $booking['status'],
+                'new_value' => 'cancelled',
+                'created_by' => $userId,
+            ]);
+            echo json_encode(['success' => true]);
+            break;
+        }
+
         case 'add_charge':
             if (ars_booking_is_financially_locked($conn, $booking)) {
                 ars_booking_activity_log($conn, [
@@ -716,6 +760,197 @@ try {
                 'forfeited' => $newForfeited,
             ]);
             break;
+
+        case 'delete_payment': {
+            // Removes a manually recorded payment entered by mistake: reverses its
+            // journal (audit trail kept), takes its allocations back off the invoices,
+            // deletes the payment row and recalculates the booking.
+            require_once __DIR__ . '/includes/ars_payment_edit.php';
+
+            $paymentId = (int)($_POST['payment_id'] ?? 0);
+            $reason = trim((string)($_POST['reason'] ?? ''));
+            if (!$paymentId || $reason === '') {
+                echo json_encode(['success' => false, 'error' => 'Payment and reason are required.']);
+                exit;
+            }
+
+            $st = $conn->prepare("SELECT * FROM ars_booking_payments WHERE id = ? AND booking_id = ? AND company_id = ?");
+            $st->execute([$paymentId, $bookingId, $arsCompanyId]);
+            $payment = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$payment) {
+                echo json_encode(['success' => false, 'error' => 'Payment not found on this booking.']);
+                exit;
+            }
+            if ($blocker = ars_payment_edit_blocker($conn, $payment)) {
+                echo json_encode(['success' => false, 'error' => $blocker]);
+                exit;
+            }
+
+            $conn->beginTransaction();
+            try {
+                $reversalJournalId = ars_payment_unpost($conn, $payment, $userId, 'Payment deleted: ' . $reason);
+                $conn->prepare("DELETE FROM ars_guest_notifications WHERE payment_id = ?")->execute([$paymentId]);
+                $conn->prepare("DELETE FROM ars_booking_payments WHERE id = ?")->execute([$paymentId]);
+                ars_recalc_booking_totals($conn, $bookingId);
+                $conn->commit();
+            } catch (Throwable $e) {
+                if ($conn->inTransaction()) {
+                    $conn->rollBack();
+                }
+                echo json_encode(['success' => false, 'error' => 'Nothing was changed. ' . $e->getMessage()]);
+                exit;
+            }
+
+            $amountLabel = number_format((float)$payment['amount'], 2);
+            AuditService::logDelete('ars_booking_payments', $paymentId, $payment,
+                'Deleted payment #' . $paymentId . ' of ' . $amountLabel . ' on ' . ($booking['booking_number'] ?? ('#' . $bookingId)) . ': ' . $reason);
+            ars_booking_activity_log($conn, [
+                'company_id' => $arsCompanyId,
+                'booking_id' => $bookingId,
+                'booking_number' => $booking['booking_number'] ?? null,
+                'event_category' => 'payment',
+                'event_type' => 'payment_deleted',
+                'title' => 'Payment #' . $paymentId . ' deleted (AED ' . $amountLabel . ')',
+                'description' => $reason,
+                'previous_value' => number_format((float)$payment['amount'], 2, '.', ''),
+                'related_entity_type' => 'ars_booking_payment',
+                'related_entity_id' => $paymentId,
+                'related_journal_id' => $reversalJournalId,
+                'created_by' => $userId,
+            ]);
+            echo json_encode(['success' => true]);
+            break;
+        }
+
+        case 'edit_payment': {
+            // Amount / method / GL account / date changes reverse the old journal and
+            // re-post the payment (same payment id). Reference / notes alone just update.
+            require_once __DIR__ . '/includes/ars_payment_edit.php';
+            require_once __DIR__ . '/includes/ars_account_roles.php';
+
+            $paymentId = (int)($_POST['payment_id'] ?? 0);
+            $amount = round((float)($_POST['amount'] ?? 0), 2);
+            $method = (string)($_POST['payment_method'] ?? '');
+            $receiptCode = trim((string)($_POST['receipt_account_code'] ?? ''));
+            $date = trim((string)($_POST['payment_date'] ?? ''));
+            $ref = trim((string)($_POST['reference_number'] ?? ''));
+            $notes = trim((string)($_POST['notes'] ?? ''));
+
+            $dt = DateTime::createFromFormat('Y-m-d', $date);
+            if (!$paymentId || $amount <= 0 || !$dt || $dt->format('Y-m-d') !== $date) {
+                echo json_encode(['success' => false, 'error' => 'Enter an amount above zero and a valid date.']);
+                exit;
+            }
+            if ($date > date('Y-m-d')) {
+                echo json_encode(['success' => false, 'error' => 'Payment date cannot be in the future.']);
+                exit;
+            }
+            if (!in_array($method, ['cash', 'bank_transfer', 'card', 'online'], true)) {
+                echo json_encode(['success' => false, 'error' => 'Choose a payment method.']);
+                exit;
+            }
+
+            $st = $conn->prepare("SELECT * FROM ars_booking_payments WHERE id = ? AND booking_id = ? AND company_id = ?");
+            $st->execute([$paymentId, $bookingId, $arsCompanyId]);
+            $payment = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$payment) {
+                echo json_encode(['success' => false, 'error' => 'Payment not found on this booking.']);
+                exit;
+            }
+            if ($blocker = ars_payment_edit_blocker($conn, $payment)) {
+                echo json_encode(['success' => false, 'error' => $blocker]);
+                exit;
+            }
+
+            ars_ensure_receipt_account_columns($conn);
+            $glCompanyId = ars_financial_gl_company_id($conn, $arsCompanyId);
+            $receiptCheck = ars_resolve_receipt_account($conn, $glCompanyId, $method, $receiptCode);
+            if (!$receiptCheck['success']) {
+                echo json_encode(['success' => false, 'error' => $receiptCheck['error']]);
+                exit;
+            }
+            $receiptCode = (string)$receiptCheck['account_code'];
+
+            $old = [
+                'amount' => number_format((float)$payment['amount'], 2, '.', ''),
+                'payment_method' => (string)$payment['payment_method'],
+                'receipt_account_code' => (string)$payment['receipt_account_code'],
+                'payment_date' => (string)$payment['payment_date'],
+                'reference_number' => (string)($payment['reference_number'] ?? ''),
+                'notes' => (string)($payment['notes'] ?? ''),
+            ];
+            $new = [
+                'amount' => number_format($amount, 2, '.', ''),
+                'payment_method' => $method,
+                'receipt_account_code' => $receiptCode,
+                'payment_date' => $date,
+                'reference_number' => $ref,
+                'notes' => $notes,
+            ];
+            $changed = array_keys(array_diff_assoc($new, $old));
+            if (!$changed) {
+                echo json_encode(['success' => true]);
+                break;
+            }
+            $repost = (bool)array_intersect($changed, ['amount', 'payment_method', 'receipt_account_code', 'payment_date']);
+
+            $conn->beginTransaction();
+            try {
+                if ($repost) {
+                    ars_payment_unpost($conn, $payment, $userId, 'Payment #' . $paymentId . ' edited');
+                    $conn->prepare("
+                        UPDATE ars_booking_payments
+                        SET amount = ?, payment_method = ?, receipt_account_code = ?, payment_date = ?,
+                            reference_number = ?, notes = ?, journal_id = NULL, financial_document_id = NULL
+                        WHERE id = ?
+                    ")->execute([$amount, $method, $receiptCode, $date, $ref ?: null, $notes ?: null, $paymentId]);
+
+                    $st = $conn->prepare("SELECT * FROM ars_booking_payments WHERE id = ?");
+                    $st->execute([$paymentId]);
+                    $fresh = $st->fetch(PDO::FETCH_ASSOC);
+                    $jr = ars_post_payment_journal($conn, $fresh, $booking, $userId);
+                    if (empty($jr['success'])) {
+                        throw new RuntimeException('Re-posting failed: ' . ($jr['error'] ?? 'unknown'));
+                    }
+                    ars_recalc_booking_totals($conn, $bookingId);
+                } else {
+                    $conn->prepare("UPDATE ars_booking_payments SET reference_number = ?, notes = ? WHERE id = ?")
+                        ->execute([$ref ?: null, $notes ?: null, $paymentId]);
+                }
+                $conn->commit();
+            } catch (Throwable $e) {
+                if ($conn->inTransaction()) {
+                    $conn->rollBack();
+                }
+                echo json_encode(['success' => false, 'error' => 'Nothing was changed. ' . $e->getMessage()]);
+                exit;
+            }
+
+            $labels = ['amount' => 'amount', 'payment_method' => 'method', 'receipt_account_code' => 'GL account',
+                'payment_date' => 'date', 'reference_number' => 'reference', 'notes' => 'notes'];
+            $summary = [];
+            foreach ($changed as $k) {
+                $summary[] = $labels[$k] . ': ' . ($old[$k] !== '' ? $old[$k] : '—') . ' → ' . ($new[$k] !== '' ? $new[$k] : '—');
+            }
+            $arsAudit('receipt_updated', 'Edited payment #' . $paymentId . ' (' . implode('; ', $summary) . ')', [
+                'old_data' => array_intersect_key($old, array_flip($changed)),
+                'new_data' => array_intersect_key($new, array_flip($changed)),
+            ]);
+            ars_booking_activity_log($conn, [
+                'company_id' => $arsCompanyId,
+                'booking_id' => $bookingId,
+                'booking_number' => $booking['booking_number'] ?? null,
+                'event_category' => 'payment',
+                'event_type' => 'payment_edited',
+                'title' => 'Payment #' . $paymentId . ' edited',
+                'description' => implode("\n", $summary),
+                'related_entity_type' => 'ars_booking_payment',
+                'related_entity_id' => $paymentId,
+                'created_by' => $userId,
+            ]);
+            echo json_encode(['success' => true]);
+            break;
+        }
 
         case 'mark_link_paid':
             $paymentId = (int)($_POST['payment_id'] ?? 0);

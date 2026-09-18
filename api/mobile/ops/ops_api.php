@@ -933,6 +933,17 @@ function ops_api_job_detail(PDO $conn, array $job, array $user): array
     // Unit cleaning jobs only; null everywhere else. See ops_checklist.php.
     $detail['checklist'] = ops_checklist_for_app($conn, $job);
 
+    // What the tenant photographed when they raised the request — the leak,
+    // the broken socket. Read, never edited; served by request-photos/{id}.
+    $detail['request_photos'] = array_map(
+        static fn(array $row): array => [
+            'id' => (int)$row['id'],
+            'url_path' => 'request-photos/' . (int)$row['id'],
+            'created_at' => (string)$row['created_at'],
+        ],
+        ops_request_photos($conn, $job)
+    );
+
     $commentRows = $comments->fetchAll(PDO::FETCH_ASSOC) ?: [];
     $mediaByComment = ops_api_comment_media(
         $conn,

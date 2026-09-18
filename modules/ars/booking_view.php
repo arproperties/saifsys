@@ -62,6 +62,16 @@ ars_ensure_receipt_account_columns($conn);
 $arsGlCompanyId = ars_financial_gl_company_id($conn, $arsCompanyId);
 $arsReceiptCashOptions = ars_receipt_account_options($conn, $arsGlCompanyId, 'cash');
 $arsReceiptBankOptions = ars_receipt_account_options($conn, $arsGlCompanyId, 'bank_transfer');
+
+// Account names for the Payments table "GL account" column.
+$paymentAccountNames = [];
+$paymentAccountCodes = array_values(array_unique(array_filter(array_column($payments, 'receipt_account_code'))));
+if ($paymentAccountCodes) {
+    $ph = implode(',', array_fill(0, count($paymentAccountCodes), '?'));
+    $stmt = $conn->prepare("SELECT account_code, account_name FROM re_chart_of_accounts WHERE company_id = ? AND account_code IN ($ph)");
+    $stmt->execute(array_merge([$arsGlCompanyId], $paymentAccountCodes));
+    $paymentAccountNames = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+}
 $arsReceiptOptionsJson = htmlspecialchars(json_encode([
     'cash' => $arsReceiptCashOptions,
     'bank_transfer' => $arsReceiptBankOptions,
@@ -250,6 +260,9 @@ if ($booking['status'] === 'pending') {
       <?php if (in_array($booking['status'], ['pending','confirmed'], true)): ?>
         <button type="button" class="btn btn-outline-danger btn-sm" onclick="if(confirm('Cancel this booking? If a revenue journal exists it will be reversed.')) bookingAction('cancel')"><i class="bi bi-x-circle me-1"></i>Cancel</button>
       <?php endif; ?>
+      <?php if (in_array($booking['status'], ['confirmed','checked_in','checked_out'], true)): ?>
+        <button type="button" class="btn btn-outline-danger btn-sm" onclick="voidBooking('<?= h((string)$booking['booking_number']) ?>')" title="Booking was entered by mistake: removes its payments, reverses its invoices and marks it cancelled"><i class="bi bi-trash me-1"></i>Void (wrong entry)</button>
+      <?php endif; ?>
       <?php if (!in_array($booking['status'], ['cancelled','expired'], true) && $balanceDue > 0.009): ?>
         <button type="button" class="btn btn-ars-outline btn-sm" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-1"></i>Payment</button>
       <?php endif; ?>
@@ -318,6 +331,15 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
    Only the trailing columns get a fixed, nowrap width; Document takes every
    remaining pixel so long names like ARS-INV-2026-00089 stay on one line. */
 #ws-docs .ars-udoc-table { min-width: 720px; }
+/* Payments table: keep the delete button in view; long GL names truncate. */
+.ars-pay-table .ars-pay-gl { max-width: 170px; }
+.ars-pay-table .ars-pay-actions { width: 1%; white-space: nowrap; padding-right: 1rem; }
+/* The shell pins .btn to min-height:40px; keep the row icons compact. */
+.ars-pay-table .ars-pay-actions .btn { min-height: 0; padding: .2rem .45rem; line-height: 1.2; margin-left: .25rem; }
+@media (max-width: 767.98px) {
+    .ars-pay-table .ars-pay-gl { max-width: none; }
+    .ars-pay-table .ars-pay-actions { width: auto; text-align: left !important; }
+}
 #ws-docs .ars-udoc-col-doc { width: auto; min-width: 15rem; }
 #ws-docs .ars-udoc-col-type,
 #ws-docs .ars-udoc-col-date,
@@ -667,24 +689,42 @@ echo $arsWsLifecycleHtml;
                 <button class="btn btn-ars btn-sm" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-plus-lg"></i></button>
                 <?php endif; ?>
             </div>
+            <?php
+            $pmShowStripe = false;
+            $pmShowLink = false;
+            foreach ($payments as $pm) {
+                if (!empty($pm['gateway_payment_intent_id'])) $pmShowStripe = true;
+                if (!empty($pm['payment_link_url'])) $pmShowLink = true;
+            }
+            $pmColspan = 7 + ($pmShowStripe ? 1 : 0) + ($pmShowLink ? 1 : 0);
+            ?>
             <div class="table-responsive">
-                <table class="table ars-table ars-mobile-cards mb-0">
-                    <thead><tr><th>Date</th><th>Method</th><th>Amount</th><th>Status</th><th>Reference</th><th>Stripe</th><th>Journal</th><th>Link</th></tr></thead>
+                <table class="table ars-table ars-mobile-cards ars-pay-table mb-0 align-middle">
+                    <thead><tr>
+                        <th>ID</th><th>Date</th><th>Method</th><th class="text-end">Amount</th><th>Status</th><th>Reference</th><th>GL account</th>
+                        <?php if ($pmShowStripe): ?><th>Stripe</th><?php endif; ?>
+                        <?php if ($pmShowLink): ?><th>Link</th><?php endif; ?>
+                        <th></th>
+                    </tr></thead>
                     <tbody>
                     <?php if (empty($payments)): ?>
-                        <tr><td colspan="8" class="text-center text-muted py-3">No payments recorded.</td></tr>
+                        <tr><td colspan="<?= $pmColspan ?>" class="text-center text-muted py-3">No payments recorded.</td></tr>
                     <?php endif; ?>
-                    <?php foreach ($payments as $pm): ?>
+                    <?php foreach ($payments as $pm):
+                        $pmAccCode = (string)($pm['receipt_account_code'] ?? '');
+                        $pmAccName = $pmAccCode !== '' ? (string)($paymentAccountNames[$pmAccCode] ?? '') : '';
+                    ?>
                         <tr>
-                            <td data-label="Date"><?= h($pm['payment_date']) ?></td>
-                            <td data-label="Method">
+                            <td data-label="ID" class="text-muted text-nowrap">#<?= (int)$pm['id'] ?></td>
+                            <td data-label="Date" class="text-nowrap"><?= h($pm['payment_date']) ?></td>
+                            <td data-label="Method" class="text-nowrap">
                                 <?= h(ucfirst(str_replace('_',' ',$pm['payment_method']))) ?>
                                 <?php if (($pm['payment_gateway'] ?? '') === 'stripe'): ?>
                                     <span class="badge bg-dark ms-1">Stripe</span>
                                     <?php if (!empty($pm['payment_type'])): ?><span class="badge bg-info text-dark ms-1"><?= h($pm['payment_type']) ?></span><?php endif; ?>
                                 <?php endif; ?>
                             </td>
-                            <td data-label="Amount" class="fw-semibold text-success">
+                            <td data-label="Amount" class="fw-semibold text-success text-end text-nowrap">
                                 <?= h($pm['currency'] ?: 'AED') ?> <?= number_format((float)$pm['amount'],2) ?>
                                 <?php if ((float)($pm['amount_refunded'] ?? 0) > 0): ?>
                                     <br><small class="text-warning">Refunded <?= h($pm['currency'] ?: 'AED') ?> <?= number_format((float)$pm['amount_refunded'],2) ?></small>
@@ -701,23 +741,21 @@ echo $arsWsLifecycleHtml;
                                 <?php endif; ?>
                             </td>
                             <td data-label="Reference"><?= h($pm['reference_number'] ?: '—') ?></td>
+                            <td data-label="GL account" class="ars-pay-gl">
+                                <?php if ($pmAccCode !== ''): ?>
+                                    <span class="fw-semibold"><?= h($pmAccCode) ?></span>
+                                    <?php if ($pmAccName !== ''): ?><small class="text-muted d-block text-truncate" title="<?= h($pmAccName) ?>"><?= h($pmAccName) ?></small><?php endif; ?>
+                                <?php else: ?>—<?php endif; ?>
+                            </td>
+                            <?php if ($pmShowStripe): ?>
                             <td data-label="Stripe">
                                 <?php if (!empty($pm['gateway_payment_intent_id'])): ?>
                                     <code class="small"><?= h($pm['gateway_payment_intent_id']) ?></code>
                                     <?php if (!empty($pm['gateway_charge_id'])): ?><br><code class="small"><?= h($pm['gateway_charge_id']) ?></code><?php endif; ?>
                                 <?php else: ?>—<?php endif; ?>
                             </td>
-                            <td data-label="Journal">
-                                <?php if ($pm['journal_id']):
-                                    $pmJournal = null;
-                                    foreach ($journals as $j) { if ($j['id'] === (int)$pm['journal_id']) { $pmJournal = $j; break; } }
-                                    if ($pmJournal): ?>
-                                    <span class="badge bg-success" title="Posted"><?= h($pmJournal['journal_number']) ?></span>
-                                    <?php else: ?>
-                                    <span class="badge bg-secondary">JV#<?= $pm['journal_id'] ?></span>
-                                    <?php endif; ?>
-                                <?php else: ?>—<?php endif; ?>
-                            </td>
+                            <?php endif; ?>
+                            <?php if ($pmShowLink): ?>
                             <td data-label="Link">
                                 <?php if ($pm['payment_link_url']): ?>
                                 <a href="<?= h($pm['payment_link_url']) ?>" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-link-45deg"></i></a>
@@ -727,6 +765,20 @@ echo $arsWsLifecycleHtml;
                                 <span class="badge bg-success"><?= h($pm['payment_link_status']) ?></span>
                                 <?php endif; ?>
                                 <?php else: ?>—<?php endif; ?>
+                            </td>
+                            <?php endif; ?>
+                            <td data-label="" class="text-end ars-pay-actions">
+                                <?php if (($pm['payment_gateway'] ?? '') !== 'stripe'): ?>
+                                <button type="button" class="btn btn-sm btn-ars-outline" title="Edit payment #<?= (int)$pm['id'] ?>" aria-label="Edit payment #<?= (int)$pm['id'] ?>"
+                                        data-ars-pay-edit="<?= (int)$pm['id'] ?>"
+                                        data-amount="<?= h(number_format((float)$pm['amount'], 2, '.', '')) ?>"
+                                        data-method="<?= h((string)$pm['payment_method']) ?>"
+                                        data-account="<?= h((string)($pm['receipt_account_code'] ?? '')) ?>"
+                                        data-date="<?= h((string)$pm['payment_date']) ?>"
+                                        data-reference="<?= h((string)($pm['reference_number'] ?? '')) ?>"
+                                        data-notes="<?= h((string)($pm['notes'] ?? '')) ?>"><i class="bi bi-pencil"></i></button>
+                                <button type="button" class="btn btn-sm btn-outline-danger" title="Delete payment #<?= (int)$pm['id'] ?>" aria-label="Delete payment #<?= (int)$pm['id'] ?>" onclick="deletePayment(<?= (int)$pm['id'] ?>, '<?= number_format((float)$pm['amount'], 2) ?>')"><i class="bi bi-trash"></i></button>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -1302,6 +1354,48 @@ echo $arsWsLifecycleHtml;
                 <button type="button" class="btn btn-ars" id="payRecordBtn" data-ars-action="record-payment" disabled title="Confirm amount, then click Record">
                     <i class="bi bi-check-lg me-1"></i>Record
                 </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Payment Modal -->
+<div class="modal fade" id="editPaymentModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header" style="background:var(--ars-primary);color:#fff">
+                <h5 class="modal-title"><i class="bi bi-pencil me-2"></i>Edit payment <span id="editPayIdLabel"></span></h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="editPayModalAlert" class="d-none"></div>
+                <input type="hidden" id="editPayId">
+                <div class="row g-3">
+                    <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="editPayAmount">Amount (AED) *</label><input type="number" step="0.01" min="0.01" id="editPayAmount" class="form-control"></div>
+                    <div class="col-12 col-sm-6">
+                        <label class="form-label fw-semibold" for="editPayMethod">Method</label>
+                        <select id="editPayMethod" class="form-select" data-ars-receipt-method>
+                            <option value="cash">Cash</option>
+                            <option value="bank_transfer">Bank Transfer</option>
+                            <option value="card">Card</option>
+                            <option value="online">Online</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold" for="editPayReceiptAccount">Post to GL account (RE) *</label>
+                        <select id="editPayReceiptAccount" class="form-select" data-ars-receipt-account required>
+                            <option value="">Select account…</option>
+                        </select>
+                    </div>
+                    <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="editPayDate">Date *</label><input type="date" id="editPayDate" class="form-control" max="<?= date('Y-m-d') ?>"></div>
+                    <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="editPayRef">Reference #</label><input type="text" id="editPayRef" class="form-control"></div>
+                    <div class="col-12"><label class="form-label fw-semibold" for="editPayNotes">Notes</label><textarea id="editPayNotes" class="form-control" rows="2"></textarea></div>
+                </div>
+                <p class="small text-muted mt-3 mb-0">Changing amount, method, GL account or date reverses the old journal and posts a new one. Reference and notes update directly.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-ars" id="editPaySaveBtn"><i class="bi bi-check-lg me-1"></i>Save changes</button>
             </div>
         </div>
     </div>

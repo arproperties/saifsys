@@ -101,6 +101,11 @@ if ($method === 'GET' && preg_match('#^photos/(\d+)$#', $route, $m)) {
     ops_api_handle_photo_serve($conn, $user, (int)$m[1]);
 }
 
+// A photo the tenant attached to the request a job came from.
+if ($method === 'GET' && preg_match('#^request-photos/(\d+)$#', $route, $m)) {
+    ops_api_handle_request_photo_serve($conn, $user, (int)$m[1]);
+}
+
 // A photo or voice note attached to a message. Separate from photos/{id}
 // because it reads a different table with different rules — see
 // migrations/ops_comment_media.sql.

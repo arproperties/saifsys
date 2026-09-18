@@ -362,6 +362,24 @@ require __DIR__ . '/includes/ops_layout_header.php';
       </div>
     <?php endif; ?>
 
+    <?php // What the tenant photographed when they raised the request. ?>
+    <?php $requestPhotos = ops_request_photos($conn, $job); ?>
+    <?php if ($requestPhotos): ?>
+    <div class="card card-round mb-3">
+      <div class="card-body">
+        <h6 class="fw-bold mb-3"><i class="bi bi-person-badge"></i> Tenant's photos</h6>
+        <div class="d-flex flex-wrap gap-2">
+          <?php foreach ($requestPhotos as $rp): ?>
+            <a href="<?= h($opsBase) ?>/request_photo.php?id=<?= (int)$rp['id'] ?>&amp;job=<?= (int)$job['id'] ?>" target="_blank" rel="noopener">
+              <img src="<?= h($opsBase) ?>/request_photo.php?id=<?= (int)$rp['id'] ?>&amp;job=<?= (int)$job['id'] ?>" alt="Tenant photo"
+                   style="width:104px;height:104px;object-fit:cover;border-radius:10px;border:1px solid #dee2e6;">
+            </a>
+          <?php endforeach; ?>
+        </div>
+      </div>
+    </div>
+    <?php endif; ?>
+
     <!-- Photos -->
     <div class="card card-round mb-3">
       <div class="card-body">

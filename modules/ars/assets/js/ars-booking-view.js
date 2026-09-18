@@ -372,6 +372,123 @@
       });
   }
 
+  function voidBooking(bookingNumber) {
+    var reason = window.prompt(
+      'Void ' + bookingNumber + ' as a wrong entry?\n\n' +
+      '- All its payments are removed (journals reversed)\n' +
+      '- Its invoices are voided (revenue journals reversed)\n' +
+      '- The booking is marked cancelled; the guest is not notified\n\n' +
+      'Reason (required):'
+    );
+    if (reason === null) return;
+    reason = reason.trim();
+    if (!reason) {
+      showAlert('A reason is required to void a booking.', 'danger');
+      return;
+    }
+    ajaxPost('void_booking', { reason: reason })
+      .then(function (d) {
+        if (d.success) {
+          location.reload();
+          return;
+        }
+        showAlert(d.error || 'Void failed', 'danger');
+      })
+      .catch(function (err) {
+        showAlert(err && err.message ? err.message : 'Network error', 'danger');
+      });
+  }
+
+  function deletePayment(paymentId, amountLabel) {
+    var reason = window.prompt('Delete payment #' + paymentId + ' (AED ' + amountLabel + ')?\n\nIts journal is reversed and the amount goes back onto the invoices.\n\nReason (required):');
+    if (reason === null) return;
+    reason = reason.trim();
+    if (!reason) {
+      showAlert('A reason is required to delete a payment.', 'danger');
+      return;
+    }
+    ajaxPost('delete_payment', { payment_id: paymentId, reason: reason })
+      .then(function (d) {
+        if (d.success) {
+          location.reload();
+          return;
+        }
+        showAlert(d.error || 'Delete failed', 'danger');
+      })
+      .catch(function () {
+        showAlert('Network error', 'danger');
+      });
+  }
+
+  function initEditPaymentModal() {
+    var modalEl = document.getElementById('editPaymentModal');
+    if (!modalEl) return;
+    var busy = false;
+    var val = function (id) { return (document.getElementById(id) || {}).value || ''; };
+    var set = function (id, v) { var el = document.getElementById(id); if (el) el.value = v == null ? '' : v; };
+
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest ? e.target.closest('[data-ars-pay-edit]') : null;
+      if (!btn) return;
+      set('editPayId', btn.getAttribute('data-ars-pay-edit'));
+      document.getElementById('editPayIdLabel').textContent = '#' + btn.getAttribute('data-ars-pay-edit');
+      set('editPayAmount', btn.getAttribute('data-amount'));
+      set('editPayMethod', btn.getAttribute('data-method'));
+      fillReceiptAccountSelect(document.getElementById('editPayReceiptAccount'), btn.getAttribute('data-method'), btn.getAttribute('data-account'));
+      set('editPayDate', btn.getAttribute('data-date'));
+      set('editPayRef', btn.getAttribute('data-reference'));
+      set('editPayNotes', btn.getAttribute('data-notes'));
+      var alertEl = document.getElementById('editPayModalAlert');
+      if (alertEl) { alertEl.classList.add('d-none'); alertEl.innerHTML = ''; }
+      if (window.bootstrap && window.bootstrap.Modal) {
+        window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+      }
+    });
+
+    var saveBtn = document.getElementById('editPaySaveBtn');
+    if (!saveBtn) return;
+    saveBtn.addEventListener('click', function () {
+      if (busy) return;
+      if (!(parseFloat(val('editPayAmount')) > 0)) {
+        showAlert('Enter an amount greater than zero.', 'danger', 'editPayModalAlert');
+        return;
+      }
+      if (!val('editPayReceiptAccount')) {
+        showAlert('Select the RE cash or bank GL account.', 'danger', 'editPayModalAlert');
+        return;
+      }
+      if (!val('editPayDate')) {
+        showAlert('Choose a date.', 'danger', 'editPayModalAlert');
+        return;
+      }
+      busy = true;
+      saveBtn.disabled = true;
+      ajaxPost('edit_payment', {
+        payment_id: val('editPayId'),
+        amount: val('editPayAmount'),
+        payment_method: val('editPayMethod'),
+        receipt_account_code: val('editPayReceiptAccount'),
+        payment_date: val('editPayDate'),
+        reference_number: val('editPayRef'),
+        notes: val('editPayNotes')
+      })
+        .then(function (d) {
+          if (d.success) {
+            location.reload();
+            return;
+          }
+          busy = false;
+          saveBtn.disabled = false;
+          showAlert(d.error || 'Save failed', 'danger', 'editPayModalAlert');
+        })
+        .catch(function (err) {
+          busy = false;
+          saveBtn.disabled = false;
+          showAlert(err && err.message ? err.message : 'Network error', 'danger', 'editPayModalAlert');
+        });
+    });
+  }
+
   function toggleLinkStatus() {
     var link = document.getElementById('payLink');
     var status = document.getElementById('payLinkStatus');
@@ -1690,6 +1807,7 @@
     initDepositSettleModal();
     initEditStayDatesModal();
     initPaymentModalGuards();
+    initEditPaymentModal();
     initDocumentsModal();
     initAttachmentModal();
     initUnifiedDocuments();
@@ -1705,6 +1823,8 @@
   window.confirmBooking = confirmBooking;
   window.addCharge = addCharge;
   window.markLinkPaid = markLinkPaid;
+  window.deletePayment = deletePayment;
+  window.voidBooking = voidBooking;
   window.toggleLinkStatus = toggleLinkStatus;
   window.recordPayment = recordPayment;
   window.receiveDeposit = receiveDeposit;

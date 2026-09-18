@@ -165,8 +165,9 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
     $today = date('Y-m-d');
 
     // Tenant requests and checkouts are copied into the pool on the way in —
-    // see modules/operations/includes/ops_sources.php.
-    ops_sync_tenant_requests($conn, $user['company_ids']);
+    // see modules/operations/includes/ops_sources.php. Every company's, not
+    // only this person's: the pool is one list for the whole group.
+    ops_sync_tenant_requests($conn, ops_api_all_company_ids($conn));
 
     // Assignment is the scope. `assigned_to` already narrows to one person, so
     // an extra company_id filter protects nothing and only hides a job from the
@@ -176,17 +177,15 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
               WHERE j.assigned_to = ?";
     $baseArgs = [$user['id']];
 
-    // The pool is the one list that is not one person's: tenant jobs nobody
-    // has claimed yet. With no assignee to scope by, the person's companies
-    // do it instead — that is the only thing that keeps another company's
-    // tenants off this phone. Customer-app bookings are the exception: open to
-    // everyone, see ops_job_open_to_all_sql().
-    $companyIn = ops_api_company_in($user['company_ids']);
+    // The pool is the one list that is not one person's: requests nobody has
+    // taken yet. It is the same list for everybody, whichever company they are
+    // on the books of — staff work across the whole group, and most cleaners'
+    // own company has no buildings or tenants of its own. The job keeps the
+    // company it belongs to, so the office still finds it there.
     $poolBase = " FROM ops_jobs j
                   WHERE j.assigned_to IS NULL
-                    AND j.source_type <> 'staff'
-                    AND (j.company_id IN ($companyIn) OR " . ops_job_open_to_all_sql('j') . ")";
-    $poolArgs = $user['company_ids'];
+                    AND j.source_type <> 'staff'";
+    $poolArgs = [];
 
     $tab = (string)($_GET['tab'] ?? 'today');
     if (!in_array($tab, ['today', 'overdue', 'upcoming', 'done', 'requests'], true)) {
@@ -337,11 +336,16 @@ function ops_api_handle_dev_log(): void
  */
 function ops_api_handle_places(PDO $conn, array $user): void
 {
-    $companyId = ops_api_job_company_id($conn, $user);
-
+    // Every building in the group. Staff are one pool across the companies —
+    // a cleaner on Heroes Zone's payroll works in AIN AL REEM's buildings —
+    // and the list used to show only one company's buildings, picked from the
+    // person's payroll company when they had no jobs yet. Every building
+    // belongs to AIN AL REEM, so for most staff the list was simply empty.
+    // A job raised at a building takes that building's company — see
+    // ops_api_places_company_id() — so the office still finds it there.
     $buildings = [];
-    $stmt = $conn->prepare("SELECT id, name FROM re_buildings WHERE company_id = ? ORDER BY name ASC");
-    $stmt->execute([$companyId]);
+    $stmt = $conn->prepare("SELECT id, name FROM re_buildings ORDER BY name ASC");
+    $stmt->execute();
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
         $buildings[(int)$row['id']] = [
             'id' => (int)$row['id'],
@@ -351,7 +355,7 @@ function ops_api_handle_places(PDO $conn, array $user): void
     }
 
     if ($buildings === []) {
-        customer_api_send_ok(['buildings' => []]);
+        customer_api_send_ok(['buildings' => [], 'cleaning_checklist' => ops_checklist_definition_for_app()]);
     }
 
     $in = implode(',', array_fill(0, count($buildings), '?'));
@@ -399,6 +403,12 @@ function ops_api_handle_places(PDO $conn, array $user): void
         'buildings' => array_values($buildings),
         'cleaning_checklist' => ops_checklist_definition_for_app(),
     ]);
+}
+
+/** Every company in the group, for the one shared pool. */
+function ops_api_all_company_ids(PDO $conn): array
+{
+    return array_map('intval', $conn->query("SELECT id FROM companies")->fetchAll(PDO::FETCH_COLUMN) ?: []);
 }
 
 /** `pump_room` is not a word. Make the enum readable without a lookup table. */
@@ -570,8 +580,9 @@ function ops_api_handle_attendance(PDO $conn, array $user, string $action): void
  * there for everyone from then on.
  */
 /**
- * The company of the first place sent, when it is one of this person's
- * companies; otherwise 0.
+ * The company of the building the first place sent is in; 0 when there is
+ * none. Not limited to the person's own companies: staff work across the group
+ * (see ops_api_handle_places), and the job belongs where the work is.
  */
 function ops_api_places_company_id(PDO $conn, array $user, $input): int
 {
@@ -588,8 +599,7 @@ function ops_api_places_company_id(PDO $conn, array $user, $input): int
             ? "SELECT b.company_id FROM re_units u JOIN re_buildings b ON b.id = u.building_id WHERE u.id = ?"
             : "SELECT b.company_id FROM re_building_common_areas a JOIN re_buildings b ON b.id = a.building_id WHERE a.id = ?");
         $stmt->execute([$id]);
-        $companyId = (int)$stmt->fetchColumn();
-        return in_array($companyId, $user['company_ids'], true) ? $companyId : 0;
+        return (int)$stmt->fetchColumn();
     }
     return 0;
 }
@@ -718,13 +728,14 @@ function ops_api_handle_job_create(PDO $conn, array $user): void
  */
 function ops_api_handle_job_claim(PDO $conn, array $user, int $jobId): void
 {
-    $companyIn = ops_api_company_in($user['company_ids']);
+    // Any request in the pool, whichever company it belongs to — the pool is
+    // the same list for everybody (see ops_api_handle_jobs_list).
     $load = $conn->prepare("
         SELECT * FROM ops_jobs
-        WHERE id = ? AND source_type <> 'staff' AND (company_id IN ($companyIn) OR " . ops_job_open_to_all_sql('') . ")
+        WHERE id = ? AND source_type <> 'staff'
         LIMIT 1
     ");
-    $load->execute(array_merge([$jobId], $user['company_ids']));
+    $load->execute([$jobId]);
     $job = $load->fetch(PDO::FETCH_ASSOC);
     if (!$job) {
         customer_api_send_error('not_found', 'That request is no longer available.', 404);
@@ -1141,6 +1152,36 @@ function ops_api_handle_photo_serve(PDO $conn, array $user, int $photoId): void
     // Ranges: the phone's video player seeks, and will not scrub a clip served
     // as one 200 with the lot.
     ops_serve_file_with_ranges($absPath, $contentType);
+    exit;
+}
+
+// ---------------------------------------------------------------------------
+// GET ops/request-photos/{id} — the tenant's own photo of the problem
+// ---------------------------------------------------------------------------
+
+/**
+ * Only for the person who has the job that request became: the same own-job
+ * rule as every other route here. Nobody else, including the pool — a request
+ * is taken on its description, and the photos come with it.
+ */
+function ops_api_handle_request_photo_serve(PDO $conn, array $user, int $photoId): void
+{
+    $stmt = $conn->prepare("
+        SELECT p.id, p.file_path, p.mime_type, p.created_at, j.id AS job_id
+        FROM re_maintenance_photos p
+        JOIN ops_jobs j ON j.source_type = 'tenant_maintenance' AND j.source_id = p.maintenance_request_id
+        WHERE p.id = ?
+        LIMIT 1
+    ");
+    $stmt->execute([$photoId]);
+    $photo = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$photo || !ops_api_load_own_job($conn, (int)$photo['job_id'], $user)) {
+        customer_api_send_error('not_found', 'That photo is not on your list.', 404);
+    }
+    if (!ops_serve_request_photo($photo)) {
+        customer_api_send_error('not_found', 'That photo could not be found.', 404);
+    }
     exit;
 }
 
