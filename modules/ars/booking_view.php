@@ -44,9 +44,17 @@ $charges = $conn->prepare("SELECT * FROM ars_booking_charges WHERE booking_id = 
 $charges->execute([$bookingId]);
 $charges = $charges->fetchAll(PDO::FETCH_ASSOC);
 
+ars_ensure_payment_total_column($conn);
 $payments = $conn->prepare("SELECT * FROM ars_booking_payments WHERE booking_id = ? ORDER BY payment_date, id");
 $payments->execute([$bookingId]);
 $payments = $payments->fetchAll(PDO::FETCH_ASSOC);
+// Default for the Record Payment GL picker: whatever this booking used last.
+$lastReceiptAccount = '';
+foreach ($payments as $pmSeed) {
+    if (!empty($pmSeed['receipt_account_code'])) {
+        $lastReceiptAccount = (string)$pmSeed['receipt_account_code'];
+    }
+}
 
 $stripeEvents = $conn->prepare("SELECT * FROM ars_stripe_events WHERE booking_id = ? ORDER BY created_at DESC, id DESC LIMIT 20");
 $stripeEvents->execute([$bookingId]);
@@ -93,17 +101,99 @@ try {
 } catch (Throwable $ignored) {
 }
 
+// Extension history — the in/out dates each extension invoice covers. Stored by
+// ars_adapter_create_extension_invoice_impl(); nothing on the page read it until now.
+$extensionDocs = [];
+try {
+    $extStmt = $conn->prepare("
+        SELECT d.id, d.document_number, d.document_date, d.status,
+               d.subtotal, d.vat_amount, d.total_amount, d.balance_due,
+               e.prior_check_out, e.new_check_out, e.added_nights, e.rate_basis
+        FROM ars_extension_documents e
+        INNER JOIN ars_financial_documents d ON d.id = e.document_id
+        WHERE d.booking_id = ? AND d.company_id = ?
+        ORDER BY e.new_check_out, d.id
+    ");
+    $extStmt->execute([$bookingId, $arsCompanyId]);
+    $extensionDocs = $extStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $ignored) {
+}
+
 require_once __DIR__ . '/includes/ars_booking_unified_docs.php';
 $unifiedDocs = ars_booking_unified_documents($conn, $booking, $arsCompanyId, $financialDocs);
 $unifiedDocsFlat = ars_booking_unified_documents_flat($unifiedDocs);
 $unifiedDocsTotal = ars_udoc_total($unifiedDocs);
 $docCategories = ars_booking_doc_categories();
 
-$openDocsBalance = 0.0;
+// AR ledger roll-up. ars_bookings.total_amount only ever holds the original
+// stay plus non-room charges — ars_recalc_booking_totals() reads
+// ars_booking_charges, and extension / service / adjustment invoices never land
+// there. So a booking that was extended shows a total that is short by every
+// extension, while paid_amount counts the money that paid thFem, and balance_due
+// goes negative. When financial documents exist they are the source of truth.
+$docsInvoiced = 0.0;    // invoices raised, excluding credit notes
+$docsCredited = 0.0;    // credit notes raised
+$docsOpenBalance = 0.0; // net still owed by the guest
+$docsInvoiceCount = 0;
+$docsByType = ['original_invoice' => 0.0, 'extension_invoice' => 0.0, 'other_invoice' => 0.0];
+$docsExtensionCount = 0;
 foreach ($financialDocs as $fd) {
-    $openDocsBalance += max(0, (float)($fd['balance_due'] ?? 0));
+    $fdStatus = strtolower((string)($fd['status'] ?? ''));
+    if (in_array($fdStatus, ['draft', 'voided', 'reversed'], true)) {
+        continue;
+    }
+    $fdType = (string)($fd['document_type'] ?? '');
+    $fdTotal = (float)($fd['total_amount'] ?? 0);
+    $fdBalance = (float)($fd['balance_due'] ?? 0);
+    // A credit note is money owed back to the guest: it reduces both the
+    // invoiced total and the open balance.
+    if ($fdType === 'credit_note') {
+        $docsCredited += $fdTotal;
+        $docsOpenBalance -= $fdBalance;
+        continue;
+    }
+    $docsInvoiced += $fdTotal;
+    $docsOpenBalance += $fdBalance;
+    $docsInvoiceCount++;
+    if ($fdType === 'original_invoice' || $fdType === 'extension_invoice') {
+        $docsByType[$fdType] += $fdTotal;
+        if ($fdType === 'extension_invoice') {
+            $docsExtensionCount++;
+        }
+    } else {
+        $docsByType['other_invoice'] += $fdTotal;
+    }
 }
-$openDocsBalance = round($openDocsBalance, 2);
+$docsInvoiced = round($docsInvoiced, 2);
+$docsCredited = round($docsCredited, 2);
+$docsNetInvoiced = round($docsInvoiced - $docsCredited, 2);
+$docsOpenBalance = round($docsOpenBalance, 2);
+foreach ($docsByType as $dtKey => $dtVal) {
+    $docsByType[$dtKey] = round($dtVal, 2);
+}
+// Only let the ledger drive the summary when it actually holds invoices. A
+// booking carrying nothing but a credit note has no invoiced total to show, so
+// it keeps the ars_bookings figures it has always used.
+$hasFinancialDocs = $docsInvoiceCount > 0;
+
+// Overpayment is not a mistake here: ars_adapter_record_payment() reclasses any
+// unallocated excess into ars_guest_credits (policy overpay_to_guest_credit),
+// so it leaves AR and becomes a liability the guest can spend or be refunded.
+$guestCreditOpen = 0.0;
+try {
+    $gcStmt = $conn->prepare("
+        SELECT COALESCE(SUM(balance), 0)
+        FROM ars_guest_credits
+        WHERE booking_id = ? AND company_id = ? AND status = 'open'
+    ");
+    $gcStmt->execute([$bookingId, $arsCompanyId]);
+    $guestCreditOpen = round((float)$gcStmt->fetchColumn(), 2);
+} catch (Throwable $ignored) {
+}
+
+// Kept for the callers that want "what is still open on invoices"; the old
+// version summed max(0, balance_due) and so counted credit notes as guest debt.
+$openDocsBalance = max(0.0, $docsOpenBalance);
 
 $revenueJournal = null;
 foreach ($journals as $j) {
@@ -170,8 +260,126 @@ ars_shell_begin([
 
 $stayLabel = ars_ds_format_stay($booking['check_in'] ?? '', $booking['check_out'] ?? '');
 $unitLabel = trim(($booking['unit_number'] ?? '—') . (!empty($booking['building_name']) ? ' · ' . $booking['building_name'] : ''));
-$stayTotal = (float)($booking['total_amount'] ?? 0);
-$balanceDue = (float)($booking['balance_due'] ?? 0);
+// Booking-table figures, kept for the "original stay" line and as the fallback
+// when the financial adapter is off and no documents exist.
+$bookingTotal = (float)($booking['total_amount'] ?? 0);
+$bookingBalance = (float)($booking['balance_due'] ?? 0);
+// What the guest was actually invoiced, and what is actually still owed.
+$stayTotal = $hasFinancialDocs ? $docsNetInvoiced : $bookingTotal;
+$balanceDue = $hasFinancialDocs ? $docsOpenBalance : $bookingBalance;
+
+// Outstanding per payment row. Two shapes, because a typed total and an
+// invoiced total mean different things:
+//
+//   Total amount typed by hand -> each row is its own line for one period, and
+//   what it leaves unpaid carries down to the next row:
+//       outstanding = previous outstanding + (this Total - this Received)
+//   So 470 still owed, then a 910 line with 500 received, shows 880.
+//
+//   No total typed -> the row falls back to the booking's invoiced total, so
+//   the rows are instalments against one figure:
+//       outstanding = invoiced total - everything received down to this row
+//   Carrying shortfalls forward there would add the same total in again on
+//   every row.
+//
+// The cumulative side deliberately does NOT replay invoices by date. Payments
+// are allocated when recorded, not according to document_date, so a backdated
+// payment legitimately settles invoices raised after its own date; walking the
+// timeline by date mis-reports those as unpaid.
+//
+// Either way the figure floors at zero, and what falls below becomes credit.
+$paymentBalanceAfter = [];
+$paymentCreditFrom = [];
+$paymentRowTotal = [];
+$pmRunningReceived = 0.0;
+$pmPriorCredit = 0.0;
+$pmPrevOutstanding = 0.0;
+foreach ($payments as $pmRow) {
+    $pmId = (int)$pmRow['id'];
+    $pmReceived = (float)$pmRow['amount'];
+    $pmManual = !($pmRow['total_amount'] === null || $pmRow['total_amount'] === '');
+    $pmRowTotal = $pmManual ? (float)$pmRow['total_amount'] : $stayTotal;
+    $paymentRowTotal[$pmId] = $pmRowTotal;
+
+    $pmRunningReceived += $pmReceived;
+
+    if ($pmManual) {
+        $pmCarried = round($pmPrevOutstanding + ($pmRowTotal - $pmReceived), 2);
+        $paymentBalanceAfter[$pmId] = max(0.0, $pmCarried);
+        $paymentCreditFrom[$pmId] = max(0.0, round(-$pmCarried, 2));
+        $pmPrevOutstanding = max(0.0, $pmCarried);
+        continue;
+    }
+
+    $pmCreditToDate = max(0.0, round($pmRunningReceived - $pmRowTotal, 2));
+    $paymentBalanceAfter[$pmId] = max(0.0, round($pmRowTotal - $pmRunningReceived, 2));
+    $paymentCreditFrom[$pmId] = round($pmCreditToDate - $pmPriorCredit, 2);
+    $pmPriorCredit = $pmCreditToDate;
+    $pmPrevOutstanding = $paymentBalanceAfter[$pmId];
+}
+
+// Once a Total amount has been typed on any row, the Payments table is the
+// office's own statement and the Pricing Summary has to agree with it — two
+// different "balance due" figures on one screen is the confusion this is meant
+// to remove. Total = Received + Outstanding by construction, so the summary
+// can never disagree with the column it sits beside. Bookings with no typed
+// totals keep the AR-document figures exactly as before.
+$tableReceived = 0.0;
+$tableHasManualTotal = false;
+foreach ($payments as $pmSum) {
+    $tableReceived += (float)$pmSum['amount'];
+    if (!($pmSum['total_amount'] === null || $pmSum['total_amount'] === '')) {
+        $tableHasManualTotal = true;
+    }
+}
+$tableReceived = round($tableReceived, 2);
+$tableOutstanding = empty($paymentBalanceAfter) ? 0.0 : (float)end($paymentBalanceAfter);
+$docsStayTotal = $stayTotal;   // kept for the "per invoices" reference line
+$docsBalanceDue = $balanceDue;
+if ($tableHasManualTotal) {
+    $stayTotal  = round($tableReceived + $tableOutstanding, 2);
+    $balanceDue = round($tableOutstanding, 2);
+}
+
+// Extension history is its own record: the Extend tab writes rows into
+// ars_booking_extension_log and reads them back. It is deliberately not
+// derived from the Payments table or from the AR documents, so editing a
+// payment never rewrites the stay history, and vice versa.
+ars_ensure_extension_log_table($conn);
+$extensionRows = [];
+try {
+    $extLog = $conn->prepare("
+        SELECT id, extended_from, extended_to, nights, note, created_at
+        FROM ars_booking_extension_log
+        WHERE booking_id = ? AND company_id = ?
+        ORDER BY extended_from, id
+    ");
+    $extLog->execute([$bookingId, $arsCompanyId]);
+    $extensionRows = $extLog->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $ignored) {
+}
+
+// The history opens with the original stay, so the periods read as one
+// unbroken run from check-in. It is derived from the booking rather than
+// stored in the log, so it carries no id and cannot be deleted: it runs from
+// check-in to wherever the first logged extension begins.
+$extensionDisplayRows = [];
+$originalFrom = (string)($booking['check_in'] ?? '');
+$originalTo = $extensionRows ? (string)$extensionRows[0]['extended_from'] : (string)($booking['check_out'] ?? '');
+if ($originalFrom !== '' && $originalTo !== '' && strtotime($originalTo) > strtotime($originalFrom)) {
+    $extensionDisplayRows[] = [
+        'id' => null,
+        'created_at' => (string)($booking['created_at'] ?? $originalFrom),
+        'extended_from' => $originalFrom,
+        'extended_to' => $originalTo,
+        'nights' => (int)round((strtotime($originalTo) - strtotime($originalFrom)) / 86400),
+        'note' => 'Original stay',
+    ];
+}
+foreach ($extensionRows as $extRow) {
+    $extensionDisplayRows[] = $extRow;
+}
+
 $depositPendingCollect = ($depositAmount > 0 && in_array($depositStatus, ['pending', 'none'], true));
 $collectNow = max(0, $balanceDue) + ($depositPendingCollect ? $depositAmount : 0);
 $journalViewBase = '../realestate/accounting/journal_entry_view.php?id=';
@@ -319,6 +527,9 @@ if ($booking['status'] === 'pending') {
      data-deposit-editable="<?= in_array($depositStatus, ['none', 'pending'], true) ? '1' : '0' ?>"
      data-booking-status="<?= h((string)($booking['status'] ?? '')) ?>"
      data-fin-locked="<?= $finLocked ? '1' : '0' ?>"
+     data-open-balance="<?= h(number_format($balanceDue, 2, '.', '')) ?>"
+     data-last-receipt-account="<?= h((string)($lastReceiptAccount ?? '')) ?>"
+     data-guest-credit="<?= h(number_format($guestCreditOpen, 2, '.', '')) ?>"
      data-guest-email="<?= h((string)($booking['guest_email'] ?? '')) ?>"
      data-receipt-accounts="<?= $arsReceiptOptionsJson ?>"></div>
 <?php
@@ -403,6 +614,7 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
     ['id' => 'overview', 'label' => 'Overview', 'icon' => 'layout-dashboard', 'active' => true],
     ['id' => 'money', 'label' => 'Money', 'icon' => 'wallet'],
     ['id' => 'deposit', 'label' => 'Deposit', 'icon' => 'shield'],
+    ['id' => 'extend', 'label' => 'Extend', 'icon' => 'calendar-range'],
     ['id' => 'timeline', 'label' => 'Timeline', 'icon' => 'activity'],
     ['id' => 'documents', 'label' => 'Documents', 'icon' => 'file-text'],
 ]) ?>
@@ -696,12 +908,12 @@ echo $arsWsLifecycleHtml;
                 if (!empty($pm['gateway_payment_intent_id'])) $pmShowStripe = true;
                 if (!empty($pm['payment_link_url'])) $pmShowLink = true;
             }
-            $pmColspan = 7 + ($pmShowStripe ? 1 : 0) + ($pmShowLink ? 1 : 0);
+            $pmColspan = 11 + ($pmShowStripe ? 1 : 0) + ($pmShowLink ? 1 : 0);
             ?>
             <div class="table-responsive">
                 <table class="table ars-table ars-mobile-cards ars-pay-table mb-0 align-middle">
                     <thead><tr>
-                        <th>ID</th><th>Date</th><th>Method</th><th class="text-end">Amount</th><th>Status</th><th>Reference</th><th>GL account</th>
+                        <th>ID</th><th>Date</th><th>Method</th><th class="text-end">Total amount</th><th class="text-end">Received amount</th><th class="text-end">Outstanding</th><th>Status</th><th>Reference</th><th class="text-end">Nights</th><th>GL account</th>
                         <?php if ($pmShowStripe): ?><th>Stripe</th><?php endif; ?>
                         <?php if ($pmShowLink): ?><th>Link</th><?php endif; ?>
                         <th></th>
@@ -724,10 +936,24 @@ echo $arsWsLifecycleHtml;
                                     <?php if (!empty($pm['payment_type'])): ?><span class="badge bg-info text-dark ms-1"><?= h($pm['payment_type']) ?></span><?php endif; ?>
                                 <?php endif; ?>
                             </td>
-                            <td data-label="Amount" class="fw-semibold text-success text-end text-nowrap">
+                            <td data-label="Total amount" class="text-end ars-tabular text-nowrap">
+                                AED <?= number_format($paymentRowTotal[(int)$pm['id']] ?? $stayTotal, 2) ?>
+                               
+                            </td>
+                            <td data-label="Received amount" class="fw-semibold text-success text-end text-nowrap">
                                 <?= h($pm['currency'] ?: 'AED') ?> <?= number_format((float)$pm['amount'],2) ?>
                                 <?php if ((float)($pm['amount_refunded'] ?? 0) > 0): ?>
                                     <br><small class="text-warning">Refunded <?= h($pm['currency'] ?: 'AED') ?> <?= number_format((float)$pm['amount_refunded'],2) ?></small>
+                                <?php endif; ?>
+                            </td>
+                            <td data-label="Balance after" class="text-end ars-tabular text-nowrap">
+                                <?php $pmBalAfter = $paymentBalanceAfter[(int)$pm['id']] ?? null; ?>
+                                <?php if ($pmBalAfter === null): ?>&mdash;<?php else: ?>
+                                    <span class="<?= $pmBalAfter > 0.009 ? 'text-danger' : 'text-success' ?>">AED <?= number_format($pmBalAfter, 2) ?></span>
+                                    <?php $pmCredit = $paymentCreditFrom[(int)$pm['id']] ?? 0.0; ?>
+                                    <?php if ($pmCredit > 0.009): ?>
+                                    <br><small class="text-info">+<?= number_format($pmCredit, 2) ?> credit</small>
+                                    <?php endif; ?>
                                 <?php endif; ?>
                             </td>
                             <td data-label="Status">
@@ -741,6 +967,10 @@ echo $arsWsLifecycleHtml;
                                 <?php endif; ?>
                             </td>
                             <td data-label="Reference"><?= h($pm['reference_number'] ?: '—') ?></td>
+                            <?php $pmPeriod = ars_parse_reference_period($pm['reference_number'] ?? null, (string)$booking['check_in']); ?>
+                            <td data-label="Nights" class="text-end ars-tabular text-nowrap">
+                                <?= $pmPeriod ? (int)$pmPeriod['nights'] : '&mdash;' ?>
+                            </td>
                             <td data-label="GL account" class="ars-pay-gl">
                                 <?php if ($pmAccCode !== ''): ?>
                                     <span class="fw-semibold"><?= h($pmAccCode) ?></span>
@@ -772,6 +1002,7 @@ echo $arsWsLifecycleHtml;
                                 <button type="button" class="btn btn-sm btn-ars-outline" title="Edit payment #<?= (int)$pm['id'] ?>" aria-label="Edit payment #<?= (int)$pm['id'] ?>"
                                         data-ars-pay-edit="<?= (int)$pm['id'] ?>"
                                         data-amount="<?= h(number_format((float)$pm['amount'], 2, '.', '')) ?>"
+                                        data-total="<?= h($pm['total_amount'] === null || $pm['total_amount'] === '' ? '' : number_format((float)$pm['total_amount'], 2, '.', '')) ?>"
                                         data-method="<?= h((string)$pm['payment_method']) ?>"
                                         data-account="<?= h((string)($pm['receipt_account_code'] ?? '')) ?>"
                                         data-date="<?= h((string)$pm['payment_date']) ?>"
@@ -876,6 +1107,113 @@ echo $arsWsLifecycleHtml;
                 </div>
                 <?php endif; ?>
             </div>
+        </div>
+        </div>
+        </section>
+
+        <section id="ars-ws-panel-extend" data-ars-ws-panel="extend" class="ars-ws-panel">
+        <div id="ws-extend">
+        <!-- Extend stay — same create_extension_invoice action as the Amendment modal's
+             Extension tab, given its own tab so the whole flow is on one screen. -->
+        <div class="ars-card mb-4" id="extend-stay">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-calendar-range me-2"></i>Extend stay details</span>
+                <?= ars_ui_status_badge('booking', $booking['status']) ?>
+            </div>
+            <div class="card-body">
+                <div id="extendPanelAlert" class="d-none"></div>
+                <div class="row g-3 mb-3">
+                    <div class="col-6 col-sm-3"><strong class="text-muted d-block small">Check-in</strong><?= h((string)$booking['check_in']) ?></div>
+                    <div class="col-6 col-sm-3"><strong class="text-muted d-block small">Current check-out</strong><?= h((string)$booking['check_out']) ?></div>
+                    <div class="col-6 col-sm-3"><strong class="text-muted d-block small">Nights booked</strong><?= (int)$booking['nights'] ?></div>
+                </div>
+                <?php if (in_array($booking['status'], ['cancelled', 'expired'], true)): ?>
+                <div class="alert alert-secondary mb-0"><i class="bi bi-info-circle me-1"></i>This booking is <?= h($booking['status']) ?>. Extensions are not available.</div>
+                <?php else: ?>
+                <hr class="my-3">
+                <?php
+                // Default the next period to start where the last logged one ended,
+                // falling back to the booking's own check-out.
+                $extLastTo = '';
+                foreach ($extensionRows as $extSeed) {
+                    $extLastTo = (string)$extSeed['extended_to'];
+                }
+                $extDefaultFrom = $extLastTo !== '' ? $extLastTo : (string)$booking['check_out'];
+                ?>
+                <div class="row g-3 align-items-end">
+                    <div class="col-6 col-sm-4">
+                        <label class="form-label fw-semibold" for="extendFrom">Extended from *</label>
+                        <input type="date" id="extendFrom" class="form-control"
+                               value="<?= h($extDefaultFrom) ?>">
+                    </div>
+                    <div class="col-6 col-sm-4">
+                        <label class="form-label fw-semibold" for="extendTo">Extended to *</label>
+                        <input type="date" id="extendTo" class="form-control"
+                               value="<?= h(date('Y-m-d', strtotime($extDefaultFrom . ' +1 day'))) ?>">
+                    </div>
+                    <div class="col-6 col-sm-2">
+                        <label class="form-label fw-semibold">Nights</label>
+                        <div class="form-control-plaintext fw-semibold ars-tabular" id="extendNightsAdded">—</div>
+                    </div>
+                    <div class="col-12 col-sm-2">
+                        <button type="button" class="btn btn-ars btn-sm w-100" id="extendSubmitBtn">
+                            <i class="bi bi-plus-lg me-1"></i>Add
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <label class="form-label fw-semibold" for="extendNote">Note</label>
+                    <input type="text" id="extendNote" class="form-control" placeholder="Optional — why the stay was extended">
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- Extension history — its own record, written by the form above.
+             Nothing here is derived from payments or from the AR documents. -->
+        <div class="ars-card mb-4" id="extension-history">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-clock-history me-2"></i>Duration of stay</span>
+                <span class="badge bg-secondary"><?= count($extensionDisplayRows) ?></span>
+            </div>
+            <div class="table-responsive">
+                <table class="table ars-table ars-mobile-cards mb-0 align-middle">
+                    <thead><tr>
+                        <th>Extended from</th>
+                        <th>Extended to</th>
+                        <th class="text-end">Nights</th>
+                        <th>Note</th>
+                        <th></th>
+                    </tr></thead>
+                    <tbody>
+                    <?php if (empty($extensionDisplayRows)): ?>
+                        <tr><td colspan="5" class="text-center text-muted py-3">No extensions recorded yet.</td></tr>
+                    <?php endif; ?>
+                    <?php foreach ($extensionDisplayRows as $ex): ?>
+                        <tr>
+                            <td data-label="Extended from" class="text-nowrap"><?= h(date('d M Y', strtotime((string)$ex['extended_from']))) ?></td>
+                            <td data-label="Extended to" class="text-nowrap fw-semibold"><?= h(date('d M Y', strtotime((string)$ex['extended_to']))) ?></td>
+                            <td data-label="Nights" class="text-end ars-tabular"><?= (int)$ex['nights'] ?></td>
+                            <td data-label="Note" class="small text-muted"><?= $ex['note'] !== null && $ex['note'] !== '' ? h((string)$ex['note']) : '—' ?></td>
+                            <td class="text-end">
+                                <?php if ($ex['id'] !== null): ?>
+                                <button type="button" class="btn btn-sm btn-outline-danger" data-ars-ext-delete="<?= (int)$ex['id'] ?>"
+                                        title="Remove this entry" aria-label="Remove this entry"><i class="bi bi-trash"></i></button>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php if (!empty($extensionDisplayRows)): ?>
+            <div class="card-body pt-3 pb-3">
+                <p class="small text-muted mb-0">
+                    <i class="bi bi-info-circle me-1"></i>A record of the periods this stay was extended by.
+                    Kept separately from payments and invoices — the money for these nights sits on the Money tab.
+                </p>
+            </div>
+            <?php endif; ?>
         </div>
         </div>
         </section>
@@ -1100,49 +1438,70 @@ echo $arsWsLifecycleHtml;
                 ?>
                 <div class="alert alert-info py-1 px-2 mb-2 small"><i class="bi bi-tags me-1"></i><?= h(implode(', ', $rulesApplied)) ?></div>
                 <?php endif; ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Nightly Rate</span><span class="ars-tabular">AED <?= number_format((float)$booking['nightly_rate'],2) ?></span></div>
-                <?php if ($booking['rate_override'] > 0): ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Override Rate</span><span class="text-warning ars-tabular">AED <?= number_format((float)$booking['rate_override'],2) ?></span></div>
-                <?php endif; ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Nights</span><span class="ars-tabular"><?= (int)$booking['nights'] ?></span></div>
-                <hr>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Room Subtotal</span><span class="ars-tabular">AED <?= number_format((float)$booking['subtotal'],2) ?></span></div>
                 <?php
-                $lengthDiscAmt = (float)($booking['length_discount_amount'] ?? 0);
-                $lengthDiscLabel = $booking['length_discount_label'] ?? null;
-                if ($lengthDiscAmt > 0):
+                // The invoiced total is built from the AR documents themselves,
+                // never from ars_bookings, so the parts always add up to it.
+                $paidAmount = (float)$booking['paid_amount'];
+                $allocatedAmount = round($stayTotal - $balanceDue, 2);
+                $unappliedAmount = round($paidAmount - $allocatedAmount, 2);
+                $summaryParts = 0;
+                foreach ([$docsByType['original_invoice'], $docsByType['extension_invoice'], $docsByType['other_invoice'], $docsCredited] as $partAmt) {
+                    if (abs($partAmt) > 0.009) $summaryParts++;
+                }
                 ?>
-                <div class="d-flex justify-content-between mb-2">
-                    <span class="text-success"><i class="bi bi-percent me-1"></i><?= h($lengthDiscLabel ?: 'Length Discount') ?></span>
-                    <span class="text-success ars-tabular">- AED <?= number_format($lengthDiscAmt, 2) ?></span>
-                </div>
+                <?php if (!$tableHasManualTotal && $hasFinancialDocs && $summaryParts > 1): ?>
+                <?php if (abs($docsByType['original_invoice']) > 0.009): ?>
+                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Original invoice</span><span class="ars-tabular">AED <?= number_format($docsByType['original_invoice'], 2) ?></span></div>
                 <?php endif; ?>
-                <?php
-                $bookingDiscAmt = (float)($booking['discount_amount'] ?? 0);
-                $bookingDiscLabel = $booking['discount_label'] ?? null;
-                $bookingDiscType = $booking['discount_type'] ?? 'none';
-                if ($bookingDiscAmt > 0):
-                ?>
+                <?php if (abs($docsByType['extension_invoice']) > 0.009): ?>
                 <div class="d-flex justify-content-between mb-2">
-                    <span class="text-warning"><i class="bi bi-ticket-perforated me-1"></i><?= h($bookingDiscLabel ?: 'Discount') ?>
-                    <?php if ($bookingDiscType === 'promo'): ?><span class="badge bg-dark ms-1 font-monospace small"><?= h($bookingDiscLabel) ?></span><?php endif; ?>
+                    <span class="text-muted"><i class="bi bi-calendar-range me-1"></i>Extensions
+                        <span class="badge bg-secondary ms-1"><?= (int)$docsExtensionCount ?></span>
                     </span>
-                    <span class="text-warning ars-tabular">- AED <?= number_format($bookingDiscAmt, 2) ?></span>
+                    <span class="ars-tabular">AED <?= number_format($docsByType['extension_invoice'], 2) ?></span>
                 </div>
                 <?php endif; ?>
-                <?php if ($booking['extras_total'] > 0): ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Extra Charges (net)</span><span class="ars-tabular">AED <?= number_format((float)$booking['extras_total'],2) ?></span></div>
+                <?php if (abs($docsByType['other_invoice']) > 0.009): ?>
+                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Other invoices</span><span class="ars-tabular">AED <?= number_format($docsByType['other_invoice'], 2) ?></span></div>
                 <?php endif; ?>
-                <?php if (isset($booking['net_amount']) && $booking['net_amount'] !== null && $booking['net_amount'] !== ''): ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Taxable net (revenue base)</span><span class="ars-tabular">AED <?= number_format((float)$booking['net_amount'],2) ?></span></div>
+                <?php if ($docsCredited > 0.009): ?>
+                <div class="d-flex justify-content-between mb-2"><span class="text-success">Credit notes</span><span class="text-success ars-tabular">- AED <?= number_format($docsCredited, 2) ?></span></div>
                 <?php endif; ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">VAT</span><span class="ars-tabular">AED <?= number_format((float)$booking['vat_amount'],2) ?></span></div>
-                <hr>
-                <div class="d-flex justify-content-between align-items-baseline fw-bold mb-3"><span>Stay total</span><span class="ars-ws-price-total">AED <?= number_format($stayTotal,2) ?></span></div>
-                <div class="d-flex justify-content-between mb-1"><span class="text-muted">Paid</span><span class="text-success ars-tabular">AED <?= number_format((float)$booking['paid_amount'],2) ?></span></div>
-                <div class="d-flex justify-content-between fw-bold"><span>Balance due</span><span class="ars-tabular <?= $balanceDue > 0 ? 'text-danger' : 'text-success' ?>">AED <?= number_format($balanceDue,2) ?></span></div>
-                <?php if ($openDocsBalance > 0.009): ?>
-                <div class="d-flex justify-content-between mt-1"><span class="text-muted small">Open invoices</span><span class="text-danger small ars-tabular">AED <?= number_format($openDocsBalance, 2) ?></span></div>
+                <hr class="my-2">
+                <?php endif; ?>
+                <div class="d-flex justify-content-between align-items-baseline fw-bold mb-3">
+                    <span><?= $tableHasManualTotal ? 'Total amount' : ($hasFinancialDocs ? 'Invoiced total' : 'Stay total') ?></span>
+                    <span class="ars-ws-price-total">AED <?= number_format($stayTotal,2) ?></span>
+                </div>
+                <?php if ($tableHasManualTotal): ?>
+                <div class="d-flex justify-content-between mb-1"><span class="text-muted">Received</span><span class="text-success ars-tabular">AED <?= number_format($tableReceived,2) ?></span></div>
+                <?php else: ?>
+                <div class="d-flex justify-content-between mb-1"><span class="text-muted">Paid</span><span class="text-success ars-tabular">AED <?= number_format($paidAmount,2) ?></span></div>
+                <?php endif; ?>
+                <div class="d-flex justify-content-between fw-bold"><span>Balance due</span><span class="ars-tabular <?= $balanceDue > 0.009 ? 'text-danger' : 'text-success' ?>">AED <?= number_format($balanceDue,2) ?></span></div>
+                <?php if ($tableHasManualTotal): ?>
+                <!-- <div class="d-flex justify-content-between mt-2 pt-2 border-top">
+                    <span class="text-muted small">Per invoices</span>
+                    <span class="text-muted small ars-tabular">AED <?= number_format($docsStayTotal, 2) ?> · due <?= number_format($docsBalanceDue, 2) ?></span>
+                </div> -->
+                <?php endif; ?>
+                
+                <?php
+                // Only what guest credit does not already account for is a genuine
+                // loose payment sitting against no document.
+                $trulyUnapplied = round($unappliedAmount - $guestCreditOpen, 2);
+                ?>
+                <?php if ($hasFinancialDocs && $trulyUnapplied > 0.009): ?>
+                <div class="d-flex justify-content-between mt-1">
+                    <span class="text-warning small"><i class="bi bi-exclamation-triangle me-1"></i>Unapplied payments</span>
+                    <span class="text-warning small ars-tabular">AED <?= number_format($trulyUnapplied, 2) ?></span>
+                </div>
+                <?php endif; ?>
+                <?php if ($hasFinancialDocs && $docsOpenBalance < -0.009): ?>
+                <div class="d-flex justify-content-between mt-1">
+                    <span class="text-success small">Owed to guest</span>
+                    <span class="text-success small ars-tabular">AED <?= number_format(abs($docsOpenBalance), 2) ?></span>
+                </div>
                 <?php endif; ?>
                 <div class="mt-2"><?= arsPaymentStatusBadge($booking['payment_status']) ?></div>
                 <?php if ($balanceDue > 0.009): ?>
@@ -1320,7 +1679,16 @@ echo $arsWsLifecycleHtml;
                 </div>
                 <?php endif; ?>
                 <div class="row g-3">
-                    <div class="col-12 col-sm-6"><label class="form-label fw-semibold">Amount (AED) *</label><input type="number" step="0.01" id="payAmount" class="form-control" value="<?= number_format(max($balanceDue, $openDocsBalance),2,'.','') ?>"></div>
+                    <div class="col-12 col-sm-6">
+                        <label class="form-label fw-semibold" for="payTotalAmount">Total amount (AED)</label>
+                        <input type="number" step="0.01" min="0" id="payTotalAmount" class="form-control"
+                               value="<?= number_format($stayTotal, 2, '.', '') ?>"
+                               data-summary-total="<?= number_format($stayTotal, 2, '.', '') ?>">
+                    </div>
+                    <div class="col-12 col-sm-6">
+                        <label class="form-label fw-semibold" for="payAmount">Received amount (AED) *</label>
+                        <input type="number" step="0.01" id="payAmount" class="form-control" value="<?= number_format(max($balanceDue, $openDocsBalance),2,'.','') ?>">
+                    </div>
                     <div class="col-12 col-sm-6">
                         <label class="form-label fw-semibold">Method</label>
                         <select id="payMethod" class="form-select" data-ars-receipt-method>
@@ -1351,7 +1719,7 @@ echo $arsWsLifecycleHtml;
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-ars" id="payRecordBtn" data-ars-action="record-payment" disabled title="Confirm amount, then click Record">
+                <button type="button" class="btn btn-ars" id="payRecordBtn" data-ars-action="record-payment">
                     <i class="bi bi-check-lg me-1"></i>Record
                 </button>
             </div>
@@ -1371,7 +1739,16 @@ echo $arsWsLifecycleHtml;
                 <div id="editPayModalAlert" class="d-none"></div>
                 <input type="hidden" id="editPayId">
                 <div class="row g-3">
-                    <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="editPayAmount">Amount (AED) *</label><input type="number" step="0.01" min="0.01" id="editPayAmount" class="form-control"></div>
+                    <div class="col-12 col-sm-6">
+                        <label class="form-label fw-semibold" for="editPayTotalAmount">Total amount (AED)</label>
+                        <input type="number" step="0.01" min="0" id="editPayTotalAmount" class="form-control">
+                        <div class="form-text">What the stay totals on this row. Leave blank to use the Pricing Summary total (AED <?= number_format($stayTotal, 2) ?>).</div>
+                    </div>
+                    <div class="col-12 col-sm-6">
+                        <label class="form-label fw-semibold" for="editPayAmount">Received amount (AED) *</label>
+                        <input type="number" step="0.01" min="0" id="editPayAmount" class="form-control">
+                        <div class="form-text">Zero is allowed — a line that carries a total with nothing received yet.</div>
+                    </div>
                     <div class="col-12 col-sm-6">
                         <label class="form-label fw-semibold" for="editPayMethod">Method</label>
                         <select id="editPayMethod" class="form-select" data-ars-receipt-method>

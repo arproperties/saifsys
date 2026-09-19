@@ -428,3 +428,177 @@ function arsPageAuth(PDO $conn): int {
     }
     return getArsCompanyId($conn);
 }
+
+/**
+ * Manually entered "Total amount" on a stay payment.
+ *
+ * The Payments table derives its Total amount from the AR documents. This
+ * column lets the office type the figure instead, per payment, for bookings
+ * where the ledger total is not the number they want shown. NULL means
+ * "use the invoiced total", which is the default for every existing row.
+ */
+function ars_ensure_payment_total_column(PDO $conn): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+    try {
+        $chk = $conn->query("SHOW COLUMNS FROM ars_booking_payments LIKE 'total_amount'");
+        if (!$chk || !$chk->fetch(PDO::FETCH_ASSOC)) {
+            $conn->exec("ALTER TABLE ars_booking_payments ADD COLUMN total_amount DECIMAL(12,2) NULL DEFAULT NULL AFTER amount");
+        }
+    } catch (Throwable $e) {
+        error_log('ARS total_amount on payments: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Standalone extension log for the booking workspace's Extend tab.
+ *
+ * Deliberately independent: it is not derived from payments and not from the
+ * AR documents. The office records the periods a stay was extended by, and
+ * that record stands on its own. Money for those nights lives on the Money tab.
+ */
+function ars_ensure_extension_log_table(PDO $conn): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+    try {
+        $conn->exec("
+            CREATE TABLE IF NOT EXISTS ars_booking_extension_log (
+                id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                booking_id    INT NOT NULL,
+                company_id    INT NOT NULL,
+                extended_from DATE NOT NULL,
+                extended_to   DATE NOT NULL,
+                nights        INT NOT NULL DEFAULT 0,
+                note          VARCHAR(255) NULL DEFAULT NULL,
+                created_by    INT NULL DEFAULT NULL,
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                KEY idx_ext_log_booking (booking_id, company_id),
+                KEY idx_ext_log_dates (extended_from, extended_to)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+    } catch (Throwable $e) {
+        error_log('ARS extension log table: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Move a booking's check-out to the latest date in its extension log.
+ *
+ * The Extend tab is the record of how long the guest actually stayed, so the
+ * booking follows it. Availability is rechecked first: if the unit has been
+ * let to someone else for those nights the log entry still stands, but the
+ * booking's dates are left alone and the caller is handed a warning to show.
+ *
+ * With an empty log the check-out is left untouched — the original date is not
+ * stored anywhere, so there is nothing safe to roll back to.
+ *
+ * @return array{check_out:?string,warning:?string,moved:bool}
+ */
+function ars_sync_checkout_to_extension_log(PDO $conn, array $booking, int $companyId, ?int $userId = null): array {
+    $bookingId = (int)$booking['id'];
+    $out = ['check_out' => (string)($booking['check_out'] ?? ''), 'warning' => null, 'moved' => false];
+
+    try {
+        $st = $conn->prepare("SELECT MAX(extended_to) FROM ars_booking_extension_log WHERE booking_id = ? AND company_id = ?");
+        $st->execute([$bookingId, $companyId]);
+        $latest = (string)($st->fetchColumn() ?: '');
+    } catch (Throwable $e) {
+        return $out;
+    }
+    if ($latest === '') {
+        return $out;
+    }
+
+    $current = (string)($booking['check_out'] ?? '');
+    if ($latest === $current) {
+        return $out;
+    }
+
+    // Only an extension needs the unit to be free; pulling the date back never can.
+    if ($latest > $current) {
+        require_once __DIR__ . '/ars_availability.php';
+        $avail = ars_check_availability($conn, (int)$booking['unit_id'], $current, $latest, $bookingId);
+        if (empty($avail['available'])) {
+            $labels = array_map(static fn($c) => $c['label'] ?? 'conflict', $avail['conflicts'] ?? []);
+            $out['warning'] = 'Entry saved, but check-out stayed at ' . $current
+                . ' — the unit is not free until ' . $latest . ': ' . implode(', ', $labels);
+            return $out;
+        }
+    }
+
+    $checkIn = (string)($booking['check_in'] ?? '');
+    $nights = 0;
+    if ($checkIn !== '') {
+        $nights = (int)max(0, (strtotime($latest) - strtotime($checkIn)) / 86400);
+    }
+    $conn->prepare('UPDATE ars_bookings SET check_out = ?, nights = ?, updated_at = NOW() WHERE id = ? AND company_id = ?')
+        ->execute([$latest, $nights, $bookingId, $companyId]);
+
+    if (function_exists('ars_booking_activity_log')) {
+        ars_booking_activity_log($conn, [
+            'company_id' => $companyId,
+            'booking_id' => $bookingId,
+            'booking_number' => $booking['booking_number'] ?? null,
+            'event_category' => 'booking',
+            'event_type' => 'dates_changed',
+            'title' => 'Check-out moved by extension log',
+            'old_value' => $current,
+            'new_value' => $latest,
+            'created_by' => $userId,
+        ]);
+    }
+
+    $out['check_out'] = $latest;
+    $out['moved'] = true;
+    return $out;
+}
+
+/**
+ * Read a free-text stay period out of a payment's Reference field.
+ *
+ * The office types periods like "04 Aug to 23 Aug" — no year, and spellings
+ * vary ("Sept", "AUg"). The year is taken from $baseDate and rolled forward
+ * when a period would otherwise land before the stay began. Returns null when
+ * the text is not a period, so callers can show nothing rather than a wrong date.
+ *
+ * @return array{from:int,to:int,nights:int}|null
+ */
+function ars_parse_reference_period(?string $reference, string $baseDate): ?array {
+    $ref = trim((string)$reference);
+    if ($ref === '') {
+        return null;
+    }
+    $halves = preg_split('/\s+(?:to|until|till|-|–|—)\s+/i', $ref);
+    if (!is_array($halves) || count($halves) !== 2) {
+        return null;
+    }
+    $baseTs = strtotime($baseDate);
+    if (!$baseTs) {
+        return null;
+    }
+    $year = (int)date('Y', $baseTs);
+    $from = strtotime(trim($halves[0]) . ' ' . $year);
+    $to   = strtotime(trim($halves[1]) . ' ' . $year);
+    if (!$from || !$to) {
+        return null;
+    }
+    if ($from < $baseTs) {
+        $from = strtotime('+1 year', $from);
+        $to   = strtotime('+1 year', $to);
+    }
+    if ($to < $from) {
+        $to = strtotime('+1 year', $to);
+    }
+    $nights = (int)round(($to - $from) / 86400);
+    if ($nights <= 0) {
+        return null;
+    }
+    return ['from' => $from, 'to' => $to, 'nights' => $nights];
+}

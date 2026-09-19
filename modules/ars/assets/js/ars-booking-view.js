@@ -12,6 +12,7 @@
     overview: 'ws-overview',
     money: 'ws-money',
     deposit: 'ws-deposit',
+    extend: 'ws-extend',
     timeline: 'ws-activity',
     documents: 'ws-docs'
   };
@@ -20,6 +21,8 @@
     '#ws-money': 'money',
     '#ws-deposit': 'deposit',
     '#security-deposit': 'deposit',
+    '#ws-extend': 'extend',
+    '#extend-stay': 'extend',
     '#ws-activity': 'timeline',
     '#activity-center': 'timeline',
     '#ws-docs': 'documents',
@@ -76,7 +79,17 @@
     if (prev) {
       selectEl.value = prev;
     }
-    if (!selectEl.value && opts.length === 1) {
+    // Never leave the picker empty: an unselected account is the one thing that
+    // silently refuses a save. Prefer the account this booking last used, then
+    // simply the first available one.
+    if (!selectEl.value) {
+      var root = document.getElementById('ars-booking-view-root');
+      var lastUsed = root ? root.getAttribute('data-last-receipt-account') || '' : '';
+      if (lastUsed) {
+        selectEl.value = lastUsed;
+      }
+    }
+    if (!selectEl.value && opts.length) {
       selectEl.value = opts[0].account_code;
     }
   }
@@ -433,6 +446,7 @@
       set('editPayId', btn.getAttribute('data-ars-pay-edit'));
       document.getElementById('editPayIdLabel').textContent = '#' + btn.getAttribute('data-ars-pay-edit');
       set('editPayAmount', btn.getAttribute('data-amount'));
+      set('editPayTotalAmount', btn.getAttribute('data-total'));
       set('editPayMethod', btn.getAttribute('data-method'));
       fillReceiptAccountSelect(document.getElementById('editPayReceiptAccount'), btn.getAttribute('data-method'), btn.getAttribute('data-account'));
       set('editPayDate', btn.getAttribute('data-date'));
@@ -449,10 +463,7 @@
     if (!saveBtn) return;
     saveBtn.addEventListener('click', function () {
       if (busy) return;
-      if (!(parseFloat(val('editPayAmount')) > 0)) {
-        showAlert('Enter an amount greater than zero.', 'danger', 'editPayModalAlert');
-        return;
-      }
+      // Zero received is allowed here too, same as the Record dialog.
       if (!val('editPayReceiptAccount')) {
         showAlert('Select the RE cash or bank GL account.', 'danger', 'editPayModalAlert');
         return;
@@ -465,7 +476,8 @@
       saveBtn.disabled = true;
       ajaxPost('edit_payment', {
         payment_id: val('editPayId'),
-        amount: val('editPayAmount'),
+        amount: val('editPayAmount') !== '' ? val('editPayAmount') : '0',
+        total_amount: val('editPayTotalAmount'),
         payment_method: val('editPayMethod'),
         receipt_account_code: val('editPayReceiptAccount'),
         payment_date: val('editPayDate'),
@@ -497,34 +509,26 @@
   }
 
   var paymentBusy = false;
-  var paymentRecordArmed = false;
-  var paymentArmTimer = null;
 
-  function armPaymentRecordButton(armed) {
-    paymentRecordArmed = !!armed;
+  // The Record button carries no arming or timing restrictions. It is disabled
+  // only while a save is actually in flight, so one click cannot post the same
+  // payment twice.
+  function setPaymentBusy(busy) {
+    paymentBusy = !!busy;
     var btn = document.getElementById('payRecordBtn')
       || document.querySelector('#addPaymentModal [data-ars-action="record-payment"]');
     if (btn) {
-      btn.disabled = !paymentRecordArmed || paymentBusy;
+      btn.disabled = paymentBusy;
     }
   }
 
   function recordPayment() {
     if (paymentBusy) return;
-    // Block ghost-clicks that land on Record while the modal is still opening.
-    if (!paymentRecordArmed) {
-      return;
-    }
-    var modal = document.getElementById('addPaymentModal');
-    if (modal && !modal.classList.contains('show')) {
-      return;
-    }
     var amountEl = document.getElementById('payAmount');
+    // Zero is allowed: it records a line that carries a Total amount with
+    // nothing received against it yet.
     var amount = amountEl ? parseFloat(amountEl.value) : 0;
-    if (!(amount > 0)) {
-      showAlert('Enter a payment amount greater than zero.', 'danger', 'payModalAlert');
-      return;
-    }
+    if (isNaN(amount)) amount = 0;
     var method = (document.getElementById('payMethod') || {}).value || 'cash';
     var receiptAccount = (document.getElementById('payReceiptAccount') || {}).value || '';
     if (!receiptAccount) {
@@ -532,22 +536,38 @@
       return;
     }
     var payDate = (document.getElementById('payDate') || {}).value || '';
+    // Taking more than the booking still owes is allowed — the adapter reclasses
+    // the excess into guest credit — but say so plainly before it happens.
+    var root = document.getElementById('ars-booking-view-root');
+    var openBalance = root ? parseFloat(root.getAttribute('data-open-balance') || '0') : NaN;
+    var overpayNote = '';
+    if (!isNaN(openBalance) && amount > openBalance + 0.01) {
+      var excess = amount - Math.max(openBalance, 0);
+      overpayNote =
+        '\n\nThis is AED ' +
+        excess.toFixed(2) +
+        ' more than the open balance of AED ' +
+        Math.max(openBalance, 0).toFixed(2) +
+        '.\nThe extra AED ' +
+        excess.toFixed(2) +
+        ' will be booked as guest credit, not as invoice payment.';
+    }
     if (
       !window.confirm(
         'Record stay payment of AED ' + amount.toFixed(2) + ' (' + method + ')'
           + ' to ' + receiptAccount
           + (payDate ? ' on ' + payDate : '')
           + '?\n\nThis posts a cash/bank journal on the Real Estate company and financially locks the booking.'
+          + overpayNote
       )
     ) {
       return;
     }
-    var btn = document.getElementById('payRecordBtn')
-      || document.querySelector('[data-ars-action="record-payment"]');
-    paymentBusy = true;
-    if (btn) btn.disabled = true;
+    setPaymentBusy(true);
+    var totalEl = document.getElementById('payTotalAmount');
     ajaxPost('record_payment', {
-      amount: amountEl.value,
+      amount: amountEl && amountEl.value !== '' ? amountEl.value : '0',
+      total_amount: totalEl ? totalEl.value : '',
       payment_method: method,
       receipt_account_code: receiptAccount,
       payment_date: payDate,
@@ -561,13 +581,11 @@
           location.href = 'booking_view.php?id=' + bookingId() + '&flash=payment_recorded#ws-money';
           return;
         }
-        paymentBusy = false;
-        armPaymentRecordButton(true);
+        setPaymentBusy(false);
         showAlert(d.error || 'Payment failed', 'danger', 'payModalAlert');
       })
       .catch(function (err) {
-        paymentBusy = false;
-        armPaymentRecordButton(true);
+        setPaymentBusy(false);
         showAlert(err && err.message ? err.message : 'Network error', 'danger', 'payModalAlert');
       });
   }
@@ -577,12 +595,7 @@
     if (!modal) return;
 
     modal.addEventListener('show.bs.modal', function () {
-      paymentBusy = false;
-      armPaymentRecordButton(false);
-      if (paymentArmTimer) {
-        window.clearTimeout(paymentArmTimer);
-        paymentArmTimer = null;
-      }
+      setPaymentBusy(false);
       var alertEl = document.getElementById('payModalAlert');
       if (alertEl) {
         alertEl.className = 'd-none';
@@ -590,23 +603,8 @@
       }
     });
 
-    modal.addEventListener('shown.bs.modal', function () {
-      // Delay arming so the opening click / Enter cannot hit Record.
-      paymentArmTimer = window.setTimeout(function () {
-        paymentArmTimer = null;
-        if (modal.classList.contains('show')) {
-          armPaymentRecordButton(true);
-        }
-      }, 400);
-    });
-
     modal.addEventListener('hidden.bs.modal', function () {
-      if (paymentArmTimer) {
-        window.clearTimeout(paymentArmTimer);
-        paymentArmTimer = null;
-      }
-      paymentBusy = false;
-      armPaymentRecordButton(false);
+      setPaymentBusy(false);
     });
 
     // Enter in amount/date fields must not silently post a payment.
@@ -1374,6 +1372,108 @@
       });
   }
 
+  // --- Extend tab -----------------------------------------------------------
+  // A standalone record of the periods a stay was extended by. It writes to its
+  // own log, independent of payments and of the AR documents.
+  function extendNightsBetween() {
+    var fromEl = document.getElementById('extendFrom');
+    var toEl = document.getElementById('extendTo');
+    if (!fromEl || !toEl || !fromEl.value || !toEl.value) return 0;
+    var a = Date.parse(fromEl.value + 'T00:00:00');
+    var b = Date.parse(toEl.value + 'T00:00:00');
+    if (isNaN(a) || isNaN(b)) return 0;
+    var nights = Math.round((b - a) / 86400000);
+    return nights > 0 ? nights : 0;
+  }
+
+  function refreshExtendPreview() {
+    var nightsEl = document.getElementById('extendNightsAdded');
+    if (!nightsEl) return;
+    var nights = extendNightsBetween();
+    nightsEl.textContent = nights > 0 ? String(nights) : '—';
+  }
+
+  function submitExtension() {
+    var fromEl = document.getElementById('extendFrom');
+    var toEl = document.getElementById('extendTo');
+    var noteEl = document.getElementById('extendNote');
+    var btn = document.getElementById('extendSubmitBtn');
+    if (!fromEl || !toEl) return;
+    if (extendNightsBetween() <= 0) {
+      showAlert('Extended to must be after Extended from.', 'danger', 'extendPanelAlert');
+      return;
+    }
+    if (btn) btn.disabled = true;
+    ajaxPost('save_extension_entry', {
+      extended_from: fromEl.value,
+      extended_to: toEl.value,
+      note: noteEl ? noteEl.value : ''
+    })
+      .then(function (d) {
+        if (d.success) {
+          if (d.warning) {
+            // Saved, but the booking's dates could not follow — say so instead
+            // of reloading into a page that silently disagrees.
+            if (btn) btn.disabled = false;
+            showAlert(d.warning, 'danger', 'extendPanelAlert');
+            return;
+          }
+          location.reload();
+          return;
+        }
+        if (btn) btn.disabled = false;
+        showAlert(d.error || 'Could not save', 'danger', 'extendPanelAlert');
+      })
+      .catch(function () {
+        if (btn) btn.disabled = false;
+        showAlert('Network error', 'danger', 'extendPanelAlert');
+      });
+  }
+
+  function deleteExtensionEntry(entryId, btn) {
+    if (!window.confirm('Remove this extension entry?\n\nIt only removes the record; no money is affected.')) {
+      return;
+    }
+    if (btn) btn.disabled = true;
+    ajaxPost('delete_extension_entry', { entry_id: entryId })
+      .then(function (d) {
+        if (d.success) {
+          location.reload();
+          return;
+        }
+        if (btn) btn.disabled = false;
+        showAlert(d.error || 'Could not remove', 'danger', 'extendPanelAlert');
+      })
+      .catch(function () {
+        if (btn) btn.disabled = false;
+        showAlert('Network error', 'danger', 'extendPanelAlert');
+      });
+  }
+
+  function initExtendPanel() {
+    var fromEl = document.getElementById('extendFrom');
+    var toEl = document.getElementById('extendTo');
+    if (fromEl) {
+      fromEl.addEventListener('change', refreshExtendPreview);
+      fromEl.addEventListener('input', refreshExtendPreview);
+    }
+    if (toEl) {
+      toEl.addEventListener('change', refreshExtendPreview);
+      toEl.addEventListener('input', refreshExtendPreview);
+    }
+    var btn = document.getElementById('extendSubmitBtn');
+    if (btn) btn.addEventListener('click', submitExtension);
+
+    document.addEventListener('click', function (e) {
+      var del = e.target.closest ? e.target.closest('[data-ars-ext-delete]') : null;
+      if (!del) return;
+      e.preventDefault();
+      deleteExtensionEntry(del.getAttribute('data-ars-ext-delete'), del);
+    });
+
+    refreshExtendPreview();
+  }
+
   function initDocumentsModal() {
     var modal = document.getElementById('documentsActionModal');
     if (!modal) return;
@@ -1603,7 +1703,7 @@
     } else if (action === 'record-payment') {
       e.preventDefault();
       e.stopPropagation();
-      if (!paymentRecordArmed || paymentBusy) return;
+      if (paymentBusy) return;
       recordPayment();
     } else if (action === 'receive-deposit') {
       e.preventDefault();
@@ -1812,6 +1912,7 @@
     initAttachmentModal();
     initUnifiedDocuments();
     initAmendmentModal();
+    initExtendPanel();
     bindReceiptAccountPickers(document);
   }
 

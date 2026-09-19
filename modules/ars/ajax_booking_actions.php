@@ -497,8 +497,10 @@ try {
 
         case 'record_payment':
             $amount = (float)($_POST['amount'] ?? 0);
-            if ($amount <= 0) {
-                echo json_encode(['success' => false, 'error' => 'Amount must be positive']);
+            // Zero is allowed: it records a line carrying a Total amount with
+            // nothing received against it yet. Only a negative is refused.
+            if ($amount < 0) {
+                echo json_encode(['success' => false, 'error' => 'Amount cannot be negative']);
                 exit;
             }
 
@@ -509,6 +511,16 @@ try {
             $notes      = trim($_POST['notes'] ?? '');
             $linkStatus = $linkUrl ? ($_POST['payment_link_status'] ?? 'paid') : null;
             $receiptAccountCode = trim((string)($_POST['receipt_account_code'] ?? ''));
+
+            // Manually entered stay total for this row; blank means "use the
+            // invoiced total from the AR documents".
+            $totalRaw = trim((string)($_POST['total_amount'] ?? ''));
+            $totalAmount = ($totalRaw === '') ? null : round((float)$totalRaw, 2);
+            if ($totalAmount !== null && $totalAmount < 0) {
+                echo json_encode(['success' => false, 'error' => 'Total amount cannot be negative']);
+                exit;
+            }
+            ars_ensure_payment_total_column($conn);
 
             require_once __DIR__ . '/includes/ars_account_roles.php';
             ars_ensure_receipt_account_columns($conn);
@@ -523,10 +535,10 @@ try {
             try {
                 $conn->prepare("
                     INSERT INTO ars_booking_payments
-                        (booking_id, company_id, amount, payment_method, receipt_account_code, payment_date, reference_number, payment_link_url, payment_link_status, notes, recorded_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (booking_id, company_id, amount, total_amount, payment_method, receipt_account_code, payment_date, reference_number, payment_link_url, payment_link_status, notes, recorded_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ")->execute([
-                    $bookingId, $arsCompanyId, $amount, $method, $receiptCheck['account_code'], $date,
+                    $bookingId, $arsCompanyId, $amount, $totalAmount, $method, $receiptCheck['account_code'], $date,
                     $ref ?: null, $linkUrl ?: null, $linkStatus, $notes ?: null, $userId,
                 ]);
 
@@ -536,16 +548,24 @@ try {
                 $pmRow = $conn->prepare("SELECT * FROM ars_booking_payments WHERE id = ? AND company_id = ?");
                 $pmRow->execute([$paymentId, $arsCompanyId]);
                 $pmRow = $pmRow->fetch(PDO::FETCH_ASSOC);
-                $journalResult = ars_post_payment_journal($conn, $pmRow, $booking, $userId);
-                if (empty($journalResult['success'])) {
-                    throw new RuntimeException('Payment journal failed: ' . ($journalResult['error'] ?? 'Unknown error'));
+                // No money moved, so there is nothing to post to the GL and
+                // nothing to allocate. The row exists purely to carry its
+                // Total amount in the Payments table.
+                $journalResult = ['success' => true, 'journal_id' => null];
+                if ($amount > 0) {
+                    $journalResult = ars_post_payment_journal($conn, $pmRow, $booking, $userId);
+                    if (empty($journalResult['success'])) {
+                        throw new RuntimeException('Payment journal failed: ' . ($journalResult['error'] ?? 'Unknown error'));
+                    }
                 }
 
                 ars_recalc_booking_totals($conn, $bookingId);
                 $freshStmt = $conn->prepare("SELECT * FROM ars_bookings WHERE id = ? AND company_id = ?");
                 $freshStmt->execute([$bookingId, $arsCompanyId]);
                 $booking = $freshStmt->fetch(PDO::FETCH_ASSOC) ?: $booking;
-                ars_booking_engage_financial_lock($conn, $booking, 'Payment recorded', $userId);
+                if ($amount > 0) {
+                    ars_booking_engage_financial_lock($conn, $booking, 'Payment recorded', $userId);
+                }
 
                 $conn->commit();
             } catch (Throwable $e) {
@@ -587,7 +607,10 @@ try {
         case 'set_security_deposit':
             $depAmount = max(0, (float)($_POST['deposit_amount'] ?? 0));
             try {
-                ars_assert_financial_edit_allowed($conn, $booking, ['deposit_amount' => $depAmount]);
+                // Until the deposit is received nothing is posted, so the lock doesn't apply.
+                if (!in_array((string)($booking['deposit_status'] ?? 'none'), ['none', 'pending'], true)) {
+                    ars_assert_financial_edit_allowed($conn, $booking, ['deposit_amount' => $depAmount]);
+                }
                 ars_booking_set_security_deposit_amount($conn, $booking, $depAmount);
             } catch (Throwable $e) {
                 echo json_encode(['success' => false, 'error' => $e->getMessage(), 'requires_amendment' => true]);
@@ -828,8 +851,13 @@ try {
             require_once __DIR__ . '/includes/ars_payment_edit.php';
             require_once __DIR__ . '/includes/ars_account_roles.php';
 
+            ars_ensure_payment_total_column($conn);
+
             $paymentId = (int)($_POST['payment_id'] ?? 0);
             $amount = round((float)($_POST['amount'] ?? 0), 2);
+            // Blank means "use the invoiced total", same as the Record dialog.
+            $editTotalRaw = trim((string)($_POST['total_amount'] ?? ''));
+            $editTotal = ($editTotalRaw === '') ? null : round((float)$editTotalRaw, 2);
             $method = (string)($_POST['payment_method'] ?? '');
             $receiptCode = trim((string)($_POST['receipt_account_code'] ?? ''));
             $date = trim((string)($_POST['payment_date'] ?? ''));
@@ -837,8 +865,12 @@ try {
             $notes = trim((string)($_POST['notes'] ?? ''));
 
             $dt = DateTime::createFromFormat('Y-m-d', $date);
-            if (!$paymentId || $amount <= 0 || !$dt || $dt->format('Y-m-d') !== $date) {
-                echo json_encode(['success' => false, 'error' => 'Enter an amount above zero and a valid date.']);
+            if (!$paymentId || $amount < 0 || !$dt || $dt->format('Y-m-d') !== $date) {
+                echo json_encode(['success' => false, 'error' => 'Enter a received amount of zero or more and a valid date.']);
+                exit;
+            }
+            if ($editTotal !== null && $editTotal < 0) {
+                echo json_encode(['success' => false, 'error' => 'Total amount cannot be negative']);
                 exit;
             }
             if ($date > date('Y-m-d')) {
@@ -878,6 +910,8 @@ try {
                 'payment_date' => (string)$payment['payment_date'],
                 'reference_number' => (string)($payment['reference_number'] ?? ''),
                 'notes' => (string)($payment['notes'] ?? ''),
+                'total_amount' => ($payment['total_amount'] === null || $payment['total_amount'] === '')
+                    ? '' : number_format((float)$payment['total_amount'], 2, '.', ''),
             ];
             $new = [
                 'amount' => number_format($amount, 2, '.', ''),
@@ -886,12 +920,14 @@ try {
                 'payment_date' => $date,
                 'reference_number' => $ref,
                 'notes' => $notes,
+                'total_amount' => $editTotal === null ? '' : number_format($editTotal, 2, '.', ''),
             ];
             $changed = array_keys(array_diff_assoc($new, $old));
             if (!$changed) {
                 echo json_encode(['success' => true]);
                 break;
             }
+            // total_amount is display only, so changing it alone never touches the GL.
             $repost = (bool)array_intersect($changed, ['amount', 'payment_method', 'receipt_account_code', 'payment_date']);
 
             $conn->beginTransaction();
@@ -900,22 +936,26 @@ try {
                     ars_payment_unpost($conn, $payment, $userId, 'Payment #' . $paymentId . ' edited');
                     $conn->prepare("
                         UPDATE ars_booking_payments
-                        SET amount = ?, payment_method = ?, receipt_account_code = ?, payment_date = ?,
+                        SET amount = ?, total_amount = ?, payment_method = ?, receipt_account_code = ?, payment_date = ?,
                             reference_number = ?, notes = ?, journal_id = NULL, financial_document_id = NULL
                         WHERE id = ?
-                    ")->execute([$amount, $method, $receiptCode, $date, $ref ?: null, $notes ?: null, $paymentId]);
+                    ")->execute([$amount, $editTotal, $method, $receiptCode, $date, $ref ?: null, $notes ?: null, $paymentId]);
 
-                    $st = $conn->prepare("SELECT * FROM ars_booking_payments WHERE id = ?");
-                    $st->execute([$paymentId]);
-                    $fresh = $st->fetch(PDO::FETCH_ASSOC);
-                    $jr = ars_post_payment_journal($conn, $fresh, $booking, $userId);
-                    if (empty($jr['success'])) {
-                        throw new RuntimeException('Re-posting failed: ' . ($jr['error'] ?? 'unknown'));
+                    // Nothing received means nothing to post to the GL; the row
+                    // just carries its Total amount.
+                    if ($amount > 0) {
+                        $st = $conn->prepare("SELECT * FROM ars_booking_payments WHERE id = ?");
+                        $st->execute([$paymentId]);
+                        $fresh = $st->fetch(PDO::FETCH_ASSOC);
+                        $jr = ars_post_payment_journal($conn, $fresh, $booking, $userId);
+                        if (empty($jr['success'])) {
+                            throw new RuntimeException('Re-posting failed: ' . ($jr['error'] ?? 'unknown'));
+                        }
                     }
                     ars_recalc_booking_totals($conn, $bookingId);
                 } else {
-                    $conn->prepare("UPDATE ars_booking_payments SET reference_number = ?, notes = ? WHERE id = ?")
-                        ->execute([$ref ?: null, $notes ?: null, $paymentId]);
+                    $conn->prepare("UPDATE ars_booking_payments SET total_amount = ?, reference_number = ?, notes = ? WHERE id = ?")
+                        ->execute([$editTotal, $ref ?: null, $notes ?: null, $paymentId]);
                 }
                 $conn->commit();
             } catch (Throwable $e) {
@@ -926,8 +966,9 @@ try {
                 exit;
             }
 
-            $labels = ['amount' => 'amount', 'payment_method' => 'method', 'receipt_account_code' => 'GL account',
-                'payment_date' => 'date', 'reference_number' => 'reference', 'notes' => 'notes'];
+            $labels = ['amount' => 'received amount', 'payment_method' => 'method', 'receipt_account_code' => 'GL account',
+                'payment_date' => 'date', 'reference_number' => 'reference', 'notes' => 'notes',
+                'total_amount' => 'total amount'];
             $summary = [];
             foreach ($changed as $k) {
                 $summary[] = $labels[$k] . ': ' . ($old[$k] !== '' ? $old[$k] : '—') . ' → ' . ($new[$k] !== '' ? $new[$k] : '—');
@@ -1562,6 +1603,66 @@ try {
                 'document_id' => $r['document_id'] ?? null,
                 'journal_id' => $r['journal_id'] ?? null,
                 'document_number' => $r['document_number'] ?? null,
+            ]);
+            break;
+        }
+
+        // --- Extend tab: a standalone record of the periods a stay was extended
+        // by. No journal, no invoice, no allocation — money is handled on the
+        // Money tab. See ars_ensure_extension_log_table().
+        case 'save_extension_entry': {
+            ars_ensure_extension_log_table($conn);
+            $from = trim((string)($_POST['extended_from'] ?? ''));
+            $to   = trim((string)($_POST['extended_to'] ?? ''));
+            $note = trim((string)($_POST['note'] ?? ''));
+            $dFrom = DateTime::createFromFormat('Y-m-d', $from);
+            $dTo   = DateTime::createFromFormat('Y-m-d', $to);
+            if (!$dFrom || $dFrom->format('Y-m-d') !== $from || !$dTo || $dTo->format('Y-m-d') !== $to) {
+                echo json_encode(['success' => false, 'error' => 'Choose both dates.']);
+                exit;
+            }
+            if ($to <= $from) {
+                echo json_encode(['success' => false, 'error' => 'Extended to must be after Extended from.']);
+                exit;
+            }
+            $nights = (int)$dFrom->diff($dTo)->days;
+            $conn->prepare("
+                INSERT INTO ars_booking_extension_log
+                    (booking_id, company_id, extended_from, extended_to, nights, note, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ")->execute([$bookingId, $arsCompanyId, $from, $to, $nights, $note !== '' ? $note : null, $userId]);
+            $arsAudit('booking_updated', 'Recorded extension ' . $from . ' to ' . $to . ' (' . $nights . ' nights) on booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)), [
+                'new_data' => ['extended_from' => $from, 'extended_to' => $to, 'nights' => $nights],
+            ]);
+            $sync = ars_sync_checkout_to_extension_log($conn, $booking, $arsCompanyId, $userId);
+            echo json_encode([
+                'success' => true,
+                'nights' => $nights,
+                'check_out' => $sync['check_out'] ?? null,
+                'warning' => $sync['warning'] ?? null,
+            ]);
+            break;
+        }
+
+        case 'delete_extension_entry': {
+            ars_ensure_extension_log_table($conn);
+            $entryId = (int)($_POST['entry_id'] ?? 0);
+            if ($entryId <= 0) {
+                echo json_encode(['success' => false, 'error' => 'Entry not found.']);
+                exit;
+            }
+            $st = $conn->prepare("DELETE FROM ars_booking_extension_log WHERE id = ? AND booking_id = ? AND company_id = ?");
+            $st->execute([$entryId, $bookingId, $arsCompanyId]);
+            if (!$st->rowCount()) {
+                echo json_encode(['success' => false, 'error' => 'Entry not found on this booking.']);
+                exit;
+            }
+            $arsAudit('booking_updated', 'Removed extension entry #' . $entryId . ' from booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)));
+            $sync = ars_sync_checkout_to_extension_log($conn, $booking, $arsCompanyId, $userId);
+            echo json_encode([
+                'success' => true,
+                'check_out' => $sync['check_out'] ?? null,
+                'warning' => $sync['warning'] ?? null,
             ]);
             break;
         }
