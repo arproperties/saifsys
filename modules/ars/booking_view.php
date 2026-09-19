@@ -125,6 +125,22 @@ $unifiedDocsFlat = ars_booking_unified_documents_flat($unifiedDocs);
 $unifiedDocsTotal = ars_udoc_total($unifiedDocs);
 $docCategories = ars_booking_doc_categories();
 
+// Evidence files (bank slip, receipt photo) per payment, for the paperclip on
+// each Payments row.
+$paymentEvidence = [];
+try {
+    foreach (ars_booking_attachments_list($conn, $arsCompanyId, $bookingId) as $evRow) {
+        if (!empty($evRow['payment_id'])) {
+            $paymentEvidence[(int)$evRow['payment_id']][] = [
+                'id' => (int)$evRow['id'],
+                'name' => (string)$evRow['original_name'],
+                'url' => 'document_download.php?booking_id=' . $bookingId . '&attachment_id=' . (int)$evRow['id'],
+            ];
+        }
+    }
+} catch (Throwable $ignored) {
+}
+
 // AR ledger roll-up. ars_bookings.total_amount only ever holds the original
 // stay plus non-room charges — ars_recalc_booking_totals() reads
 // ars_booking_charges, and extension / service / adjustment invoices never land
@@ -216,6 +232,7 @@ $created = isset($_GET['created']);
 $flash = (string)($_GET['flash'] ?? '');
 $flashMessages = [
     'payment_recorded' => 'Stay payment recorded. Cash/bank journal posted and AR cleared for this amount.',
+    'payment_evidence_failed' => 'Payment recorded, but the evidence file did not upload. Use the paperclip on the payment row to attach it again.',
     'deposit_received' => 'Security deposit received. Liability journal posted (not stay revenue).',
     'deposit_settled' => 'Security deposit settled. Liability released to cash refund and/or deductions (no VAT on deductions).',
     'booking_confirmed' => 'Booking confirmed. Stay revenue journal posted.',
@@ -990,6 +1007,12 @@ echo $arsWsLifecycleHtml;
                             </td>
                             <?php endif; ?>
                             <td data-label="" class="text-end ars-pay-actions">
+                                <?php $pmEvidence = $paymentEvidence[(int)$pm['id']] ?? []; ?>
+                                <button type="button" class="btn btn-sm <?= $pmEvidence ? 'btn-ars' : 'btn-ars-outline' ?>"
+                                        title="<?= $pmEvidence ? 'Payment evidence (' . count($pmEvidence) . ')' : 'Attach payment evidence' ?>"
+                                        aria-label="Payment evidence for payment #<?= (int)$pm['id'] ?>"
+                                        data-ars-pay-evidence="<?= (int)$pm['id'] ?>"
+                                        data-files="<?= h(json_encode($pmEvidence, JSON_UNESCAPED_UNICODE)) ?>"><i class="bi bi-paperclip"></i><?php if ($pmEvidence): ?> <?= count($pmEvidence) ?><?php endif; ?></button>
                                 <?php if (($pm['payment_gateway'] ?? '') !== 'stripe'): ?>
                                 <button type="button" class="btn btn-sm btn-ars-outline" title="Edit payment #<?= (int)$pm['id'] ?>" aria-label="Edit payment #<?= (int)$pm['id'] ?>"
                                         data-ars-pay-edit="<?= (int)$pm['id'] ?>"
@@ -1707,6 +1730,11 @@ echo $arsWsLifecycleHtml;
                         </select>
                     </div>
                     <div class="col-12"><label class="form-label fw-semibold">Notes</label><textarea id="payNotes" class="form-control" rows="2"></textarea></div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold" for="payEvidenceFile">Payment evidence</label>
+                        <input type="file" id="payEvidenceFile" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.xls,.xlsx,.txt">
+                        <div class="form-text">Optional — bank slip, transfer screenshot or receipt photo. Max 10 MB. Filed under Payment Receipts on the Documents tab.</div>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1765,6 +1793,30 @@ echo $arsWsLifecycleHtml;
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-ars" id="editPaySaveBtn"><i class="bi bi-check-lg me-1"></i>Save changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Payment evidence: files that prove one payment -->
+<div class="modal fade" id="paymentEvidenceModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header" style="background:var(--ars-primary);color:#fff">
+                <h5 class="modal-title"><i class="bi bi-paperclip me-2"></i>Payment evidence <span id="payEvIdLabel"></span></h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="payEvModalAlert" class="d-none"></div>
+                <input type="hidden" id="payEvPaymentId">
+                <div id="payEvList" class="list-group list-group-flush small mb-3"></div>
+                <label class="form-label fw-semibold" for="payEvFile">Add file</label>
+                <input type="file" id="payEvFile" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.xls,.xlsx,.txt">
+                <div class="form-text">Bank slip, transfer screenshot or receipt photo. Max 10 MB.</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-ars" id="payEvUploadBtn"><i class="bi bi-upload me-1"></i>Upload</button>
             </div>
         </div>
     </div>

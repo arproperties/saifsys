@@ -200,7 +200,8 @@ function ars_booking_unified_documents(
         $buckets[$cat]['items'][] = ars_udoc_row([
             'kind' => 'upload',
             'title' => (string)($a['original_name'] ?? 'file'),
-            'subtitle' => $size > 0 ? ars_udoc_filesize($size) : '',
+            'subtitle' => trim((!empty($a['payment_id']) ? 'Evidence for payment #' . (int)$a['payment_id'] . ' · ' : '')
+                . ($size > 0 ? ars_udoc_filesize($size) : ''), ' ·'),
             'badge' => 'Uploaded',
             'badge_class' => 'bg-secondary-subtle text-secondary-emphasis border',
             'date' => substr((string)($a['created_at'] ?? ''), 0, 10),

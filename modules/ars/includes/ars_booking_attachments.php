@@ -59,6 +59,18 @@ function ars_booking_attachments_ensure_schema(PDO $conn): void {
     } catch (Throwable $ignored) {
     }
 
+    // Evidence files (bank slip, cash receipt photo) point at the payment they
+    // prove. NULL for every other upload.
+    try {
+        $has = $conn->query("SHOW COLUMNS FROM ars_booking_attachments LIKE 'payment_id'")->fetch(PDO::FETCH_ASSOC);
+        if (!$has) {
+            $conn->exec("ALTER TABLE ars_booking_attachments
+                ADD COLUMN payment_id INT NULL AFTER booking_id,
+                ADD INDEX idx_ars_att_payment (payment_id)");
+        }
+    } catch (Throwable $ignored) {
+    }
+
     $root = ars_booking_attachments_storage_root();
     if (!ars_booking_attachments_ensure_writable_dir($root)) {
         error_log('ars_booking_attachments: storage root not writable: ' . $root);
@@ -139,7 +151,7 @@ function ars_booking_attachment_mime_map(): array {
 function ars_booking_attachments_list(PDO $conn, int $companyId, int $bookingId): array {
     ars_booking_attachments_ensure_schema($conn);
     $stmt = $conn->prepare("
-        SELECT id, original_name, mime_type, file_size, doc_category, uploaded_by, created_at
+        SELECT id, payment_id, original_name, mime_type, file_size, doc_category, uploaded_by, created_at
         FROM ars_booking_attachments
         WHERE company_id = ? AND booking_id = ?
         ORDER BY id DESC
@@ -157,7 +169,8 @@ function ars_booking_attachment_upload(
     int $bookingId,
     array $file,
     ?int $userId,
-    ?string $docCategory = 'other'
+    ?string $docCategory = 'other',
+    ?int $paymentId = null
 ): array {
     ars_booking_attachments_ensure_schema($conn);
     $docCategory = ars_booking_doc_category_normalize($docCategory);
@@ -216,9 +229,9 @@ function ars_booking_attachment_upload(
 
     $conn->prepare("
         INSERT INTO ars_booking_attachments
-            (company_id, booking_id, original_name, stored_name, relative_path, mime_type, file_size, doc_category, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ")->execute([$companyId, $bookingId, $safeOrig, $stored, $rel, $mime, $size, $docCategory, $userId]);
+            (company_id, booking_id, payment_id, original_name, stored_name, relative_path, mime_type, file_size, doc_category, uploaded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ")->execute([$companyId, $bookingId, $paymentId ?: null, $safeOrig, $stored, $rel, $mime, $size, $docCategory, $userId]);
 
     $id = (int)$conn->lastInsertId();
     return [
@@ -226,6 +239,7 @@ function ars_booking_attachment_upload(
         'error' => null,
         'attachment' => [
             'id' => $id,
+            'payment_id' => $paymentId ?: null,
             'original_name' => $safeOrig,
             'mime_type' => $mime,
             'file_size' => $size,

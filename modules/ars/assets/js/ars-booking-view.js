@@ -508,6 +508,51 @@
     status.disabled = !(link && link.value && link.value.trim());
   }
 
+  // Same limits the server enforces in ars_booking_attachment_upload(); checked
+  // here too so a bad file is caught before a payment is posted.
+  var EVIDENCE_EXTS = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'doc', 'docx', 'xls', 'xlsx', 'txt'];
+
+  function evidenceFileError(file) {
+    if (!file) return '';
+    var ext = String(file.name || '').split('.').pop().toLowerCase();
+    if (EVIDENCE_EXTS.indexOf(ext) === -1) {
+      return 'Evidence file type not allowed. Use PDF, an image, Office or text.';
+    }
+    if (!file.size || file.size > 10 * 1024 * 1024) {
+      return 'Evidence file must be under 10 MB.';
+    }
+    return '';
+  }
+
+  function escHtml(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function uploadPaymentEvidence(paymentId, file) {
+    var fd = new FormData();
+    fd.append('action', 'upload_attachment');
+    fd.append('booking_id', String(bookingId()));
+    fd.append('_csrf', csrfToken());
+    fd.append('payment_id', String(paymentId));
+    fd.append('doc_category', 'payment_receipt');
+    fd.append('file', file);
+    return fetch('ajax_booking_actions.php', {
+      method: 'POST',
+      body: fd,
+      credentials: 'same-origin',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRF-Token': csrfToken()
+      }
+    }).then(function (r) {
+      return r.json();
+    });
+  }
+
   var paymentBusy = false;
 
   // The Record button carries no arming or timing restrictions. It is disabled
@@ -536,6 +581,13 @@
       return;
     }
     var payDate = (document.getElementById('payDate') || {}).value || '';
+    var evidenceInput = document.getElementById('payEvidenceFile');
+    var evidenceFile = evidenceInput && evidenceInput.files ? evidenceInput.files[0] : null;
+    var evidenceErr = evidenceFileError(evidenceFile);
+    if (evidenceErr) {
+      showAlert(escHtml(evidenceErr), 'danger', 'payModalAlert');
+      return;
+    }
     // Taking more than the booking still owes is allowed — the adapter reclasses
     // the excess into guest credit — but say so plainly before it happens.
     var root = document.getElementById('ars-booking-view-root');
@@ -578,7 +630,29 @@
     })
       .then(function (d) {
         if (d.success) {
-          location.href = 'booking_view.php?id=' + bookingId() + '&flash=payment_recorded#ws-money';
+          var done = function (flash) {
+            location.href = 'booking_view.php?id=' + bookingId() + '&flash=' + flash + '#ws-money';
+          };
+          if (!evidenceFile || !d.payment_id) {
+            done('payment_recorded');
+            return;
+          }
+          // The payment is already posted at this point. A failed upload must
+          // say so, never pass as a clean save.
+          showAlert('Payment recorded. Uploading evidence…', 'info', 'payModalAlert');
+          uploadPaymentEvidence(d.payment_id, evidenceFile)
+            .then(function (u) {
+              if (u && u.success) {
+                done('payment_recorded');
+                return;
+              }
+              window.alert('Payment recorded, but the evidence file did not upload:\n' + ((u && u.error) || 'Upload failed'));
+              done('payment_evidence_failed');
+            })
+            .catch(function () {
+              window.alert('Payment recorded, but the evidence file did not upload (network error).');
+              done('payment_evidence_failed');
+            });
           return;
         }
         setPaymentBusy(false);
@@ -617,6 +691,108 @@
           e.stopPropagation();
         }
       });
+    });
+  }
+
+  function initPaymentEvidenceModal() {
+    var modalEl = document.getElementById('paymentEvidenceModal');
+    if (!modalEl) return;
+    var list = document.getElementById('payEvList');
+    var fileInput = document.getElementById('payEvFile');
+    var uploadBtn = document.getElementById('payEvUploadBtn');
+    var busy = false;
+
+    function render(files) {
+      if (!files.length) {
+        list.innerHTML = '<div class="text-muted py-2">No evidence attached to this payment yet.</div>';
+        return;
+      }
+      list.innerHTML = files.map(function (f) {
+        return '<div class="list-group-item d-flex justify-content-between align-items-center gap-2 px-0">'
+          + '<a href="' + escHtml(f.url) + '" target="_blank" rel="noopener" class="text-truncate">'
+          + '<i class="bi bi-file-earmark me-1"></i>' + escHtml(f.name) + '</a>'
+          + '<button type="button" class="btn btn-sm btn-outline-danger" data-ars-pay-ev-delete="' + escHtml(f.id) + '"'
+          + ' data-name="' + escHtml(f.name) + '"><i class="bi bi-trash"></i></button>'
+          + '</div>';
+      }).join('');
+    }
+
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest ? e.target.closest('[data-ars-pay-evidence]') : null;
+      if (!btn) return;
+      var paymentId = btn.getAttribute('data-ars-pay-evidence');
+      document.getElementById('payEvPaymentId').value = paymentId;
+      document.getElementById('payEvIdLabel').textContent = '#' + paymentId;
+      var files = [];
+      try {
+        files = JSON.parse(btn.getAttribute('data-files') || '[]') || [];
+      } catch (err) {
+        files = [];
+      }
+      render(files);
+      if (fileInput) fileInput.value = '';
+      var alertEl = document.getElementById('payEvModalAlert');
+      if (alertEl) { alertEl.className = 'd-none'; alertEl.innerHTML = ''; }
+      if (window.bootstrap && window.bootstrap.Modal) {
+        window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+      }
+    });
+
+    list.addEventListener('click', function (e) {
+      var del = e.target.closest ? e.target.closest('[data-ars-pay-ev-delete]') : null;
+      if (!del || busy) return;
+      if (!window.confirm('Delete "' + (del.getAttribute('data-name') || 'this file') + '"? The payment itself is not changed.')) return;
+      busy = true;
+      del.disabled = true;
+      ajaxPost('delete_attachment', { attachment_id: del.getAttribute('data-ars-pay-ev-delete') })
+        .then(function (d) {
+          if (d.success) {
+            location.hash = 'ws-money';
+            location.reload();
+            return;
+          }
+          busy = false;
+          del.disabled = false;
+          showAlert(escHtml(d.error || 'Delete failed'), 'danger', 'payEvModalAlert');
+        })
+        .catch(function () {
+          busy = false;
+          del.disabled = false;
+          showAlert('Network error', 'danger', 'payEvModalAlert');
+        });
+    });
+
+    if (!uploadBtn) return;
+    uploadBtn.addEventListener('click', function () {
+      if (busy) return;
+      var file = fileInput && fileInput.files ? fileInput.files[0] : null;
+      if (!file) {
+        showAlert('Choose a file first.', 'danger', 'payEvModalAlert');
+        return;
+      }
+      var err = evidenceFileError(file);
+      if (err) {
+        showAlert(escHtml(err), 'danger', 'payEvModalAlert');
+        return;
+      }
+      busy = true;
+      uploadBtn.disabled = true;
+      uploadPaymentEvidence(document.getElementById('payEvPaymentId').value, file)
+        .then(function (d) {
+          if (d && d.success) {
+            location.hash = 'ws-money';
+            location.reload();
+            return;
+          }
+          busy = false;
+          uploadBtn.disabled = false;
+          showAlert(escHtml((d && d.error) || 'Upload failed'), 'danger', 'payEvModalAlert');
+        })
+        .catch(function () {
+          busy = false;
+          uploadBtn.disabled = false;
+          showAlert('Network error', 'danger', 'payEvModalAlert');
+        });
     });
   }
 
@@ -1908,6 +2084,7 @@
     initEditStayDatesModal();
     initPaymentModalGuards();
     initEditPaymentModal();
+    initPaymentEvidenceModal();
     initDocumentsModal();
     initAttachmentModal();
     initUnifiedDocuments();

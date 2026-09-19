@@ -601,7 +601,7 @@ try {
                 'message' => 'We received your payment for booking ' . (string)($booking['booking_number'] ?? ('#' . $bookingId)) . '.',
                 'cta_route' => '/guest/bookings/' . $bookingId,
             ]);
-            echo json_encode(['success' => true]);
+            echo json_encode(['success' => true, 'payment_id' => $paymentId]);
             break;
 
         case 'set_security_deposit':
@@ -1457,7 +1457,19 @@ try {
                 exit;
             }
             $docCategory = ars_booking_doc_category_normalize((string)($_POST['doc_category'] ?? 'other'));
-            $up = ars_booking_attachment_upload($conn, $arsCompanyId, $bookingId, $_FILES['file'], $userId, $docCategory);
+            // Payment evidence: the payment must be on this booking, and the
+            // file always files under Payment Receipts.
+            $evidencePaymentId = (int)($_POST['payment_id'] ?? 0);
+            if ($evidencePaymentId > 0) {
+                $pmCheck = $conn->prepare("SELECT id FROM ars_booking_payments WHERE id = ? AND booking_id = ? AND company_id = ?");
+                $pmCheck->execute([$evidencePaymentId, $bookingId, $arsCompanyId]);
+                if (!$pmCheck->fetchColumn()) {
+                    echo json_encode(['success' => false, 'error' => 'Payment not found on this booking.']);
+                    exit;
+                }
+                $docCategory = 'payment_receipt';
+            }
+            $up = ars_booking_attachment_upload($conn, $arsCompanyId, $bookingId, $_FILES['file'], $userId, $docCategory, $evidencePaymentId ?: null);
             if (!$up['success']) {
                 echo json_encode(['success' => false, 'error' => $up['error']]);
                 exit;
@@ -1468,7 +1480,9 @@ try {
                 'booking_number' => $booking['booking_number'] ?? null,
                 'event_category' => 'documents',
                 'event_type' => 'attachment_uploaded',
-                'title' => 'Document uploaded — ' . ars_booking_doc_category_label($docCategory),
+                'title' => $evidencePaymentId > 0
+                    ? 'Payment evidence uploaded — payment #' . $evidencePaymentId
+                    : 'Document uploaded — ' . ars_booking_doc_category_label($docCategory),
                 'description' => (string)($up['attachment']['original_name'] ?? ''),
                 'related_entity_type' => 'ars_booking_attachment',
                 'related_entity_id' => (int)($up['attachment']['id'] ?? 0),
