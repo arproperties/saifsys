@@ -908,12 +908,12 @@ echo $arsWsLifecycleHtml;
                 if (!empty($pm['gateway_payment_intent_id'])) $pmShowStripe = true;
                 if (!empty($pm['payment_link_url'])) $pmShowLink = true;
             }
-            $pmColspan = 11 + ($pmShowStripe ? 1 : 0) + ($pmShowLink ? 1 : 0);
+            $pmColspan = 8 + ($pmShowStripe ? 1 : 0) + ($pmShowLink ? 1 : 0);
             ?>
             <div class="table-responsive">
                 <table class="table ars-table ars-mobile-cards ars-pay-table mb-0 align-middle">
                     <thead><tr>
-                        <th>ID</th><th>Date</th><th>Method</th><th class="text-end">Total amount</th><th class="text-end">Received amount</th><th class="text-end">Outstanding</th><th>Status</th><th>Reference</th><th class="text-end">Nights</th><th>GL account</th>
+                        <th>Method</th><th class="text-end">Total amount</th><th class="text-end">Received amount</th><th class="text-end">Outstanding</th><th>Reference</th><th class="text-end">Nights</th><th>GL account</th>
                         <?php if ($pmShowStripe): ?><th>Stripe</th><?php endif; ?>
                         <?php if ($pmShowLink): ?><th>Link</th><?php endif; ?>
                         <th></th>
@@ -927,13 +927,15 @@ echo $arsWsLifecycleHtml;
                         $pmAccName = $pmAccCode !== '' ? (string)($paymentAccountNames[$pmAccCode] ?? '') : '';
                     ?>
                         <tr>
-                            <td data-label="ID" class="text-muted text-nowrap">#<?= (int)$pm['id'] ?></td>
-                            <td data-label="Date" class="text-nowrap"><?= h($pm['payment_date']) ?></td>
                             <td data-label="Method" class="text-nowrap">
                                 <?= h(ucfirst(str_replace('_',' ',$pm['payment_method']))) ?>
                                 <?php if (($pm['payment_gateway'] ?? '') === 'stripe'): ?>
                                     <span class="badge bg-dark ms-1">Stripe</span>
                                     <?php if (!empty($pm['payment_type'])): ?><span class="badge bg-info text-dark ms-1"><?= h($pm['payment_type']) ?></span><?php endif; ?>
+                                    <span class="badge bg-<?= ($pm['gateway_status'] ?? '') === 'succeeded' ? 'success' : (in_array(($pm['gateway_status'] ?? ''), ['requires_payment_method','failed','canceled']) ? 'danger' : 'warning text-dark') ?> ms-1">
+                                        <?= h($pm['gateway_status'] ?: 'pending') ?>
+                                    </span>
+                                    <?php if (!empty($pm['failure_message'])): ?><div class="small text-danger mt-1"><?= h($pm['failure_message']) ?></div><?php endif; ?>
                                 <?php endif; ?>
                             </td>
                             <td data-label="Total amount" class="text-end ars-tabular text-nowrap">
@@ -954,16 +956,6 @@ echo $arsWsLifecycleHtml;
                                     <?php if ($pmCredit > 0.009): ?>
                                     <br><small class="text-info">+<?= number_format($pmCredit, 2) ?> credit</small>
                                     <?php endif; ?>
-                                <?php endif; ?>
-                            </td>
-                            <td data-label="Status">
-                                <?php if (($pm['payment_gateway'] ?? '') === 'stripe'): ?>
-                                    <span class="badge bg-<?= ($pm['gateway_status'] ?? '') === 'succeeded' ? 'success' : (in_array(($pm['gateway_status'] ?? ''), ['requires_payment_method','failed','canceled']) ? 'danger' : 'warning text-dark') ?>">
-                                        <?= h($pm['gateway_status'] ?: 'pending') ?>
-                                    </span>
-                                    <?php if (!empty($pm['failure_message'])): ?><div class="small text-danger mt-1"><?= h($pm['failure_message']) ?></div><?php endif; ?>
-                                <?php else: ?>
-                                    <span class="badge bg-success">recorded</span>
                                 <?php endif; ?>
                             </td>
                             <td data-label="Reference"><?= h($pm['reference_number'] ?: '—') ?></td>
