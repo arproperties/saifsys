@@ -210,41 +210,16 @@ function erp_resolve_ap_account_id(PDO $db, int $companyId): int {
 /**
  * @return array{success:bool,journal_id?:int,error?:string|null}
  */
-function erp_post_expense(PDO $db, int $expenseId, ?int $userId): array {
-    $H = $db->prepare('SELECT * FROM erp_expense_headers WHERE id = ?');
-    $H->execute([$expenseId]);
-    $h = $H->fetch(PDO::FETCH_ASSOC);
-    if (!$h) {
-        return ['success' => false, 'error' => 'Expense not found'];
-    }
-    $status = $h['status'] ?? 'draft';
-    if ($status === 'cancelled') {
-        return ['success' => false, 'error' => 'Cannot post cancelled expense'];
-    }
-    if ($status === 'posted' && !empty($h['journal_id'])) {
-        return ['success' => false, 'error' => 'Expense already posted'];
-    }
-    if (!empty($h['journal_id'])) {
-        return ['success' => false, 'error' => 'Expense already has a journal'];
-    }
+/**
+ * Journal lines for an expense header (Dr expense lines / Dr Input VAT / Cr pay account).
+ *
+ * @return array{success:bool,lines?:array,error?:string}
+ */
+function erp_expense_build_journal_lines(PDO $db, array $h): array {
+    $expenseId = (int)$h['id'];
     $companyId = (int)$h['company_id'];
-    if ($companyId <= 0) {
-        return ['success' => false, 'error' => 'Company context is required.'];
-    }
-
     $sourceModule = (string)($h['source_module'] ?? 'realestate');
     $paidVia = $h['paid_via'] ?? 'bank';
-    if (erp_expense_is_legacy_archive($h)) {
-        return ['success' => false, 'error' => 'Historical ERP Expenses are read-only and cannot be posted or changed.'];
-    }
-    if (in_array($sourceModule, ['realestate', 'construction'], true) && $paidVia === 'accounts_payable') {
-        return [
-            'success' => false,
-            'error' => $sourceModule === 'construction'
-                ? 'Quick Paid Expenses must be paid via cash, bank, or credit card. Use Supplier Invoices for unpaid AP.'
-                : 'Quick Paid Expenses must be paid via bank or cash. Use Vendor Bills for unpaid AP.',
-        ];
-    }
 
     $L = $db->prepare('SELECT * FROM erp_expense_lines WHERE expense_id = ? ORDER BY line_no');
     $L->execute([$expenseId]);
@@ -322,6 +297,51 @@ function erp_post_expense(PDO $db, int $expenseId, ?int $userId): array {
         return ['success' => false, 'error' => 'Journal does not balance (Dr ' . $sumDr . ' vs Cr ' . $sumCr . '). Check line totals.'];
     }
 
+    return ['success' => true, 'lines' => $lines];
+}
+
+function erp_post_expense(PDO $db, int $expenseId, ?int $userId): array {
+    $H = $db->prepare('SELECT * FROM erp_expense_headers WHERE id = ?');
+    $H->execute([$expenseId]);
+    $h = $H->fetch(PDO::FETCH_ASSOC);
+    if (!$h) {
+        return ['success' => false, 'error' => 'Expense not found'];
+    }
+    $status = $h['status'] ?? 'draft';
+    if ($status === 'cancelled') {
+        return ['success' => false, 'error' => 'Cannot post cancelled expense'];
+    }
+    if ($status === 'posted' && !empty($h['journal_id'])) {
+        return ['success' => false, 'error' => 'Expense already posted'];
+    }
+    if (!empty($h['journal_id'])) {
+        return ['success' => false, 'error' => 'Expense already has a journal'];
+    }
+    $companyId = (int)$h['company_id'];
+    if ($companyId <= 0) {
+        return ['success' => false, 'error' => 'Company context is required.'];
+    }
+
+    $sourceModule = (string)($h['source_module'] ?? 'realestate');
+    $paidVia = $h['paid_via'] ?? 'bank';
+    if (erp_expense_is_legacy_archive($h)) {
+        return ['success' => false, 'error' => 'Historical ERP Expenses are read-only and cannot be posted or changed.'];
+    }
+    if (in_array($sourceModule, ['realestate', 'construction'], true) && $paidVia === 'accounts_payable') {
+        return [
+            'success' => false,
+            'error' => $sourceModule === 'construction'
+                ? 'Quick Paid Expenses must be paid via cash, bank, or credit card. Use Supplier Invoices for unpaid AP.'
+                : 'Quick Paid Expenses must be paid via bank or cash. Use Vendor Bills for unpaid AP.',
+        ];
+    }
+
+    $built = erp_expense_build_journal_lines($db, $h);
+    if (!$built['success']) {
+        return ['success' => false, 'error' => $built['error']];
+    }
+    $lines = $built['lines'];
+
     $ref = !empty($h['expense_number']) ? $h['expense_number'] : ('#' . $expenseId);
     $memo = 'ERP Expense ' . $ref . (!empty($h['reference_no']) ? ' (Ref ' . $h['reference_no'] . ')' : '');
     $res = create_and_post_journal(
@@ -346,6 +366,102 @@ function erp_post_expense(PDO $db, int $expenseId, ?int $userId): array {
 }
 
 /**
+ * Replace the lines of an expense's posted journal in place (same journal number).
+ * Returns null when the journal can't be safely rewritten (reversed, other satellite
+ * rows, bank-reconciled, locked period) so the caller falls back to reverse + repost.
+ *
+ * @return array{success:bool,journal_id?:int,error?:string|null}|null
+ */
+function erp_rewrite_expense_journal(PDO $db, array $h, int $jid, ?int $userId): ?array {
+    $expenseId = (int)$h['id'];
+    $companyId = (int)$h['company_id'];
+
+    $J = $db->prepare('SELECT * FROM re_journal_headers WHERE id = ? AND company_id = ?');
+    $J->execute([$jid, $companyId]);
+    $j = $J->fetch(PDO::FETCH_ASSOC);
+    if (!$j || (int)$j['is_posted'] !== 1 || (int)$j['is_reversed'] !== 0
+        || ($j['reference_type'] ?? '') !== 'erp_expense' || (int)$j['reference_id'] !== $expenseId) {
+        return null;
+    }
+    if (is_period_locked($companyId, $j['journal_date']) || is_period_locked($companyId, $h['expense_date'])) {
+        return null;
+    }
+    foreach ([
+        'SELECT COUNT(*) FROM re_bank_reconciliation_matches m JOIN re_general_ledger g ON g.id = m.gl_line_id WHERE g.company_id = ? AND g.journal_id = ?',
+        'SELECT COUNT(*) FROM re_account_ledger_entries WHERE company_id = ? AND journal_id = ?',
+        'SELECT COUNT(*) FROM re_accounting_postings WHERE company_id = ? AND journal_id = ?',
+    ] as $sql) {
+        try {
+            $c = $db->prepare($sql);
+            $c->execute([$companyId, $jid]);
+            if ((int)$c->fetchColumn() > 0) {
+                return null;
+            }
+        } catch (Throwable $e) {
+            // table may not exist
+        }
+    }
+
+    $built = erp_expense_build_journal_lines($db, $h);
+    if (!$built['success']) {
+        return ['success' => false, 'error' => $built['error']];
+    }
+    $lines = $built['lines'];
+    $totalDr = 0.0;
+    $totalCr = 0.0;
+    foreach ($lines as $ln) {
+        $totalDr += (float)$ln['debit'];
+        $totalCr += (float)$ln['credit'];
+    }
+
+    $ref = !empty($h['expense_number']) ? $h['expense_number'] : ('#' . $expenseId);
+    $memo = 'ERP Expense ' . $ref . (!empty($h['reference_no']) ? ' (Ref ' . $h['reference_no'] . ')' : '');
+
+    $ownTx = !$db->inTransaction();
+    if ($ownTx) {
+        $db->beginTransaction();
+    }
+    try {
+        $db->prepare('DELETE FROM re_general_ledger WHERE company_id = ? AND journal_id = ?')->execute([$companyId, $jid]);
+        $db->prepare('DELETE FROM re_journal_lines WHERE company_id = ? AND journal_id = ?')->execute([$companyId, $jid]);
+        $db->prepare('
+            UPDATE re_journal_headers
+            SET journal_date = ?, description = ?, total_debit = ?, total_credit = ?, is_posted = 0
+            WHERE id = ? AND company_id = ?
+        ')->execute([$h['expense_date'], $memo, round($totalDr, 2), round($totalCr, 2), $jid, $companyId]);
+
+        $insL = $db->prepare('
+            INSERT INTO re_journal_lines
+            (company_id, journal_id, account_id, line_number, debit_amount, credit_amount, description, reference)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ');
+        $n = 1;
+        foreach ($lines as $ln) {
+            $insL->execute([$companyId, $jid, $ln['account_id'], $n++, (float)$ln['debit'], (float)$ln['credit'], $ln['description'], null]);
+        }
+
+        // Re-posts the GL rows and marks the header posted again.
+        $post = post_journal($jid, $userId);
+        if (empty($post['success'])) {
+            throw new RuntimeException($post['error'] ?? 'Journal repost failed');
+        }
+        $db->prepare('UPDATE erp_expense_headers SET status = \'posted\' WHERE id = ?')->execute([$expenseId]);
+        accounting_audit_log($companyId, 'edit_journal', 'journal_header', $jid, $userId, 'Expense updated in place: ' . ($j['journal_number'] ?? ''));
+
+        if ($ownTx) {
+            $db->commit();
+        }
+    } catch (Throwable $e) {
+        if ($ownTx && $db->inTransaction()) {
+            $db->rollBack();
+        }
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+
+    return ['success' => true, 'journal_id' => $jid, 'error' => null];
+}
+
+/**
  * @return array{success:bool,journal_id?:int,error?:string|null}
  */
 function erp_repost_expense(PDO $db, int $expenseId, ?int $userId): array {
@@ -363,6 +479,11 @@ function erp_repost_expense(PDO $db, int $expenseId, ?int $userId): array {
     }
     $jid = (int)($h['journal_id'] ?? 0);
     if ($jid > 0) {
+        // Edit keeps one journal: rewrite it in place instead of reverse + new entry.
+        $rewrite = erp_rewrite_expense_journal($db, $h, $jid, $userId);
+        if ($rewrite !== null) {
+            return $rewrite;
+        }
         $rev = reverse_journal($jid, 'Expense updated', $userId, $h['expense_date']);
         if (!$rev['success']) {
             return ['success' => false, 'error' => $rev['error'] ?? 'Reverse failed'];
