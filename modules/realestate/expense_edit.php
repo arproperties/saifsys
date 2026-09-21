@@ -507,17 +507,19 @@ searchable_select_assets();
                             }
                             try {
                                 $payStmt = $conn->prepare("
-                                    SELECT id, account_code, account_name
-                                    FROM re_chart_of_accounts
-                                    WHERE company_id = ?
-                                      AND is_active = 1
-                                      AND is_header = 0
+                                    SELECT c.id, c.account_code, c.account_name
+                                    FROM re_chart_of_accounts c
+                                    LEFT JOIN re_chart_of_accounts p ON p.id = c.parent_id
+                                    WHERE c.company_id = ?
+                                      AND c.is_active = 1
+                                      AND c.is_header = 0
                                       AND (
-                                        account_code LIKE '11%%'
-                                        OR LOWER(account_name) LIKE '%%cash%%'
-                                        OR LOWER(account_name) LIKE '%%bank%%'
+                                        c.account_code LIKE '11%%'
+                                        OR LOWER(c.account_name) LIKE '%%cash%%'
+                                        OR LOWER(c.account_name) LIKE '%%bank%%'
+                                        OR p.account_code IN ('1100', '1200')
                                       )
-                                    ORDER BY account_code
+                                    ORDER BY c.account_code
                                 ");
                                 $payStmt->execute([$currentCompanyId]);
                                 foreach ($payStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
