@@ -73,7 +73,7 @@ function hr_fleet_player(): void
 function hr_fleet_map_scripts(string $hrAssetBase): string
 {
     return '<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>'
-        . '<script src="' . htmlspecialchars($hrAssetBase, ENT_QUOTES, 'UTF-8') . '/fleet-map.js?v=20260911-3"></script>';
+        . '<script src="' . htmlspecialchars($hrAssetBase, ENT_QUOTES, 'UTF-8') . '/fleet-map.js?v=20260921-1"></script>';
 }
 
 /** Flash messages set by the POST handlers (fleet_trip_end.php). */
@@ -167,6 +167,10 @@ function hr_fleet_trip_table(array $trips, bool $showVehicle, string $back): voi
               <?php elseif ($t['ended_by'] !== null): ?>
                 <span class="badge text-bg-warning" title="Ended from HR, not by the driver">Ended by office</span>
               <?php endif; ?>
+              <a href="fleet_trip?<?= htmlspecialchars(http_build_query(['id' => (int)$t['id'], 'back' => $back])) ?>"
+                 class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1" title="Investigate this trip" aria-label="Investigate this trip">
+                <i class="bi bi-search"></i>
+              </a>
             </td>
           </tr>
         <?php endforeach; ?>

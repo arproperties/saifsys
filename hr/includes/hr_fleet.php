@@ -407,6 +407,348 @@ function fleet_trip_points(PDO $conn, int $tripId): array
     ], $rows);
 }
 
+/** A counted hop faster than this is flagged on the trip page as a likely GPS jump. */
+function fleet_suspect_speed_kmh(): float
+{
+    return 150.0;
+}
+
+/** No fix for this long is a signal gap on the trip page. */
+function fleet_gap_seconds(): int
+{
+    return 3 * 60;
+}
+
+/** Staying within this many metres for a while is a stop on the trip page. */
+function fleet_stop_radius_m(): float
+{
+    return 50.0;
+}
+
+/** Shortest stop the trip page lists, unless the page asks for another. */
+function fleet_stop_seconds(): int
+{
+    return 60;
+}
+
+/** Choices for "stops of at least" on the trip page, in seconds. */
+function fleet_stop_second_options(): array
+{
+    return [60, 120, 180, 300, 600];
+}
+
+/**
+ * Why a trip shows the km and time it does, for hr/fleet_trip.php.
+ *
+ * Walks the points with the same rules as fleet_fold_points(), so the
+ * "counted" km here is what the trip's distance is made of. Returns every
+ * point with what happened to it, plus the stops, signal gaps and
+ * too-fast hops found along the way, and a timeline of drives and stops.
+ *
+ * @param int $minStop shortest stay in one place that counts as a stop, seconds
+ */
+function fleet_trip_analysis(PDO $conn, array $trip, int $minStop = 0): array
+{
+    $minStop = $minStop > 0 ? $minStop : fleet_stop_seconds();
+    $stmt = $conn->prepare("
+        SELECT lat, lng, speed_kmh, accuracy_m, recorded_at, received_at
+        FROM fleet_trip_points
+        WHERE trip_id = ?
+        ORDER BY recorded_at ASC
+    ");
+    $stmt->execute([(int)$trip['id']]);
+
+    $points = [];
+    $good = [];
+    $jumps = [];
+    $gaps = [];
+    $counted = 0.0;
+    $poor = 0;
+    $late = 0;
+    $anchor = null;
+    $prev = null;
+
+    while ($p = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $ts = (int)strtotime((string)$p['recorded_at']);
+        $lat = (float)$p['lat'];
+        $lng = (float)$p['lng'];
+        $row = [
+            'ts' => $ts,
+            'lat' => $lat,
+            'lng' => $lng,
+            'speed' => $p['speed_kmh'] !== null ? (float)$p['speed_kmh'] : null,
+            'accuracy' => $p['accuracy_m'] !== null ? (float)$p['accuracy_m'] : null,
+            'gap_s' => $prev !== null ? $ts - $prev['ts'] : null,
+            'late_s' => max(0, (int)strtotime((string)$p['received_at']) - $ts),
+            'hop_m' => null,
+            'hop_kmh' => null,
+            'status' => 'first',
+        ];
+        if ($row['late_s'] > 300) {
+            $late++;
+        }
+
+        if ($prev !== null && $row['gap_s'] >= fleet_gap_seconds()) {
+            $gaps[] = [
+                'from_ts' => $prev['ts'],
+                'to_ts' => $ts,
+                'seconds' => $row['gap_s'],
+                'meters' => fleet_distance_m($prev['lat'], $prev['lng'], $lat, $lng),
+                'from' => [$prev['lat'], $prev['lng']],
+                'to' => [$lat, $lng],
+            ];
+        }
+        $prev = $row;
+
+        if ($row['accuracy'] !== null && $row['accuracy'] > fleet_max_accuracy_m()) {
+            $row['status'] = 'poor';
+            $poor++;
+            $points[] = $row;
+            continue;
+        }
+        $good[] = $row;
+
+        if ($anchor !== null) {
+            $hop = fleet_distance_m($anchor['lat'], $anchor['lng'], $lat, $lng);
+            $kmh = $hop / max(1, $ts - $anchor['ts']) * 3.6;
+            $row['hop_m'] = $hop;
+            $row['hop_kmh'] = $kmh;
+            if ($hop < fleet_min_hop_m()) {
+                $row['status'] = 'still';
+                $points[] = $row;
+                continue;
+            }
+            if ($kmh > fleet_max_speed_kmh()) {
+                $row['status'] = 'dropped';
+                $points[] = $row;
+                continue;
+            }
+            $counted += $hop;
+            $row['status'] = 'counted';
+            if ($kmh > fleet_suspect_speed_kmh()) {
+                $row['status'] = 'suspect';
+                $jumps[] = [
+                    'ts' => $ts,
+                    'meters' => $hop,
+                    'kmh' => $kmh,
+                    'from' => [$anchor['lat'], $anchor['lng']],
+                    'to' => [$lat, $lng],
+                ];
+            }
+        }
+        $anchor = ['lat' => $lat, 'lng' => $lng, 'ts' => $ts];
+        $points[] = $row;
+    }
+
+    // Stops: from each good fix, how long the vehicle stayed within the
+    // radius of it. A gap while parked still counts, as both ends are close.
+    $stops = [];
+    $n = count($good);
+    for ($i = 0; $i < $n;) {
+        $j = $i;
+        while ($j + 1 < $n
+            && fleet_distance_m($good[$i]['lat'], $good[$i]['lng'], $good[$j + 1]['lat'], $good[$j + 1]['lng']) <= fleet_stop_radius_m()) {
+            $j++;
+        }
+        if ($good[$j]['ts'] - $good[$i]['ts'] >= $minStop) {
+            $stops[] = [
+                'from_ts' => $good[$i]['ts'],
+                'to_ts' => $good[$j]['ts'],
+                'seconds' => $good[$j]['ts'] - $good[$i]['ts'],
+                'lat' => $good[$i]['lat'],
+                'lng' => $good[$i]['lng'],
+                'at_start' => $i === 0,
+                'at_end' => $j === $n - 1,
+            ];
+            $i = $j + 1;
+        } else {
+            $i++;
+        }
+    }
+
+    // Pulling forward a few metres at the same place is still one stop.
+    $merged = [];
+    foreach ($stops as $stop) {
+        $last = $merged ? $merged[count($merged) - 1] : null;
+        if ($last !== null && $stop['from_ts'] - $last['to_ts'] <= 60
+            && fleet_distance_m($last['lat'], $last['lng'], $stop['lat'], $stop['lng']) <= 3 * fleet_stop_radius_m()) {
+            $last['to_ts'] = $stop['to_ts'];
+            $last['seconds'] = $last['to_ts'] - $last['from_ts'];
+            $last['at_end'] = $stop['at_end'];
+            $merged[count($merged) - 1] = $last;
+            continue;
+        }
+        $merged[] = $stop;
+    }
+    $stops = $merged;
+
+    // A stop at a pickup point is named after it.
+    $pickups = [];
+    if (fleet_routes_ready($conn)) {
+        $pickups = $conn->query("SELECT name, lat, lng, radius_m FROM fleet_pickup_points WHERE status = 'active'")
+            ->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+    foreach ($stops as &$stop) {
+        $stop['pickup'] = null;
+        $best = null;
+        foreach ($pickups as $pp) {
+            $away = fleet_distance_m($stop['lat'], $stop['lng'], (float)$pp['lat'], (float)$pp['lng']);
+            if ($away <= (float)$pp['radius_m'] && ($best === null || $away < $best)) {
+                $best = $away;
+                $stop['pickup'] = (string)$pp['name'];
+            }
+        }
+    }
+    unset($stop);
+
+    // Timeline: the drive before each stop, the stop, and the drive after the last one.
+    $timeline = [];
+    if ($points) {
+        $cursor = $points[0]['ts'];
+        $number = 0;
+        foreach ($stops as $stop) {
+            if ($stop['from_ts'] > $cursor) {
+                $timeline[] = fleet_trip_leg($points, $cursor, $stop['from_ts']);
+            }
+            $timeline[] = ['type' => 'stop', 'number' => ++$number] + $stop;
+            $cursor = $stop['to_ts'];
+        }
+        $lastTs = $points[count($points) - 1]['ts'];
+        if ($lastTs > $cursor) {
+            $timeline[] = fleet_trip_leg($points, $cursor, $lastTs);
+        }
+    }
+
+    $start = (int)strtotime((string)$trip['started_at']);
+    $end = $trip['ended_at'] !== null ? (int)strtotime((string)$trip['ended_at']) : time();
+
+    return [
+        'points' => $points,
+        'stops' => $stops,
+        'gaps' => $gaps,
+        'jumps' => $jumps,
+        'counted_m' => $counted,
+        'poor' => $poor,
+        'late' => $late,
+        'start_ts' => $start,
+        'end_ts' => $end,
+        'first_ts' => $points ? $points[0]['ts'] : null,
+        'last_ts' => $points ? $points[count($points) - 1]['ts'] : null,
+        'stopped_s' => array_sum(array_column($stops, 'seconds')),
+        'min_stop_s' => $minStop,
+        'timeline' => $timeline,
+    ];
+}
+
+/** One drive between two moments of a trip, from fleet_trip_analysis() points. */
+function fleet_trip_leg(array $points, int $from, int $to): array
+{
+    $meters = 0.0;
+    $top = null;
+    $path = [];
+    foreach ($points as $p) {
+        if ($p['ts'] < $from || $p['ts'] > $to || $p['status'] === 'poor') {
+            continue;
+        }
+        $path[] = [$p['lat'], $p['lng']];
+        if ($p['ts'] > $from && in_array($p['status'], ['counted', 'suspect'], true)) {
+            $meters += $p['hop_m'];
+        }
+        if ($p['speed'] !== null && ($top === null || $p['speed'] > $top)) {
+            $top = $p['speed'];
+        }
+    }
+    $seconds = $to - $from;
+    return [
+        'type' => 'drive',
+        'from_ts' => $from,
+        'to_ts' => $to,
+        'seconds' => $seconds,
+        'meters' => $meters,
+        'avg_kmh' => $seconds > 0 ? $meters / $seconds * 3.6 : null,
+        'max_kmh' => $top,
+        'path' => $path,
+    ];
+}
+
+/**
+ * Plain-language findings for the trip page, worst first.
+ *
+ * @return list<array{level:string,text:string}> level: danger, warning, info, success
+ */
+function fleet_trip_findings(array $trip, array $a): array
+{
+    $out = [];
+    $saved = (int)$trip['distance_m'];
+    $km = static fn(float $m): string => number_format($m / 1000, 1) . ' km';
+    $mins = 'fleet_format_seconds';
+    $hm = static fn(int $ts): string => date('H:i', $ts);
+
+    if (!$a['points']) {
+        return [['level' => 'danger', 'text' => 'The phone sent no GPS points for this trip, so there is no route and no distance.']];
+    }
+
+    if (abs($saved - $a['counted_m']) > 200) {
+        $out[] = ['level' => 'warning', 'text' => 'The trip shows ' . $km($saved) . ' but its points add up to ' . $km($a['counted_m'])
+            . '. Points probably arrived out of order; the difference is not explained by this page.'];
+    }
+
+    if ($a['jumps']) {
+        $jumpM = array_sum(array_column($a['jumps'], 'meters'));
+        $top = max(array_column($a['jumps'], 'kmh'));
+        $out[] = ['level' => 'danger', 'text' => count($a['jumps']) . ' hop(s) faster than ' . (int)fleet_suspect_speed_kmh()
+            . ' km/h were counted (fastest ' . (int)round($top) . ' km/h). They add ' . $km($jumpM)
+            . ' — most likely GPS jumps, not driving. Marked red on the map.'];
+    }
+
+    $endStop = null;
+    foreach ($a['stops'] as $s) {
+        if ($s['at_end']) {
+            $endStop = $s;
+        }
+    }
+    if ($endStop !== null) {
+        $parked = $a['end_ts'] - $endStop['from_ts'];
+        if ($parked >= 10 * 60) {
+            $out[] = ['level' => 'danger', 'text' => 'The vehicle was parked from ' . $hm($endStop['from_ts']) . ' until the trip ended at '
+                . $hm($a['end_ts']) . ' (' . $mins($parked) . '). The trip was probably left running after the drive.'];
+        }
+    }
+    if ($a['last_ts'] !== null && $a['end_ts'] - $a['last_ts'] >= 10 * 60) {
+        $out[] = ['level' => 'warning', 'text' => 'No GPS for the last ' . $mins($a['end_ts'] - $a['last_ts']) . ' of the trip (last point '
+            . $hm($a['last_ts']) . ', ended ' . $hm($a['end_ts']) . '). The phone stopped sending before Stop was pressed.'];
+    }
+    if ($a['first_ts'] !== null && $a['first_ts'] - $a['start_ts'] >= 5 * 60) {
+        $out[] = ['level' => 'warning', 'text' => 'First GPS point came ' . $mins($a['first_ts'] - $a['start_ts']) . ' after Start was pressed.'];
+    }
+
+    if ($a['gaps']) {
+        $gapS = array_sum(array_column($a['gaps'], 'seconds'));
+        $gapM = array_sum(array_column($a['gaps'], 'meters'));
+        $out[] = ['level' => 'warning', 'text' => count($a['gaps']) . ' signal gap(s) of ' . (int)(fleet_gap_seconds() / 60)
+            . '+ min, ' . $mins($gapS) . ' in total. The route draws a straight line across them (' . $km($gapM)
+            . '), so the real road distance there is missing. Dashed orange on the map.'];
+    }
+
+    $middle = array_filter($a['stops'], static fn(array $s): bool => !$s['at_end']);
+    if ($middle) {
+        $out[] = ['level' => 'info', 'text' => count($middle) . ' stop(s) of ' . (int)($a['min_stop_s'] / 60) . '+ min, '
+            . $mins((int)array_sum(array_column($middle, 'seconds'))) . ' in total. Numbered on the map and listed in the timeline below.'];
+    }
+    if ($a['poor']) {
+        $out[] = ['level' => 'info', 'text' => $a['poor'] . ' of ' . count($a['points']) . ' points had poor accuracy (over '
+            . (int)fleet_max_accuracy_m() . ' m) and were left out of the distance and route.'];
+    }
+    if ($a['late']) {
+        $out[] = ['level' => 'info', 'text' => $a['late'] . ' points reached the server more than 5 min late — the phone was offline and sent them afterwards.'];
+    }
+
+    if (!$out) {
+        $out[] = ['level' => 'success', 'text' => 'Nothing unusual: the distance comes from continuous driving with no jumps, gaps or long stops.'];
+    }
+    return $out;
+}
+
 /** Vehicles currently on a trip, shaped for the live map. */
 function fleet_live_rows(PDO $conn, int $companyId = 0): array
 {
@@ -620,7 +962,12 @@ function fleet_driver_options(PDO $conn): array
 function fleet_format_duration(string $start, ?string $end): string
 {
     $to = ($end !== null && $end !== '') ? (int)strtotime($end) : time();
-    $seconds = max(0, $to - (int)strtotime($start));
+    return fleet_format_seconds($to - (int)strtotime($start));
+}
+
+function fleet_format_seconds(int $seconds): string
+{
+    $seconds = max(0, $seconds);
     $h = intdiv($seconds, 3600);
     $m = intdiv($seconds % 3600, 60);
     return $h > 0 ? "{$h}h {$m}m" : "{$m}m";

@@ -95,7 +95,7 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'label' => 'Trip History',
                     'icon' => 'route',
                     'href' => $hrBase . '/fleet_history',
-                    'pages' => ['fleet_history.php'],
+                    'pages' => ['fleet_history.php', 'fleet_trip.php'],
                 ],
                 // Pickup points and routes are hidden for now — see fleet_routes_enabled().
                 ...(fleet_routes_enabled() ? [[

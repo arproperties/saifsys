@@ -382,6 +382,8 @@
         document.getElementById(opts.mapEl).scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       });
     }
+
+    return { map: map };
   }
 
   window.FleetMap = { live: live, routes: routes };
