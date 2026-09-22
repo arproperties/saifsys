@@ -38,6 +38,9 @@
  *     ops_finalize_old_module_checkouts().
  *   - Customer-app bookings, at the price the customer booked
  *     (ops_bill_customer_booking).
+ *   - Orders the office scheduled in the old module — the job was made from
+ *     the order, so Finish only marks that order completed (ops_bill_work_order).
+ *     See ops_work_order_link.php.
  *   - Nothing else, deliberately:
  *       maintenance jobs staff raise themselves — the old cleaning module only
  *                           ever billed cleaning;
@@ -115,7 +118,7 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
     // that order is invoiced, so for them a link is not the end: their own
     // function decides, and is safe to run again.
     $sourceType = (string)($job['source_type'] ?? 'staff');
-    if ((int)($job['order_id'] ?? 0) > 0 && !in_array($sourceType, ['ars_checkout', 'customer_booking'], true)) {
+    if ((int)($job['order_id'] ?? 0) > 0 && !in_array($sourceType, ['ars_checkout', 'customer_booking', 'work_order'], true)) {
         return ['status' => (string)($job['billing_status'] ?: 'awaiting_finalize'), 'note' => null, 'invoice_id' => (int)$job['invoice_id'] ?: null];
     }
     if ($job['status'] !== 'done') {
@@ -133,6 +136,10 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
     }
     if ($sourceType === 'customer_booking') {
         return ops_bill_customer_booking($conn, $job);
+    }
+    // Scheduled in the old module: its order is the work order.
+    if ($sourceType === 'work_order') {
+        return ops_bill_work_order($conn, $job);
     }
     // Move-out cleaning has never been billed to anyone.
     if ($sourceType === 'tenant_move_out') {
@@ -362,6 +369,30 @@ function ops_bill_ars_checkout(PDO $conn, array $job): array
     }
 
     // The clean is done; the office finalizes the order in the old module.
+    ops_bill_complete_order($conn, $orderId);
+    return ops_bill_link($conn, $jobId, $orderId, 'awaiting_finalize', null, null);
+}
+
+/**
+ * A job the office scheduled in the old module uses that order, never a new
+ * one — its own client, fee and hours, as the office typed them. Finish marks
+ * it completed; the office finalizes it. Safe to run again.
+ */
+function ops_bill_work_order(PDO $conn, array $job): array
+{
+    $jobId = (int)$job['id'];
+    $orderId = (int)($job['order_id'] ?? 0) ?: (int)($job['source_id'] ?? 0);
+
+    $stmt = $conn->prepare("SELECT status FROM make_order WHERE id = ?");
+    $stmt->execute([$orderId]);
+    $status = $stmt->fetchColumn();
+    if ($status === false) {
+        return ops_bill_record($conn, $jobId, 'not_billable', 'Work order #' . $orderId . ' no longer exists, so nothing to invoice.');
+    }
+    if ($status === 'cancelled') {
+        return ops_bill_link($conn, $jobId, $orderId, 'not_billable', 'Work order #' . $orderId . ' was cancelled in the old module.', null);
+    }
+
     ops_bill_complete_order($conn, $orderId);
     return ops_bill_link($conn, $jobId, $orderId, 'awaiting_finalize', null, null);
 }

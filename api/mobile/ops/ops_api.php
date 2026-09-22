@@ -751,7 +751,10 @@ function ops_api_job_row(array $job): array
         // 'staff', 'tenant_maintenance', 'tenant_cleaning', 'cleaner_report', 'ars_checkout', 'tenant_move_out' or 'customer_booking'. The card marks a
         // tenant's job, and the Requests tab needs the tenant's own words on
         // it: "AC not cooling" is how somebody decides whether it is theirs.
-        'source_type' => (string)($job['source_type'] ?? 'staff'),
+        // A job scheduled in the old module is the office's own work, not a
+        // tenant's: the app shows it as a staff job (the card would otherwise
+        // tag it Tenant). Its notes still come through as request_note.
+        'source_type' => ($job['source_type'] ?? 'staff') === 'work_order' ? 'staff' : (string)($job['source_type'] ?? 'staff'),
         'request_note' => ($job['source_type'] ?? 'staff') !== 'staff' && !empty($job['description'])
             ? mb_substr((string)$job['description'], 0, 160)
             : null,

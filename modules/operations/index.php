@@ -460,6 +460,8 @@ require __DIR__ . '/includes/ops_layout_header.php';
                     <span class="badge bg-info text-dark"><i class="bi bi-phone"></i> Customer booking</span>
                   <?php elseif ($j['source_type'] === 'tenant_move_out'): ?>
                     <span class="badge bg-info text-dark"><i class="bi bi-box-arrow-right"></i> Move-out</span>
+                  <?php elseif ($j['source_type'] === 'work_order'): ?>
+                    <span class="badge bg-info text-dark" title="Scheduled in the old cleaning module"><i class="bi bi-calendar-check"></i> Scheduled · WO #<?= (int)$j['source_id'] ?></span>
                   <?php else: ?>
                     <span class="badge bg-info text-dark"><i class="bi bi-person-badge"></i> Request</span>
                   <?php endif; ?>

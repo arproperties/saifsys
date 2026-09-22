@@ -47,8 +47,12 @@
  * — some fixed and never closed, some not. Pouring them into the phones on the
  * first morning would bury the new ones and send people to doors that were
  * dealt with weeks ago. Move this date back to bring the backlog into the pool.
+ *
+ * Moved from 2026-09-16 to 2026-09-22 when tenant requests were switched back
+ * on that day. The user chose new requests only: the 65 the office typed on
+ * the Real Estate page between 18 and 22 Sep stay there, not in the pool.
  */
-const OPS_TENANT_SYNC_FROM = '2026-09-16';
+const OPS_TENANT_SYNC_FROM = '2026-09-22';
 
 /**
  * Checkouts and move-outs before this date are not copied.
@@ -68,16 +72,20 @@ const OPS_CHECKOUT_SYNC_FROM = '2026-09-17';
 const OPS_CUSTOMER_BOOKING_COMPANY_ID = 1;
 
 /**
- * Whether requests raised elsewhere are copied into the pool at all.
+ * Whether checkouts, move-outs and customer-app bookings are copied into the
+ * pool.
  *
- * Off. A job is made by the person who wants it done — staff on the ops page
- * or in the field app, a cleaner reporting what they found on a checklist —
- * and by nobody else. Copying maintenance requests, checkouts, move-outs and
- * bookings in filled the phones with work the office had never looked at.
- *
- * Everything below still works; turn this back to true to have it run again.
+ * Off since 2026-09-18. A job is made by the person who wants it done, and
+ * those were made by the system. Everything below still works; turn this back
+ * to true to have them run again.
  */
 const OPS_SYNC_SOURCES = false;
+
+/**
+ * Whether tenant requests — maintenance and cleaning — are copied into the
+ * pool. On again from 2026-09-22: the tenant is the person who wants it done.
+ */
+const OPS_SYNC_TENANT_REQUESTS = true;
 
 // ---------------------------------------------------------------------------
 // Copy requests in
@@ -95,7 +103,12 @@ const OPS_SYNC_SOURCES = false;
  */
 function ops_sync_tenant_requests(PDO $conn, array $companyIds): void
 {
-    if (!OPS_SYNC_SOURCES) {
+    // Orders the office scheduled in the old module, for the scheduled worker
+    // only — see ops_work_order_link.php. Read-only on the old tables.
+    require_once __DIR__ . '/ops_work_order_link.php';
+    ops_sync_work_orders($conn);
+
+    if (!OPS_SYNC_SOURCES && !OPS_SYNC_TENANT_REQUESTS) {
         return;
     }
 
@@ -105,16 +118,20 @@ function ops_sync_tenant_requests(PDO $conn, array $companyIds): void
     }
 
     try {
-        ops_fix_copied_maintenance($conn, $companyIds);
-        ops_sync_tenant_maintenance($conn, $companyIds);
-        ops_sync_tenant_cleaning($conn, $companyIds);
-        ops_sync_ars_checkouts($conn, $companyIds);
-        ops_sync_tenant_move_outs($conn, $companyIds);
-        ops_sync_customer_bookings($conn, $companyIds);
-        ops_withdraw_tenant_requests($conn, $companyIds);
-        ops_withdraw_checkouts($conn, $companyIds);
-        ops_withdraw_customer_bookings($conn, $companyIds);
-        ops_finalize_old_module_checkouts($conn, $companyIds);
+        if (OPS_SYNC_TENANT_REQUESTS) {
+            ops_fix_copied_maintenance($conn, $companyIds);
+            ops_sync_tenant_maintenance($conn, $companyIds);
+            ops_sync_tenant_cleaning($conn, $companyIds);
+            ops_withdraw_tenant_requests($conn, $companyIds);
+        }
+        if (OPS_SYNC_SOURCES) {
+            ops_sync_ars_checkouts($conn, $companyIds);
+            ops_sync_tenant_move_outs($conn, $companyIds);
+            ops_sync_customer_bookings($conn, $companyIds);
+            ops_withdraw_checkouts($conn, $companyIds);
+            ops_withdraw_customer_bookings($conn, $companyIds);
+            ops_finalize_old_module_checkouts($conn, $companyIds);
+        }
         ops_escalate_unclaimed($conn, $companyIds);
     } catch (Throwable $e) {
         // Most often a database without migrations/ops_job_sources.sql yet.
