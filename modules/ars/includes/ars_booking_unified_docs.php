@@ -228,7 +228,7 @@ function ars_udoc_filesize(int $bytes): string {
  * Each row carries its category so the "Type" column can show it.
  *
  * Ordered by category (contract → receipts → deposit → other), newest first
- * within each, so the Type column reads in tidy runs without needing headings.
+ * within each; the view splits it into one section per category.
  *
  * @param array<string,array{label:string,icon:string,items:list<array<string,mixed>>}> $buckets
  * @return list<array<string,mixed>>

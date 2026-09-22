@@ -569,7 +569,6 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
     .ars-pay-table .ars-pay-actions { width: auto; text-align: left !important; }
 }
 #ws-docs .ars-udoc-col-doc { width: auto; min-width: 15rem; }
-#ws-docs .ars-udoc-col-type,
 #ws-docs .ars-udoc-col-date,
 #ws-docs .ars-udoc-col-amount,
 #ws-docs .ars-udoc-actions { width: 1%; white-space: nowrap; }
@@ -584,11 +583,25 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
     font-size: .78rem;
 }
 #ws-docs .ars-udoc-meta .badge { font-weight: 500; }
-#ws-docs .ars-udoc-type { font-size: .8125rem; }
+
+/* Section header per document type (Contract / Receipts / Deposit / Other). */
+#ws-docs .ars-udoc-group-head td {
+    background: var(--ars-primary-soft);
+    color: var(--ars-text);
+    border-top: 2px solid var(--ars-border);
+    padding: .6rem .9rem;
+    text-align: left;
+    font-size: .875rem;
+}
+#ws-docs .ars-udoc-group:first-of-type .ars-udoc-group-head td { border-top: 0; }
+#ws-docs .ars-udoc-group-title { font-weight: 600; }
+#ws-docs .ars-udoc-group-hint { color: var(--ars-text-muted); font-size: .78rem; margin-left: .6rem; }
+#ws-docs .ars-udoc-group-empty td { font-size: .8125rem; padding: .55rem .9rem .55rem 1.6rem; text-align: left; }
+#ws-docs .ars-udoc-group > tr:not(.ars-udoc-group-head) > td:first-child { padding-left: 1.6rem; }
 
 /* The shell pins .btn to min-height:40px and .form-select to 42px, so Bootstrap's
    btn-sm/form-select-sm cannot shrink them. Override inside this table only. */
-#ws-docs .ars-udoc-col-type .ars-udoc-refile {
+#ws-docs .ars-udoc-meta .ars-udoc-refile {
     width: auto;
     min-width: 9.5rem;
     min-height: 0;
@@ -616,11 +629,16 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
 @media (max-width: 767.98px) {
     #ws-docs .ars-udoc-table { min-width: 0; }
     #ws-docs .ars-udoc-col-doc,
-    #ws-docs .ars-udoc-col-type,
     #ws-docs .ars-udoc-col-date,
     #ws-docs .ars-udoc-col-amount,
     #ws-docs .ars-udoc-actions { width: auto; min-width: 0; white-space: normal; }
     #ws-docs .ars-udoc-actions-row { flex-wrap: wrap; justify-content: flex-start; }
+    /* Section headers read as plain labels between the cards, not as cards. */
+    #ws-docs .ars-udoc-group-head,
+    #ws-docs .ars-udoc-group-empty { background: none; border: 0; box-shadow: none; padding: 0; margin: .9rem 0 .4rem; }
+    #ws-docs .ars-udoc-group-head td,
+    #ws-docs .ars-udoc-group-empty td { background: none; border: 0; padding: 0 .25rem; }
+    #ws-docs .ars-udoc-group > tr:not(.ars-udoc-group-head) > td:first-child { padding-left: 1rem; }
 }
 </style>
 <script>window.ARS_BOOKING_ID = <?= (int)$booking['id'] ?>;</script>
@@ -1235,7 +1253,7 @@ echo $arsWsLifecycleHtml;
 
         <section id="ars-ws-panel-documents" data-ars-ws-panel="documents" class="ars-ws-panel">
         <div id="documents">
-        <!-- Unified Documents — one flat list; the Type column says where each doc is filed -->
+        <!-- Unified Documents — one table, one section per document type -->
         <div class="ars-card mb-4" id="ws-docs">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <span><i class="bi bi-folder2-open me-2"></i>Documents
@@ -1258,14 +1276,38 @@ echo $arsWsLifecycleHtml;
                         <thead>
                             <tr>
                                 <th class="ars-udoc-col-doc">Document</th>
-                                <th class="ars-udoc-col-type">Type</th>
                                 <th class="ars-udoc-col-date">Date</th>
                                 <th class="text-end ars-udoc-col-amount">Amount</th>
                                 <th class="text-end ars-udoc-actions">Actions</th>
                             </tr>
                         </thead>
-                        <tbody>
-                        <?php foreach ($unifiedDocsFlat as $item): ?>
+                        <?php
+                        // One section per document type, in category order; empty
+                        // sections stay visible so staff can see what is missing.
+                        $udocGroups = [];
+                        foreach ($docCategories as $catKey => $catMeta) {
+                            $udocGroups[$catKey] = [];
+                        }
+                        foreach ($unifiedDocsFlat as $item) {
+                            $udocGroups[$item['category']][] = $item;
+                        }
+                        ?>
+                        <?php foreach ($udocGroups as $catKey => $groupItems): ?>
+                        <?php $catMeta = $docCategories[$catKey]; ?>
+                        <tbody class="ars-udoc-group">
+                            <tr class="ars-udoc-group-head">
+                                <td colspan="4">
+                                    <i class="bi <?= h($catMeta['icon']) ?> me-2"></i><span class="ars-udoc-group-title"><?= h($catMeta['label']) ?></span>
+                                    <span class="badge bg-secondary ms-1"><?= count($groupItems) ?></span>
+                                    <span class="ars-udoc-group-hint d-none d-md-inline"><?= h($catMeta['hint']) ?></span>
+                                </td>
+                            </tr>
+                            <?php if (empty($groupItems)): ?>
+                            <tr class="ars-udoc-group-empty">
+                                <td colspan="4" class="text-muted">Nothing filed here yet.</td>
+                            </tr>
+                            <?php endif; ?>
+                        <?php foreach ($groupItems as $item): ?>
                             <tr>
                                 <td data-label="Document" class="ars-udoc-col-doc">
                                     <div class="fw-semibold"><?= h($item['title']) ?></div>
@@ -1277,20 +1319,17 @@ echo $arsWsLifecycleHtml;
                                         <?php if ($item['subtitle'] !== ''): ?>
                                         <span class="text-muted"><?= h($item['subtitle']) ?></span>
                                         <?php endif; ?>
+                                        <?php if ($item['attachment_id'] !== null): ?>
+                                        <span class="text-muted ms-1">Move to</span>
+                                        <select class="form-select form-select-sm ars-udoc-refile"
+                                                data-ars-attachment-id="<?= (int)$item['attachment_id'] ?>"
+                                                aria-label="Move document to another section">
+                                            <?php foreach ($docCategories as $optKey => $optMeta): ?>
+                                            <option value="<?= h($optKey) ?>" <?= $optKey === $item['category'] ? 'selected' : '' ?>><?= h($optMeta['label']) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <?php endif; ?>
                                     </div>
-                                </td>
-                                <td data-label="Type" class="ars-udoc-col-type">
-                                    <?php if ($item['attachment_id'] !== null): ?>
-                                    <select class="form-select form-select-sm ars-udoc-refile"
-                                            data-ars-attachment-id="<?= (int)$item['attachment_id'] ?>"
-                                            aria-label="Change document type">
-                                        <?php foreach ($docCategories as $optKey => $optMeta): ?>
-                                        <option value="<?= h($optKey) ?>" <?= $optKey === $item['category'] ? 'selected' : '' ?>><?= h($optMeta['label']) ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                    <?php else: ?>
-                                    <span class="ars-udoc-type"><?= h($item['category_label']) ?></span>
-                                    <?php endif; ?>
                                 </td>
                                 <td data-label="Date" class="ars-udoc-col-date"><?= $item['date'] !== '' ? h($item['date']) : '—' ?></td>
                                 <td data-label="Amount" class="text-end ars-tabular ars-udoc-col-amount">
@@ -1326,6 +1365,7 @@ echo $arsWsLifecycleHtml;
                             </tr>
                         <?php endforeach; ?>
                         </tbody>
+                        <?php endforeach; ?>
                     </table>
                 </div>
                 <?php endif; ?>
