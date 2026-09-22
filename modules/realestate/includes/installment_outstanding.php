@@ -197,3 +197,51 @@ if (!function_exists('re_apply_installment_outstanding')) {
         return $out;
     }
 }
+
+if (!function_exists('re_apply_billing_item_outstanding')) {
+    /**
+     * Same problem as installments, for re_billing_items: an Invoice Mode receipt settles
+     * the obligation behind the item but never writes `is_paid = 1`. Resolve collected the
+     * way lease_view.php does (obligation allocated_amount first, then Legacy allocations /
+     * paid_amount), add `collected_amount` + `outstanding_balance`, and by default drop rows
+     * that are already fully collected.
+     *
+     * @param array<int,array<string,mixed>> $rows rows carrying `id`, `lease_id`, `total_amount`
+     * @return array<int,array<string,mixed>>
+     */
+    function re_apply_billing_item_outstanding(PDO $conn, int $companyId, array $rows, bool $dropSettled = true): array
+    {
+        if ($rows === []) {
+            return [];
+        }
+
+        $idsByLease = [];
+        foreach ($rows as $row) {
+            $idsByLease[(int)($row['lease_id'] ?? 0)][] = (int)($row['id'] ?? 0);
+        }
+        $obligationPaid = [];
+        foreach ($idsByLease as $leaseId => $ids) {
+            try {
+                $obligationPaid += re_billing_item_obligation_allocated_map($conn, $companyId, (int)$leaseId, $ids);
+            } catch (Throwable $e) {
+                // Obligations table missing: fall through to Legacy paid below.
+            }
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            $id = (int)($row['id'] ?? 0);
+            $paid = (float)($obligationPaid[$id] ?? 0);
+            if ($paid <= 0.005) {
+                $paid = get_billing_item_total_paid($conn, $id);
+            }
+            $row['collected_amount'] = $paid;
+            $row['outstanding_balance'] = max(0.0, round((float)($row['total_amount'] ?? 0) - $paid, 2));
+            if ($dropSettled && $row['outstanding_balance'] <= 0.005) {
+                continue;
+            }
+            $out[] = $row;
+        }
+        return $out;
+    }
+}

@@ -90,6 +90,8 @@ $overdueBillingItems = $conn->prepare("
 ");
 $overdueBillingItems->execute([$currentCompanyId]);
 $overdueBillingItems = $overdueBillingItems->fetchAll(PDO::FETCH_ASSOC);
+// is_paid is never set by Invoice Mode receipts; resolve what is still owed (as lease_view.php does).
+$overdueBillingItems = re_apply_billing_item_outstanding($conn, $currentCompanyId, $overdueBillingItems);
 
 // Get overdue invoices
 $overdueInvoices = $conn->prepare("
@@ -148,7 +150,7 @@ foreach ($overdueInstallments as $item) {
     $totalOverdue += (float)$item['outstanding_balance'];
 }
 foreach ($overdueBillingItems as $item) {
-    $totalOverdue += (float)$item['total_amount'];
+    $totalOverdue += (float)$item['outstanding_balance'];
 }
 foreach ($overdueInvoices as $inv) {
     $totalOverdue += (float)$inv['outstanding_amount'];
@@ -325,7 +327,12 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                                 <td>
                                                     <span class="badge bg-warning"><?= $item['days_overdue'] ?> days</span>
                                                 </td>
-                                                <td class="text-end"><strong><?= number_format($item['total_amount'], 2) ?> AED</strong></td>
+                                                <td class="text-end">
+                                                    <strong><?= number_format((float)$item['outstanding_balance'], 2) ?> AED</strong>
+                                                    <?php if ((float)$item['collected_amount'] > 0.005): ?>
+                                                        <br><small class="text-muted">of <?= number_format((float)$item['total_amount'], 2) ?> · collected <?= number_format((float)$item['collected_amount'], 2) ?></small>
+                                                    <?php endif; ?>
+                                                </td>
                                             </tr>
                                         <?php endforeach; ?>
                                     </tbody>
