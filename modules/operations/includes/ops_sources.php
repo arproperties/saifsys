@@ -597,12 +597,13 @@ function ops_withdraw_customer_bookings(PDO $conn, array $companyIds): void
 }
 
 /**
- * Invoice checkouts that were cleaned through the old module instead.
+ * Link checkouts that were cleaned through the old module instead.
  *
- * Their job left the pool when the old work order was marked completed, and
- * the old module would then wait for somebody to press Finalize. This does it,
- * the same way Finish does. Only checkouts that had a job here — go-live
- * onwards — and a few per page load.
+ * Their job left the pool when the old work order was marked completed. The
+ * office finalizes that order in the old module as it always did; this only
+ * ties the job to it, so the job reads "Waiting for Finalize" and then shows
+ * the invoice. Only checkouts that had a job here — go-live onwards — and a
+ * few per page load.
  */
 function ops_finalize_old_module_checkouts(PDO $conn, array $companyIds): void
 {
@@ -616,30 +617,15 @@ function ops_finalize_old_module_checkouts(PDO $conn, array $companyIds): void
         WHERE j.source_type = 'ars_checkout'
           AND j.status = 'cancelled'
           AND j.company_id IN ($in)
-          AND o.status = 'completed'
-          AND o.invoice_id IS NULL
-          AND COALESCE(j.billing_status, '') <> 'failed'
+          AND j.order_id IS NULL
+          AND o.status IN ('completed', 'invoiced')
         ORDER BY o.id ASC
         LIMIT 5
     ");
     $stmt->execute($companyIds);
 
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-        $orderId = (int)$row['order_id'];
-        $jobId = (int)$row['job_id'];
-        try {
-            $invoiceId = ops_bill_finalize_order(
-                $conn, $orderId, null,
-                "ARS work order #{$orderId} completed in the old module — finalized and invoiced automatically"
-            );
-            ops_bill_link($conn, $jobId, $orderId, 'billed', null, $invoiceId);
-        } catch (Throwable $e) {
-            // Said once, on the job, and not retried on every page load: the
-            // query above skips a job already marked failed.
-            ops_bill_link($conn, $jobId, $orderId, 'failed',
-                mb_substr('Invoice not created from ARS work order #' . $orderId . ': ' . $e->getMessage(), 0, 255), null);
-            error_log('ops_finalize_old_module_checkouts #' . $orderId . ' failed: ' . $e->getMessage());
-        }
+        ops_bill_link($conn, (int)$row['job_id'], (int)$row['order_id'], 'awaiting_finalize', null, null);
     }
 }
 

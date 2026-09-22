@@ -78,15 +78,17 @@ switch ($action) {
     // Supervisor-only status changes
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
-    // Invoice a finished job that did not invoice itself
+    // Work order for a finished job that did not get one
     // -----------------------------------------------------------------------
     // The only billing button in the module, and it is a retry, not a step:
-    // normally Finish on the phone already did this. It exists for the job
+    // normally Finish on the phone already wrote the work order. It exists for the job
     // that finished before its building had a client, or hit an error.
     case 'retry_billing':
         $result = ops_bill_finished_job($conn, $jobId);
-        if ($result['status'] === 'billed') {
-            ops_flash('Invoice created.');
+        if ($result['status'] === 'awaiting_finalize') {
+            ops_flash('Work order created. Finalize it in Work Orders to invoice it.');
+        } elseif ($result['status'] === 'billed') {
+            ops_flash('Already invoiced.');
         } else {
             ops_flash($result['note'] ?: 'The invoice was not created.', $result['status'] === 'not_billable' ? 'info' : 'warning');
         }

@@ -201,17 +201,17 @@ require __DIR__ . '/includes/ops_layout_header.php';
 <?php $bill = ops_bill_summary($conn, $appBase, $job); ?>
 <?php if ($bill): ?>
   <div class="alert alert-<?= h($bill['tone']) ?> d-flex flex-wrap align-items-center gap-2 py-2">
-    <i class="bi <?= $bill['tone'] === 'success' ? 'bi-receipt' : 'bi-info-circle' ?>"></i>
+    <i class="bi <?= $bill['tone'] === 'success' ? 'bi-receipt' : ($bill['tone'] === 'info' ? 'bi-hourglass-split' : 'bi-info-circle') ?>"></i>
     <span><?= h($bill['text']) ?></span>
     <?php if ($bill['url']): ?>
-      <a href="<?= h($bill['url']) ?>" class="btn btn-sm btn-outline-dark ms-auto">View invoice</a>
+      <a href="<?= h($bill['url']) ?>" class="btn btn-sm btn-outline-dark ms-auto"><?= $bill['tone'] === 'success' ? 'View invoice' : 'Open Work Orders' ?></a>
     <?php elseif (in_array($job['billing_status'], ['no_client', 'failed'], true)): ?>
       <a href="<?= h($opsBase) ?>/billing.php" class="btn btn-sm btn-outline-dark ms-auto">Billing</a>
       <form method="post" action="<?= h($opsBase) ?>/job_action.php" class="m-0">
         <?php csrf_field(); ?>
         <input type="hidden" name="action" value="retry_billing">
         <input type="hidden" name="job_id" value="<?= (int)$job['id'] ?>">
-        <button class="btn btn-sm btn-dark">Retry invoice</button>
+        <button class="btn btn-sm btn-dark">Retry work order</button>
       </form>
     <?php endif; ?>
   </div>

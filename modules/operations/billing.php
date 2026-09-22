@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // The jobs that finished while this building had nobody to bill.
             $billed = 0;
             foreach (ops_billing_waiting_jobs($conn, $buildingId) as $waitingId) {
-                if (ops_bill_finished_job($conn, $waitingId)['status'] === 'billed') {
+                if (in_array(ops_bill_finished_job($conn, $waitingId)['status'], ['billed', 'awaiting_finalize'], true)) {
                     $billed++;
                 }
             }
@@ -90,7 +90,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ((float)$clientRow['rate'] <= 0) {
                 $message .= ' This client has no hourly rate yet, so nothing will be invoiced until one is added.';
             } elseif ($billed > 0) {
-                $message .= ' ' . $billed . ' waiting job' . ($billed === 1 ? ' was' : 's were') . ' invoiced.';
+                $message .= ' ' . $billed . ' waiting job' . ($billed === 1 ? ' now has its' : 's now have their') . ' work order, ready to Finalize.';
             }
             ops_flash($message, (float)$clientRow['rate'] <= 0 ? 'warning' : 'success');
         }
@@ -112,7 +112,7 @@ $buildings = $conn->prepare("
                AND j.order_id IS NULL AND j.billing_status IN ('no_client','failed')) AS waiting,
            (SELECT COUNT(DISTINCT j.id)
               FROM ops_jobs j JOIN ops_job_places p ON p.job_id = j.id
-             WHERE p.building_id = b.id AND j.billing_status = 'billed'
+             WHERE p.building_id = b.id AND j.billing_status IN ('billed', 'awaiting_finalize')
                AND j.finished_at >= ?) AS billed_30d
     FROM re_buildings b
     LEFT JOIN ops_building_clients bc ON bc.building_id = b.id
@@ -158,12 +158,13 @@ require __DIR__ . '/includes/ops_layout_header.php';
 <div class="mb-4">
   <div class="page-header-label">Billing</div>
   <div class="text-muted small">
-    A cleaning job finished in a building invoices that building's client automatically —
+    A cleaning job finished in a building makes a work order for that building's client —
     app time rounded up to the half hour, at most <?= (int)OPS_BILL_MAX_HOURS ?> hours,
     at the client's own rate and VAT. With no client chosen, the building's landlord is billed
     when the landlord is a client. Maintenance requests bill the same client,
     at most <?= (int)OPS_BILL_MAX_HOURS_TENANT ?> hours. ARS checkouts and customer-app bookings
-    invoice at their own price. Tenant cleaning bookings (already paid), move-outs
+    keep their own price. The office checks each work order and presses Finalize in
+    Work Orders to invoice it. Tenant cleaning bookings (already paid), move-outs
     and maintenance jobs staff raise themselves are not invoiced.
   </div>
 </div>
@@ -190,7 +191,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
               <?php if ((int)$b['waiting'] > 0): ?>
                 <div class="small text-warning-emphasis">
                   <i class="bi bi-exclamation-triangle"></i>
-                  <?= (int)$b['waiting'] ?> finished job<?= (int)$b['waiting'] === 1 ? '' : 's' ?> waiting to be invoiced
+                  <?= (int)$b['waiting'] ?> finished job<?= (int)$b['waiting'] === 1 ? '' : 's' ?> with no work order yet
                 </div>
               <?php endif; ?>
             </td>
@@ -224,7 +225,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <span class="text-muted">—</span>
               <?php endif; ?>
             </td>
-            <td class="text-end small"><?= (int)$b['billed_30d'] ?> invoiced</td>
+            <td class="text-end small"><?= (int)$b['billed_30d'] ?> work order<?= (int)$b['billed_30d'] === 1 ? '' : 's' ?></td>
           </tr>
         <?php endforeach; ?>
       </tbody>

@@ -549,11 +549,29 @@ if ($flash !== '') {
         'cancelled' => ['Cancelled', 'secondary'],
         'finalized' => ['Finalized', 'dark'],
       ];
+      // How many completed orders still need Finalize — finished app jobs land
+      // here and are only invoiced once someone presses it.
+      $awaitingFinalizeCount = 0;
+      try {
+        $afStmt = $conn->prepare("
+          SELECT COUNT(*) FROM make_order mo
+          WHERE mo.company_id = ?
+            AND COALESCE(mo.is_finalized,0) = 0
+            AND COALESCE(mo.status,'') = 'completed'
+        ");
+        $afStmt->execute([$currentCompanyId]);
+        $awaitingFinalizeCount = (int)$afStmt->fetchColumn();
+      } catch (Throwable $e) {
+        $awaitingFinalizeCount = 0;
+      }
       foreach ($opsStatuses as $key => $data):
         $active = ($ops_filter === $key) ? ' active' : '';
     ?>
       <a href="javascript:void(0)" class="status-chip status-chip-<?= $data[1] ?><?= $active ?>" data-ops-filter="<?= h($key) ?>">
         <?= h($data[0]) ?>
+        <?php if ($key === 'completed' && $awaitingFinalizeCount > 0): ?>
+          <span class="badge rounded-pill text-bg-warning ms-1" title="Completed, not finalized yet"><?= $awaitingFinalizeCount ?></span>
+        <?php endif; ?>
       </a>
     <?php endforeach; ?>
   </div>

@@ -1,32 +1,27 @@
 <?php
 /**
- * Operations — a finished job invoices itself.
+ * Operations — a finished job makes its work order; the office invoices it.
  *
- * WHAT THIS REPLACES
- * ------------------
- * In the old cleaning module a job became money in three office steps: someone
- * typed a work order, the job was marked complete, and an Admin or Accountant
- * pressed Finalize (wo_finalize_work_order), which produced the invoice and its
- * GL journal. Almost nothing got that far — 2 of 420 orders in the thirty days
- * before this. Here the person on site pressing Finish is the whole trigger.
+ * HOW IT WORKS
+ * ------------
+ * Finish on the phone writes the work order the office would have typed in the
+ * old module (make_order), already completed, with the client, the place, the
+ * person and the hours the app measured. It is NOT invoiced here. The order
+ * waits in the old Work Orders list under "Completed", where an Admin or
+ * Accountant checks it — fixes the hours of a job left running, for one — and
+ * presses Finalize (wo_finalize_work_order), exactly as before. That is what
+ * makes the invoice, its receivable and its GL journal.
  *
- * THE SAME INVOICE, NOT A NEW KIND OF ONE
- * ---------------------------------------
- * Nothing about invoicing is re-implemented. A finished job writes the work
- * order the office would have typed, and hands it to ar_ensure_invoice_for_order
- * — the function Finalize itself calls. So the invoice number, its line, the
- * client's terms and due date, the receivable, the VAT and the GL journal are
- * identical to a Finalize, and every accounts page, statement, reconciliation
- * and report that reads make_order and invoices sees these without knowing
- * where they came from.
+ * The job shows "Waiting for Finalize" until then, and the invoice after,
+ * read from the order's own invoice_id (ops_bill_summary), so it does not
+ * matter which old screen did the finalizing.
  *
- * The one thing left out is Finalize's role check. It exists to stop the wrong
- * person in the office freezing an order; here there is no person in the
- * office, and the rules that decide the amount are fixed in this file rather
- * than typed by whoever is logged in.
+ * Until 2026-09-22 Finish finalized the order itself. The user moved it back to
+ * the office: cleaners were leaving jobs running for days, and a job finished
+ * late would have invoiced the full 10-hour cap with nobody looking.
  *
- * WHAT GETS INVOICED
- * ------------------
+ * WHAT GETS A WORK ORDER
+ * ----------------------
  *   - Cleaning jobs a staff member raised in a building. Billed to the building's
  *     client, at that client's hourly rate and VAT, for the time the app
  *     measured, up to 10 hours. The client is the one set on
@@ -37,10 +32,9 @@
  *     to one flat, and the owner is not billed a day because a technician left
  *     the job open.
  *   - ARS checkouts, from the work order the checkout already made in the old
- *     module. Finish completes that order and finalizes it — its own fee, its
- *     own client — so there is one invoice, never a second order
- *     (ops_bill_ars_checkout). A checkout cleaned through the old module and
- *     marked completed there is finalized the same way — see
+ *     module. Finish marks that order completed — its own fee, its own client —
+ *     so there is one order, never a second (ops_bill_ars_checkout). A checkout
+ *     cleaned through the old module is only linked — see
  *     ops_finalize_old_module_checkouts().
  *   - Customer-app bookings, at the price the customer booked
  *     (ops_bill_customer_booking).
@@ -57,9 +51,9 @@
  *
  * NEVER BLOCKS FINISH
  * -------------------
- * Billing runs after the job is already marked done. If it fails, the job is
- * still finished, the reason is recorded as `failed`, and the office sees a
- * Retry button on the job. A cleaner is never told their work did not count
+ * The work order is written after the job is already marked done. If that
+ * fails, the job is still finished, the reason is recorded as `failed`, and the
+ * office sees a Retry button on the job. A cleaner is never told their work did not count
  * because an account code was missing.
  */
 
@@ -100,7 +94,7 @@ function ops_billable_hours(int $minutes, float $maxHours = OPS_BILL_MAX_HOURS):
 }
 
 /**
- * Invoice a finished job, once.
+ * Write the work order for a finished job, once.
  *
  * Safe to call again for the same job: a job that already produced a work
  * order is left exactly as it is. That is what makes the web Retry button and
@@ -122,7 +116,7 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
     // function decides, and is safe to run again.
     $sourceType = (string)($job['source_type'] ?? 'staff');
     if ((int)($job['order_id'] ?? 0) > 0 && !in_array($sourceType, ['ars_checkout', 'customer_booking'], true)) {
-        return ['status' => 'billed', 'note' => null, 'invoice_id' => (int)$job['invoice_id'] ?: null];
+        return ['status' => (string)($job['billing_status'] ?: 'awaiting_finalize'), 'note' => null, 'invoice_id' => (int)$job['invoice_id'] ?: null];
     }
     if ($job['status'] !== 'done') {
         return ['status' => 'failed', 'note' => 'Only a finished job can be invoiced.', 'invoice_id' => null];
@@ -133,7 +127,7 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
         return ops_bill_record($conn, $jobId, 'not_billable', 'Tenant cleaning — paid by the tenant when booked.');
     }
     // ARS checkout already has its work order in the old module; that one is
-    // finalized rather than writing a second.
+    // completed rather than writing a second.
     if ($sourceType === 'ars_checkout') {
         return ops_bill_ars_checkout($conn, $job);
     }
@@ -249,48 +243,15 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
                  ->execute([$orderId, $workerId]);
         }
 
-        // The same preconditions Finalize enforces, on the order just written.
-        $order = $conn->prepare("SELECT * FROM make_order WHERE id = ?");
-        $order->execute([$orderId]);
-        [$ok, $reason] = wo_can_finalize($conn, $order->fetch(PDO::FETCH_ASSOC) ?: []);
-        if (!$ok) {
-            throw new RuntimeException($reason);
-        }
-
-        // Invoice, items, receivable and GL journal — Finalize's own call.
-        $invoiceId = (int)ar_ensure_invoice_for_order($conn, $orderId, $job['assigned_to'] ? (int)$job['assigned_to'] : null);
-        if ($invoiceId <= 0) {
-            throw new RuntimeException('The invoice could not be created.');
-        }
-
-        // What Finalize writes after the invoice, so these orders read as
-        // finalized and locked everywhere the old module checks.
-        $sets = ['invoice_id = ?', "status = 'invoiced'"];
-        $args = [$invoiceId];
-        if (wo_column_exists($conn, 'frozen_subtotal')) {
-            $sets[] = 'frozen_subtotal = ?';
-            $sets[] = 'frozen_vat_amount = ?';
-            $sets[] = 'frozen_grand_total = ?';
-            array_push($args, $subtotal, $vat, $grand);
-        }
-        if (wo_column_exists($conn, 'is_finalized')) {
-            $sets[] = 'is_finalized = 1';
-            $sets[] = 'finalized_at = ?';
-            $sets[] = 'finalized_by = ?';
-            array_push($args, date('Y-m-d H:i:s'), $job['assigned_to'] ?: null);
-        }
-        if (wo_column_exists($conn, 'ops_status')) {
-            $sets[] = "ops_status = 'completed'";
-        }
-        $args[] = $orderId;
-        $conn->prepare('UPDATE make_order SET ' . implode(', ', $sets) . ' WHERE id = ?')->execute($args);
-
+        // No invoice here. The order waits, completed and unlocked, in the old
+        // work order list, where the office checks the hours and presses
+        // Finalize — see the header.
         $conn->prepare("
             UPDATE ops_jobs
-            SET billing_status = 'billed', billing_note = NULL, billed_hours = ?,
-                order_id = ?, invoice_id = ?
+            SET billing_status = 'awaiting_finalize', billing_note = NULL, billed_hours = ?,
+                order_id = ?, invoice_id = NULL
             WHERE id = ? AND order_id IS NULL
-        ")->execute([$hours, $orderId, $invoiceId, $jobId]);
+        ")->execute([$hours, $orderId, $jobId]);
 
         require_once dirname(__DIR__, 3) . '/includes/AuditService.php';
         AuditService::logCreate('make_order', $orderId, [
@@ -298,120 +259,50 @@ function ops_bill_finished_job(PDO $conn, int $jobId): array
             'client_id' => (int)$client['id'],
             'hours' => $hours,
             'grand_total' => $grand,
-            'invoice_id' => $invoiceId,
-        ], "Operations job #{$jobId} finished — work order #{$orderId} and invoice created automatically",
+        ], "Operations job #{$jobId} finished — work order #{$orderId} created, waiting for Finalize",
             $job['assigned_to'] ? (int)$job['assigned_to'] : null);
 
         if ($ownsTxn) {
             $conn->commit();
         }
 
-        // Finalize refreshes the cached financial dashboards afterwards; so does
-        // this. Outside the transaction, and never allowed to undo a good invoice.
-        try {
-            require_once dirname(__DIR__, 3) . '/includes/service_accounting_service.php';
-            (new ServiceAccountingService($conn))->invalidateFinancialCache();
-        } catch (Throwable $e) {
-            error_log('ops billing cache refresh failed: ' . $e->getMessage());
-        }
-
-        return ['status' => 'billed', 'note' => null, 'invoice_id' => $invoiceId];
+        return ['status' => 'awaiting_finalize', 'note' => null, 'invoice_id' => null];
     } catch (Throwable $e) {
         if ($ownsTxn && $conn->inTransaction()) {
             $conn->rollBack();
         }
         error_log('ops_bill_finished_job #' . $jobId . ' failed: ' . $e->getMessage());
-        return ops_bill_record($conn, $jobId, 'failed', mb_substr('Invoice not created: ' . $e->getMessage(), 0, 255));
+        return ops_bill_record($conn, $jobId, 'failed', mb_substr('Work order not created: ' . $e->getMessage(), 0, 255));
     }
 }
 
 /**
- * Finalize a work order that already exists — the steps of
- * wo_finalize_work_order(), without its Admin/Accountant check, for the reason
- * in the header. The amount is the order's own; nothing here prices it.
- *
- * Returns the invoice id. An order that already has an invoice returns that
- * one untouched, so this is safe to call again. Throws when the order cannot be
- * finalized (not completed, zero total), with Finalize's own reason.
+ * The old module's work order list, showing the completed orders that are not
+ * finalized yet — where the office checks and presses Finalize.
  */
-function ops_bill_finalize_order(PDO $conn, int $orderId, ?int $userId, string $auditNote): int
+function ops_bill_finalize_list_url(string $appBase): string
 {
-    $order = wo_load_order($conn, $orderId);
-    if (!$order) {
-        throw new RuntimeException('Work order #' . $orderId . ' not found.');
+    return $appBase . '/operation?tab=workorder&ops_filter=completed&search=&date=&date_from=&date_to=&status_filter=';
+}
+
+/** Work orders from finished jobs that nobody has finalized yet. */
+function ops_bill_awaiting_finalize_count(PDO $conn, array $companyIds): int
+{
+    if (!$companyIds) {
+        return 0;
     }
-    if ((int)($order['invoice_id'] ?? 0) > 0) {
-        return (int)$order['invoice_id'];
-    }
-
-    $ownsTxn = !$conn->inTransaction();
-    if ($ownsTxn) {
-        $conn->beginTransaction();
-    }
-
-    try {
-        wo_sync_order_totals_from_services($conn, $orderId);
-        $order = wo_load_order($conn, $orderId) ?: [];
-        [$ok, $reason] = wo_can_finalize($conn, $order);
-        if (!$ok) {
-            throw new RuntimeException($reason);
-        }
-
-        $sub = round((float)($order['total'] ?? 0), 2);
-        $vat = round((float)($order['vat_amount'] ?? 0), 2);
-        $grand = round((float)($order['grand_total'] ?? ($sub + $vat)), 2);
-
-        if (wo_column_exists($conn, 'frozen_subtotal')) {
-            $conn->prepare("
-                UPDATE make_order
-                SET frozen_subtotal = ?, frozen_vat_amount = ?, frozen_grand_total = ?, ops_status = 'completed'
-                WHERE id = ?
-            ")->execute([$sub, $vat, $grand, $orderId]);
-        }
-
-        $invoiceId = (int)ar_ensure_invoice_for_order($conn, $orderId, $userId);
-        if ($invoiceId <= 0) {
-            throw new RuntimeException('The invoice could not be created.');
-        }
-        $conn->prepare('UPDATE make_order SET invoice_id = ? WHERE id = ?')->execute([$invoiceId, $orderId]);
-
-        if (wo_column_exists($conn, 'is_finalized')) {
-            $conn->prepare("
-                UPDATE make_order
-                SET is_finalized = 1, finalized_at = ?, finalized_by = ?,
-                    status = IF(status = 'cancelled', status, 'invoiced'), ops_status = 'completed'
-                WHERE id = ?
-            ")->execute([date('Y-m-d H:i:s'), $userId, $orderId]);
-        } else {
-            $conn->prepare("UPDATE make_order SET status = 'invoiced' WHERE id = ? AND status <> 'cancelled'")
-                 ->execute([$orderId]);
-        }
-
-        require_once dirname(__DIR__, 3) . '/includes/AuditService.php';
-        AuditService::logUpdate('make_order', $orderId, $order, [
-            'is_finalized' => 1,
-            'invoice_id' => $invoiceId,
-            'frozen_grand_total' => $grand,
-        ], $auditNote, $userId);
-
-        if ($ownsTxn) {
-            $conn->commit();
-        }
-    } catch (Throwable $e) {
-        if ($ownsTxn && $conn->inTransaction()) {
-            $conn->rollBack();
-        }
-        throw $e;
-    }
-
-    try {
-        require_once dirname(__DIR__, 3) . '/includes/service_accounting_service.php';
-        (new ServiceAccountingService($conn))->invalidateFinancialCache();
-    } catch (Throwable $e) {
-        error_log('ops billing cache refresh failed: ' . $e->getMessage());
-    }
-
-    return $invoiceId;
+    $in = implode(',', array_fill(0, count($companyIds), '?'));
+    $stmt = $conn->prepare("
+        SELECT COUNT(*)
+        FROM ops_jobs j
+        JOIN make_order o ON o.id = j.order_id
+        WHERE j.billing_status = 'awaiting_finalize'
+          AND j.company_id IN ($in)
+          AND o.invoice_id IS NULL
+          AND o.status <> 'cancelled'
+    ");
+    $stmt->execute(array_values($companyIds));
+    return (int)$stmt->fetchColumn();
 }
 
 /** Mark an old-module work order done, only forward. */
@@ -440,14 +331,13 @@ function ops_bill_link(PDO $conn, int $jobId, int $orderId, string $status, ?str
 }
 
 /**
- * An ARS checkout job is invoiced once — from the ARS work order, never a new one.
+ * An ARS checkout job uses the ARS work order, never a new one.
  *
  * Checkout still makes its make_order in the old module (ars_cleaning_trigger),
  * and that order carries the fee and the client. Writing a second order from
  * the job would mean two invoices for one clean. So Finish marks that same
- * order completed and finalizes it. Safe to run again, which is what makes
- * Retry work: an order already finalized is only linked, and
- * invoices.order_id is unique, so there can only ever be one invoice.
+ * order completed and links it; the office finalizes it. Safe to run again,
+ * which is what makes Retry work.
  */
 function ops_bill_ars_checkout(PDO $conn, array $job): array
 {
@@ -471,30 +361,18 @@ function ops_bill_ars_checkout(PDO $conn, array $job): array
         return ops_bill_record($conn, $jobId, 'not_billable', 'No ARS work order for this checkout, so nothing to invoice.');
     }
 
-    // The clean is done whatever happens to the invoice, so this stands even
-    // when finalizing fails.
+    // The clean is done; the office finalizes the order in the old module.
     ops_bill_complete_order($conn, $orderId);
-
-    try {
-        $invoiceId = ops_bill_finalize_order(
-            $conn, $orderId, $job['assigned_to'] ? (int)$job['assigned_to'] : null,
-            "Operations job #{$jobId} finished — ARS work order #{$orderId} finalized and invoiced automatically"
-        );
-    } catch (Throwable $e) {
-        error_log('ops_bill_ars_checkout #' . $jobId . ' failed: ' . $e->getMessage());
-        return ops_bill_link($conn, $jobId, $orderId, 'failed',
-            mb_substr('Invoice not created from ARS work order #' . $orderId . ': ' . $e->getMessage(), 0, 255), null);
-    }
-    return ops_bill_link($conn, $jobId, $orderId, 'billed', null, $invoiceId);
+    return ops_bill_link($conn, $jobId, $orderId, 'awaiting_finalize', null, null);
 }
 
 /**
- * A customer-app booking is invoiced at the price the customer was shown.
+ * A customer-app booking's work order carries the price the customer was shown.
  *
  * The booking already carries it: total_price with its VAT, after any coupon
  * or wallet discount. Finish writes the work order the office used to make
  * from the booking (operation/ajax_online_bookings.php), already completed, at
- * those amounts rather than re-pricing it, then finalizes it. If the office did
+ * those amounts rather than re-pricing it, for the office to finalize. If the office did
  * convert the booking in the old module meanwhile, that order is used instead,
  * so there is still only one.
  */
@@ -522,14 +400,9 @@ function ops_bill_customer_booking(PDO $conn, array $job): array
             ops_bill_complete_order($conn, $orderId);
         }
         $conn->prepare("UPDATE ops_jobs SET order_id = ? WHERE id = ? AND order_id IS NULL")->execute([$orderId, $jobId]);
-
-        $invoiceId = ops_bill_finalize_order(
-            $conn, $orderId, $userId,
-            "Operations job #{$jobId} finished — customer booking #{$bookingId}, work order #{$orderId} invoiced automatically"
-        );
     } catch (Throwable $e) {
         error_log('ops_bill_customer_booking #' . $jobId . ' failed: ' . $e->getMessage());
-        $note = mb_substr('Invoice not created for customer booking #' . $bookingId . ': ' . $e->getMessage(), 0, 255);
+        $note = mb_substr('Work order not created for customer booking #' . $bookingId . ': ' . $e->getMessage(), 0, 255);
         return $orderId > 0
             ? ops_bill_link($conn, $jobId, $orderId, 'failed', $note, null)
             : ops_bill_record($conn, $jobId, 'failed', $note);
@@ -537,7 +410,7 @@ function ops_bill_customer_booking(PDO $conn, array $job): array
 
     $conn->prepare("UPDATE online_bookings SET status = 'completed', updated_at = NOW() WHERE id = ? AND status NOT IN ('cancelled', 'no_show')")
          ->execute([$bookingId]);
-    return ops_bill_link($conn, $jobId, $orderId, 'billed', null, $invoiceId);
+    return ops_bill_link($conn, $jobId, $orderId, 'awaiting_finalize', null, null);
 }
 
 /** The completed work order for a finished customer booking. Returns its id. */
@@ -758,13 +631,34 @@ function ops_bill_summary(PDO $conn, string $appBase, array $job): ?array
         $stmt = $conn->prepare("SELECT invoice_no, total FROM invoices WHERE id = ?");
         $stmt->execute([$invoiceId]);
         $inv = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        // The order's hours, not the job's: the office may have corrected
+        // them before pressing Finalize.
         $hours = (float)($job['billed_hours'] ?? 0);
+        if ((int)($job['order_id'] ?? 0) > 0) {
+            $stmt = $conn->prepare("SELECT hours FROM make_order WHERE id = ?");
+            $stmt->execute([(int)$job['order_id']]);
+            $orderHours = $stmt->fetchColumn();
+            if ($orderHours !== false && $orderHours !== null) {
+                $hours = (float)$orderHours;
+            }
+        }
         return [
             'tone' => 'success',
             'text' => 'Invoiced ' . ($inv['invoice_no'] ?? '#' . $invoiceId)
                     . ' — AED ' . number_format((float)($inv['total'] ?? 0), 2)
                     . ($hours > 0 ? ' (' . rtrim(rtrim(number_format($hours, 2), '0'), '.') . ' h)' : ''),
             'url' => $appBase . '/accounts/invoice_view.php?id=' . $invoiceId,
+        ];
+    }
+
+    if ($status === 'awaiting_finalize' && (int)($job['order_id'] ?? 0) > 0) {
+        $hours = (float)($job['billed_hours'] ?? 0);
+        return [
+            'tone' => 'info',
+            'text' => 'Work order #' . (int)$job['order_id']
+                    . ($hours > 0 ? ' (' . rtrim(rtrim(number_format($hours, 2), '0'), '.') . ' h)' : '')
+                    . ' is waiting for the office to check it and press Finalize.',
+            'url' => ops_bill_finalize_list_url($appBase),
         ];
     }
 

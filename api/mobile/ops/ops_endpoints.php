@@ -813,6 +813,16 @@ function ops_api_handle_job_start(PDO $conn, array $user, int $jobId): void
         );
     }
 
+    // One running job at a time. Cleaners were starting the next unit and
+    // never tapping Finish on the last, and Finish is what writes the work
+    // order the office invoices. A paused job does not count: pausing is a
+    // choice with a reason the office can see. Before the replay guard, like
+    // the photo — finishing the other job and retrying is the fix.
+    // A job already running is a retried start that landed: let it through.
+    if ($job['status'] !== 'in_progress') {
+        ops_api_refuse_if_other_job_running($conn, $user, $jobId);
+    }
+
     ops_api_guard_replay($conn, $user, $jobId, "jobs/$jobId/start");
 
     if ($job['status'] === 'done' || $job['status'] === 'cancelled') {
@@ -832,6 +842,31 @@ function ops_api_handle_job_start(PDO $conn, array $user, int $jobId): void
 
     $fresh = ops_api_job_or_404($conn, $jobId, $user);
     customer_api_send_ok(['job' => ops_api_job_detail($conn, $fresh, $user)]);
+}
+
+/**
+ * Stop here when this person already has another job running (started, not
+ * paused, not finished). Says which one, so they know what to finish.
+ */
+function ops_api_refuse_if_other_job_running(PDO $conn, array $user, int $jobId): void
+{
+    $stmt = $conn->prepare("
+        SELECT id, title
+        FROM ops_jobs
+        WHERE assigned_to = ? AND status = 'in_progress' AND paused_at IS NULL AND id <> ?
+        ORDER BY started_at ASC
+        LIMIT 1
+    ");
+    $stmt->execute([(int)$user['id'], $jobId]);
+    $running = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($running) {
+        customer_api_send_error(
+            'job_running',
+            'Finish "' . $running['title'] . '" first. Only one job can be running at a time.',
+            409,
+            ['running_job_id' => (int)$running['id']]
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -893,6 +928,11 @@ function ops_api_handle_job_pause(PDO $conn, array $user, int $jobId): void
 function ops_api_handle_job_resume(PDO $conn, array $user, int $jobId): void
 {
     $job = ops_api_job_or_404($conn, $jobId, $user);
+
+    // Resuming makes it the running job again, so the same rule as Start.
+    if (!empty($job['paused_at'])) {
+        ops_api_refuse_if_other_job_running($conn, $user, $jobId);
+    }
 
     ops_api_guard_replay($conn, $user, $jobId, "jobs/$jobId/resume");
 

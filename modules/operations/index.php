@@ -10,6 +10,7 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/ops_helper.php';
 require_once __DIR__ . '/includes/ops_sources.php';
+require_once __DIR__ . '/includes/ops_billing.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -134,7 +135,8 @@ $listStmt = $conn->prepare("
            COALESCE(NULLIF(u.fullname, ''), u.username) AS assignee_name,
            COALESCE(NULLIF(cu.fullname, ''), cu.username) AS creator_name,
            (SELECT COUNT(*) FROM ops_job_photos p WHERE p.job_id = j.id) AS photo_count,
-           (SELECT COUNT(*) FROM ops_job_comments c WHERE c.job_id = j.id) AS comment_count
+           (SELECT COUNT(*) FROM ops_job_comments c WHERE c.job_id = j.id) AS comment_count,
+           (SELECT mo.invoice_id FROM make_order mo WHERE mo.id = j.order_id) AS order_invoice_id
     FROM ops_jobs j
     LEFT JOIN user u  ON u.id  = j.assigned_to
     LEFT JOIN user cu ON cu.id = j.created_by
@@ -190,6 +192,20 @@ require __DIR__ . '/includes/ops_layout_header.php';
     </span>
     <a href="<?= h($opsBase) ?>/index.php?assignee=0&amp;status=open"
        class="btn btn-sm btn-outline-dark ms-auto">See them</a>
+  </div>
+<?php endif; ?>
+
+<?php // Finished jobs are invoiced by the office, in the old Work Orders list —
+      // see includes/ops_billing.php. This keeps the pile visible. ?>
+<?php $awaitingFinalize = ops_bill_awaiting_finalize_count($conn, [$companyId]); ?>
+<?php if ($awaitingFinalize > 0): ?>
+  <div class="alert alert-info d-flex flex-wrap align-items-center gap-2">
+    <i class="bi bi-hourglass-split"></i>
+    <span>
+      <strong><?= $awaitingFinalize ?></strong> finished job<?= $awaitingFinalize > 1 ? 's are' : ' is' ?>
+      waiting for Finalize before <?= $awaitingFinalize > 1 ? 'they are' : 'it is' ?> invoiced.
+    </span>
+    <a href="<?= h(ops_bill_finalize_list_url($appBase)) ?>" class="btn btn-sm btn-dark ms-auto">Open Work Orders</a>
   </div>
 <?php endif; ?>
 
@@ -424,8 +440,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
               </a>
               <div class="small text-muted">
                 <span class="badge bg-light text-dark border"><?= h(ops_job_types()[$j['job_type']] ?? $j['job_type']) ?></span>
-                <?php if (($j['billing_status'] ?? '') === 'billed'): ?>
+                <?php if (($j['billing_status'] ?? '') === 'billed' || (int)($j['order_invoice_id'] ?? 0) > 0): ?>
                   <span class="badge bg-success-subtle text-success-emphasis border"><i class="bi bi-receipt"></i> Invoiced</span>
+                <?php elseif (($j['billing_status'] ?? '') === 'awaiting_finalize'): ?>
+                  <span class="badge bg-info-subtle text-info-emphasis border" title="Work order #<?= (int)$j['order_id'] ?> — Finalize it in Work Orders"><i class="bi bi-hourglass-split"></i> Waiting for Finalize</span>
                 <?php elseif (in_array($j['billing_status'] ?? '', ['no_client', 'failed'], true)): ?>
                   <span class="badge bg-warning text-dark" title="<?= h($j['billing_note'] ?? '') ?>"><i class="bi bi-exclamation-triangle"></i> Not invoiced</span>
                 <?php endif; ?>
