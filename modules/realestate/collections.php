@@ -42,6 +42,7 @@ $overdueInstallments = $conn->prepare("
     JOIN re_tenants t ON t.id = l.tenant_id
     WHERE l.company_id = ?
     AND l.status <> 'draft'
+    AND b.is_active = 1
     AND li.status = 'pending'
     AND li.installment_date < CURDATE()
     AND NOT EXISTS (
@@ -80,6 +81,7 @@ $overdueBillingItems = $conn->prepare("
     JOIN re_tenants t ON t.id = l.tenant_id
     WHERE bi.company_id = ?
     AND l.status <> 'draft'
+    AND b.is_active = 1
     AND bi.is_paid = 0
     AND COALESCE(bi.is_waived, 0) = 0
     AND bi.status != 'waived'
@@ -108,6 +110,7 @@ $overdueInvoices = $conn->prepare("
     JOIN re_tenants t ON t.id = l.tenant_id
     WHERE i.company_id = ?
     AND l.status <> 'draft'
+    AND b.is_active = 1
     AND i.status IN ('sent', 'partial')
     AND i.due_date < CURDATE()
     ORDER BY i.due_date ASC
@@ -133,6 +136,7 @@ $bouncedCheques = $conn->prepare("
     JOIN re_tenants t ON t.id = l.tenant_id
     WHERE c.company_id = ? 
     AND c.status = 'bounced'
+    AND b.is_active = 1
     ORDER BY c.bounced_date DESC
 ");
 $bouncedCheques->execute([$currentCompanyId]);

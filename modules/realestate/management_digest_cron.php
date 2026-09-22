@@ -71,6 +71,7 @@ foreach ($companies as $companyId) {
         JOIN re_leases l ON l.id = li.lease_id
         WHERE l.company_id = ?
           AND l.status <> 'draft'
+          AND NOT EXISTS (SELECT 1 FROM re_units xu JOIN re_buildings xb ON xb.id = xu.building_id WHERE xu.id = l.unit_id AND xb.is_active = 0)
           AND li.status = 'pending'
           AND li.installment_date < CURDATE()
           AND NOT EXISTS (
@@ -95,6 +96,7 @@ foreach ($companies as $companyId) {
         JOIN re_leases l ON l.id = bi.lease_id
         WHERE bi.company_id = ?
           AND l.status <> 'draft'
+          AND NOT EXISTS (SELECT 1 FROM re_units xu JOIN re_buildings xb ON xb.id = xu.building_id WHERE xu.id = l.unit_id AND xb.is_active = 0)
           AND bi.is_paid = 0
           AND COALESCE(bi.is_waived, 0) = 0
           AND bi.status != 'waived'
@@ -111,6 +113,7 @@ foreach ($companies as $companyId) {
         JOIN re_leases l ON l.id = i.lease_id
         WHERE i.company_id = ?
           AND l.status <> 'draft'
+          AND NOT EXISTS (SELECT 1 FROM re_units xu JOIN re_buildings xb ON xb.id = xu.building_id WHERE xu.id = l.unit_id AND xb.is_active = 0)
           AND i.status IN ('sent', 'partial')
           AND i.due_date < CURDATE()
     ");
