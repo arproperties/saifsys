@@ -97,6 +97,13 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'href' => $hrBase . '/fleet_history',
                     'pages' => ['fleet_history.php', 'fleet_trip.php'],
                 ],
+                [
+                    'key' => 'fleet_checks',
+                    'label' => 'Daily Checks',
+                    'icon' => 'clipboard-list',
+                    'href' => $hrBase . '/fleet_checks',
+                    'pages' => ['fleet_checks.php'],
+                ],
                 // Pickup points and routes are hidden for now — see fleet_routes_enabled().
                 ...(fleet_routes_enabled() ? [[
                     'key' => 'fleet_pickup_report',
@@ -235,6 +242,7 @@ function hr_nav_page_title(string $currentPage): string
         'org_units.php' => 'Organization',
         'fleet_live.php' => 'Live Map',
         'fleet_history.php' => 'Trip History',
+        'fleet_checks.php' => 'Daily Checks',
         'vehicles.php' => 'Vehicles',
         'vehicle_view.php' => 'Vehicle',
         'fleet_pickup_report.php' => 'Pickup Report',

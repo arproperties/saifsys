@@ -99,6 +99,25 @@
       servicesOffBody: "Turn on your phone's location, then try again.",
       ok: 'OK',
     },
+    check: {
+      title: 'Daily check',
+      subtitle: function (plate) { return 'Before your first trip today in ' + plate + '.'; },
+      ok: 'OK',
+      problem: 'Problem',
+      na: 'N/A',
+      kmTitle: 'Starting kilometres',
+      kmHint: function (km) { return 'Last recorded: ' + km.toLocaleString('en-US') + ' km'; },
+      kmPlaceholder: 'Odometer reading',
+      notesTitle: 'Problems',
+      notesHint: 'Write what is wrong, so the office can fix it.',
+      notesOptional: 'Anything else the office should know (optional)',
+      save: 'Save and start trip',
+      back: 'Back',
+      missing: function (n) { return n === 1 ? '1 item still needs an answer.' : n + ' items still need an answer.'; },
+      needKm: 'Enter the starting kilometres.',
+      needNotes: 'Write what the problem is.',
+      loading: 'Loading the daily check…',
+    },
     settings: {
       title: 'Settings',
       back: 'Back',
@@ -907,6 +926,134 @@
     render();
   }
 
+  // --- Daily check ---------------------------------------------------------
+  //
+  // Once a day per vehicle, before the first trip. The list comes from the
+  // server. While it is open the screen is drawn once and then only patched,
+  // so nothing a driver types is lost to a refresh.
+
+  /** Start pressed: the daily check first if today's is still owed, else straight to Start. */
+  async function openStart() {
+    var vehicleId = state.selectedId;
+    if (vehicleId === null) return;
+    var vehicle = (state.vehicles || []).find(function (v) { return v.id === vehicleId; });
+    state.busy = true;
+    render();
+    var today;
+    try {
+      today = await api('checks/today?vehicle_id=' + vehicleId);
+    } catch (e) {
+      state.busy = false;
+      render();
+      toast(e.message || T.errors.genericBody);
+      return;
+    }
+    state.busy = false;
+    if (today.needed) {
+      state.check = {
+        vehicleId: vehicleId,
+        plate: vehicle ? vehicle.plate_no : '',
+        sections: today.sections,
+        lastKm: today.last_km,
+        answers: {},
+        km: '',
+        notes: '',
+      };
+      state.screen = 'checklist';
+      render();
+      window.scrollTo(0, 0);
+      return;
+    }
+    state.sheet = { title: T.home.startSheet.title, body: T.home.startSheet.body, confirm: T.home.startSheet.confirm, cancel: T.home.startSheet.cancel, onConfirm: begin };
+    render();
+  }
+
+  function renderChecklist() {
+    var c = state.check;
+    var sections = c.sections.map(function (s) {
+      return '<h2 class="label muted check-section">' + esc(s.title) + '</h2>' + s.items.map(function (item) {
+        var opts = [['ok', T.check.ok], ['problem', T.check.problem]].concat(item.na ? [['na', T.check.na]] : []);
+        return '<div class="card check-item" data-item="' + esc(item.key) + '">' +
+          '<div class="body-lg">' + esc(item.label) + '</div>' +
+          '<div class="seg mt-2" role="radiogroup" aria-label="' + esc(item.label) + '">' + opts.map(function (o) {
+            var on = c.answers[item.key] === o[0];
+            return '<button type="button" role="radio" aria-checked="' + on + '" class="seg-btn ' + o[0] + (on ? ' on' : '') +
+              '" data-action="check-answer" data-key="' + esc(item.key) + '" data-value="' + o[0] + '">' + esc(o[1]) + '</button>';
+          }).join('') + '</div></div>';
+      }).join('');
+    }).join('');
+
+    return '<main class="screen">' +
+      '<div><button type="button" class="back-btn" data-action="check-back">' + icon('back') + esc(T.check.back) + '</button></div>' +
+      '<h1 class="h1 mt-2">' + esc(T.check.title) + '</h1>' +
+      '<p class="secondary mt-1" style="margin-bottom:0">' + esc(T.check.subtitle(c.plate)) + '</p>' +
+      '<div class="screen-body">' + sections +
+      '<h2 class="label muted check-section">' + esc(T.check.kmTitle) + '</h2>' +
+      '<div class="card"><input class="field" id="check-km" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="' + esc(T.check.kmPlaceholder) + '" value="' + esc(c.km) + '">' +
+      (c.lastKm !== null ? '<div class="small muted mt-2">' + esc(T.check.kmHint(c.lastKm)) + '</div>' : '') + '</div>' +
+      '<h2 class="label muted check-section" id="check-notes-title">' + esc(T.check.notesTitle) + '</h2>' +
+      '<div class="card"><div class="small secondary" id="check-notes-hint"></div>' +
+      '<textarea class="field mt-2" id="check-notes" rows="3">' + esc(c.notes) + '</textarea></div>' +
+      '<div class="card alert" id="check-error" hidden></div>' +
+      '</div>' +
+      '<div class="footer">' + button(T.check.save, 'check-save', { loading: c.saving }) + '</div>' +
+      '</main>';
+  }
+
+  function checkProblems() {
+    var c = state.check;
+    return Object.keys(c.answers).filter(function (k) { return c.answers[k] === 'problem'; }).length;
+  }
+
+  /** The bits that change while the check is open — patched, not redrawn. */
+  function patchChecklist() {
+    var hint = document.getElementById('check-notes-hint');
+    if (hint) hint.textContent = checkProblems() > 0 ? T.check.notesHint : T.check.notesOptional;
+  }
+
+  function checkError(message) {
+    var el = document.getElementById('check-error');
+    if (!el) return;
+    el.textContent = message || '';
+    el.hidden = !message;
+    if (message) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
+  async function saveCheck() {
+    var c = state.check;
+    var keys = [];
+    c.sections.forEach(function (s) { s.items.forEach(function (i) { keys.push(i.key); }); });
+    var missing = keys.filter(function (k) { return !c.answers[k]; });
+    if (missing.length) {
+      checkError(T.check.missing(missing.length));
+      var first = app.querySelector('[data-item="' + missing[0] + '"]');
+      if (first) first.classList.add('missing');
+      return;
+    }
+    var km = c.km.replace(/[^\d]/g, '');
+    if (km === '') { checkError(T.check.needKm); return; }
+    if (checkProblems() > 0 && !c.notes.trim()) { checkError(T.check.needNotes); return; }
+
+    keepScreenOn(); // still inside the tap
+    c.saving = true;
+    state.checkDrawn = false;
+    render();
+    try {
+      await api('checks', { method: 'POST', body: { vehicle_id: c.vehicleId, start_km: Number(km), answers: c.answers, notes: c.notes } });
+    } catch (e) {
+      c.saving = false;
+      state.checkDrawn = false;
+      render();
+      checkError(e.message || T.errors.genericBody);
+      return;
+    }
+    state.check = null;
+    state.screen = 'home';
+    state.selectedId = c.vehicleId;
+    render();
+    begin();
+  }
+
   // --- Sheet ---------------------------------------------------------------
 
   function renderSheet() {
@@ -932,7 +1079,18 @@
   var lastSheet = '';
 
   function render() {
-    var html = state.screen === 'signin' || !store.session() ? renderSignIn()
+    var checklist = state.screen === 'checklist' && state.check && store.session();
+    if (checklist && state.checkDrawn) {
+      patchChecklist();
+    } else if (checklist) {
+      lastHtml = renderChecklist();
+      app.innerHTML = lastHtml;
+      state.checkDrawn = true;
+      patchChecklist();
+    }
+    if (!checklist) state.checkDrawn = false;
+    var html = checklist ? lastHtml
+      : state.screen === 'signin' || !store.session() ? renderSignIn()
       : state.screen === 'settings' ? renderSettings()
       : renderHome();
     document.body.classList.toggle('dark', html.indexOf('class="screen signin"') !== -1);
@@ -989,10 +1147,23 @@
           state.installPrompt.userChoice.finally(function () { state.installPrompt = null; render(); });
         }
         break;
-      case 'confirm-start':
-        state.sheet = { title: T.home.startSheet.title, body: T.home.startSheet.body, confirm: T.home.startSheet.confirm, cancel: T.home.startSheet.cancel, onConfirm: begin };
-        render();
+      case 'confirm-start': openStart(); break;
+      case 'check-answer': {
+        var key = el.getAttribute('data-key');
+        state.check.answers[key] = el.getAttribute('data-value');
+        var group = el.parentNode;
+        Array.prototype.forEach.call(group.children, function (b) {
+          var on = b === el;
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-checked', String(on));
+        });
+        group.parentNode.classList.remove('missing');
+        checkError(null);
+        patchChecklist();
         break;
+      }
+      case 'check-back': state.check = null; state.screen = 'home'; render(); break;
+      case 'check-save': saveCheck(); break;
       case 'confirm-stop':
         state.sheet = { title: T.home.stopSheet.title, body: T.home.stopSheet.body, confirm: T.home.stopSheet.confirm, cancel: T.home.stopSheet.cancel, danger: true, onConfirm: end };
         render();
@@ -1023,6 +1194,12 @@
   }
 
   document.addEventListener('click', onTap);
+  document.addEventListener('input', function (e) {
+    if (!state.check) return;
+    if (e.target.id === 'check-km') state.check.km = e.target.value;
+    if (e.target.id === 'check-notes') state.check.notes = e.target.value;
+    checkError(null);
+  });
 
   // --- Coming and going ----------------------------------------------------
 

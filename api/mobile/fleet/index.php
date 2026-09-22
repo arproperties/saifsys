@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/fleet_api.php';
 require_once __DIR__ . '/fleet_endpoints.php';
+require_once dirname(__DIR__, 3) . '/hr/includes/hr_fleet_checks.php';
 
 fleet_api_boot($conn);
 
@@ -35,6 +36,14 @@ if ($route === 'vehicles' && $method === 'GET') {
 
 if ($route === 'trips/current' && $method === 'GET') {
     fleet_api_handle_current_trip($conn, $driver);
+}
+
+if ($route === 'checks/today' && $method === 'GET') {
+    fleet_api_handle_check_today($conn, $driver);
+}
+
+if ($route === 'checks' && $method === 'POST') {
+    fleet_api_handle_check_save($conn, $driver);
 }
 
 if ($route === 'trips/start' && $method === 'POST') {

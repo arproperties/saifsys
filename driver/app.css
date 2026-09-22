@@ -166,3 +166,16 @@ button.card { width: 100%; text-align: left; }
 /* Settings */
 .back-btn { display: inline-flex; align-items: center; gap: 4px; min-height: 48px; color: var(--navy-700); font-weight: 600; }
 .kv { display: flex; justify-content: space-between; gap: 12px; }
+
+/* Daily check */
+.check-section { margin: 24px 0 0; }
+.check-item.missing { box-shadow: 0 0 0 2px var(--danger); }
+.seg { display: flex; gap: 8px; }
+.seg-btn { flex: 1; min-height: 48px; border-radius: 12px; border: 1.5px solid var(--cream-400); background: var(--cream-100); font-weight: 700; color: var(--text-2); }
+.seg-btn.na { flex: 0 0 72px; }
+.seg-btn.ok.on { background: var(--success); border-color: var(--success); color: #fff; }
+.seg-btn.problem.on { background: var(--danger); border-color: var(--danger); color: #fff; }
+.seg-btn.na.on { background: var(--muted); border-color: var(--muted); color: #fff; }
+.field { width: 100%; font: inherit; font-size: 18px; padding: 12px 14px; border: 1.5px solid var(--cream-400); border-radius: 12px; background: var(--cream-0); color: var(--text); }
+.field:focus { outline: none; border-color: var(--gold-500); box-shadow: 0 0 0 3px rgba(198, 161, 94, .25); }
+textarea.field { resize: vertical; min-height: 88px; font-size: 16px; }

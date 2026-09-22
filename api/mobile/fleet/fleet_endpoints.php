@@ -304,3 +304,78 @@ function fleet_api_handle_trip_stop(PDO $conn, array $driver, int $tripId): void
 
     customer_api_send_ok(['trip' => fleet_api_trip_row($conn, $trip)]);
 }
+
+// ---------------------------------------------------------------------------
+// Daily checklist (hr/includes/hr_fleet_checks.php)
+// ---------------------------------------------------------------------------
+
+/** The active vehicle named in the request, or 404. */
+function fleet_api_active_vehicle(PDO $conn, int $vehicleId): array
+{
+    $stmt = $conn->prepare("SELECT id, company_id, plate_no FROM fleet_vehicles WHERE id = ? AND status = 'active' LIMIT 1");
+    $stmt->execute([$vehicleId]);
+    $vehicle = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$vehicle) {
+        customer_api_send_error('not_found', 'That vehicle is not available any more. Pick another one.', 404);
+    }
+    return $vehicle;
+}
+
+/**
+ * GET checks/today?vehicle_id= — does this driver still owe today's check for
+ * this vehicle, and if so the list to show. Before the migration has run the
+ * answer is simply "not needed", so trips keep starting.
+ */
+function fleet_api_handle_check_today(PDO $conn, array $driver): void
+{
+    $vehicle = fleet_api_active_vehicle($conn, (int)($_GET['vehicle_id'] ?? 0));
+
+    if (!fleet_checks_ready($conn)) {
+        customer_api_send_ok(['needed' => false, 'sections' => [], 'last_km' => null]);
+    }
+
+    $done = fleet_daily_check_for($conn, (int)$vehicle['id'], $driver['id'], fleet_check_today()) !== null;
+    customer_api_send_ok([
+        'needed' => !$done,
+        'sections' => $done ? [] : array_map(static fn(array $s): array => [
+            'key' => $s['key'],
+            'title' => $s['title'],
+            'items' => array_map(static fn(array $i): array => [
+                'key' => $i['key'],
+                'label' => $i['label'],
+                'na' => !empty($i['na']),
+            ], $s['items']),
+        ], fleet_daily_checklist()),
+        'last_km' => $done ? null : fleet_last_start_km($conn, (int)$vehicle['id']),
+    ]);
+}
+
+/** POST checks — {vehicle_id, start_km, answers: {key: ok|problem|na}, notes}. */
+function fleet_api_handle_check_save(PDO $conn, array $driver): void
+{
+    if (!fleet_checks_ready($conn)) {
+        customer_api_send_error('not_configured', 'This service is not available.', 503);
+    }
+    $body = customer_api_read_json_body();
+    $vehicle = fleet_api_active_vehicle($conn, (int)($body['vehicle_id'] ?? 0));
+
+    $result = fleet_save_daily_check(
+        $conn,
+        $vehicle,
+        $driver,
+        $body['answers'] ?? null,
+        $body['start_km'] ?? null,
+        (string)($body['notes'] ?? '')
+    );
+    if (!$result['ok']) {
+        customer_api_send_error('bad_request', $result['error'], 400);
+    }
+
+    $check = $result['check'];
+    customer_api_send_ok(['check' => [
+        'id' => (int)$check['id'],
+        'check_date' => (string)$check['check_date'],
+        'start_km' => (int)$check['start_km'],
+        'problem_count' => (int)$check['problem_count'],
+    ]]);
+}
