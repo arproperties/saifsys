@@ -556,9 +556,9 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
 ?>
 <style>
 /* Unified Documents table.
-   Only the trailing columns get a fixed, nowrap width; Document takes every
+   Only the Actions column gets a fixed, nowrap width; Document takes every
    remaining pixel so long names like ARS-INV-2026-00089 stay on one line. */
-#ws-docs .ars-udoc-table { min-width: 720px; }
+#ws-docs .ars-udoc-table { min-width: 520px; }
 /* Payments table: keep the delete button in view; long GL names truncate. */
 .ars-pay-table .ars-pay-gl { max-width: 170px; }
 .ars-pay-table .ars-pay-actions { width: 1%; white-space: nowrap; padding-right: 1rem; }
@@ -569,8 +569,6 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
     .ars-pay-table .ars-pay-actions { width: auto; text-align: left !important; }
 }
 #ws-docs .ars-udoc-col-doc { width: auto; min-width: 15rem; }
-#ws-docs .ars-udoc-col-date,
-#ws-docs .ars-udoc-col-amount,
 #ws-docs .ars-udoc-actions { width: 1%; white-space: nowrap; }
 
 /* Source + status + note ride under the title instead of costing two columns. */
@@ -584,20 +582,17 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
 }
 #ws-docs .ars-udoc-meta .badge { font-weight: 500; }
 
-/* Section header per document type (Contract / Receipts / Deposit / Other). */
-#ws-docs .ars-udoc-group-head td {
-    background: var(--ars-primary-soft);
-    color: var(--ars-text);
-    border-top: 2px solid var(--ars-border);
-    padding: .6rem .9rem;
-    text-align: left;
+/* One tab per document type (Contract / Receipts / Deposit / Other). */
+#ws-docs .ars-udoc-tabs { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; margin-bottom: .75rem; }
+#ws-docs .ars-udoc-tabs .nav-link {
+    min-height: 0;
+    white-space: nowrap;
+    color: var(--ars-text-muted);
     font-size: .875rem;
+    padding: .5rem .85rem;
 }
-#ws-docs .ars-udoc-group:first-of-type .ars-udoc-group-head td { border-top: 0; }
-#ws-docs .ars-udoc-group-title { font-weight: 600; }
-#ws-docs .ars-udoc-group-hint { color: var(--ars-text-muted); font-size: .78rem; margin-left: .6rem; }
-#ws-docs .ars-udoc-group-empty td { font-size: .8125rem; padding: .55rem .9rem .55rem 1.6rem; text-align: left; }
-#ws-docs .ars-udoc-group > tr:not(.ars-udoc-group-head) > td:first-child { padding-left: 1.6rem; }
+#ws-docs .ars-udoc-tabs .nav-link.active { color: var(--ars-text); font-weight: 600; }
+#ws-docs .ars-udoc-hint { color: var(--ars-text-muted); font-size: .78rem; margin: 0 0 .6rem .1rem; }
 
 /* The shell pins .btn to min-height:40px and .form-select to 42px, so Bootstrap's
    btn-sm/form-select-sm cannot shrink them. Override inside this table only. */
@@ -629,16 +624,8 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
 @media (max-width: 767.98px) {
     #ws-docs .ars-udoc-table { min-width: 0; }
     #ws-docs .ars-udoc-col-doc,
-    #ws-docs .ars-udoc-col-date,
-    #ws-docs .ars-udoc-col-amount,
     #ws-docs .ars-udoc-actions { width: auto; min-width: 0; white-space: normal; }
     #ws-docs .ars-udoc-actions-row { flex-wrap: wrap; justify-content: flex-start; }
-    /* Section headers read as plain labels between the cards, not as cards. */
-    #ws-docs .ars-udoc-group-head,
-    #ws-docs .ars-udoc-group-empty { background: none; border: 0; box-shadow: none; padding: 0; margin: .9rem 0 .4rem; }
-    #ws-docs .ars-udoc-group-head td,
-    #ws-docs .ars-udoc-group-empty td { background: none; border: 0; padding: 0 .25rem; }
-    #ws-docs .ars-udoc-group > tr:not(.ars-udoc-group-head) > td:first-child { padding-left: 1rem; }
 }
 </style>
 <script>window.ARS_BOOKING_ID = <?= (int)$booking['id'] ?>;</script>
@@ -1261,52 +1248,66 @@ echo $arsWsLifecycleHtml;
                 </span>
                 <div class="d-flex gap-1 flex-wrap">
                     <button type="button" class="btn btn-ars-outline btn-sm" data-bs-toggle="modal" data-bs-target="#documentsActionModal" data-ars-docs-mode="send"><i class="bi bi-envelope-check me-1"></i>Send to guest</button>
-                    <button type="button" class="btn btn-ars btn-sm" data-bs-toggle="modal" data-bs-target="#attachmentModal"><i class="bi bi-upload me-1"></i>Upload</button>
+                    <button type="button" class="btn btn-ars btn-sm" data-bs-toggle="modal" data-bs-target="#attachmentModal" id="udocUploadBtn"><i class="bi bi-upload me-1"></i>Upload</button>
                 </div>
             </div>
             <div class="card-body pb-3">
-                <?php if (empty($unifiedDocsFlat)): ?>
-                <div class="border rounded text-center text-muted py-4 px-2 bg-light">
-                    <i class="bi bi-folder2-open fs-4 d-block mb-2"></i>
-                    No documents on this booking yet.
-                </div>
-                <?php else: ?>
-                <div class="table-responsive border rounded">
-                    <table class="table ars-table ars-mobile-cards ars-udoc-table mb-0 align-middle">
-                        <thead>
-                            <tr>
-                                <th class="ars-udoc-col-doc">Document</th>
-                                <th class="ars-udoc-col-date">Date</th>
-                                <th class="text-end ars-udoc-col-amount">Amount</th>
-                                <th class="text-end ars-udoc-actions">Actions</th>
-                            </tr>
-                        </thead>
-                        <?php
-                        // One section per document type, in category order; empty
-                        // sections stay visible so staff can see what is missing.
-                        $udocGroups = [];
-                        foreach ($docCategories as $catKey => $catMeta) {
-                            $udocGroups[$catKey] = [];
-                        }
-                        foreach ($unifiedDocsFlat as $item) {
-                            $udocGroups[$item['category']][] = $item;
-                        }
-                        ?>
-                        <?php foreach ($udocGroups as $catKey => $groupItems): ?>
-                        <?php $catMeta = $docCategories[$catKey]; ?>
-                        <tbody class="ars-udoc-group">
-                            <tr class="ars-udoc-group-head">
-                                <td colspan="4">
-                                    <i class="bi <?= h($catMeta['icon']) ?> me-2"></i><span class="ars-udoc-group-title"><?= h($catMeta['label']) ?></span>
-                                    <span class="badge bg-secondary ms-1"><?= count($groupItems) ?></span>
-                                    <span class="ars-udoc-group-hint d-none d-md-inline"><?= h($catMeta['hint']) ?></span>
-                                </td>
-                            </tr>
-                            <?php if (empty($groupItems)): ?>
-                            <tr class="ars-udoc-group-empty">
-                                <td colspan="4" class="text-muted">Nothing filed here yet.</td>
-                            </tr>
-                            <?php endif; ?>
+                <?php
+                // One tab per document type, in category order. Empty tabs stay
+                // clickable so staff can see what is missing and upload into it.
+                $udocGroups = [];
+                foreach ($docCategories as $catKey => $catMeta) {
+                    $udocGroups[$catKey] = [];
+                }
+                foreach ($unifiedDocsFlat as $item) {
+                    $udocGroups[$item['category']][] = $item;
+                }
+                // Open on the first tab that has something in it.
+                $udocActive = 'other';
+                foreach ($udocGroups as $catKey => $groupItems) {
+                    if ($groupItems) { $udocActive = $catKey; break; }
+                }
+                ?>
+                <ul class="nav nav-tabs ars-udoc-tabs" role="tablist">
+                    <?php foreach ($udocGroups as $catKey => $groupItems): ?>
+                    <?php $catMeta = $docCategories[$catKey]; ?>
+                    <li class="nav-item" role="presentation">
+                        <button type="button" class="nav-link<?= $catKey === $udocActive ? ' active' : '' ?>"
+                                id="udoc-tab-<?= h($catKey) ?>"
+                                data-bs-toggle="tab" data-bs-target="#udoc-pane-<?= h($catKey) ?>"
+                                data-ars-udoc-tab="<?= h($catKey) ?>"
+                                role="tab" aria-controls="udoc-pane-<?= h($catKey) ?>"
+                                aria-selected="<?= $catKey === $udocActive ? 'true' : 'false' ?>">
+                            <i class="bi <?= h($catMeta['icon']) ?> me-1"></i><?= h($catMeta['label']) ?>
+                            <span class="badge <?= $groupItems ? 'bg-secondary' : 'bg-light text-muted border' ?> ms-1"><?= count($groupItems) ?></span>
+                        </button>
+                    </li>
+                    <?php endforeach; ?>
+                </ul>
+                <div class="tab-content">
+                    <?php foreach ($udocGroups as $catKey => $groupItems): ?>
+                    <?php $catMeta = $docCategories[$catKey]; ?>
+                    <div class="tab-pane fade<?= $catKey === $udocActive ? ' show active' : '' ?>"
+                         id="udoc-pane-<?= h($catKey) ?>" role="tabpanel" aria-labelledby="udoc-tab-<?= h($catKey) ?>">
+                        <div class="ars-udoc-hint"><?= h($catMeta['hint']) ?></div>
+                        <?php if (empty($groupItems)): ?>
+                        <div class="border rounded text-center text-muted py-4 px-2 bg-light">
+                            <i class="bi <?= h($catMeta['icon']) ?> fs-4 d-block mb-2"></i>
+                            No <?= h($catMeta['label']) ?> documents yet.
+                            <div class="mt-2">
+                                <button type="button" class="btn btn-ars-outline btn-sm" data-bs-toggle="modal" data-bs-target="#attachmentModal" data-ars-doc-category="<?= h($catKey) ?>"><i class="bi bi-upload me-1"></i>Upload <?= h($catMeta['label']) ?></button>
+                            </div>
+                        </div>
+                        <?php else: ?>
+                        <div class="table-responsive border rounded">
+                            <table class="table ars-table ars-mobile-cards ars-udoc-table mb-0 align-middle">
+                                <thead>
+                                    <tr>
+                                        <th class="ars-udoc-col-doc">Document</th>
+                                        <th class="text-end ars-udoc-actions">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
                         <?php foreach ($groupItems as $item): ?>
                             <tr>
                                 <td data-label="Document" class="ars-udoc-col-doc">
@@ -1330,10 +1331,6 @@ echo $arsWsLifecycleHtml;
                                         </select>
                                         <?php endif; ?>
                                     </div>
-                                </td>
-                                <td data-label="Date" class="ars-udoc-col-date"><?= $item['date'] !== '' ? h($item['date']) : '—' ?></td>
-                                <td data-label="Amount" class="text-end ars-tabular ars-udoc-col-amount">
-                                    <?= $item['amount'] !== null ? h($item['currency']) . ' ' . number_format((float)$item['amount'], 2) : '—' ?>
                                 </td>
                                 <td data-label="Actions" class="text-end ars-udoc-actions">
                                     <div class="ars-udoc-actions-row">
@@ -1364,11 +1361,13 @@ echo $arsWsLifecycleHtml;
                                 </td>
                             </tr>
                         <?php endforeach; ?>
-                        </tbody>
-                        <?php endforeach; ?>
-                    </table>
+                                </tbody>
+                            </table>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php endforeach; ?>
                 </div>
-                <?php endif; ?>
             </div>
         </div>
 

@@ -1449,6 +1449,7 @@
           showAlert('Uploaded. Refreshing Documents…', 'success', 'attachModalAlert');
           // Reload so the unified Documents tab picks the new file up in its
           // category. The #ws-docs hash keeps the user on the same tab.
+          rememberDocTab(catEl ? catEl.value : 'other');
           window.setTimeout(function () {
             location.hash = 'ws-docs';
             location.reload();
@@ -1737,6 +1738,7 @@
         })
           .then(function (d) {
             if (d.success) {
+              rememberDocTab(next);
               location.hash = 'ws-docs';
               location.reload();
             } else {
@@ -1778,6 +1780,46 @@
           });
       });
     });
+  }
+
+  // Documents tab: one sub-tab per document type. The open sub-tab is kept in
+  // sessionStorage so the reload after upload / move / delete lands back on it.
+  function udocTabKey() {
+    return 'arsUdocTab:' + bookingId();
+  }
+
+  function rememberDocTab(cat) {
+    try {
+      window.sessionStorage.setItem(udocTabKey(), cat);
+    } catch (e) {}
+  }
+
+  function initDocTabs() {
+    var tabs = document.querySelectorAll('[data-ars-udoc-tab]');
+    if (!tabs.length) return;
+    var upload = document.getElementById('udocUploadBtn');
+    function onShown(btn) {
+      var cat = btn.getAttribute('data-ars-udoc-tab');
+      // The header Upload button files into whichever type is open.
+      if (upload) upload.setAttribute('data-ars-doc-category', cat);
+      rememberDocTab(cat);
+    }
+    tabs.forEach(function (btn) {
+      btn.addEventListener('shown.bs.tab', function () {
+        onShown(btn);
+      });
+      if (btn.classList.contains('active') && upload) {
+        upload.setAttribute('data-ars-doc-category', btn.getAttribute('data-ars-udoc-tab'));
+      }
+    });
+    var saved = null;
+    try {
+      saved = window.sessionStorage.getItem(udocTabKey());
+    } catch (e) {}
+    var target = saved && document.querySelector('[data-ars-udoc-tab="' + saved + '"]');
+    if (target && window.bootstrap && window.bootstrap.Tab) {
+      window.bootstrap.Tab.getOrCreateInstance(target).show();
+    }
   }
 
   function initAttachmentModal() {
@@ -2087,6 +2129,7 @@
     initPaymentEvidenceModal();
     initDocumentsModal();
     initAttachmentModal();
+    initDocTabs();
     initUnifiedDocuments();
     initAmendmentModal();
     initExtendPanel();
