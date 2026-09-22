@@ -76,6 +76,82 @@ if (!function_exists('re_cheque_is_extra_service_target')) {
     }
 }
 
+if (!function_exists('re_cheque_linked_extra_service_face_by_installment')) {
+    /**
+     * Face of Extra SC items tied to each installment (re_billing_items.installment_id),
+     * i.e. the "Includes service charge +X" part of that cheque's face.
+     *
+     * @param list<array<string,mixed>> $invoices
+     * @param list<array<string,mixed>> $obligations
+     * @return array<int,float>
+     */
+    function re_cheque_linked_extra_service_face_by_installment(array $invoices, array $obligations): array
+    {
+        $faces = [];
+        foreach (array_merge($invoices, $obligations) as $row) {
+            $installmentId = (int)($row['linked_installment_id'] ?? 0);
+            if ($installmentId <= 0 || !re_cheque_is_extra_service_target($row)) {
+                continue;
+            }
+            $faces[$installmentId] = re_receipt_money(($faces[$installmentId] ?? 0) + (float)($row['total_amount'] ?? 0));
+        }
+        return $faces;
+    }
+}
+
+if (!function_exists('re_cheque_pick_linked_extra_service_targets')) {
+    /**
+     * Extra SC items that are part of this cheque's own installment. Unlike pooled
+     * rent money, the cheque face explicitly includes these, so it may pay them.
+     * Settled ones stay in invoice_ids so collected display sums their receipt lines.
+     *
+     * @param list<array<string,mixed>> $invoices
+     * @param list<array<string,mixed>> $obligations
+     * @return array{invoice_ids:list<int>,obligation_ids:list<int>,expected_total:float,preferred_caps:array<string,float>}
+     */
+    function re_cheque_pick_linked_extra_service_targets(array $invoices, array $obligations, int $installmentId): array
+    {
+        $picked = ['invoice_ids' => [], 'obligation_ids' => [], 'expected_total' => 0.0, 'preferred_caps' => []];
+        if ($installmentId <= 0) {
+            return $picked;
+        }
+
+        foreach ($invoices as $row) {
+            if ((int)($row['linked_installment_id'] ?? 0) !== $installmentId || !re_cheque_is_extra_service_target($row)) {
+                continue;
+            }
+            $invoiceId = (int)($row['id'] ?? 0);
+            if ($invoiceId <= 0) {
+                continue;
+            }
+            $picked['invoice_ids'][] = $invoiceId;
+            $picked['expected_total'] = re_receipt_money($picked['expected_total'] + (float)($row['total_amount'] ?? 0));
+            $open = re_receipt_money($row['outstanding_amount'] ?? 0);
+            if ($open > 0.005) {
+                $picked['preferred_caps']['invoice:' . $invoiceId] = $open;
+            }
+        }
+
+        foreach ($obligations as $row) {
+            if ((int)($row['linked_installment_id'] ?? 0) !== $installmentId || !re_cheque_is_extra_service_target($row)) {
+                continue;
+            }
+            $obligationId = (int)($row['id'] ?? 0);
+            if ($obligationId <= 0) {
+                continue;
+            }
+            $picked['expected_total'] = re_receipt_money($picked['expected_total'] + (float)($row['total_amount'] ?? 0));
+            $open = re_receipt_money(max(0, (float)($row['total_amount'] ?? 0) - (float)($row['allocated_amount'] ?? 0)));
+            if ($open > 0.005) {
+                $picked['obligation_ids'][] = $obligationId;
+                $picked['preferred_caps']['obligation:' . $obligationId] = $open;
+            }
+        }
+
+        return $picked;
+    }
+}
+
 if (!function_exists('re_cheque_load_financial_targets')) {
     /**
      * Load invoice and standalone-obligation rows used to resolve cheque coverage.
@@ -123,6 +199,18 @@ if (!function_exists('re_cheque_load_financial_targets')) {
                        LIMIT 1
                    ) AS obligation_id,
                    (
+                       SELECT bi.installment_id
+                       FROM re_invoice_items ii
+                       JOIN re_obligations o ON o.id = ii.obligation_id AND o.company_id = ii.company_id
+                       JOIN re_billing_items bi ON bi.id = o.source_id AND bi.company_id = o.company_id
+                       WHERE ii.invoice_id = i.id AND ii.company_id = i.company_id
+                         AND o.source_type = 'billing_item'
+                         AND o.obligation_type = 'service'
+                         AND bi.item_type = 'service_charge'
+                       ORDER BY ii.id ASC
+                       LIMIT 1
+                   ) AS linked_installment_id,
+                   (
                        SELECT COALESCE(SUM(o.vat_amount), 0)
                        FROM re_invoice_items ii
                        JOIN re_obligations o ON o.id = ii.obligation_id AND o.company_id = ii.company_id
@@ -146,8 +234,15 @@ if (!function_exists('re_cheque_load_financial_targets')) {
                    o.obligation_type,
                    o.source_type,
                    o.source_id,
-                   COALESCE(o.vat_amount, 0) AS vat_amount
+                   COALESCE(o.vat_amount, 0) AS vat_amount,
+                   bi.installment_id AS linked_installment_id
             FROM re_obligations o
+            LEFT JOIN re_billing_items bi
+              ON o.source_type = 'billing_item'
+             AND o.obligation_type = 'service'
+             AND bi.id = o.source_id
+             AND bi.company_id = o.company_id
+             AND bi.item_type = 'service_charge'
             WHERE o.company_id = ?
               AND o.lease_id = ?
               AND o.status NOT IN ('cancelled', 'waived')
@@ -1036,6 +1131,19 @@ if (!function_exists('re_cheque_resolve_lease_coverage_map')) {
         ");
         $leaseStmt->execute([$leaseId, $companyId]);
         $leaseRow = $leaseStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $financial = re_cheque_load_financial_targets($conn, $companyId, $leaseId);
+        $invoices = $financial['invoices'];
+        $obligations = $financial['obligations'];
+        // Extra SC items written into a rent installment ("Includes service charge +750")
+        // are part of that cheque's face but not rent/chiller. Take them off before the
+        // rent share, or every such cheque looks "uneven" and over-claims rent months.
+        $linkedExtraFaceByInstallment = re_cheque_linked_extra_service_face_by_installment($invoices, $obligations);
+        $rentFaceOf = static function (array $chequeRow) use ($linkedExtraFaceByInstallment): float {
+            $face = re_receipt_money($chequeRow['cheque_amount'] ?? 0);
+            $linked = (float)($linkedExtraFaceByInstallment[(int)($chequeRow['installment_id'] ?? 0)] ?? 0);
+            return re_receipt_money(max(0.0, $face - $linked));
+        };
         $installmentCount = max(1, (int)($leaseRow['number_of_installments'] ?? 1));
         $annualRent = re_receipt_money($leaseRow['annual_rent'] ?? 0);
         $rentSharePerCheque = re_receipt_money($annualRent / $installmentCount);
@@ -1090,7 +1198,7 @@ if (!function_exists('re_cheque_resolve_lease_coverage_map')) {
             if ((string)($probeRow['installment_type'] ?? 'rent') !== 'rent') {
                 continue;
             }
-            $probeAmount = re_receipt_money($probeRow['cheque_amount'] ?? 0);
+            $probeAmount = $rentFaceOf($probeRow);
             $rentChequeFacesTotal = re_receipt_money($rentChequeFacesTotal + $probeAmount);
             if ($firstRentChequeId <= 0) {
                 $firstRentChequeId = (int)($probeRow['cheque_id'] ?? 0);
@@ -1133,10 +1241,6 @@ if (!function_exists('re_cheque_resolve_lease_coverage_map')) {
             $rentPeriodFeeTypes = ['service'];
         }
 
-        $financial = re_cheque_load_financial_targets($conn, $companyId, $leaseId);
-        $invoices = $financial['invoices'];
-        $obligations = $financial['obligations'];
-
         $rentInvoices = array_values(array_filter(
             $invoices,
             static fn(array $row): bool => (string)($row['obligation_type'] ?? '') === 'rent'
@@ -1154,6 +1258,13 @@ if (!function_exists('re_cheque_resolve_lease_coverage_map')) {
             $chequeAmount = re_receipt_money($row['cheque_amount'] ?? 0);
 
             if ($installmentType === 'rent') {
+                $pickedLinkedExtra = re_cheque_pick_linked_extra_service_targets(
+                    $invoices,
+                    $obligations,
+                    (int)($row['installment_id'] ?? 0)
+                );
+                // Rent/fee split below works on the face without this cheque's own Extra SC.
+                $chequeAmount = $rentFaceOf($row);
                 // Operational rent cheques often include merged/split fees on the same row.
                 // Cover rent share first, then fill the remainder with fee invoices (not VAT).
                 // Fee targets already claimed by Fees Installment / typed fee cheques are skipped.
@@ -1244,23 +1355,27 @@ if (!function_exists('re_cheque_resolve_lease_coverage_map')) {
                         $periodFeeInvoiceIds,
                         $pickedRent['invoice_ids'] ?? [],
                         $pickedFees['invoice_ids'] ?? [],
-                        $pickedDeposit['invoice_ids'] ?? []
+                        $pickedDeposit['invoice_ids'] ?? [],
+                        $pickedLinkedExtra['invoice_ids']
                     ))),
                     'obligation_ids' => array_values(array_unique(array_merge(
                         $pickedRent['obligation_ids'] ?? [],
                         $pickedFees['obligation_ids'] ?? [],
-                        $pickedDeposit['obligation_ids'] ?? []
+                        $pickedDeposit['obligation_ids'] ?? [],
+                        $pickedLinkedExtra['obligation_ids']
                     ))),
                     'expected_total' => re_receipt_money(
                         (float)($pickedRent['expected_total'] ?? 0)
                         + (float)($pickedFees['expected_total'] ?? 0)
                         + (float)($pickedDeposit['expected_total'] ?? 0)
+                        + (float)$pickedLinkedExtra['expected_total']
                     ),
                     // Prefill caps stay open-only (preferred allocation suggestion).
                     'preferred_caps' => array_merge(
                         $pickedRent['preferred_caps'] ?? [],
                         $pickedDeposit['preferred_caps'] ?? [],
-                        $pickedFees['preferred_caps'] ?? []
+                        $pickedFees['preferred_caps'] ?? [],
+                        $pickedLinkedExtra['preferred_caps']
                     ),
                 ];
             } elseif ($installmentType === 'combined_fees') {
@@ -1313,7 +1428,7 @@ if (!function_exists('re_cheque_resolve_lease_coverage_map')) {
                 'installment_id' => (int)($row['installment_id'] ?? 0),
                 'installment_type' => $installmentType,
                 'installment_date' => $installmentDate,
-                'cheque_amount' => $chequeAmount,
+                'cheque_amount' => re_receipt_money($row['cheque_amount'] ?? 0),
                 'invoice_ids' => $picked['invoice_ids'] ?? [],
                 'obligation_ids' => $picked['obligation_ids'] ?? [],
                 'expected_total' => re_receipt_money($picked['expected_total'] ?? $chequeAmount),
