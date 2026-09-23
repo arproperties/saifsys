@@ -604,6 +604,81 @@ function ops_api_places_company_id(PDO $conn, array $user, $input): int
     return 0;
 }
 
+/**
+ * Kind and id only, sorted, so two lists naming the same places read the same.
+ *
+ * Takes either shape: the resolved places of a create request ('kind', 'id')
+ * or the rows ops_job_places() returns ('place_kind', 'place_id').
+ */
+function ops_api_places_signature(array $places): string
+{
+    $parts = [];
+    foreach ($places as $place) {
+        $kind = (string)($place['kind'] ?? $place['place_kind'] ?? '');
+        $id = (int)($place['id'] ?? $place['place_id'] ?? 0);
+        if ($kind === '' || $id <= 0) {
+            continue;
+        }
+        $parts[$kind . ':' . $id] = true;
+    }
+    $keys = array_keys($parts);
+    sort($keys);
+    return implode(',', $keys);
+}
+
+/**
+ * The job this create would duplicate, or null.
+ *
+ * The replay guard above only catches a RESEND of one queued op, because the
+ * op's own id is the idempotency key. Two taps of Create make two ops with two
+ * ids, and nothing ties them together. Neither does the other way this
+ * happens: someone who cannot start a job raises another instead of finding
+ * out why, which is how one shop got six identical jobs in fifteen minutes.
+ *
+ * The match is deliberately exact - same person, same day, same company, same
+ * type, the same set of places - and the job it finds must still be `open`.
+ * A job already started, finished or cancelled is real work, and cleaning the
+ * same bin store twice in a day is a normal thing to be asked for. Only an
+ * untouched twin sitting in the list is the mistake, and giving that one back
+ * costs nothing: nothing has been recorded against it yet.
+ */
+function ops_api_duplicate_open_job(
+    PDO $conn,
+    array $user,
+    int $companyId,
+    string $jobType,
+    string $day,
+    array $places
+): ?array {
+    $wanted = ops_api_places_signature($places);
+    if ($wanted === '') {
+        return null;
+    }
+
+    $stmt = $conn->prepare("
+        SELECT id
+        FROM ops_jobs
+        WHERE assigned_to = ? AND company_id = ? AND job_type = ?
+          AND scheduled_date = ? AND status = 'open'
+        ORDER BY id ASC
+    ");
+    $stmt->execute([(int)$user['id'], $companyId, $jobType, $day]);
+    $candidates = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN) ?: []);
+    if (!$candidates) {
+        return null;
+    }
+
+    $existing = ops_job_places($conn, $candidates);
+    foreach ($candidates as $candidateId) {
+        if (ops_api_places_signature($existing[$candidateId] ?? []) === $wanted) {
+            // The oldest match wins: any Before photos already taken are on
+            // that one, and it is the one the office has been looking at.
+            return ops_api_load_own_job($conn, $candidateId, $user);
+        }
+    }
+    return null;
+}
+
 function ops_api_handle_job_create(PDO $conn, array $user): void
 {
     $title = trim((string)(ops_api_param('title', '') ?? ''));
@@ -668,6 +743,22 @@ function ops_api_handle_job_create(PDO $conn, array $user): void
     // The day it was raised on the phone, which is not the day it arrived when
     // it was raised offline late in the evening.
     $today = substr(ops_api_client_time(2 * 86400), 0, 10);
+
+    // A second Create for work that is already on the list. Hand back the job
+    // they have rather than making another: the app maps its pending job onto
+    // the id in this reply (mapJobId() in the app's queue), so the person ends
+    // up inside the job that exists and there is nothing left to tidy up.
+    // Recorded against this request id too, so a resend of THIS op answers
+    // with the same job instead of falling through and inserting one.
+    $duplicate = ops_api_duplicate_open_job($conn, $user, $companyId, $jobType, $today, $places);
+    if ($duplicate) {
+        ops_api_log('duplicate create folded into job ' . (int)$duplicate['id']);
+        ops_api_record_request_job($conn, $requestId, (int)$duplicate['id']);
+        customer_api_send_ok([
+            'job' => ops_api_job_detail($conn, $duplicate, $user),
+            'duplicate' => true,
+        ]);
+    }
 
     $stmt = $conn->prepare("
         INSERT INTO ops_jobs
@@ -851,7 +942,7 @@ function ops_api_handle_job_start(PDO $conn, array $user, int $jobId): void
 function ops_api_refuse_if_other_job_running(PDO $conn, array $user, int $jobId): void
 {
     $stmt = $conn->prepare("
-        SELECT id, title
+        SELECT id, title, started_at
         FROM ops_jobs
         WHERE assigned_to = ? AND status = 'in_progress' AND paused_at IS NULL AND id <> ?
         ORDER BY started_at ASC
@@ -860,9 +951,20 @@ function ops_api_refuse_if_other_job_running(PDO $conn, array $user, int $jobId)
     $stmt->execute([(int)$user['id'], $jobId]);
     $running = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($running) {
+        // Said by where to find it rather than by its number: the app shows a
+        // job id nowhere. And with the time it started, because the job that
+        // is running is very often the same place under the same auto-built
+        // title as the one being started — "Finish <the name you are looking
+        // at> first" reads as nonsense, and people raised a fresh job instead
+        // of going back to the old one.
+        $since = !empty($running['started_at'])
+            ? ' (started ' . date('H:i', strtotime((string)$running['started_at'])) . ')'
+            : '';
         customer_api_send_error(
             'job_running',
-            'Finish "' . $running['title'] . '" first. Only one job can be running at a time.',
+            'Only one job at a time. "' . $running['title'] . '"' . $since
+                . ' is still running - it is the one marked In progress on your'
+                . ' Today list. Finish that one first.',
             409,
             ['running_job_id' => (int)$running['id']]
         );
