@@ -5,6 +5,7 @@
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/db_connect.php';
 require_once __DIR__ . '/includes/branding.php';
+require_once __DIR__ . '/includes/account_status.php';
 
 // Get branding settings
 $brand = getBrandSettings($conn);
@@ -85,6 +86,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($ok) {
                     $conn->prepare("UPDATE `user` SET password=? WHERE id=?")
                          ->execute([password_hash($password, PASSWORD_BCRYPT), (int)$user['id']]);
+                }
+            }
+        }
+
+        // A correct password is not enough: the account may have been disabled,
+        // or belong to someone who has left the company.
+        if ($ok) {
+            $blocked = account_login_block_reason($conn, (int)$user['id']);
+            if ($blocked !== null) {
+                $ok    = false;
+                $error = $blocked['message'];
+
+                require_once __DIR__ . '/includes/AuditService.php';
+                AuditService::logEvent([
+                    'action'        => 'login_blocked',
+                    'module'        => 'auth',
+                    'object_type'   => 'auth',
+                    'object_id'     => (string)$user['id'],
+                    'object_ref'    => 'Sign-in',
+                    'summary'       => "Blocked sign-in for {$user['username']}: {$blocked['detail']}",
+                    'source'        => 'user',
+                    'success'       => false,
+                    'error_message' => $blocked['detail'],
+                ]);
+
+                // A valid password on a closed account: drop any remember-me token too.
+                try {
+                    $conn->prepare("DELETE FROM user_tokens WHERE user_id = ?")->execute([(int)$user['id']]);
+                } catch (Throwable $e) {
+                    error_log('login: could not clear tokens for blocked account: ' . $e->getMessage());
                 }
             }
         }
@@ -308,7 +339,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Failure: increment buckets
         $bucket_ip['c']++;   $bucket_ip['ts']   = time();
         $bucket_user['c']++; $bucket_user['ts'] = time();
-        $error = 'Invalid username or password.';
+        // A closed account, or one with no employee profile, has already said so.
+        // Only a genuinely wrong password gets the generic message.
+        if ($error === '') {
+            $error = 'Invalid username or password.';
+        }
         
         // Audit Log: Track failed login attempt
         require_once __DIR__ . '/includes/AuditService.php';

@@ -250,6 +250,14 @@ function ops_pin_resolve_user(PDO $conn, string $pin): ?array
         return null;
     }
 
+    // Someone who has left the company keeps a valid PIN until it is removed,
+    // so check the account the same way the admin sign-in does. A closed account
+    // looks exactly like a wrong PIN.
+    require_once __DIR__ . '/../../../includes/account_status.php';
+    if (account_login_block_reason($conn, (int)$row['user_id']) !== null) {
+        return null;
+    }
+
     return [
         'id' => (int)$row['user_id'],
         'name' => (string)$row['name'],

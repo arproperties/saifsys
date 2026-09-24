@@ -200,6 +200,16 @@ if (empty($_SESSION['user_id']) && !empty($_COOKIE['rememberme']) && isset($conn
                 $u->execute([(int)$row['user_id']]);
                 $user = $u->fetch(PDO::FETCH_ASSOC);
 
+                // The account may have been closed since this cookie was issued.
+                if ($user) {
+                    require_once __DIR__ . '/account_status.php';
+                    if (account_login_block_reason($conn, (int)$user['id']) !== null) {
+                        $conn->prepare("DELETE FROM user_tokens WHERE user_id=?")->execute([(int)$user['id']]);
+                        setcookie('rememberme', '', time() - 3600, '/');
+                        $user = null;
+                    }
+                }
+
                 if ($user) {
                     session_regenerate_id(true);
                     set_logged_in_user((int)$user['id'], $user['username'] ?? null, $user['fullname'] ?? null);
