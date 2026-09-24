@@ -26,7 +26,7 @@ require_once __DIR__ . '/db_connect.php';
  */
 function attendance_self_enabled(): bool
 {
-    return false;
+    return true;
 }
 
 /**
