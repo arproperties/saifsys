@@ -48,6 +48,13 @@ $asSecs = ($asHour * 3600) + ((int)$asMoment->format('i') * 60) + (int)$asMoment
 
 $asBlocking = ($asState['stage'] === 'check_in') && attendance_self_blocking();
 
+// The pop-up is about to draw, so the gate did its job — clear its loop
+// counter. Anything that keeps this from drawing leaves the count climbing,
+// and the gate gives up rather than trapping the person.
+if ($asBlocking) {
+    unset($_SESSION['attendance_self_gate_hops']);
+}
+
 if (!function_exists('h')) {
     function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
 }

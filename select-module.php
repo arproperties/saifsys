@@ -75,7 +75,18 @@ foreach ($userModules as $module) {
 $companiesCount = count($userCompanies);
 $modulesWithDeptsCount = count($modulesWithDepts);
 
-if ($modulesWithDeptsCount === 1) {
+// ...unless they still have to check in. The check-in pop-up lives further
+// down this page, so redirecting here would bounce them into a module that the
+// attendance gate only sends them straight back from — a redirect loop for
+// anyone with a single module. Hold them here until they have checked in.
+require_once __DIR__ . '/includes/attendance_self.php';
+$asMustCheckIn = false;
+if (attendance_self_enabled() && attendance_self_blocking()) {
+    $asGateState = attendance_self_state($conn);
+    $asMustCheckIn = ($asGateState['stage'] === 'check_in');
+}
+
+if (!$asMustCheckIn && $modulesWithDeptsCount === 1) {
     $moduleData = $modulesWithDepts[0];
     $moduleName = $moduleData['module'];
     $moduleDepts = $moduleData['departments'];

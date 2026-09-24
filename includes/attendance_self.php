@@ -26,7 +26,7 @@ require_once __DIR__ . '/db_connect.php';
  */
 function attendance_self_enabled(): bool
 {
-    return true;
+    return false;
 }
 
 /**
@@ -546,6 +546,19 @@ function attendance_self_gate_enforce(PDO $conn): void
     if ($state['stage'] !== 'check_in') {
         return;
     }
+
+    // Circuit breaker. If the launcher ever fails to show the pop-up, this gate
+    // would redirect to it, get bounced back, and redirect again — locking the
+    // person out of the whole system. Rather than trust that never happens,
+    // give up after a few hops and let them through. Losing one day's check-in
+    // is a far smaller failure than nobody being able to work. The counter is
+    // cleared the moment the pop-up actually draws.
+    $hops = (int)($_SESSION['attendance_self_gate_hops'] ?? 0) + 1;
+    if ($hops > 4) {
+        unset($_SESSION['attendance_self_gate_hops']);
+        return;
+    }
+    $_SESSION['attendance_self_gate_hops'] = $hops;
 
     $root = function_exists('get_application_web_root') ? get_application_web_root() : '';
     $target = ($root !== '' ? $root : '') . '/select-module';
