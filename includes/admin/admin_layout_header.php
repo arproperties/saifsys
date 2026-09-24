@@ -51,6 +51,12 @@ $companyQs = $settingsCompanyId > 0 ? '&settings_company_id=' . $settingsCompany
   </style>
 </head>
 <body class="admin-ui-v2">
+<?php
+// Check-out bar for staff who have checked in. Prints nothing when the
+// feature is off or the person has no attendance to record.
+$asWidget = dirname(__DIR__, 2) . '/includes/attendance_self_widget.php';
+if (is_file($asWidget)) { require $asWidget; }
+?>
 <div class="admin-sidebar-overlay" id="admin-sidebar-overlay"></div>
 <div class="admin-shell">
   <aside class="admin-sidebar" id="admin-sidebar" aria-label="Administration navigation">

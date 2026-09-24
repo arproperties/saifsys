@@ -77,6 +77,12 @@ $invSwitchReturn = $_SERVER['REQUEST_URI'] ?? (($appBase !== '' ? $appBase : '')
   </style>
 </head>
 <body>
+<?php
+// Check-out bar for staff who have checked in. Prints nothing when the
+// feature is off or the person has no attendance to record.
+$asWidget = dirname(__DIR__, 3) . '/includes/attendance_self_widget.php';
+if (is_file($asWidget)) { require $asWidget; }
+?>
 <div class="d-flex">
   <aside class="sidebar p-3">
     <div class="d-flex align-items-center justify-content-between mb-3">

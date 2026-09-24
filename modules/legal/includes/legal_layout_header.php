@@ -62,6 +62,12 @@ $counselPages = ['legal_counsel.php','legal_counsel_add.php','legal_counsel_edit
     <?php if (isset($pageHead)) echo $pageHead; ?>
 </head>
 <body>
+<?php
+// Check-out bar for staff who have checked in. Prints nothing when the
+// feature is off or the person has no attendance to record.
+$asWidget = dirname(__DIR__, 3) . '/includes/attendance_self_widget.php';
+if (is_file($asWidget)) { require $asWidget; }
+?>
 <div class="d-flex">
     <aside id="legalSb" class="legal-sidebar d-flex flex-column">
         <div class="brand">

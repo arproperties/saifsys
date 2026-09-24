@@ -42,6 +42,12 @@ $hasArsOps  = has_department_access(MODULE_ARS, DEPT_ARS_OPERATIONS, $conn);
     <?php if (isset($pageHead)) echo $pageHead; ?>
 </head>
 <body<?= !empty($brand['dark_mode_enabled']) ? ' class="dark-mode"' : '' ?>>
+<?php
+// Check-out bar for staff who have checked in. Prints nothing when the
+// feature is off or the person has no attendance to record.
+$asWidget = dirname(__DIR__, 3) . '/includes/attendance_self_widget.php';
+if (is_file($asWidget)) { require $asWidget; }
+?>
 <div class="d-flex">
     <!-- Sidebar -->
     <aside id="sb" class="ars-sidebar no-print d-flex flex-column">

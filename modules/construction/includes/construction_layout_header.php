@@ -151,6 +151,12 @@ if ($coUiV2) {
 }
 ?>
 <body<?= $bodyClasses ? ' class="' . h(implode(' ', $bodyClasses)) . '"' : '' ?><?= $coBodyAttrs ?>>
+<?php
+// Check-out bar for staff who have checked in. Prints nothing when the
+// feature is off or the person has no attendance to record.
+$asWidget = dirname(__DIR__, 3) . '/includes/attendance_self_widget.php';
+if (is_file($asWidget)) { require $asWidget; }
+?>
 <div class="co-sidebar-overlay no-print" id="co-sidebar-overlay" aria-hidden="true"></div>
 <div class="d-flex flex-column flex-md-row">
     <aside class="sidebar no-print d-flex flex-column p-3" id="co-sidebar" role="navigation">

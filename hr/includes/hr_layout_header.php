@@ -80,6 +80,12 @@ $logoSrc = function_exists('brand_logo_src') ? brand_logo_src($brand) : null;
   } ?>
 </head>
 <body class="hr-ui-v2">
+<?php
+// Check-out bar for staff who have checked in. Prints nothing when the
+// feature is off or the person has no attendance to record.
+$asWidget = dirname(__DIR__, 2) . '/includes/attendance_self_widget.php';
+if (is_file($asWidget)) { require $asWidget; }
+?>
 <div class="hr-sidebar-overlay" id="hr-sidebar-overlay"></div>
 <div class="hr-shell">
   <aside class="hr-sidebar" id="hr-sidebar" aria-label="HR navigation">

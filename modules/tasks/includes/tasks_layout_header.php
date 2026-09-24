@@ -38,6 +38,12 @@ $pageTitleSafe = isset($pageTitle) ? h($pageTitle) : 'Tasks';
   <?php if (isset($pageStyles)) echo '<style>' . $pageStyles . '</style>'; ?>
 </head>
 <body>
+<?php
+// Check-out bar for staff who have checked in. Prints nothing when the
+// feature is off or the person has no attendance to record.
+$asWidget = dirname(__DIR__, 3) . '/includes/attendance_self_widget.php';
+if (is_file($asWidget)) { require $asWidget; }
+?>
   <div class="topbar">
     <div class="page-wrap d-flex align-items-center justify-content-between">
       <div class="app-title d-flex align-items-center gap-2">
