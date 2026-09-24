@@ -38,6 +38,29 @@ function attendance_self_blocking(): bool
     return true;
 }
 
+/**
+ * Field staff — cleaners, drivers — are outside this entirely. They record
+ * attendance on the PIN app, and Guard keeps them to a handful of pages. One
+ * of those is their own profile, which is drawn with the HR layout, so without
+ * this check the pop-up would appear there and trap them: no launcher to
+ * reach, nothing else allowed, no way out.
+ */
+function attendance_self_is_worker(PDO $conn): bool
+{
+    static $isWorker = null;
+    if ($isWorker !== null) {
+        return $isWorker;
+    }
+    $isWorker = false;
+    require_once __DIR__ . '/../lib/Guard.php';
+    try {
+        $isWorker = Guard::isWorker(current_user_roles($conn));
+    } catch (Throwable $e) {
+        $isWorker = false;
+    }
+    return $isWorker;
+}
+
 /** Company time. Set here only — changing it globally would shift other modules. */
 function attendance_self_tz(): DateTimeZone
 {
@@ -203,6 +226,9 @@ function attendance_self_state(PDO $conn): array
 
     if (!attendance_self_enabled()) {
         return $state;
+    }
+    if (attendance_self_is_worker($conn)) {
+        return $state; // PIN app, not this
     }
 
     $employee = attendance_self_employee($conn);
@@ -486,13 +512,10 @@ function attendance_self_gate_enforce(PDO $conn): void
         return;
     }
 
-    // Field staff — cleaners, drivers — record attendance on the PIN app, and
-    // Guard keeps them to a handful of pages that do not include the launcher
-    // this gate redirects to. Sending them there would bounce them straight
-    // back, so leave them alone entirely.
-    require_once __DIR__ . '/../lib/Guard.php';
+    // Field staff are outside this — sending them to the launcher would only
+    // bounce them back to their profile.
     try {
-        if (Guard::isWorker(current_user_roles($conn))) {
+        if (attendance_self_is_worker($conn)) {
             return;
         }
     } catch (Throwable $e) {
