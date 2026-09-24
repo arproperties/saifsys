@@ -203,6 +203,7 @@ function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
     </style>
 </head>
 <body class="sm-v2">
+    <?php require __DIR__ . '/includes/attendance_self_widget.php'; ?>
     <div class="sm-atmosphere" aria-hidden="true"></div>
     <div class="sm-shell">
         <header class="sm-topbar">

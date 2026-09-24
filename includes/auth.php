@@ -241,4 +241,11 @@ if (empty($_SESSION['user_id']) && !empty($_COOKIE['rememberme']) && isset($conn
 if (isset($conn) && $conn instanceof PDO) {
     require_once __DIR__ . '/../lib/Guard.php';
     Guard::enforce($conn);
+
+    // Staff self check-in. Sends anyone who has not checked in yet back to the
+    // workspace launcher, where the pop-up is waiting. Does nothing at all
+    // while attendance_self_enabled() is false, and never applies to a user
+    // with no employee record.
+    require_once __DIR__ . '/attendance_self.php';
+    attendance_self_gate_enforce($conn);
 }

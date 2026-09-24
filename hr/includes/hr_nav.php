@@ -148,6 +148,13 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'pages' => ['attendance.php', 'attendance_bulk.php', 'attendance_summary.php', 'attendance_edit.php'],
                 ],
                 [
+                    'key' => 'attendance_missing',
+                    'label' => 'Missing check-ins',
+                    'icon' => 'user-x',
+                    'href' => $hrBase . '/attendance_missing',
+                    'pages' => ['attendance_missing.php'],
+                ],
+                [
                     'key' => 'overtime',
                     'label' => 'Overtime',
                     'icon' => 'clock',
@@ -252,6 +259,7 @@ function hr_nav_page_title(string $currentPage): string
         'attendance_bulk.php' => 'Bulk attendance',
         'attendance_summary.php' => 'Attendance summary',
         'attendance_edit.php' => 'Edit attendance',
+        'attendance_missing.php' => 'Missing check-ins',
         'overtime.php' => 'Overtime',
         'leave_requests.php' => 'Leave requests',
         'leave_types.php' => 'Leave types',

@@ -206,6 +206,11 @@ hr_add_company_where($where, $prms, $selectedCompanyId, 'e.company_id');
 if ($st !== '' && in_array($st,['approved','absent','half','on_leave'], true)) {
     $where[] = "a.status = ?"; $prms[] = $st;
 }
+// Who recorded it: HR by hand, the staff member themselves, or an import.
+$src = $_GET['source'] ?? '';
+if ($src !== '' && in_array($src, ['admin','self','import'], true)) {
+    $where[] = "a.source = ?"; $prms[] = $src;
+}
 
 $sqlWhere = $where ? ('WHERE '.implode(' AND ', $where)) : '';
 
@@ -308,6 +313,18 @@ echo hr_ui_page_header(
           ?>
         </select>
       </div>
+      <div class="col-md-2">
+        <label class="form-label">Recorded by</label>
+        <select name="source" class="form-select">
+          <?php
+            $srcOpts = ['' => '— Any —', 'admin' => 'HR', 'self' => 'Staff (self)', 'import' => 'Import'];
+            foreach ($srcOpts as $k => $v) {
+              $sel = ($src === $k) ? 'selected' : '';
+              echo "<option value=\"".h($k)."\" $sel>".h($v)."</option>";
+            }
+          ?>
+        </select>
+      </div>
       <div class="col-md-1 d-flex align-items-end">
         <button class="btn btn-primary w-100">Apply</button>
       </div>
@@ -376,13 +393,14 @@ echo hr_ui_page_header(
             <th>Out</th>
             <th>Hours</th>
             <th>Status</th>
+            <th>Source</th>
             <th>Notes</th>
             <th class="text-end">Actions</th>
           </tr>
         </thead>
         <tbody>
           <?php if (!$rows): ?>
-            <tr><td colspan="10" class="text-center text-muted py-4">No rows.</td></tr>
+            <tr><td colspan="11" class="text-center text-muted py-4">No rows.</td></tr>
           <?php else: foreach ($rows as $r): ?>
             <tr>
               <td><?= (int)$r['id'] ?></td>
@@ -400,6 +418,16 @@ echo hr_ui_page_header(
                 <span class="badge text-bg-<?= $cls ?>"><?= h($r['status']) ?></span>
                 <?php if ($r['status'] === 'absent' && strpos((string)($r['notes'] ?? ''), 'Worker Availability absent:') === 0): ?>
                   <span class="badge text-bg-info ms-1">From Operation</span>
+                <?php endif; ?>
+              </td>
+              <td>
+                <?php $srcVal = (string)($r['source'] ?? 'admin'); ?>
+                <?php if ($srcVal === 'self'): ?>
+                  <span class="badge text-bg-primary">Self</span>
+                <?php elseif ($srcVal === 'import'): ?>
+                  <span class="badge text-bg-secondary">Import</span>
+                <?php else: ?>
+                  <span class="text-muted small">HR</span>
                 <?php endif; ?>
               </td>
               <td><?= h($r['notes'] ?: '') ?></td>
