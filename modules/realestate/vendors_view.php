@@ -121,7 +121,7 @@ $invoices = $conn->prepare("
     SELECT vi.*,
            GREATEST(COALESCE(vi.balance_due, vi.total_amount - COALESCE(vi.paid_amount,0)), 0) as computed_balance,
            (SELECT COUNT(*) FROM re_vendor_bill_attachments a WHERE a.vendor_invoice_id=vi.id AND a.company_id=vi.company_id) attachment_count,
-           (SELECT jh.id FROM re_journal_headers jh WHERE jh.company_id=vi.company_id AND jh.reference_type='vendor_invoice' AND jh.reference_id=vi.id AND jh.is_posted=1 AND jh.is_reversed=0 ORDER BY jh.id DESC LIMIT 1) posted_journal_id
+           (SELECT jh.id FROM re_journal_headers jh WHERE jh.company_id=vi.company_id AND jh.reference_type='vendor_invoice' AND jh.reference_id=vi.id AND jh.is_posted=1 AND jh.is_reversed=0 AND jh.journal_type<>'reversal' ORDER BY jh.id DESC LIMIT 1) posted_journal_id
     FROM re_vendor_invoices vi
     WHERE vi.vendor_id = ? AND vi.company_id = ?
     ORDER BY vi.invoice_date DESC, vi.id DESC

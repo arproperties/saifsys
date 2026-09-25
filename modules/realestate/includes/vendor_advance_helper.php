@@ -542,9 +542,11 @@ function re_ap_unapply_vendor_advance(PDO $conn, int $companyId, int $applicatio
 }
 
 /**
- * Reverse an original vendor payment. Requires no posted advance applications and no bill allocations.
+ * Reverse an original vendor payment. Requires no posted advance applications.
+ * Bill allocations normally block the reversal; pass $clearAllocations = true to drop
+ * them first (used when a wrongly entered payment is being undone with its bill).
  */
-function re_ap_reverse_vendor_payment(PDO $conn, int $companyId, int $paymentId, string $reason = '', ?int $userId = null): array
+function re_ap_reverse_vendor_payment(PDO $conn, int $companyId, int $paymentId, string $reason = '', ?int $userId = null, bool $clearAllocations = false): array
 {
     if ($companyId <= 0) {
         return ['success' => false, 'error' => 'Company context is required.', 'reversal_journal_id' => null];
@@ -586,24 +588,44 @@ function re_ap_reverse_vendor_payment(PDO $conn, int $companyId, int $paymentId,
             throw new RuntimeException('Reverse all advance refunds on this payment before reversing it.');
         }
 
-        $alloc = $conn->prepare("
-            SELECT COALESCE(SUM(amount_allocated), 0) FROM re_vendor_payment_allocations
+        $allocRows = $conn->prepare("
+            SELECT vendor_invoice_id, amount_allocated FROM re_vendor_payment_allocations
             WHERE company_id = ? AND vendor_payment_id = ?
         ");
-        $alloc->execute([$companyId, $paymentId]);
-        if ((float)$alloc->fetchColumn() > 0.005) {
-            throw new RuntimeException('Clear bill allocations on this payment before reversing it.');
+        $allocRows->execute([$companyId, $paymentId]);
+        $allocRows = $allocRows->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $allocatedTotal = 0.0;
+        $touchedBills = [];
+        foreach ($allocRows as $row) {
+            $allocatedTotal += (float)$row['amount_allocated'];
+            $touchedBills[] = (int)$row['vendor_invoice_id'];
+        }
+        if ($allocatedTotal > 0.005) {
+            if (!$clearAllocations) {
+                throw new RuntimeException('Clear bill allocations on this payment before reversing it.');
+            }
+            $conn->prepare("DELETE FROM re_vendor_payment_allocations WHERE company_id = ? AND vendor_payment_id = ?")
+                ->execute([$companyId, $paymentId]);
         }
 
         $journalId = (int)($pay['journal_id'] ?? 0);
         if ($journalId <= 0) {
             throw new RuntimeException('Payment has no posted journal to reverse.');
         }
-        $rev = reverse_journal($journalId, $reason ?: 'Vendor payment reversed', $userId);
-        if (empty($rev['success'])) {
-            throw new RuntimeException($rev['error'] ?? 'Payment journal reversal failed');
+        $jh = $conn->prepare("SELECT is_posted,is_reversed,reversal_journal_id FROM re_journal_headers WHERE id = ? AND company_id = ?");
+        $jh->execute([$journalId, $companyId]);
+        $jhRow = $jh->fetch(PDO::FETCH_ASSOC) ?: [];
+        if ($jhRow && (int)($jhRow['is_reversed'] ?? 0) === 1 && (int)($jhRow['reversal_journal_id'] ?? 0) > 0) {
+            // Journal was already reversed straight from the journal screen; only the
+            // payment record and its sub-ledger are still out of sync.
+            $reversalJournalId = (int)$jhRow['reversal_journal_id'];
+        } else {
+            $rev = reverse_journal($journalId, $reason ?: 'Vendor payment reversed', $userId);
+            if (empty($rev['success'])) {
+                throw new RuntimeException($rev['error'] ?? 'Payment journal reversal failed');
+            }
+            $reversalJournalId = (int)$rev['reversal_journal_id'];
         }
-        $reversalJournalId = (int)$rev['reversal_journal_id'];
 
         $advanceAmount = re_ap_money($pay['advance_amount'] ?? 0);
         $remainingAdv = re_ap_payment_advance_remaining($conn, $companyId, $paymentId);
@@ -652,6 +674,11 @@ function re_ap_reverse_vendor_payment(PDO $conn, int $companyId, int $paymentId,
 
         $conn->prepare("UPDATE re_vendor_payments SET status = 'void' WHERE id = ? AND company_id = ?")
             ->execute([$paymentId, $companyId]);
+        foreach (array_unique($touchedBills) as $touchedBillId) {
+            if ($touchedBillId > 0 && function_exists('re_ap_refresh_bill_status')) {
+                re_ap_refresh_bill_status($conn, $companyId, $touchedBillId);
+            }
+        }
         re_ap_audit($conn, $companyId, $vendorId, null, $paymentId, 'payment_reversed', (string)$journalId, (string)$reversalJournalId, (float)$pay['amount'], $reason ?: 'Vendor payment reversed', $userId, 'vendor_payment_reverse', $reversalJournalId);
 
         if ($ownTx) {

@@ -76,9 +76,17 @@ function re_ap_recurring_totals(array $lines): array { $subtotal=0.0;$tax=0.0;$t
 function re_ap_generate_due_recurring_bills(PDO $conn,int $companyId,?int $userId=null): array { $result=['generated'=>0,'invoice_ids'=>[],'errors'=>[]];try{if(!re_ap_recurring_ensure_schema($conn))return $result;$due=$conn->prepare("SELECT id FROM re_vendor_recurring_bills WHERE company_id=? AND status='active' AND next_bill_date IS NOT NULL AND next_bill_date<=CURDATE() AND (end_date IS NULL OR next_bill_date<=end_date) ORDER BY next_bill_date ASC,id ASC LIMIT 50");$due->execute([$companyId]);$ids=array_map('intval',$due->fetchAll(PDO::FETCH_COLUMN)?:[]);foreach($ids as $id){try{$conn->beginTransaction();$lock=$conn->prepare("SELECT * FROM re_vendor_recurring_bills WHERE id=? AND company_id=? FOR UPDATE");$lock->execute([$id,$companyId]);$rec=$lock->fetch(PDO::FETCH_ASSOC);if(!$rec||$rec['status']!=='active'||empty($rec['next_bill_date'])||$rec['next_bill_date']>date('Y-m-d')||(!empty($rec['end_date'])&&$rec['next_bill_date']>$rec['end_date'])){$conn->commit();continue;}$billDate=(string)$rec['next_bill_date'];if(!empty($rec['last_generated_bill_date'])&&$rec['last_generated_bill_date']===$billDate){$next=re_ap_recurring_next_bill_date($billDate,(string)$rec['frequency']);$newStatus=(!empty($rec['end_date'])&&$next>$rec['end_date'])?'paused':'active';$nextValue=$newStatus==='paused'?null:$next;$conn->prepare("UPDATE re_vendor_recurring_bills SET next_bill_date=?,status=? WHERE id=? AND company_id=?")->execute([$nextValue,$newStatus,$id,$companyId]);$conn->commit();continue;}$lineData=re_ap_recurring_totals(re_ap_recurring_template_lines($conn,$companyId,$rec));if(!$lineData['lines'])throw new RuntimeException('No valid lines on recurring template #'.$id);$invoiceNumber=re_ap_recurring_unique_invoice_number($conn,$companyId,$rec,$billDate);$dueDate=date('Y-m-d',strtotime('+'.max(0,(int)($rec['due_days']??0)).' days',strtotime($billDate)));$notes=trim((string)($rec['notes']??''));$notes=trim($notes."\nGenerated from recurring bill template #".$id.' - '.($rec['template_name']??''));$ins=$conn->prepare("INSERT INTO re_vendor_invoices (company_id,vendor_id,invoice_number,order_number,permit_number,place_of_supply,vat_treatment,invoice_date,due_date,payment_terms,subtotal,tax_amount,discount_amount,total_amount,paid_amount,balance_due,status,posting_status,notes,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,'not_posted',?,?)");$ins->execute([$companyId,(int)$rec['vendor_id'],$invoiceNumber,$rec['order_number']?:null,$rec['permit_number']?:null,$rec['place_of_supply']?:'Dubai',$rec['vat_treatment']?:'vat_registered',$billDate,$dueDate,$rec['payment_terms']?:null,$lineData['subtotal'],$lineData['tax_amount'],$lineData['total_amount'],0,$lineData['total_amount'],'open',$notes?:null,$userId]);$billId=(int)$conn->lastInsertId();$lineStmt=$conn->prepare("INSERT INTO re_vendor_invoice_items (company_id,invoice_id,expense_account_id,building_id,unit_id,lease_id,service_name,description,line_description,quantity,unit_price,subtotal,vat_treatment,vat_rate,vat_amount,line_total,total_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");foreach($lineData['lines'] as $ln){$desc=$ln['description']?:'Recurring bill line';$lineStmt->execute([$companyId,$billId,$ln['expense_account_id'],$ln['building_id']?:null,$ln['unit_id']?:null,$ln['lease_id']?:null,$desc,$desc,$desc,$ln['quantity'],$ln['unit_price'],$ln['subtotal'],$ln['vat_treatment'],$ln['vat_rate'],$ln['vat_amount'],$ln['line_total'],$ln['line_total']]);}$next=re_ap_recurring_next_bill_date($billDate,(string)$rec['frequency']);$newStatus=(!empty($rec['end_date'])&&$next>$rec['end_date'])?'paused':'active';$nextValue=$newStatus==='paused'?null:$next;$conn->prepare("UPDATE re_vendor_recurring_bills SET last_generated_bill_date=?,last_generated_invoice_id=?,next_bill_date=?,status=? WHERE id=? AND company_id=?")->execute([$billDate,$billId,$nextValue,$newStatus,$id,$companyId]);re_ap_audit($conn,$companyId,(int)$rec['vendor_id'],$billId,null,'recurring_bill_generated',null,$billDate,(float)$lineData['total_amount'],'Vendor bill generated from recurring template #'.$id,$userId,'vendor_recurring_bills');$conn->commit();$result['generated']++;$result['invoice_ids'][]=$billId;}catch(Throwable $e){if($conn->inTransaction())$conn->rollBack();$result['errors'][]=$e->getMessage();}}}catch(Throwable $e){$result['errors'][]=$e->getMessage();}return $result; }
 function re_ap_unique_vendor_bill_number(PDO $conn,int $companyId,string $base): string { $base=trim($base)?:('BILL-'.date('Ymd'));$base=substr(preg_replace('/[^A-Za-z0-9_-]+/','-',$base),0,88);$candidate=$base;$i=2;$st=$conn->prepare("SELECT id FROM re_vendor_invoices WHERE company_id=? AND invoice_number=? LIMIT 1");while(true){$st->execute([$companyId,$candidate]);if(!$st->fetchColumn())return $candidate;$candidate=substr($base,0,92).'-'.$i;$i++;} }
 function re_ap_copy_vendor_bill_as_draft(PDO $conn,int $companyId,int $billId,?int $userId=null,string $reason='Amendment copy'): array { try{$bill=re_ap_load_bill($conn,$companyId,$billId);if(!$bill)return ['success'=>false,'bill_id'=>null,'error'=>'Bill not found'];$lines=$conn->prepare("SELECT * FROM re_vendor_invoice_items WHERE company_id=? AND invoice_id=? ORDER BY id");$lines->execute([$companyId,$billId]);$rows=$lines->fetchAll(PDO::FETCH_ASSOC)?:[];if(!$rows)return ['success'=>false,'bill_id'=>null,'error'=>'Original bill has no lines to copy'];$invoiceNumber=re_ap_unique_vendor_bill_number($conn,$companyId,$bill['invoice_number'].'-AMEND-'.date('Ymd'));$notes=trim((string)($bill['notes']??''));$notes=trim($notes."\nAmendment copy of bill #".$bill['invoice_number'].". ".$reason);$conn->beginTransaction();$ins=$conn->prepare("INSERT INTO re_vendor_invoices (company_id,vendor_id,invoice_number,order_number,permit_number,place_of_supply,vat_treatment,invoice_date,due_date,payment_terms,subtotal,tax_amount,discount_amount,total_amount,paid_amount,balance_due,status,posting_status,notes,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,'not_posted',?,?)");$ins->execute([$companyId,(int)$bill['vendor_id'],$invoiceNumber,$bill['order_number']?:null,$bill['permit_number']?:null,$bill['place_of_supply']?:'Dubai',$bill['vat_treatment']?:'vat_registered',date('Y-m-d'),$bill['due_date']?:date('Y-m-d'),$bill['payment_terms']?:null,(float)$bill['subtotal'],(float)$bill['tax_amount'],(float)$bill['total_amount'],0,(float)$bill['total_amount'],'draft',$notes?:null,$userId]);$newBillId=(int)$conn->lastInsertId();$lineStmt=$conn->prepare("INSERT INTO re_vendor_invoice_items (company_id,invoice_id,expense_account_id,building_id,unit_id,lease_id,service_name,description,line_description,quantity,unit_price,subtotal,vat_treatment,vat_rate,vat_amount,line_total,total_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");foreach($rows as $ln){$desc=$ln['service_name']?:($ln['line_description']?:($ln['description']?:'Bill line'));$lineStmt->execute([$companyId,$newBillId,$ln['expense_account_id']?:null,$ln['building_id']?:null,$ln['unit_id']?:null,$ln['lease_id']?:null,$desc,$ln['description']?:$desc,$ln['line_description']?:$desc,$ln['quantity'],$ln['unit_price'],$ln['subtotal']??0,$ln['vat_treatment']??'standard',$ln['vat_rate']??0,$ln['vat_amount']??0,$ln['line_total']??$ln['total_price']??0,$ln['total_price']??$ln['line_total']??0]);}re_ap_audit($conn,$companyId,(int)$bill['vendor_id'],$newBillId,null,'bill_amendment_created',(string)$billId,(string)$newBillId,(float)$bill['total_amount'],'Draft amendment created from bill #'.$bill['invoice_number'],$userId,'vendor_bill_amendment');$conn->commit();return ['success'=>true,'bill_id'=>$newBillId,'error'=>null];}catch(Throwable $e){if($conn->inTransaction())$conn->rollBack();return ['success'=>false,'bill_id'=>null,'error'=>$e->getMessage()];} }
-function re_ap_void_posted_vendor_bill(PDO $conn,int $companyId,int $billId,string $reason,?int $userId=null): array { try{$bill=re_ap_load_bill($conn,$companyId,$billId);if(!$bill)return ['success'=>false,'reversal_journal_id'=>null,'error'=>'Bill not found'];if(in_array($bill['status'],['void','cancelled'],true)||($bill['posting_status']??'')==='reversed')return ['success'=>true,'reversal_journal_id'=>null,'already_void'=>true,'error'=>null];$payments=$conn->prepare("SELECT COALESCE(SUM(amount_allocated),0) FROM re_vendor_payment_allocations WHERE company_id=? AND vendor_invoice_id=?");$payments->execute([$companyId,$billId]);if((float)$payments->fetchColumn()>0.005)return ['success'=>false,'reversal_journal_id'=>null,'error'=>'This bill has payments allocated. Reverse/unallocate the payments before voiding the bill.'];if(function_exists('re_ap_advance_applied_on_bill')&&re_ap_advance_applied_on_bill($conn,$companyId,$billId)>0.005)return ['success'=>false,'reversal_journal_id'=>null,'error'=>'This bill has vendor advances applied. Unapply the advances before voiding the bill.'];$journalId=(int)($bill['journal_id']??0);if($journalId<=0){$jh=$conn->prepare("SELECT id FROM re_journal_headers WHERE company_id=? AND reference_type='vendor_invoice' AND reference_id=? AND is_posted=1 AND is_reversed=0 ORDER BY id DESC LIMIT 1");$jh->execute([$companyId,$billId]);$journalId=(int)($jh->fetchColumn()?:0);}if($journalId<=0)return ['success'=>false,'reversal_journal_id'=>null,'error'=>'Posted journal was not found for this bill.'];$ownTx=!$conn->inTransaction();if($ownTx)$conn->beginTransaction();try{if(function_exists('re_ap_reverse_advance_vat_links_on_bill')){re_ap_reverse_advance_vat_links_on_bill($conn,$companyId,$billId,$userId);}$reverse=reverse_journal($journalId,$reason?:'Vendor bill voided',$userId);if(empty($reverse['success']))throw new RuntimeException($reverse['error']??'Journal reversal failed');$reversalJournalId=(int)$reverse['reversal_journal_id'];$ap=re_ap_account($conn,$companyId);if($ap){$ledger=get_or_create_vendor_ledger((int)$bill['vendor_id'],(int)$ap['id'],$companyId);$jl=$conn->prepare("SELECT id FROM re_journal_lines WHERE journal_id=? AND account_id=? ORDER BY line_number LIMIT 1");$jl->execute([$reversalJournalId,(int)$ap['id']]);$journalLineId=(int)($jl->fetchColumn()?:0);post_to_vendor_ledger($ledger['id'],date('Y-m-d'),(float)$bill['total_amount'],0,'Void vendor bill: '.$bill['invoice_number'],$bill['invoice_number'],$companyId,$reversalJournalId,$journalLineId?:null);}$note=trim((string)($bill['notes']??''));$note=trim($note."\nVoided/reversed on ".date('Y-m-d').($reason?': '.$reason:''));$conn->prepare("UPDATE re_vendor_invoices SET status='void', posting_status='reversed', paid_amount=0, balance_due=0, notes=?, updated_at=NOW() WHERE id=? AND company_id=?")->execute([$note?:null,$billId,$companyId]);re_ap_audit($conn,$companyId,(int)$bill['vendor_id'],$billId,null,'bill_voided',(string)$journalId,(string)$reversalJournalId,(float)$bill['total_amount'],$reason?:'Vendor bill voided',$userId,'vendor_bill_void',$reversalJournalId);if($ownTx)$conn->commit();return ['success'=>true,'reversal_journal_id'=>$reversalJournalId,'error'=>null];}catch(Throwable $e){if($ownTx&&$conn->inTransaction())$conn->rollBack();return ['success'=>false,'reversal_journal_id'=>null,'error'=>$e->getMessage()];}}catch(Throwable $e){return ['success'=>false,'reversal_journal_id'=>null,'error'=>$e->getMessage()];} }
+function re_ap_void_posted_vendor_bill(PDO $conn,int $companyId,int $billId,string $reason,?int $userId=null): array { try{$bill=re_ap_load_bill($conn,$companyId,$billId);if(!$bill)return ['success'=>false,'reversal_journal_id'=>null,'error'=>'Bill not found'];if(in_array($bill['status'],['void','cancelled'],true)||($bill['posting_status']??'')==='reversed')return ['success'=>true,'reversal_journal_id'=>null,'already_void'=>true,'error'=>null];$payments=$conn->prepare("SELECT COALESCE(SUM(amount_allocated),0) FROM re_vendor_payment_allocations WHERE company_id=? AND vendor_invoice_id=?");$payments->execute([$companyId,$billId]);if((float)$payments->fetchColumn()>0.005)return ['success'=>false,'reversal_journal_id'=>null,'error'=>'This bill has payments allocated. Reverse/unallocate the payments before voiding the bill.'];if(function_exists('re_ap_advance_applied_on_bill')&&re_ap_advance_applied_on_bill($conn,$companyId,$billId)>0.005)return ['success'=>false,'reversal_journal_id'=>null,'error'=>'This bill has vendor advances applied. Unapply the advances before voiding the bill.'];$live=re_ap_bill_live_journal($conn,$companyId,$bill);$journalId=(int)$live['journal_id'];$alreadyReversedId=(int)$live['already_reversed_id'];
+if($journalId<=0&&$alreadyReversedId<=0){
+    // Nothing live in the GL (never posted, or already unposted): close the bill record only.
+    if(($bill['posting_status']??'')==='posted')return ['success'=>false,'reversal_journal_id'=>null,'error'=>'Posted journal was not found for this bill.'];
+    $note=trim((string)($bill['notes']??''));$note=trim($note."\nVoided on ".date('Y-m-d').($reason?': '.$reason:''));
+    $conn->prepare("UPDATE re_vendor_invoices SET status='void', paid_amount=0, balance_due=0, notes=?, updated_at=NOW() WHERE id=? AND company_id=?")->execute([$note?:null,$billId,$companyId]);
+    re_ap_audit($conn,$companyId,(int)$bill['vendor_id'],$billId,null,'bill_voided',null,null,(float)$bill['total_amount'],$reason?:'Vendor bill voided (no general ledger entry)',$userId,'vendor_bill_void');
+    return ['success'=>true,'reversal_journal_id'=>null,'error'=>null];
+}$ownTx=!$conn->inTransaction();if($ownTx)$conn->beginTransaction();try{if(function_exists('re_ap_reverse_advance_vat_links_on_bill')){re_ap_reverse_advance_vat_links_on_bill($conn,$companyId,$billId,$userId);}if($journalId>0){$reverse=reverse_journal($journalId,$reason?:'Vendor bill voided',$userId);if(empty($reverse['success']))throw new RuntimeException($reverse['error']??'Journal reversal failed');$reversalJournalId=(int)$reverse['reversal_journal_id'];}else{$reversalJournalId=$alreadyReversedId;}$ap=re_ap_account($conn,$companyId);if($ap){$ledger=get_or_create_vendor_ledger((int)$bill['vendor_id'],(int)$ap['id'],$companyId);$jl=$conn->prepare("SELECT id FROM re_journal_lines WHERE journal_id=? AND account_id=? ORDER BY line_number LIMIT 1");$jl->execute([$reversalJournalId,(int)$ap['id']]);$journalLineId=(int)($jl->fetchColumn()?:0);post_to_vendor_ledger($ledger['id'],date('Y-m-d'),(float)$bill['total_amount'],0,'Void vendor bill: '.$bill['invoice_number'],$bill['invoice_number'],$companyId,$reversalJournalId,$journalLineId?:null);}$note=trim((string)($bill['notes']??''));$note=trim($note."\nVoided/reversed on ".date('Y-m-d').($reason?': '.$reason:''));$conn->prepare("UPDATE re_vendor_invoices SET status='void', posting_status='reversed', paid_amount=0, balance_due=0, notes=?, updated_at=NOW() WHERE id=? AND company_id=?")->execute([$note?:null,$billId,$companyId]);re_ap_audit($conn,$companyId,(int)$bill['vendor_id'],$billId,null,'bill_voided',(string)$journalId,(string)$reversalJournalId,(float)$bill['total_amount'],$reason?:'Vendor bill voided',$userId,'vendor_bill_void',$reversalJournalId);if($ownTx)$conn->commit();return ['success'=>true,'reversal_journal_id'=>$reversalJournalId,'error'=>null];}catch(Throwable $e){if($ownTx&&$conn->inTransaction())$conn->rollBack();return ['success'=>false,'reversal_journal_id'=>null,'error'=>$e->getMessage()];}}catch(Throwable $e){return ['success'=>false,'reversal_journal_id'=>null,'error'=>$e->getMessage()];} }
 function re_ap_post_vendor_bill(PDO $conn,int $companyId,int $billId,?int $userId=null): array { $bill=re_ap_load_bill($conn,$companyId,$billId); if(!$bill)return ['success'=>false,'error'=>'Bill not found']; if(($bill['posting_status']??'not_posted')==='posted'&&!empty($bill['journal_id']))return ['success'=>true,'journal_id'=>(int)$bill['journal_id'],'already_posted'=>true,'error'=>null];
-$existingJournalStmt=$conn->prepare("SELECT id FROM re_journal_headers WHERE company_id=? AND reference_type='vendor_invoice' AND reference_id=? AND is_posted=1 AND is_reversed=0 ORDER BY id DESC LIMIT 1");
+$existingJournalStmt=$conn->prepare("SELECT id FROM re_journal_headers WHERE company_id=? AND reference_type='vendor_invoice' AND reference_id=? AND is_posted=1 AND is_reversed=0 AND journal_type<>'reversal' ORDER BY id DESC LIMIT 1");
 $existingJournalStmt->execute([$companyId,$billId]);
 $existingJournalId=(int)($existingJournalStmt->fetchColumn()?:0);
 if($existingJournalId>0){
@@ -299,5 +307,195 @@ function re_ap_post_vendor_payment(PDO $conn, int $companyId, int $paymentId, ?i
             $conn->rollBack();
         }
         return ['success' => false, 'error' => $e->getMessage(), 'journal_id' => null];
+    }
+}
+
+/**
+ * Amounts that must be cleared before a bill can be unposted, voided or deleted.
+ * Returns ['cash' => float, 'advance' => float, 'advance_vat' => float].
+ */
+function re_ap_bill_clearing_blocks(PDO $conn, int $companyId, int $billId): array
+{
+    $cash = 0.0;
+    try {
+        $st = $conn->prepare("SELECT COALESCE(SUM(amount_allocated),0) FROM re_vendor_payment_allocations WHERE company_id=? AND vendor_invoice_id=?");
+        $st->execute([$companyId, $billId]);
+        $cash = re_ap_money($st->fetchColumn());
+    } catch (Throwable $e) {
+    }
+    $advance = function_exists('re_ap_advance_applied_on_bill') ? re_ap_advance_applied_on_bill($conn, $companyId, $billId) : 0.0;
+    $advanceVat = function_exists('re_ap_advance_vat_linked_to_bill') ? re_ap_advance_vat_linked_to_bill($conn, $companyId, $billId) : 0.0;
+    return ['cash' => re_ap_money($cash), 'advance' => re_ap_money($advance), 'advance_vat' => re_ap_money($advanceVat)];
+}
+
+/** True when the bill has ever had a journal posted against it (even a reversed one). */
+function re_ap_bill_has_journal_history(PDO $conn, int $companyId, int $billId): bool
+{
+    try {
+        $st = $conn->prepare("SELECT id FROM re_journal_headers WHERE company_id=? AND reference_type='vendor_invoice' AND reference_id=? LIMIT 1");
+        $st->execute([$companyId, $billId]);
+        return (bool)$st->fetchColumn();
+    } catch (Throwable $e) {
+        return true; // fail closed: never delete when history cannot be checked
+    }
+}
+
+/**
+ * Resolve the live (posted, not reversed) journal for a vendor bill, and report when the
+ * journal recorded on the bill has already been reversed straight from the journal screen.
+ * Returns ['journal_id'=>int, 'already_reversed_id'=>int] - journal_id 0 means nothing live.
+ */
+function re_ap_bill_live_journal(PDO $conn, int $companyId, array $bill): array
+{
+    $billId = (int)$bill['id'];
+    $alreadyReversed = 0;
+    $recorded = (int)($bill['journal_id'] ?? 0);
+    if ($recorded > 0) {
+        $st = $conn->prepare("SELECT is_posted,is_reversed,reversal_journal_id FROM re_journal_headers WHERE id=? AND company_id=?");
+        $st->execute([$recorded, $companyId]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if ($row && (int)$row['is_posted'] === 1 && (int)$row['is_reversed'] === 0) {
+            return ['journal_id' => $recorded, 'already_reversed_id' => 0];
+        }
+        if ($row && (int)$row['is_reversed'] === 1) {
+            $alreadyReversed = (int)($row['reversal_journal_id'] ?? 0);
+        }
+    }
+    $jh = $conn->prepare("SELECT id FROM re_journal_headers WHERE company_id=? AND reference_type='vendor_invoice' AND reference_id=? AND is_posted=1 AND is_reversed=0 AND journal_type<>'reversal' ORDER BY id DESC LIMIT 1");
+    $jh->execute([$companyId, $billId]);
+    $live = (int)($jh->fetchColumn() ?: 0);
+    return ['journal_id' => $live, 'already_reversed_id' => $live > 0 ? 0 : $alreadyReversed];
+}
+
+/**
+ * Reverse a posted bill's journal and put the bill back to an editable draft, keeping the
+ * same bill number. Used to correct a wrongly entered amount without a duplicate bill.
+ */
+function re_ap_unpost_vendor_bill(PDO $conn, int $companyId, int $billId, string $reason, ?int $userId = null): array
+{
+    $bill = re_ap_load_bill($conn, $companyId, $billId);
+    if (!$bill) {
+        return ['success' => false, 'reversal_journal_id' => null, 'error' => 'Bill not found'];
+    }
+    $blocks = re_ap_bill_clearing_blocks($conn, $companyId, $billId);
+    if ($blocks['cash'] > 0.005) {
+        return ['success' => false, 'reversal_journal_id' => null, 'error' => 'This bill has payments allocated. Reverse the payment first, then unpost the bill.'];
+    }
+    if ($blocks['advance'] > 0.005) {
+        return ['success' => false, 'reversal_journal_id' => null, 'error' => 'This bill has vendor advances applied. Unapply the advances before unposting.'];
+    }
+    $live = re_ap_bill_live_journal($conn, $companyId, $bill);
+    $journalId = (int)$live['journal_id'];
+    $alreadyReversedId = (int)$live['already_reversed_id'];
+    if ($journalId <= 0 && $alreadyReversedId <= 0) {
+        // Nothing posted: just make sure the flags say so.
+        $conn->prepare("UPDATE re_vendor_invoices SET posting_status='not_posted', journal_id=NULL, paid_amount=0, balance_due=total_amount, status=CASE WHEN status IN('void','cancelled') THEN status ELSE 'draft' END, updated_at=NOW() WHERE id=? AND company_id=?")
+            ->execute([$billId, $companyId]);
+        return ['success' => true, 'reversal_journal_id' => null, 'error' => null];
+    }
+    $ownTx = !$conn->inTransaction();
+    if ($ownTx) {
+        $conn->beginTransaction();
+    }
+    try {
+        if (function_exists('re_ap_reverse_advance_vat_links_on_bill')) {
+            re_ap_reverse_advance_vat_links_on_bill($conn, $companyId, $billId, $userId);
+        }
+        if ($journalId > 0) {
+            $reverse = reverse_journal($journalId, $reason ?: 'Vendor bill unposted for correction', $userId);
+            if (empty($reverse['success'])) {
+                throw new RuntimeException($reverse['error'] ?? 'Journal reversal failed');
+            }
+            $reversalJournalId = (int)$reverse['reversal_journal_id'];
+        } else {
+            // Journal was already reversed straight from the journal screen; only the
+            // bill record and its sub-ledger are still out of sync.
+            $reversalJournalId = $alreadyReversedId;
+        }
+        $ap = re_ap_account($conn, $companyId);
+        if ($ap) {
+            $ledger = get_or_create_vendor_ledger((int)$bill['vendor_id'], (int)$ap['id'], $companyId);
+            $jl = $conn->prepare("SELECT id FROM re_journal_lines WHERE journal_id=? AND account_id=? ORDER BY line_number LIMIT 1");
+            $jl->execute([$reversalJournalId, (int)$ap['id']]);
+            $journalLineId = (int)($jl->fetchColumn() ?: 0);
+            post_to_vendor_ledger($ledger['id'], date('Y-m-d'), (float)$bill['total_amount'], 0, 'Unpost vendor bill: ' . $bill['invoice_number'], $bill['invoice_number'], $companyId, $reversalJournalId, $journalLineId ?: null);
+        }
+        $note = trim((string)($bill['notes'] ?? ''));
+        $note = trim($note . "\nUnposted for correction on " . date('Y-m-d') . ($reason ? ': ' . $reason : ''));
+        $conn->prepare("UPDATE re_vendor_invoices SET status='draft', posting_status='not_posted', journal_id=NULL, paid_amount=0, balance_due=total_amount, notes=?, updated_at=NOW() WHERE id=? AND company_id=?")
+            ->execute([$note ?: null, $billId, $companyId]);
+        re_ap_audit($conn, $companyId, (int)$bill['vendor_id'], $billId, null, 'bill_unposted', (string)($journalId ?: $bill['journal_id']), (string)$reversalJournalId, (float)$bill['total_amount'], $reason ?: 'Vendor bill unposted for correction', $userId, 'vendor_bill_unpost', $reversalJournalId ?: null);
+        if ($ownTx) {
+            $conn->commit();
+        }
+        return ['success' => true, 'reversal_journal_id' => $reversalJournalId, 'error' => null];
+    } catch (Throwable $e) {
+        if ($ownTx && $conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        return ['success' => false, 'reversal_journal_id' => null, 'error' => $e->getMessage()];
+    }
+}
+
+/**
+ * Hard delete a vendor bill that never reached the general ledger. Bills with journal
+ * history must be voided instead so the GL trail survives.
+ */
+function re_ap_delete_vendor_bill(PDO $conn, int $companyId, int $billId, string $reason, ?int $userId = null): array
+{
+    $bill = re_ap_load_bill($conn, $companyId, $billId);
+    if (!$bill) {
+        return ['success' => false, 'error' => 'Bill not found'];
+    }
+    if (($bill['posting_status'] ?? '') === 'posted' || !empty($bill['journal_id'])) {
+        return ['success' => false, 'error' => 'This bill is posted to the general ledger. Unpost or void it first, then delete.'];
+    }
+    if (re_ap_bill_has_journal_history($conn, $companyId, $billId)) {
+        return ['success' => false, 'error' => 'This bill already has journal entries in the general ledger, so it cannot be deleted. Void it instead to keep the audit trail.'];
+    }
+    $blocks = re_ap_bill_clearing_blocks($conn, $companyId, $billId);
+    if ($blocks['cash'] > 0.005 || $blocks['advance'] > 0.005 || $blocks['advance_vat'] > 0.005) {
+        return ['success' => false, 'error' => 'This bill still has payments, advances or advance VAT linked to it. Clear those first.'];
+    }
+    $ownTx = !$conn->inTransaction();
+    if ($ownTx) {
+        $conn->beginTransaction();
+    }
+    try {
+        $attachments = [];
+        try {
+            $at = $conn->prepare("SELECT file_path FROM re_vendor_bill_attachments WHERE company_id=? AND vendor_invoice_id=?");
+            $at->execute([$companyId, $billId]);
+            $attachments = $at->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            $conn->prepare("DELETE FROM re_vendor_bill_attachments WHERE company_id=? AND vendor_invoice_id=?")->execute([$companyId, $billId]);
+        } catch (Throwable $e) {
+        }
+        try {
+            $conn->prepare("DELETE FROM re_vendor_payment_allocations WHERE company_id=? AND vendor_invoice_id=?")->execute([$companyId, $billId]);
+        } catch (Throwable $e) {
+        }
+        $conn->prepare("DELETE FROM re_vendor_invoice_items WHERE company_id=? AND invoice_id=?")->execute([$companyId, $billId]);
+        $del = $conn->prepare("DELETE FROM re_vendor_invoices WHERE id=? AND company_id=?");
+        $del->execute([$billId, $companyId]);
+        if ($del->rowCount() < 1) {
+            throw new RuntimeException('Bill could not be deleted.');
+        }
+        re_ap_audit($conn, $companyId, (int)$bill['vendor_id'], null, null, 'bill_deleted', (string)$bill['invoice_number'], null, (float)$bill['total_amount'], $reason ?: 'Vendor bill deleted', $userId, 'vendor_bill_delete');
+        if ($ownTx) {
+            $conn->commit();
+        }
+        $root = realpath(__DIR__ . '/../../..');
+        foreach ($attachments as $relPath) {
+            $full = realpath($root . '/' . ltrim((string)$relPath, '/'));
+            if ($full && $root && strpos($full, $root . DIRECTORY_SEPARATOR) === 0 && is_file($full)) {
+                @unlink($full);
+            }
+        }
+        return ['success' => true, 'error' => null, 'invoice_number' => $bill['invoice_number']];
+    } catch (Throwable $e) {
+        if ($ownTx && $conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        return ['success' => false, 'error' => $e->getMessage()];
     }
 }

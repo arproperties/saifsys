@@ -122,7 +122,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'rever
         csrf_verify();
         $payId = (int)($_POST['payment_id'] ?? 0);
         $reason = trim((string)($_POST['reason'] ?? 'Payment reversed'));
-        $res = re_ap_reverse_vendor_payment($conn, $companyId, $payId, $reason, current_user_id());
+        $clearAllocations = !empty($_POST['clear_allocations']);
+        $res = re_ap_reverse_vendor_payment($conn, $companyId, $payId, $reason, current_user_id(), $clearAllocations);
         if (empty($res['success'])) {
             throw new RuntimeException($res['error'] ?? 'Reverse failed');
         }
@@ -273,11 +274,16 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
             <tbody>
                 <?php foreach ($rows as $r): ?>
                     <?php
-                    $canReverse = ($r['status'] ?? '') === 'posted'
-                        && (float)$r['allocated_to_bills'] <= 0.005
-                        && (float)$r['advance_applied'] <= 0.005
+                    $noAdvanceHolds = (float)$r['advance_applied'] <= 0.005
                         && (float)($r['advance_vat_posted'] ?? 0) <= 0.005
                         && (float)($r['advance_refunded'] ?? 0) <= 0.005;
+                    $canReverse = ($r['status'] ?? '') === 'posted'
+                        && (float)$r['allocated_to_bills'] <= 0.005
+                        && $noAdvanceHolds;
+                    // A payment allocated to bills can still be undone, but the allocations go with it.
+                    $canReverseAllocated = ($r['status'] ?? '') === 'posted'
+                        && (float)$r['allocated_to_bills'] > 0.005
+                        && $noAdvanceHolds;
                     $canRefund = ($r['status'] ?? '') === 'posted'
                         && (float)$r['original_advance'] > 0.005
                         && (float)$r['advance_remaining'] > 0.005
@@ -312,6 +318,15 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
                                     <input type="hidden" name="payment_id" value="<?= (int)$r['id'] ?>">
                                     <input type="hidden" name="reason" value="Reversed from payments list">
                                     <button class="btn btn-sm btn-outline-danger">Reverse</button>
+                                </form>
+                            <?php elseif ($canReverseAllocated): ?>
+                                <form method="post" class="d-inline" onsubmit="return confirm('Reverse this payment and remove it from the bills it was allocated to (<?= m($r['allocated_to_bills']) ?> AED)? Those bills go back to unpaid.');">
+                                    <?php csrf_field(); ?>
+                                    <input type="hidden" name="action" value="reverse_payment">
+                                    <input type="hidden" name="payment_id" value="<?= (int)$r['id'] ?>">
+                                    <input type="hidden" name="clear_allocations" value="1">
+                                    <input type="hidden" name="reason" value="Reversed from payments list (allocations cleared)">
+                                    <button class="btn btn-sm btn-outline-danger" title="Reverses the payment journal and unallocates it from its bills">Reverse</button>
                                 </form>
                             <?php endif; ?>
                         </td>
