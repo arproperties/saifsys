@@ -64,15 +64,30 @@ if ($action === 'checkouts') {
 
     // The same rule as the ARS dashboard's "Departures today" (modules/ars/index.php),
     // across every company, since Jarvis is not signed in to one.
+    //
+    // The balance is worked out the way the booking page does it (booking_view.php),
+    // not read from ars_bookings.balance_due: extension / service invoices never land
+    // in that column, so on an extended stay it is wrong. When the booking has live
+    // invoices, their open balances are the truth (credit notes subtract); only a
+    // booking with no invoices falls back to the column.
     $stmt = $conn->prepare("
         SELECT b.id, b.company_id, b.booking_number, b.status, b.check_in, b.check_out,
                b.num_guests, b.balance_due, b.payment_status,
+               fd.invoice_count, fd.open_balance,
                g.first_name, g.last_name, g.phone,
                u.unit_number, bd.name AS building_name
         FROM ars_bookings b
         LEFT JOIN ars_guests g ON g.id = b.guest_id
         LEFT JOIN re_units u ON u.id = b.unit_id
         LEFT JOIN re_buildings bd ON bd.id = u.building_id
+        LEFT JOIN (
+            SELECT booking_id, company_id,
+                   SUM(document_type <> 'credit_note') AS invoice_count,
+                   SUM(CASE WHEN document_type = 'credit_note' THEN -balance_due ELSE balance_due END) AS open_balance
+            FROM ars_financial_documents
+            WHERE LOWER(status) NOT IN ('draft','voided','reversed')
+            GROUP BY booking_id, company_id
+        ) fd ON fd.booking_id = b.id AND fd.company_id = b.company_id
         WHERE b.check_out = ? AND b.status IN ('checked_in','checked_out','confirmed')
         ORDER BY bd.name, u.unit_number, b.booking_number
         LIMIT 500
@@ -93,7 +108,7 @@ if ($action === 'checkouts') {
             'guest'          => trim(($r['first_name'] ?? '') . ' ' . ($r['last_name'] ?? '')),
             'guest_phone'    => $r['phone'],
             'guests'         => (int)$r['num_guests'],
-            'balance_due'    => (float)$r['balance_due'],
+            'balance_due'    => round((int)$r['invoice_count'] > 0 ? (float)$r['open_balance'] : (float)$r['balance_due'], 2),
             'payment_status' => $r['payment_status'],
         ];
     }
