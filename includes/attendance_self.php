@@ -440,7 +440,7 @@ function attendance_self_gate_exempt(string $path): bool
 
     // Clean URLs are in use, so match with and without the .php.
     $exact = [
-        '/login', '/logout', '/select-module', '/forgot_password', '/reset_password',
+        '/login', '/logout', '/forgot_password', '/reset_password',
         '/profile', '/account',
     ];
     foreach ($exact as $p) {
@@ -456,7 +456,7 @@ function attendance_self_gate_exempt(string $path): bool
     }
 
     // Suffix match, so the app still works when it is served from a subfolder.
-    $suffixes = ['/login.php', '/logout.php', '/select-module.php', '/forgot_password.php', '/reset_password.php'];
+    $suffixes = ['/login.php', '/logout.php', '/forgot_password.php', '/reset_password.php'];
     foreach ($suffixes as $s) {
         if (substr($path, -strlen($s)) === $s) {
             return true;
@@ -488,8 +488,8 @@ function attendance_self_is_asset(string $path): bool
 }
 
 /**
- * Send anyone who has not checked in back to the workspace launcher, where the
- * pop-up is waiting. Called once per request from includes/auth.php.
+ * Stop anyone who has not checked in yet and show them the pop-up, on whatever
+ * page they asked for. Called once per request from includes/auth.php.
  *
  * Someone on leave, someone HR has already marked, someone with no employee
  * record and anyone who has already checked in all pass through untouched.
@@ -547,26 +547,49 @@ function attendance_self_gate_enforce(PDO $conn): void
         return;
     }
 
-    // Circuit breaker. If the launcher ever fails to show the pop-up, this gate
-    // would redirect to it, get bounced back, and redirect again — locking the
-    // person out of the whole system. Rather than trust that never happens,
-    // give up after a few hops and let them through. Losing one day's check-in
-    // is a far smaller failure than nobody being able to work. The counter is
-    // cleared the moment the pop-up actually draws.
-    $hops = (int)($_SESSION['attendance_self_gate_hops'] ?? 0) + 1;
-    if ($hops > 4) {
-        unset($_SESSION['attendance_self_gate_hops']);
+    // Draw the pop-up here, on the page they asked for, instead of redirecting
+    // to the launcher and trusting that page to draw it. A redirect can be
+    // bounced straight back — the launcher forwards single-module staff into
+    // their module — and a launcher that draws nothing leaves the person with
+    // no way in at all. Rendering in place cannot loop and depends on nothing
+    // but this file and the widget beside it.
+    attendance_self_gate_render($conn);
+}
+
+/**
+ * The check-in wall: the pop-up on a page of its own.
+ *
+ * The widget is drawn into a buffer first. If it comes back empty — the switch
+ * was turned off mid-request, the state moved on, anything at all — the person
+ * is let through rather than left staring at a blank page they cannot leave.
+ * A missed check-in is a far smaller failure than somebody unable to work.
+ */
+function attendance_self_gate_render(PDO $conn): void
+{
+    ob_start();
+    try {
+        require __DIR__ . '/attendance_self_widget.php';
+        $html = (string)ob_get_clean();
+    } catch (Throwable $e) {
+        ob_end_clean();
         return;
     }
-    $_SESSION['attendance_self_gate_hops'] = $hops;
 
-    $root = function_exists('get_application_web_root') ? get_application_web_root() : '';
-    $target = ($root !== '' ? $root : '') . '/select-module';
+    if (trim($html) === '') {
+        return;
+    }
 
     if (!headers_sent()) {
-        header('Location: ' . $target);
-    } else {
-        echo '<script>location.href=' . json_encode($target) . '</script>';
+        header('Content-Type: text/html; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
     }
+
+    echo '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+       . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+       . '<title>Check in</title>'
+       . '<style>html,body{margin:0;padding:0;min-height:100vh;background:#f5f0e8;}</style>'
+       . '</head><body>'
+       . $html
+       . '</body></html>';
     exit;
 }

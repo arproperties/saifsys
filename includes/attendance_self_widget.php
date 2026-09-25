@@ -22,6 +22,13 @@ if (!isset($conn) || !($conn instanceof PDO)) {
 require_once __DIR__ . '/attendance_self.php';
 require_once __DIR__ . '/url_helper.php';
 
+// Every page that reaches here has loaded auth.php, which defines these. The
+// fallback is for the gate's own page, which is drawn from almost nothing —
+// without it the form would die half-printed on an undefined function.
+if (!function_exists('csrf_field')) {
+    require_once __DIR__ . '/csrf.php';
+}
+
 $asState = attendance_self_state($conn);
 if ($asState['stage'] === 'n/a' || $asState['stage'] === 'excused') {
     return;
@@ -47,13 +54,6 @@ $asGreeting = $asHour < 12 ? 'Good morning' : ($asHour < 17 ? 'Good afternoon' :
 $asSecs = ($asHour * 3600) + ((int)$asMoment->format('i') * 60) + (int)$asMoment->format('s');
 
 $asBlocking = ($asState['stage'] === 'check_in') && attendance_self_blocking();
-
-// The pop-up is about to draw, so the gate did its job — clear its loop
-// counter. Anything that keeps this from drawing leaves the count climbing,
-// and the gate gives up rather than trapping the person.
-if ($asBlocking) {
-    unset($_SESSION['attendance_self_gate_hops']);
-}
 
 if (!function_exists('h')) {
     function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
