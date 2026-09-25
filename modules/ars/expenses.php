@@ -8,6 +8,7 @@ require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/rbac_department.php';
 require_once __DIR__ . '/includes/ars_helpers.php';
 require_once __DIR__ . '/includes/ars_shell.php';
+require_once __DIR__ . '/../../includes/erp_expense_attachments.php';
 
 require_login();
 if (!has_department_access(MODULE_ARS, DEPT_ARS_CORE, $conn) && !has_department_access(MODULE_ARS, DEPT_ARS_OPERATIONS, $conn)) {
@@ -126,6 +127,7 @@ ars_shell_begin([
 <div class="alert alert-warning">Run <code>migrations/erp_expenses.sql</code> to create ERP expense tables.</div>
 <?php endif; ?>
 <?php if (isset($_GET['ok']) && $_GET['ok'] === '1'): ?><div class="alert alert-success alert-dismissible">Saved and posted.<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>
+        <?= erp_expense_attachment_flash_html() ?>
 <?php if (isset($_GET['saved']) && $_GET['saved'] === 'draft'): ?><div class="alert alert-info alert-dismissible">Draft saved (not posted).<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>
 <?php if (isset($_GET['ok']) && $_GET['ok'] === 'cancelled'): ?><div class="alert alert-secondary alert-dismissible">Expense cancelled.<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>
 

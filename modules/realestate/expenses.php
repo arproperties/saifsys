@@ -7,6 +7,7 @@ require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/rbac_department.php';
 require_once __DIR__ . '/../../includes/erp_expense_posting.php';
+require_once __DIR__ . '/../../includes/erp_expense_attachments.php';
 
 require_login();
 if (!has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_FINANCIAL, $conn)) {
@@ -105,6 +106,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
         <div class="alert alert-warning">Run <code>migrations/erp_expenses.sql</code> to create ERP expense tables.</div>
         <?php endif; ?>
         <?php if (isset($_GET['ok']) && $_GET['ok'] === '1'): ?><div class="alert alert-success alert-dismissible">Saved and posted.<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>
+        <?= erp_expense_attachment_flash_html() ?>
         <?php if (isset($_GET['saved']) && $_GET['saved'] === 'draft'): ?><div class="alert alert-info alert-dismissible">Draft saved (not posted).<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>
         <?php if (isset($_GET['ok']) && $_GET['ok'] === 'cancelled'): ?><div class="alert alert-secondary alert-dismissible">Expense cancelled.<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>
         <?php if (isset($_GET['ok']) && $_GET['ok'] === 'deleted'): ?><div class="alert alert-success alert-dismissible">Quick Paid Expense deleted. Posted journal was reversed if present.<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>

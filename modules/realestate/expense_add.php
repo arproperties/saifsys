@@ -12,6 +12,7 @@ require_once __DIR__ . '/../../includes/erp_expense_number.php';
 require_once __DIR__ . '/../../includes/erp_expense_ui.php';
 require_once __DIR__ . '/includes/qpe_ap_duplicate_helper.php';
 require_once __DIR__ . '/../construction/includes/qpe_supplier_duplicate_helper.php';
+require_once __DIR__ . '/../../includes/erp_expense_attachments.php';
 
 require_login();
 if (defined('ERP_EXPENSE_PAGE_LAYOUT') && constant('ERP_EXPENSE_PAGE_LAYOUT') === 'construction') {
@@ -140,9 +141,24 @@ if ($sourceModule === 'construction') {
 $err = '';
 $duplicateOverlaps = [];
 $showDuplicateConfirm = false;
+
+// Attachments. The form can bounce back (possible-duplicate confirmation) and a
+// browser never resends a file input on reload, so uploads are staged against this
+// token on the first POST and committed once the expense row exists.
+$attachToken = erp_expense_attachments_valid_token($_POST['attach_token'] ?? '');
+if ($attachToken === '') {
+    $attachToken = erp_expense_attachments_new_token();
+}
+$attachNotices = [];
 if (!function_exists('h')) { function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); } }
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
+        if (erp_expense_attachments_post_too_large()) {
+            throw new RuntimeException(
+                'The submission was larger than this server accepts (' . erp_expense_attachments_post_max_label()
+                . ' in total). Nothing was saved — re-enter the expense with fewer or smaller attachments.'
+            );
+        }
         csrf_verify();
         $sm = $_POST['source_module'] ?? 'realestate';
         if (!in_array($sm, ['realestate', 'construction', 'ars'], true)) {
@@ -162,6 +178,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $save_action = $_POST['save_action'] ?? 'post';
         if (!in_array($save_action, ['draft', 'post'], true)) {
             $save_action = 'post';
+        }
+
+        // Drop anything the user ticked off, then stage this POST's files. Both run
+        // before validation so the list survives a rejected save.
+        foreach ((array)($_POST['remove_pending'] ?? []) as $removeStored) {
+            $kept = [];
+            foreach (erp_expense_attachments_pending($attachToken) as $p) {
+                if (($p['stored'] ?? '') === $removeStored) {
+                    $f = erp_expense_attachments_pending_dir($attachToken) . '/' . $p['stored'];
+                    if (is_file($f)) { @unlink($f); }
+                    continue;
+                }
+                $kept[] = $p;
+            }
+            $_SESSION['erp_expense_pending_attachments'][$attachToken] = $kept;
+        }
+        if (!empty($_FILES['attachments'])) {
+            erp_expense_attachments_stage($_FILES['attachments'], $attachToken, $attachNotices);
         }
         $expense_date = $_POST['expense_date'] ?: date('Y-m-d');
         $vendor_id = 0;
@@ -414,6 +448,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $conn->commit();
 
+        // Outside the transaction: a file problem must not roll back a saved expense,
+        // it is reported on the next screen instead.
+        $attachResult = erp_expense_attachments_commit($conn, $expId, $userId, $attachToken);
+        if (!empty($attachResult['errors'])) {
+            $_SESSION['erp_expense_attach_errors'] = $attachResult['errors'];
+        }
+
         if ($save_action === 'draft') {
             header('Location: ' . $expensesListUrl . '?saved=draft');
             exit;
@@ -463,9 +504,10 @@ searchable_select_assets();
         <div class="alert alert-warning">No accounts in chart of accounts. Add accounts under <a href="<?= h($erpChartOfAccountsUrl) ?>">Chart of Accounts</a>.</div>
         <?php endif; ?>
 
-        <form method="post" id="expForm">
+        <form method="post" id="expForm" enctype="multipart/form-data">
             <?php csrf_field(); ?>
             <input type="hidden" name="source_module" value="<?= h($sourceModule) ?>">
+            <input type="hidden" name="attach_token" value="<?= h($attachToken) ?>">
             <div class="card card-round mb-3"><div class="card-body">
                 <h6 class="text-primary">Details</h6>
                 <div class="row g-3">
@@ -596,6 +638,43 @@ searchable_select_assets();
                         </div>
                     </div>
                 </div>
+            </div></div>
+
+            <?php $pendingAttachments = erp_expense_attachments_pending($attachToken); ?>
+            <div class="card card-round mb-3"><div class="card-body">
+                <h6 class="text-primary"><i class="bi bi-paperclip me-1"></i>Attachments <span class="text-muted fw-normal">(optional)</span></h6>
+                <?php if ($attachNotices): ?>
+                <div class="alert alert-warning py-2 small mb-2">
+                    <ul class="mb-0"><?php foreach ($attachNotices as $n): ?><li><?= h($n) ?></li><?php endforeach; ?></ul>
+                </div>
+                <?php endif; ?>
+                <input type="file" name="attachments[]" class="form-control" multiple
+                       accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.xls,.xlsx,.doc,.docx,.csv,.txt">
+                <div class="form-text">
+                    Bill / receipt scans. PDF, image, Word, Excel, CSV or text —
+                    up to <?= (int)(ERP_EXPENSE_ATTACH_MAX_BYTES / 1024 / 1024) ?> MB each,
+                    <?= (int)ERP_EXPENSE_ATTACH_MAX_FILES ?> files per expense.
+                </div>
+                <?php if ($pendingAttachments): ?>
+                <div class="mt-3">
+                    <div class="small text-muted mb-1">Ready to attach when you save:</div>
+                    <ul class="list-group list-group-flush">
+                        <?php foreach ($pendingAttachments as $p): ?>
+                        <li class="list-group-item px-0 py-2 d-flex align-items-center gap-2">
+                            <i class="bi <?= h(erp_expense_attachment_icon((string)($p['name'] ?? ''))) ?>"></i>
+                            <span class="text-truncate flex-grow-1"><?= h($p['name'] ?? '') ?></span>
+                            <span class="text-muted small"><?= h(erp_expense_attachment_size((int)($p['size'] ?? 0))) ?></span>
+                            <div class="form-check mb-0 ms-2">
+                                <input class="form-check-input" type="checkbox" name="remove_pending[]"
+                                       value="<?= h($p['stored'] ?? '') ?>" id="rm_<?= h($p['stored'] ?? '') ?>">
+                                <label class="form-check-label small text-danger" for="rm_<?= h($p['stored'] ?? '') ?>">Remove</label>
+                            </div>
+                        </li>
+                        <?php endforeach; ?>
+                    </ul>
+                    <div class="form-text">These files are held on the server for this form only. Ticking Remove drops them on the next save.</div>
+                </div>
+                <?php endif; ?>
             </div></div>
 
             <div class="card card-round mb-3"><div class="card-header bg-primary text-white"><i class="bi bi-list-ul"></i> Lines</div>

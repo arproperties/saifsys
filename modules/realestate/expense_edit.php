@@ -9,6 +9,7 @@ require_once __DIR__ . '/../../includes/rbac_department.php';
 require_once __DIR__ . '/../../includes/erp_expense_line_calc.php';
 require_once __DIR__ . '/../../includes/erp_expense_posting.php';
 require_once __DIR__ . '/../../includes/erp_expense_ui.php';
+require_once __DIR__ . '/../../includes/erp_expense_attachments.php';
 
 require_login();
 
@@ -142,6 +143,13 @@ $loadedLines = $L->fetchAll(PDO::FETCH_ASSOC);
 $err = '';
 $msg = '';
 
+// An oversized upload arrives with $_POST empty, so no action below would match and
+// the page would silently look like a plain reload. Say what happened instead.
+if (erp_expense_attachments_post_too_large()) {
+    $err = 'The upload was larger than this server accepts (' . erp_expense_attachments_post_max_label()
+         . ' in total). Nothing was attached — try fewer or smaller files.';
+}
+
 if (!$historicalReadOnly && isset($_GET['void']) && $_GET['void'] === '1') {
     try {
         csrf_verify();
@@ -154,6 +162,41 @@ if (!$historicalReadOnly && isset($_GET['void']) && $_GET['void'] === '1') {
     } catch (Throwable $e) {
         $err = $e->getMessage();
     }
+}
+
+// Attachments are their own small POSTs so a receipt can be added to an expense that
+// is already posted, without touching the lines or the ledger.
+if (!$historicalReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'attach_upload') {
+    try {
+        csrf_verify();
+        $notices = [];
+        $token = erp_expense_attachments_new_token();
+        erp_expense_attachments_stage($_FILES['attachments'] ?? [], $token, $notices);
+        $committed = erp_expense_attachments_commit($conn, $id, $userId, $token);
+        erp_expense_attachments_pending_clear($token);
+        $problems = array_merge($notices, $committed['errors']);
+        if ($problems) {
+            $_SESSION['erp_expense_attach_errors'] = $problems;
+        }
+        $_SESSION['erp_expense_attach_saved'] = (int)$committed['saved'];
+    } catch (Throwable $e) {
+        $_SESSION['erp_expense_attach_errors'] = [$e->getMessage()];
+    }
+    header('Location: expense_edit.php?id=' . (int)$id);
+    exit;
+}
+
+if (!$historicalReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'attach_delete') {
+    try {
+        csrf_verify();
+        if (!erp_expense_attachment_delete($conn, (int)($_POST['attachment_id'] ?? 0), $currentCompanyId)) {
+            $_SESSION['erp_expense_attach_errors'] = ['That attachment could not be deleted.'];
+        }
+    } catch (Throwable $e) {
+        $_SESSION['erp_expense_attach_errors'] = [$e->getMessage()];
+    }
+    header('Location: expense_edit.php?id=' . (int)$id);
+    exit;
 }
 
 if (!$historicalReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
@@ -595,6 +638,74 @@ searchable_select_assets();
                 <?php endif; ?>
             </div>
         </form>
+
+        <?php
+        $attachments = erp_expense_attachments_list($conn, $id);
+        $attachErrors = $_SESSION['erp_expense_attach_errors'] ?? [];
+        $attachSaved = (int)($_SESSION['erp_expense_attach_saved'] ?? 0);
+        unset($_SESSION['erp_expense_attach_errors'], $_SESSION['erp_expense_attach_saved']);
+        ?>
+        <div class="card card-round mb-3"><div class="card-body">
+            <h6 class="text-primary"><i class="bi bi-paperclip me-1"></i>Attachments</h6>
+            <?php if ($attachSaved > 0): ?>
+            <div class="alert alert-success py-2 small"><?= (int)$attachSaved ?> file<?= $attachSaved === 1 ? '' : 's' ?> attached.</div>
+            <?php endif; ?>
+            <?php if ($attachErrors): ?>
+            <div class="alert alert-warning py-2 small">
+                <ul class="mb-0"><?php foreach ($attachErrors as $e): ?><li><?= h($e) ?></li><?php endforeach; ?></ul>
+            </div>
+            <?php endif; ?>
+
+            <?php if (!$attachments): ?>
+            <p class="text-muted small mb-3">No files attached to this expense yet.</p>
+            <?php else: ?>
+            <ul class="list-group list-group-flush mb-3">
+                <?php foreach ($attachments as $a): ?>
+                <li class="list-group-item px-0 py-2 d-flex align-items-center gap-2 flex-wrap">
+                    <i class="bi <?= h(erp_expense_attachment_icon((string)$a['file_name'])) ?>"></i>
+                    <a href="<?= h(erp_expense_attachment_href((int)$a['id'], 'view')) ?>" target="_blank" rel="noopener"
+                       class="text-truncate flex-grow-1" style="min-width:150px"><?= h($a['file_name']) ?></a>
+                    <span class="text-muted small"><?= h(erp_expense_attachment_size((int)$a['file_size'])) ?></span>
+                    <span class="text-muted small d-none d-md-inline">
+                        <?= h((string)($a['uploaded_by_name'] ?? '')) ?> · <?= h(substr((string)$a['uploaded_at'], 0, 16)) ?>
+                    </span>
+                    <a href="<?= h(erp_expense_attachment_href((int)$a['id'], 'download')) ?>"
+                       class="btn btn-sm btn-outline-primary" title="Download"><i class="bi bi-download"></i></a>
+                    <?php if (!$historicalReadOnly): ?>
+                    <form method="post" action="expense_edit.php?id=<?= (int)$id ?>" class="d-inline"
+                          onsubmit="return confirm('Delete this attachment? The file is removed from the server.');">
+                        <?php csrf_field(); ?>
+                        <input type="hidden" name="action" value="attach_delete">
+                        <input type="hidden" name="expense_id" value="<?= (int)$id ?>">
+                        <input type="hidden" name="attachment_id" value="<?= (int)$a['id'] ?>">
+                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></button>
+                    </form>
+                    <?php endif; ?>
+                </li>
+                <?php endforeach; ?>
+            </ul>
+            <?php endif; ?>
+
+            <?php if (!$historicalReadOnly): ?>
+            <form method="post" action="expense_edit.php?id=<?= (int)$id ?>" enctype="multipart/form-data" class="row g-2 align-items-start">
+                <?php csrf_field(); ?>
+                <input type="hidden" name="action" value="attach_upload">
+                <input type="hidden" name="expense_id" value="<?= (int)$id ?>">
+                <div class="col-md-8">
+                    <input type="file" name="attachments[]" class="form-control" multiple required
+                           accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.xls,.xlsx,.doc,.docx,.csv,.txt">
+                    <div class="form-text">
+                        PDF, image, Word, Excel, CSV or text — up to
+                        <?= (int)(ERP_EXPENSE_ATTACH_MAX_BYTES / 1024 / 1024) ?> MB each.
+                        Uploading does not change the lines or the ledger.
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-outline-primary"><i class="bi bi-upload me-1"></i>Upload</button>
+                </div>
+            </form>
+            <?php endif; ?>
+        </div></div>
 
         <template id="lineTpl">
             <tr class="line-row">
