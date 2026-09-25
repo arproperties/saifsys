@@ -456,9 +456,10 @@ function ars_ensure_payment_total_column(PDO $conn): void {
 /**
  * Standalone extension log for the booking workspace's Extend tab.
  *
- * Deliberately independent: it is not derived from payments and not from the
- * AR documents. The office records the periods a stay was extended by, and
- * that record stands on its own. Money for those nights lives on the Money tab.
+ * The office records the periods a stay was extended by, each with the price
+ * agreed for those nights. Recording is still separate from billing: an entry
+ * carries a rate and an amount from the moment it is saved, but no money moves
+ * until someone bills it, and document_id is what says that happened.
  */
 function ars_ensure_extension_log_table(PDO $conn): void {
     static $done = false;
@@ -475,6 +476,9 @@ function ars_ensure_extension_log_table(PDO $conn): void {
                 extended_from DATE NOT NULL,
                 extended_to   DATE NOT NULL,
                 nights        INT NOT NULL DEFAULT 0,
+                rate_per_night DECIMAL(12,2) NULL DEFAULT NULL,
+                amount        DECIMAL(12,2) NULL DEFAULT NULL,
+                document_id   INT NULL DEFAULT NULL,
                 note          VARCHAR(255) NULL DEFAULT NULL,
                 created_by    INT NULL DEFAULT NULL,
                 created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -485,6 +489,25 @@ function ars_ensure_extension_log_table(PDO $conn): void {
         ");
     } catch (Throwable $e) {
         error_log('ARS extension log table: ' . $e->getMessage());
+    }
+
+    // Pricing arrived after the table did, so older installs are missing these
+    // three columns. Added here as well as in the migration so a site that has
+    // the files but not the SQL still works instead of erroring on every save.
+    $add = [
+        'rate_per_night' => "ALTER TABLE ars_booking_extension_log ADD COLUMN rate_per_night DECIMAL(12,2) NULL DEFAULT NULL AFTER nights",
+        'amount'         => "ALTER TABLE ars_booking_extension_log ADD COLUMN amount DECIMAL(12,2) NULL DEFAULT NULL AFTER rate_per_night",
+        'document_id'    => "ALTER TABLE ars_booking_extension_log ADD COLUMN document_id INT NULL DEFAULT NULL AFTER amount",
+    ];
+    foreach ($add as $col => $sql) {
+        try {
+            $chk = $conn->query("SHOW COLUMNS FROM ars_booking_extension_log LIKE '" . $col . "'");
+            if (!$chk || !$chk->fetch(PDO::FETCH_ASSOC)) {
+                $conn->exec($sql);
+            }
+        } catch (Throwable $e) {
+            error_log('ARS extension log column ' . $col . ': ' . $e->getMessage());
+        }
     }
 }
 

@@ -366,7 +366,7 @@ ars_ensure_extension_log_table($conn);
 $extensionRows = [];
 try {
     $extLog = $conn->prepare("
-        SELECT id, extended_from, extended_to, nights, note, created_at
+        SELECT id, extended_from, extended_to, nights, rate_per_night, amount, document_id, note, created_at
         FROM ars_booking_extension_log
         WHERE booking_id = ? AND company_id = ?
         ORDER BY extended_from, id
@@ -390,11 +390,43 @@ if ($originalFrom !== '' && $originalTo !== '' && strtotime($originalTo) > strto
         'extended_from' => $originalFrom,
         'extended_to' => $originalTo,
         'nights' => (int)round((strtotime($originalTo) - strtotime($originalFrom)) / 86400),
+        'rate_per_night' => ($booking['rate_override'] ?? null) ?: ($booking['nightly_rate'] ?? null),
+        // The original stay's money is the original invoice's, not the log's,
+        // so it is shown with a rate but no amount of its own to bill.
+        'amount' => null,
+        'document_id' => null,
         'note' => 'Original stay',
     ];
 }
 foreach ($extensionRows as $extRow) {
     $extensionDisplayRows[] = $extRow;
+}
+
+// What the logged periods come to, and what of that is still unbilled. Only
+// rows the log itself owns count — the original stay is already invoiced.
+$extensionTotalNights = 0;
+$extensionTotalAmount = 0.0;
+$extensionUnbilledAmount = 0.0;
+$extensionUnbilledCount = 0;
+foreach ($extensionRows as $extRow) {
+    $extensionTotalNights += (int)$extRow['nights'];
+    $extAmt = $extRow['amount'] === null ? 0.0 : (float)$extRow['amount'];
+    $extensionTotalAmount += $extAmt;
+    if (empty($extRow['document_id']) && $extAmt > 0) {
+        $extensionUnbilledAmount += $extAmt;
+        $extensionUnbilledCount++;
+    }
+}
+$extensionTotalAmount = round($extensionTotalAmount, 2);
+$extensionUnbilledAmount = round($extensionUnbilledAmount, 2);
+
+// The nightly rate the price field opens on, and the VAT the invoice will add
+// on top of it, so the Extend form can show the guest-facing figure.
+$extDefaultRate = (float)(($booking['rate_override'] ?? null) ?: ($booking['nightly_rate'] ?? 0));
+$extVatMode = strtolower((string)($booking['vat_mode'] ?? 'exclusive'));
+$extVatRate = (float)($booking['vat_rate'] ?? 5);
+if ($extVatMode === 'none') {
+    $extVatRate = 0.0;
 }
 
 $depositPendingCollect = ($depositAmount > 0 && in_array($depositStatus, ['pending', 'none'], true));
@@ -1160,26 +1192,42 @@ echo $arsWsLifecycleHtml;
                 }
                 $extDefaultFrom = $extLastTo !== '' ? $extLastTo : (string)$booking['check_out'];
                 ?>
-                <div class="row g-3 align-items-end">
-                    <div class="col-6 col-sm-4">
+                <div class="row g-3 align-items-end"
+                     data-ars-ext-vat-rate="<?= h((string)$extVatRate) ?>"
+                     data-ars-ext-vat-mode="<?= h($extVatMode) ?>" id="extendForm">
+                    <div class="col-6 col-md-3">
                         <label class="form-label fw-semibold" for="extendFrom">Extended from *</label>
                         <input type="date" id="extendFrom" class="form-control"
                                value="<?= h($extDefaultFrom) ?>">
                     </div>
-                    <div class="col-6 col-sm-4">
+                    <div class="col-6 col-md-3">
                         <label class="form-label fw-semibold" for="extendTo">Extended to *</label>
                         <input type="date" id="extendTo" class="form-control"
                                value="<?= h(date('Y-m-d', strtotime($extDefaultFrom . ' +1 day'))) ?>">
                     </div>
-                    <div class="col-6 col-sm-2">
+                    <div class="col-4 col-md-1">
                         <label class="form-label fw-semibold">Nights</label>
                         <div class="form-control-plaintext fw-semibold ars-tabular" id="extendNightsAdded">—</div>
                     </div>
-                    <div class="col-12 col-sm-2">
+                    <div class="col-8 col-md-2">
+                        <label class="form-label fw-semibold" for="extendRate">Price / night</label>
+                        <input type="number" id="extendRate" class="form-control ars-tabular" min="0" step="0.01"
+                               value="<?= $extDefaultRate > 0 ? h(number_format($extDefaultRate, 2, '.', '')) : '' ?>"
+                               placeholder="0.00">
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <label class="form-label fw-semibold">Total</label>
+                        <div class="form-control-plaintext fw-semibold ars-tabular" id="extendAmountTotal">—</div>
+                    </div>
+                    <div class="col-6 col-md-1">
                         <button type="button" class="btn btn-ars btn-sm w-100" id="extendSubmitBtn">
                             <i class="bi bi-plus-lg me-1"></i>Add
                         </button>
                     </div>
+                </div>
+                <div class="small text-muted mt-2" id="extendAmountHint">
+                    Price x nights is what this period is worth. Adding it records the price —
+                    nothing is billed until you press <strong>Bill</strong> on the row below.
                 </div>
                 <div class="mt-3">
                     <label class="form-label fw-semibold" for="extendNote">Note</label>
@@ -1202,21 +1250,47 @@ echo $arsWsLifecycleHtml;
                         <th>Extended from</th>
                         <th>Extended to</th>
                         <th class="text-end">Nights</th>
+                        <th class="text-end">Price / night</th>
+                        <th class="text-end">Amount</th>
                         <th>Note</th>
                         <th></th>
                     </tr></thead>
                     <tbody>
                     <?php if (empty($extensionDisplayRows)): ?>
-                        <tr><td colspan="5" class="text-center text-muted py-3">No extensions recorded yet.</td></tr>
+                        <tr><td colspan="7" class="text-center text-muted py-3">No extensions recorded yet.</td></tr>
                     <?php endif; ?>
                     <?php foreach ($extensionDisplayRows as $ex): ?>
+                        <?php $exBilled = !empty($ex['document_id']); ?>
                         <tr>
                             <td data-label="Extended from" class="text-nowrap"><?= h(date('d M Y', strtotime((string)$ex['extended_from']))) ?></td>
                             <td data-label="Extended to" class="text-nowrap fw-semibold"><?= h(date('d M Y', strtotime((string)$ex['extended_to']))) ?></td>
                             <td data-label="Nights" class="text-end ars-tabular"><?= (int)$ex['nights'] ?></td>
+                            <td data-label="Price / night" class="text-end ars-tabular">
+                                <?= ($ex['rate_per_night'] ?? null) !== null && (float)$ex['rate_per_night'] > 0
+                                    ? number_format((float)$ex['rate_per_night'], 2) : '—' ?>
+                            </td>
+                            <td data-label="Amount" class="text-end ars-tabular fw-semibold">
+                                <?php if (($ex['amount'] ?? null) !== null && (float)$ex['amount'] > 0): ?>
+                                    <?= number_format((float)$ex['amount'], 2) ?>
+                                    <?php if ($exBilled): ?>
+                                        <span class="badge bg-success-subtle text-success-emphasis ms-1">Billed</span>
+                                    <?php else: ?>
+                                        <span class="badge bg-warning-subtle text-warning-emphasis ms-1">Not billed</span>
+                                    <?php endif; ?>
+                                <?php else: ?>
+                                    —
+                                <?php endif; ?>
+                            </td>
                             <td data-label="Note" class="small text-muted"><?= $ex['note'] !== null && $ex['note'] !== '' ? h((string)$ex['note']) : '—' ?></td>
-                            <td class="text-end">
-                                <?php if ($ex['id'] !== null): ?>
+                            <td class="text-end text-nowrap">
+                                <?php if ($ex['id'] !== null && !$exBilled && ($ex['amount'] ?? null) !== null && (float)$ex['amount'] > 0): ?>
+                                <button type="button" class="btn btn-sm btn-ars-outline me-1" data-ars-ext-bill="<?= (int)$ex['id'] ?>"
+                                        data-ars-ext-amount="<?= h(number_format((float)$ex['amount'], 2, '.', '')) ?>"
+                                        title="Raise the extension invoice for this period">
+                                    <i class="bi bi-receipt me-1"></i>Bill
+                                </button>
+                                <?php endif; ?>
+                                <?php if ($ex['id'] !== null && !$exBilled): ?>
                                 <button type="button" class="btn btn-sm btn-outline-danger" data-ars-ext-delete="<?= (int)$ex['id'] ?>"
                                         title="Remove this entry" aria-label="Remove this entry"><i class="bi bi-trash"></i></button>
                                 <?php endif; ?>
@@ -1224,13 +1298,33 @@ echo $arsWsLifecycleHtml;
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
+                    <?php if ($extensionTotalNights > 0 || $extensionTotalAmount > 0.009): ?>
+                    <tfoot>
+                        <tr class="fw-semibold">
+                            <td colspan="2" data-label="Total">Extensions total</td>
+                            <td class="text-end ars-tabular"><?= (int)$extensionTotalNights ?></td>
+                            <td></td>
+                            <td class="text-end ars-tabular">AED <?= number_format($extensionTotalAmount, 2) ?></td>
+                            <td colspan="2" class="small text-muted fw-normal">
+                                <?php if ($extensionUnbilledAmount > 0.009): ?>
+                                    AED <?= number_format($extensionUnbilledAmount, 2) ?> not billed yet
+                                    (<?= (int)$extensionUnbilledCount ?> <?= $extensionUnbilledCount === 1 ? 'period' : 'periods' ?>)
+                                <?php elseif ($extensionTotalAmount > 0.009): ?>
+                                    All billed
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    </tfoot>
+                    <?php endif; ?>
                 </table>
             </div>
             <?php if (!empty($extensionDisplayRows)): ?>
             <div class="card-body pt-3 pb-3">
                 <p class="small text-muted mb-0">
-                    <i class="bi bi-info-circle me-1"></i>A record of the periods this stay was extended by.
-                    Kept separately from payments and invoices — the money for these nights sits on the Money tab.
+                    <i class="bi bi-info-circle me-1"></i>A record of the periods this stay was extended by,
+                    each priced at its own rate. <strong>Bill</strong> raises the extension invoice for that period —
+                    it then joins the open balance and takes payment like any other invoice.
+                    A billed period cannot be deleted; reverse it with a credit note instead.
                 </p>
             </div>
             <?php endif; ?>

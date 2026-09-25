@@ -559,7 +559,13 @@ function ars_adapter_create_extension_invoice_impl(PDO $conn, array $booking, ar
     if ($added <= 0) {
         return ars_adapter_fail('No nights added', 'validation_failed');
     }
-    $rate = (float)(($booking['rate_override'] ?? null) ?: $booking['nightly_rate'] ?? 0);
+    // The caller may price the added nights itself — the Extend tab bills each
+    // logged period at the rate the office agreed for it, which is not always
+    // the booking's own nightly rate.
+    $rate = round((float)($opts['rate'] ?? 0), 2);
+    if ($rate <= 0) {
+        $rate = (float)(($booking['rate_override'] ?? null) ?: $booking['nightly_rate'] ?? 0);
+    }
     if ($rate <= 0) {
         return ars_adapter_fail('Nightly rate missing', 'validation_failed');
     }
@@ -583,7 +589,11 @@ function ars_adapter_create_extension_invoice_impl(PDO $conn, array $booking, ar
             'rate_basis' => (string)$rate,
         ],
     ]));
-    if (!empty($r['success']) && empty($r['replay'])) {
+    // The Extend tab owns the booking's dates itself (the log is the record of
+    // how long the guest stayed, and billing an older period must not pull the
+    // check-out back), so it opts out and re-syncs afterwards.
+    $moveDates = !array_key_exists('update_booking_dates', $opts) || !empty($opts['update_booking_dates']);
+    if (!empty($r['success']) && empty($r['replay']) && $moveDates) {
         $nights = (int)$booking['nights'] + $added;
         $conn->prepare('UPDATE ars_bookings SET check_out=?, nights=?, updated_at=NOW() WHERE id=? AND company_id=?')
             ->execute([$newOut, $nights, (int)$booking['id'], $companyId]);

@@ -1563,11 +1563,51 @@
     return nights > 0 ? nights : 0;
   }
 
+  function extendRateValue() {
+    var rateEl = document.getElementById('extendRate');
+    if (!rateEl || rateEl.value === '') return 0;
+    var rate = parseFloat(rateEl.value);
+    return isNaN(rate) || rate < 0 ? 0 : rate;
+  }
+
+  function extendMoney(n) {
+    return 'AED ' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  // Price x nights, shown as you type. The hint carries the VAT the invoice
+  // will add, so the figure the guest is quoted is on screen too.
   function refreshExtendPreview() {
     var nightsEl = document.getElementById('extendNightsAdded');
     if (!nightsEl) return;
     var nights = extendNightsBetween();
     nightsEl.textContent = nights > 0 ? String(nights) : '—';
+
+    var totalEl = document.getElementById('extendAmountTotal');
+    if (!totalEl) return;
+    var rate = extendRateValue();
+    var total = nights > 0 ? Math.round(rate * nights * 100) / 100 : 0;
+    totalEl.textContent = total > 0 ? extendMoney(total) : '—';
+
+    var hintEl = document.getElementById('extendAmountHint');
+    var form = document.getElementById('extendForm');
+    if (!hintEl || !form) return;
+    var base =
+      'Price x nights is what this period is worth. Adding it records the price — ' +
+      'nothing is billed until you press <strong>Bill</strong> on the row below.';
+    if (total <= 0) {
+      hintEl.innerHTML = base;
+      return;
+    }
+    var vatRate = parseFloat(form.getAttribute('data-ars-ext-vat-rate') || '0') || 0;
+    var vatMode = form.getAttribute('data-ars-ext-vat-mode') || 'exclusive';
+    var sum = extendMoney(rate) + ' x ' + nights + ' night(s) = <strong>' + extendMoney(total) + '</strong>';
+    if (vatRate > 0 && vatMode === 'exclusive') {
+      var vat = Math.round(total * vatRate) / 100;
+      sum += ' + ' + vatRate + '% VAT ' + extendMoney(vat) + ' = ' + extendMoney(total + vat) + ' on the invoice';
+    } else if (vatRate > 0 && vatMode === 'inclusive') {
+      sum += ' (VAT included)';
+    }
+    hintEl.innerHTML = sum + '. ' + base;
   }
 
   function submitExtension() {
@@ -1581,9 +1621,11 @@
       return;
     }
     if (btn) btn.disabled = true;
+    var rateEl = document.getElementById('extendRate');
     ajaxPost('save_extension_entry', {
       extended_from: fromEl.value,
       extended_to: toEl.value,
+      rate_per_night: rateEl ? rateEl.value : '',
       note: noteEl ? noteEl.value : ''
     })
       .then(function (d) {
@@ -1600,6 +1642,33 @@
         }
         if (btn) btn.disabled = false;
         showAlert(d.error || 'Could not save', 'danger', 'extendPanelAlert');
+      })
+      .catch(function () {
+        if (btn) btn.disabled = false;
+        showAlert('Network error', 'danger', 'extendPanelAlert');
+      });
+  }
+
+  // Billing is the one step on this tab that moves money: it raises the
+  // extension invoice for that period alone, at the rate stored on it.
+  function billExtensionEntry(entryId, amount, btn) {
+    var shown = amount ? 'AED ' + amount : 'this period';
+    if (!window.confirm(
+      'Raise an extension invoice for ' + shown + '?\n\n' +
+      'It is added to the open balance and the guest can pay it. ' +
+      'Reversing it afterwards needs a credit note.'
+    )) {
+      return;
+    }
+    if (btn) btn.disabled = true;
+    ajaxPost('bill_extension_entry', { entry_id: entryId })
+      .then(function (d) {
+        if (d.success) {
+          location.reload();
+          return;
+        }
+        if (btn) btn.disabled = false;
+        showAlert(d.error || 'Could not bill this period', 'danger', 'extendPanelAlert');
       })
       .catch(function () {
         if (btn) btn.disabled = false;
@@ -1638,11 +1707,27 @@
       toEl.addEventListener('change', refreshExtendPreview);
       toEl.addEventListener('input', refreshExtendPreview);
     }
+    var rateEl = document.getElementById('extendRate');
+    if (rateEl) {
+      rateEl.addEventListener('change', refreshExtendPreview);
+      rateEl.addEventListener('input', refreshExtendPreview);
+    }
     var btn = document.getElementById('extendSubmitBtn');
     if (btn) btn.addEventListener('click', submitExtension);
 
     document.addEventListener('click', function (e) {
-      var del = e.target.closest ? e.target.closest('[data-ars-ext-delete]') : null;
+      if (!e.target.closest) return;
+      var bill = e.target.closest('[data-ars-ext-bill]');
+      if (bill) {
+        e.preventDefault();
+        billExtensionEntry(
+          bill.getAttribute('data-ars-ext-bill'),
+          bill.getAttribute('data-ars-ext-amount'),
+          bill
+        );
+        return;
+      }
+      var del = e.target.closest('[data-ars-ext-delete]');
       if (!del) return;
       e.preventDefault();
       deleteExtensionEntry(del.getAttribute('data-ars-ext-delete'), del);
