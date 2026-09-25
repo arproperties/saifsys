@@ -39,6 +39,9 @@ unset($_SESSION['attendance_self_flash']);
 
 $asRoot     = function_exists('get_application_web_root') ? get_application_web_root() : '';
 $asEndpoint = ($asRoot !== '' ? $asRoot : '') . '/api/attendance_self.php';
+// The gate draws this pop-up as the whole page, so it carries the only way out
+// of a wrong account — without it, signing in as someone else is a dead end.
+$asLogout   = ($asRoot !== '' ? $asRoot : '') . '/logout';
 $asBack     = (string)($_SERVER['REQUEST_URI'] ?? '');
 if ($asBack === '' || $asBack[0] !== '/') {
     $asBack = ($asRoot !== '' ? $asRoot : '') . '/select-module';
@@ -78,6 +81,10 @@ if (!function_exists('h')) {
 .as-btn[disabled]{opacity:.55;cursor:default;}
 .as-btn-out{background:#9a3412;}
 .as-foot{margin:16px 0 0;color:#a8a29e;font-size:12px;line-height:1.5;}
+.as-who{margin:18px 0 0;padding-top:14px;border-top:1px solid #f0ebe3;color:#a8a29e;font-size:12px;line-height:1.5;}
+.as-who strong{color:#78716c;font-weight:600;}
+.as-who a{color:#9a3412;font-weight:600;text-decoration:none;}
+.as-who a:hover{text-decoration:underline;}
 .as-err{margin:0 0 16px;padding:10px 13px;border-radius:11px;background:#fef2f2;color:#991b1b;
   font-size:13px;text-align:left;line-height:1.45;}
 .as-ok{margin:0 0 16px;padding:10px 13px;border-radius:11px;background:#f0fdf4;color:#166534;
@@ -126,6 +133,11 @@ if (!function_exists('h')) {
       </form>
       <p class="as-foot">Your arrival time is recorded as <?= h($asState['now_label']) ?>. HR can correct it if something is wrong.</p>
     <?php endif; ?>
+
+    <p class="as-who">
+      Signed in as <strong><?= h($asName !== '' ? $asName : 'this account') ?></strong> &middot;
+      <a href="<?= h($asLogout) ?>">Not you? Sign out</a>
+    </p>
   </div>
 </div>
 <script>
