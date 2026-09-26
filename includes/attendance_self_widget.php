@@ -150,8 +150,8 @@ if (!function_exists('h')) {
 <div class="as-scrim" id="asBreakScrim" role="dialog" aria-modal="true" aria-labelledby="asBreakTitle">
   <div class="as-card">
     <span class="as-badge">On break</span>
-    <h2 id="asBreakTitle">Enjoy your break<?= $asFirst !== '' ? ', ' . h($asFirst) : '' ?></h2>
-    <p class="as-day">Started <?= h(as_time_label($asState['break_start'])) ?></p>
+    <h2 id="asBreakTitle">On break<?= $asFirst !== '' ? ', ' . h($asFirst) : '' ?></h2>
+    <p class="as-day">Break started <?= h(as_time_label($asState['break_start'])) ?></p>
 
     <div class="as-clock" id="asBreakClock">0:00</div>
 
@@ -159,14 +159,14 @@ if (!function_exists('h')) {
       <p class="as-err"><?= h($asFlash['message']) ?></p>
     <?php endif; ?>
 
-    <p class="as-note">The system is paused until you are back at your desk.</p>
+    <p class="as-note">Tap <strong>Check In</strong> when you are back at your desk. The system is paused until you do.</p>
     <form method="post" action="<?= h($asEndpoint) ?>" id="asFormBack">
       <?php csrf_field(); ?>
       <input type="hidden" name="action" value="resume">
       <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
-      <button type="submit" class="as-btn as-btn-back" id="asBtnBack">I&rsquo;m back</button>
+      <button type="submit" class="as-btn as-btn-back" id="asBtnBack">Check In</button>
     </form>
-    <p class="as-foot">Your break is recorded for HR. It is not taken off your hours &mdash; the day is still counted from check-in to check-out.</p>
+    <p class="as-foot">Your break start and your return are both recorded for HR. The break is not taken off your hours &mdash; the day is still counted from your morning check-in to your check-out.</p>
 
     <p class="as-who">
       Signed in as <strong><?= h($asName !== '' ? $asName : 'this account') ?></strong> &middot;
@@ -311,7 +311,9 @@ if (!function_exists('h')) {
   <div class="as-bar-txt">
     <strong>Checked in <?= h(as_time_label($asState['check_in'])) ?></strong>
     <?php if ($asBreakMins !== null): ?>
-      <span>Break <?= h($asBreakMins) ?> min &middot; tap when you leave</span>
+      <span>Back <?= h(as_time_label($asState['break_end'])) ?> &middot; break was <?= h($asBreakMins) ?> min</span>
+    <?php elseif ($asCanBreak): ?>
+      <span>Break when you step away</span>
     <?php else: ?>
       <span>Tap when you leave</span>
     <?php endif; ?>
@@ -339,7 +341,7 @@ if (!function_exists('h')) {
   var bBtn = document.getElementById('asBtnBreak');
   if (bForm && bBtn) {
     bForm.addEventListener('submit', function (e) {
-      if (!window.confirm('Start your break? The system pauses until you tap I\u2019m back.')) {
+      if (!window.confirm('Start your break? The system pauses until you tap Check In again.')) {
         e.preventDefault();
         return;
       }

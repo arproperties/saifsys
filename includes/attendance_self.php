@@ -560,7 +560,13 @@ function attendance_self_break_start(PDO $conn): array
     return ['ok' => true, 'message' => 'Break started at ' . $state['now_label'] . '.'];
 }
 
-/** End the break and come back to the desk. */
+/**
+ * The second check-in of the day: back from the break, at the desk again.
+ *
+ * Stored as the end of the break rather than a second check-in row, because
+ * the day is still one row with one arrival and one departure — the pair in
+ * the middle is what the person was away for.
+ */
 function attendance_self_break_end(PDO $conn): array
 {
     $state = attendance_self_state($conn);
@@ -601,7 +607,7 @@ function attendance_self_break_end(PDO $conn): array
         ['employee_id' => $employeeId, 'work_date' => $workDate, 'break_start' => $started, 'break_end' => $time, 'break_minutes' => $minutes]
     );
 
-    return ['ok' => true, 'message' => 'Welcome back. Break was ' . $minutes . ' minutes.'];
+    return ['ok' => true, 'message' => 'Checked in again at ' . $state['now_label'] . '. Break was ' . $minutes . ' minutes.'];
 }
 
 /* ---------------------------------------------------------------------------
