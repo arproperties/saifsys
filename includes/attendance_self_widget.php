@@ -376,7 +376,11 @@ if (!function_exists('h')) {
   <span class="as-bar-grip" aria-hidden="true" title="Drag to move">&#8942;&#8942;</span>
   <div class="as-bar-txt">
     <strong><?= h(as_time_label($asState['check_in'])) ?> &rarr; <?= h(as_time_label($asState['check_out'])) ?></strong>
-    <span>Recorded for today<?= $asBreakMins !== null ? ' &middot; ' . h($asBreakMins) . ' min break' : '' ?></span>
+    <?php if (!empty($asState['auto_out'])): ?>
+      <span>Auto checked out at 6 PM &middot; tell HR if you left at another time</span>
+    <?php else: ?>
+      <span>Recorded for today<?= $asBreakMins !== null ? ' &middot; ' . h($asBreakMins) . ' min break' : '' ?></span>
+    <?php endif; ?>
   </div>
   <span class="as-bar-done"><?= $asState['hours'] !== null ? h($asState['hours']) . ' h' : 'Done' ?></span>
 </div>

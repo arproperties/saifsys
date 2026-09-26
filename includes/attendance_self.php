@@ -258,6 +258,7 @@ function attendance_self_state(PDO $conn): array
         'break_start' => null,
         'break_end'   => null,
         'break_mins'  => null,
+        'auto_out'    => false,
     ];
 
     if (!attendance_self_enabled()) {
@@ -268,6 +269,10 @@ function attendance_self_state(PDO $conn): array
         $state['reason'] = 'worker'; // PIN app, not this
         return $state;
     }
+
+    // Close anyone who forgot to check out before reading today's row, so a
+    // person still open at 6 PM sees their day as done.
+    attendance_self_auto_checkout_maybe($conn);
 
     $employee = attendance_self_employee($conn);
     if (!$employee) {
@@ -284,6 +289,7 @@ function attendance_self_state(PDO $conn): array
         $state['check_out'] = $row['check_out'] ?: null;
         $state['hours']     = $row['hours'];
         $state['att_status'] = (string)$row['status'];
+        $state['auto_out']  = strpos((string)$row['notes'], 'Auto check-out') !== false;
         if ($state['breaks_on']) {
             $state['break_start'] = $row['break_start'] ?: null;
             $state['break_end']   = $row['break_end'] ?: null;
@@ -608,6 +614,129 @@ function attendance_self_break_end(PDO $conn): array
     );
 
     return ['ok' => true, 'message' => 'Checked in again at ' . $state['now_label'] . '. Break was ' . $minutes . ' minutes.'];
+}
+
+/* ---------------------------------------------------------------------------
+ * Auto check-out
+ * ------------------------------------------------------------------------- */
+
+/** Everyone still checked in at this time is checked out at it. H:i, company time. */
+function attendance_self_auto_checkout_time(): string
+{
+    return '18:00';
+}
+
+/**
+ * Run the sweep at most twice a day per session: once for earlier days that
+ * were left open, and once more after 6 PM for today. There is no cron — any
+ * office page load does it for everybody, and a day nobody closes tonight is
+ * closed at 6 PM by the first page load tomorrow, with the same result.
+ */
+function attendance_self_auto_checkout_maybe(PDO $conn): void
+{
+    static $ran = false;
+    if ($ran) {
+        return;
+    }
+    $ran = true;
+
+    $now  = attendance_self_now();
+    $slot = $now->format('Y-m-d') . ($now->format('H:i') >= attendance_self_auto_checkout_time() ? '-pm' : '-am');
+    if (session_status() === PHP_SESSION_ACTIVE && ($_SESSION['attendance_self_auto_out'] ?? '') === $slot) {
+        return;
+    }
+    try {
+        attendance_self_auto_checkout($conn);
+    } catch (Throwable $e) {
+        return; // try again on the next page load
+    }
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        $_SESSION['attendance_self_auto_out'] = $slot;
+    }
+}
+
+/**
+ * Check out, at 6 PM, every self check-in that was never checked out: today's
+ * once it is past 6 PM, and any earlier day's. Returns how many were closed.
+ *
+ * Only rows staff made themselves (source='self'). Rows HR typed are HR's to
+ * finish, and a day HR has marked as leave or absent is left alone. Someone who
+ * checked in at or after 6 PM is skipped too — there is no sensible 6 PM
+ * check-out for them, so HR decides.
+ *
+ * A break still running at 6 PM is ended at 6 PM, the same as the day.
+ */
+function attendance_self_auto_checkout(PDO $conn): int
+{
+    $now    = attendance_self_now();
+    $today  = $now->format('Y-m-d');
+    $cutoff = attendance_self_auto_checkout_time();
+    $past6  = $now->format('H:i') >= $cutoff;
+    $breaks = attendance_self_breaks_available($conn);
+
+    $breakCols = $breaks ? ', a.break_start, a.break_end' : '';
+    $st = $conn->prepare(
+        "SELECT a.id, a.employee_id, a.work_date, a.check_in, a.notes{$breakCols},
+                e.full_name, e.employee_code, e.company_id
+           FROM attendance a
+           LEFT JOIN employees e ON e.id = a.employee_id
+          WHERE a.source = 'self'
+            AND a.check_in IS NOT NULL
+            AND a.check_out IS NULL
+            AND a.check_in < ?
+            AND a.status NOT IN ('on_leave', 'absent', 'half', 'excused_absent')
+            AND (a.work_date < ? OR (a.work_date = ? AND ? = 1))"
+    );
+    $st->execute([$cutoff . ':00', $today, $today, $past6 ? 1 : 0]);
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+    $closed = 0;
+    foreach ($rows as $row) {
+        $checkIn = substr((string)$row['check_in'], 0, 5);
+        $hours   = attendance_self_hours($checkIn, $cutoff);
+        if ($hours === null) {
+            continue;
+        }
+        $note  = trim((string)$row['notes']);
+        $note  = mb_substr(($note !== '' ? $note . ' · ' : '') . 'Auto check-out 6 PM (not checked out)', 0, 255);
+
+        $set    = 'check_out = ?, hours = ?, notes = ?, updated_at = NOW()';
+        $params = [$cutoff, $hours, $note];
+        $breakEnd = null;
+        if ($breaks && !empty($row['break_start']) && empty($row['break_end'])) {
+            $breakEnd = $cutoff;
+            $set .= ', break_end = ?, break_minutes = ?';
+            $params[] = $cutoff;
+            $params[] = attendance_self_minutes(substr((string)$row['break_start'], 0, 5), $cutoff);
+        }
+        $params[] = (int)$row['id'];
+
+        // check_out IS NULL again here, so a person who taps Check Out at the
+        // same moment keeps their own time.
+        $upd = $conn->prepare("UPDATE attendance SET {$set} WHERE id = ? AND check_out IS NULL LIMIT 1");
+        $upd->execute($params);
+        if ($upd->rowCount() === 0) {
+            continue;
+        }
+        $closed++;
+
+        $employee = [
+            'id'            => (int)$row['employee_id'],
+            'full_name'     => (string)($row['full_name'] ?? ''),
+            'employee_code' => (string)($row['employee_code'] ?? ''),
+            'company_id'    => $row['company_id'] ?? null,
+        ];
+        attendance_self_audit(
+            $conn,
+            'attendance_self_auto_check_out',
+            (int)$row['id'],
+            $employee,
+            'Auto checked out at ' . $cutoff . ' on ' . $row['work_date'] . ' (' . $hours . ' h) — forgot to check out',
+            ['employee_id' => (int)$row['employee_id'], 'work_date' => $row['work_date'], 'check_in' => $checkIn,
+             'check_out' => $cutoff, 'hours' => $hours, 'break_end' => $breakEnd, 'source' => 'auto']
+        );
+    }
+    return $closed;
 }
 
 /* ---------------------------------------------------------------------------
