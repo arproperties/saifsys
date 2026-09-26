@@ -302,7 +302,7 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
             <td><span class="badge bg-<?= ($r['status'] ?? '') === 'cancelled' ? 'secondary' : (($r['status'] ?? '') === 'draft' ? 'warning text-dark' : 'success') ?>"><?= h($r['status'] ?? '') ?></span></td>
             <td class="text-nowrap">
                 <?php if (($r['status'] ?? '') !== 'cancelled'): ?>
-                    <a class="btn btn-sm btn-outline-<?= $isLegacy ? 'secondary' : 'primary' ?>" href="expense_edit.php?id=<?= (int)$r['id'] ?>"><?= $isLegacy ? 'View' : 'Open' ?></a>
+                    <a class="btn btn-sm btn-outline-primary" href="expense_edit.php?id=<?= (int)$r['id'] ?>">Open</a>
                 <?php endif; ?>
                 <?php if (!$isLegacy): ?>
                     <button type="button"

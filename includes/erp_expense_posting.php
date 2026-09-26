@@ -147,7 +147,11 @@ function erp_resolve_input_vat_account_id(PDO $db, int $companyId, ?string $sour
     return $id ? (int)$id : null;
 }
 
-/** @return bool True when Construction historical ERP archive row (read-only forever). */
+/**
+ * @return bool True when this is a pre-Quick-Paid Construction ERP row (kept as a "Historical" marker).
+ *              Since 2026-09-26 these are editable like any other Quick Paid expense (BR-CO-QPE-005 revised);
+ *              saving one reverses its old journal and reposts it.
+ */
 function erp_expense_is_legacy_archive(array $header): bool {
     return (string)($header['source_module'] ?? '') === 'construction'
         && (int)($header['legacy_archive'] ?? 0) === 1;
@@ -324,9 +328,6 @@ function erp_post_expense(PDO $db, int $expenseId, ?int $userId): array {
 
     $sourceModule = (string)($h['source_module'] ?? 'realestate');
     $paidVia = $h['paid_via'] ?? 'bank';
-    if (erp_expense_is_legacy_archive($h)) {
-        return ['success' => false, 'error' => 'Historical ERP Expenses are read-only and cannot be posted or changed.'];
-    }
     if (in_array($sourceModule, ['realestate', 'construction'], true) && $paidVia === 'accounts_payable') {
         return [
             'success' => false,
@@ -471,9 +472,6 @@ function erp_repost_expense(PDO $db, int $expenseId, ?int $userId): array {
     if (!$h) {
         return ['success' => false, 'error' => 'Expense not found'];
     }
-    if (erp_expense_is_legacy_archive($h)) {
-        return ['success' => false, 'error' => 'Historical ERP Expenses are read-only and cannot be reposted.'];
-    }
     if (($h['status'] ?? '') === 'cancelled') {
         return ['success' => false, 'error' => 'Cannot repost cancelled expense'];
     }
@@ -504,9 +502,6 @@ function erp_cancel_expense(PDO $db, int $expenseId, ?int $userId): array {
     $h = $H->fetch(PDO::FETCH_ASSOC);
     if (!$h) {
         return ['success' => false, 'error' => 'Expense not found'];
-    }
-    if (erp_expense_is_legacy_archive($h)) {
-        return ['success' => false, 'error' => 'Historical ERP Expenses are read-only and cannot be cancelled.'];
     }
     $jid = (int)($h['journal_id'] ?? 0);
     if ($jid > 0) {

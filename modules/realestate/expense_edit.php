@@ -49,12 +49,9 @@ if (($h['status'] ?? '') === 'cancelled') {
 }
 $sourceModule = $h['source_module'] ?? 'realestate';
 $expensesListUrl = ($sourceModule === 'construction') ? '../construction/expenses.php' : (($sourceModule === 'ars') ? '../ars/expenses.php' : 'expenses.php');
-$historicalReadOnly = erp_expense_is_legacy_archive($h);
-if (!$historicalReadOnly && defined('ERP_EXPENSE_HISTORICAL_READONLY') && ERP_EXPENSE_HISTORICAL_READONLY && $sourceModule === 'construction'
-    && !erp_expense_headers_has_legacy_archive_column($conn)) {
-    // Fallback only when migration not applied yet.
-    $historicalReadOnly = true;
-}
+// Historical Construction ERP rows (legacy_archive = 1) are editable like any other Quick Paid expense
+// since 2026-09-26 (BR-CO-QPE-005 revised). Saving one reverses its old journal and reposts it.
+$isLegacyArchive = erp_expense_is_legacy_archive($h);
 if ($sourceModule === 'realestate') {
     if (!has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_FINANCIAL, $conn)) {
         require_module_access($conn, MODULE_REALESTATE);
@@ -150,7 +147,7 @@ if (erp_expense_attachments_post_too_large()) {
          . ' in total). Nothing was attached — try fewer or smaller files.';
 }
 
-if (!$historicalReadOnly && isset($_GET['void']) && $_GET['void'] === '1') {
+if (isset($_GET['void']) && $_GET['void'] === '1') {
     try {
         csrf_verify();
         $v = erp_cancel_expense($conn, $id, $userId);
@@ -166,7 +163,7 @@ if (!$historicalReadOnly && isset($_GET['void']) && $_GET['void'] === '1') {
 
 // Attachments are their own small POSTs so a receipt can be added to an expense that
 // is already posted, without touching the lines or the ledger.
-if (!$historicalReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'attach_upload') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'attach_upload') {
     try {
         csrf_verify();
         $notices = [];
@@ -186,7 +183,7 @@ if (!$historicalReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['ac
     exit;
 }
 
-if (!$historicalReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'attach_delete') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'attach_delete') {
     try {
         csrf_verify();
         if (!erp_expense_attachment_delete($conn, (int)($_POST['attachment_id'] ?? 0), $currentCompanyId)) {
@@ -199,7 +196,7 @@ if (!$historicalReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['ac
     exit;
 }
 
-if (!$historicalReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
     try {
         csrf_verify();
         $headerStatus = $h['status'] ?? 'draft';
@@ -420,15 +417,14 @@ if ($sourceModule === 'realestate' && $pvSel === 'accounts_payable') {
     // Quick Paid Expenses no longer use AP; show bank until user picks cash/credit.
     $pvSel = 'bank';
 }
-if ($sourceModule === 'construction' && $pvSel === 'accounts_payable' && !$historicalReadOnly) {
+if ($sourceModule === 'construction' && $pvSel === 'accounts_payable') {
+    // Historical AP rows: pick a settlement account; saving moves the credit from AP to that account.
     $pvSel = 'bank';
 }
 $expNum = trim((string)($h['expense_number'] ?? ''));
 $st = $h['status'] ?? 'draft';
 
-$pageTitle = $historicalReadOnly
-    ? 'Historical ERP Expense'
-    : (($sourceModule === 'realestate' || $sourceModule === 'construction') ? 'Edit Quick Paid Expense' : 'Edit Expense');
+$pageTitle = ($sourceModule === 'realestate' || $sourceModule === 'construction') ? 'Edit Quick Paid Expense' : 'Edit Expense';
 $erpExpenseLayout = erp_expense_resolve_layout($h['source_module'] ?? 'realestate');
 erp_expense_require_header($erpExpenseLayout);
 require_once __DIR__ . '/../../includes/searchable_select.php';
@@ -439,7 +435,7 @@ searchable_select_assets();
             <strong>Quick Paid Expenses</strong> — for small expenses paid immediately from bank or cash (Dr expense / Dr Input VAT / Cr bank).
             For unpaid purchases, credit purchases, and formal AP, use <a href="accounting/vendor_bills.php" class="alert-link">Vendor Bills</a>.
         </div>
-        <?php elseif ($sourceModule === 'construction' && !$historicalReadOnly): ?>
+        <?php elseif ($sourceModule === 'construction'): ?>
         <div class="alert alert-warning mx-3 mt-3">
             <strong>Quick Paid Expenses</strong> — paid immediately (Cash / Bank / Credit Card). Dr Expense / Dr Input VAT (2130) / Cr settlement.
             Does <strong>not</strong> create Supplier Invoices or change Outstanding AP. Unpaid bills → <a href="../construction/supplier_invoice_add.php" class="alert-link">Supplier Invoices</a>.
@@ -449,21 +445,20 @@ searchable_select_assets();
             <div class="d-flex align-items-center">
                 <a href="<?= h($expensesListUrl) ?>" class="btn btn-outline-secondary me-2"><i class="bi bi-arrow-left"></i> Back</a>
                 <div>
-                <h4 class="mb-0"><i class="bi <?= $historicalReadOnly ? 'bi-archive' : 'bi-pencil' ?> me-2"></i><?= $historicalReadOnly ? 'Historical ERP Expense ' : (($sourceModule === 'realestate' || $sourceModule === 'construction') ? 'Edit Quick Paid Expense ' : 'Edit ') ?><?= $expNum !== '' ? h($expNum) : ('#' . (int)$id) ?></h4>
-                <small class="text-muted">ID <?= (int)$id ?> · <span class="badge bg-<?= $st === 'posted' ? 'success' : ($st === 'draft' ? 'warning text-dark' : 'secondary') ?>"><?= h($st) ?></span><?php if ($historicalReadOnly): ?> · <span class="badge bg-secondary">Legacy archive</span><?php endif; ?></small>
+                <h4 class="mb-0"><i class="bi <?= $isLegacyArchive ? 'bi-archive' : 'bi-pencil' ?> me-2"></i><?= ($sourceModule === 'realestate' || $sourceModule === 'construction') ? 'Edit Quick Paid Expense ' : 'Edit ' ?><?= $expNum !== '' ? h($expNum) : ('#' . (int)$id) ?></h4>
+                <small class="text-muted">ID <?= (int)$id ?> · <span class="badge bg-<?= $st === 'posted' ? 'success' : ($st === 'draft' ? 'warning text-dark' : 'secondary') ?>"><?= h($st) ?></span><?php if ($isLegacyArchive): ?> · <span class="badge bg-secondary">Historical</span><?php endif; ?></small>
                 </div>
             </div>
-            <?php if (!$historicalReadOnly): ?>
             <form method="post" action="expense_edit.php?id=<?= (int)$id ?>&void=1" onsubmit="return confirm('Cancel this expense? Posted amounts will be reversed in the ledger.');">
                 <?php csrf_field(); ?>
                 <button type="submit" class="btn btn-outline-danger">Cancel expense</button>
             </form>
-            <?php endif; ?>
         </div>
-        <?php if ($historicalReadOnly): ?>
-            <div class="alert alert-info">
-                This Construction ERP expense is a <strong>legacy historical archive</strong> and is read-only forever. Journals are not rewritten.
-                New immediate payments → <a href="../construction/expense_add.php" class="alert-link">Quick Paid Expenses</a>. Unpaid AP → Supplier Invoices.
+        <?php if ($isLegacyArchive): ?>
+            <div class="alert alert-warning">
+                <strong>Historical expense.</strong> This one was recorded before Quick Paid Expenses<?= in_array($h['paid_via'] ?? '', ['accounts_payable', 'ap'], true) ? ', and was charged to Accounts Payable (the supplier was owed the money)' : '' ?>.
+                Saving reverses its old ledger entry and posts a new one from the payment account you choose.
+                Check first that this bill was not already settled through a Supplier Payment, or the money goes out twice.
             </div>
         <?php endif; ?>
         <?php if ($err): ?><div class="alert alert-danger"><?= h($err) ?></div><?php endif; ?>
@@ -505,7 +500,7 @@ searchable_select_assets();
                     <?php if (($h['source_module'] ?? '') === 'construction' && $hasExpenseProjectColumn): ?>
                     <div class="col-md-4">
                         <label class="form-label">Project <span class="text-muted fw-normal">(optional)</span></label>
-                        <select name="project_id" class="form-select" data-search <?= $historicalReadOnly ? 'disabled' : '' ?>>
+                        <select name="project_id" class="form-select" data-search>
                             <option value="0">— Overhead (no project) —</option>
                             <?php foreach ($constructionProjects as $p): ?>
                             <option value="<?= (int)$p['id'] ?>" <?= (int)($h['project_id'] ?? 0) === (int)$p['id'] ? 'selected' : '' ?>>
@@ -517,19 +512,17 @@ searchable_select_assets();
                     <?php endif; ?>
                     <div class="col-md-4">
                         <label class="form-label">Payment method *</label>
-                        <select name="paid_via" id="paid_via" class="form-select" <?= $historicalReadOnly ? 'disabled' : '' ?>>
+                        <select name="paid_via" id="paid_via" class="form-select">
                             <option value="cash" <?= $pvSel === 'cash' ? 'selected' : '' ?>>Cash</option>
                             <option value="bank" <?= $pvSel === 'bank' ? 'selected' : '' ?>>Bank</option>
                             <option value="credit" <?= $pvSel === 'credit' ? 'selected' : '' ?>>Credit Card</option>
-                            <?php if ($historicalReadOnly && $pvSel === 'accounts_payable'): ?>
-                            <option value="accounts_payable" selected>Accounts payable (legacy)</option>
-                            <?php elseif (!in_array($sourceModule, ['realestate', 'construction'], true)): ?>
+                            <?php if (!in_array($sourceModule, ['realestate', 'construction'], true)): ?>
                             <option value="accounts_payable" <?= $pvSel === 'accounts_payable' ? 'selected' : '' ?>>Accounts payable</option>
                             <?php endif; ?>
                         </select>
                         <?php if ($sourceModule === 'realestate'): ?>
                         <div class="form-text">Must settle immediately. Unpaid purchases → Vendor Bills.</div>
-                        <?php elseif ($sourceModule === 'construction' && !$historicalReadOnly): ?>
+                        <?php elseif ($sourceModule === 'construction'): ?>
                         <div class="form-text">Cash / Bank / Credit Card only. Never creates Supplier AP.</div>
                         <?php endif; ?>
                     </div>
@@ -620,7 +613,7 @@ searchable_select_assets();
                 </table>
             </div>
             <div class="card-body border-top d-flex justify-content-between flex-wrap gap-2">
-                <?php if (!$historicalReadOnly): ?><button type="button" class="btn btn-outline-primary btn-sm" id="addLine">+ Add line</button><?php else: ?><span class="text-muted small">Historical lines</span><?php endif; ?>
+                <button type="button" class="btn btn-outline-primary btn-sm" id="addLine">+ Add line</button>
                 <div>Subtotal <strong id="tSub">0.00</strong> &nbsp; VAT <strong id="tVat">0.00</strong> &nbsp; Total <strong id="tTot">0.00</strong> AED</div>
             </div>
             <?php if ($sourceModule === 'realestate'): ?>
@@ -630,10 +623,10 @@ searchable_select_assets();
 
             <div class="d-flex justify-content-end gap-2">
                 <a href="<?= h($expensesListUrl) ?>" class="btn btn-outline-secondary">Cancel</a>
-                <?php if (!$historicalReadOnly && ($h['status'] ?? '') === 'draft'): ?>
+                <?php if (($h['status'] ?? '') === 'draft'): ?>
                 <button type="submit" name="save_action" value="draft" class="btn btn-outline-primary">Save draft</button>
                 <button type="submit" name="save_action" value="post" class="btn btn-success">Post to ledger</button>
-                <?php elseif (!$historicalReadOnly): ?>
+                <?php else: ?>
                 <button type="submit" name="save_action" value="repost" class="btn btn-success">Save &amp; Repost</button>
                 <?php endif; ?>
             </div>
@@ -671,7 +664,6 @@ searchable_select_assets();
                     </span>
                     <a href="<?= h(erp_expense_attachment_href((int)$a['id'], 'download')) ?>"
                        class="btn btn-sm btn-outline-primary" title="Download"><i class="bi bi-download"></i></a>
-                    <?php if (!$historicalReadOnly): ?>
                     <form method="post" action="expense_edit.php?id=<?= (int)$id ?>" class="d-inline"
                           onsubmit="return confirm('Delete this attachment? The file is removed from the server.');">
                         <?php csrf_field(); ?>
@@ -680,13 +672,11 @@ searchable_select_assets();
                         <input type="hidden" name="attachment_id" value="<?= (int)$a['id'] ?>">
                         <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></button>
                     </form>
-                    <?php endif; ?>
                 </li>
                 <?php endforeach; ?>
             </ul>
             <?php endif; ?>
 
-            <?php if (!$historicalReadOnly): ?>
             <form method="post" action="expense_edit.php?id=<?= (int)$id ?>" enctype="multipart/form-data" class="row g-2 align-items-start">
                 <?php csrf_field(); ?>
                 <input type="hidden" name="action" value="attach_upload">
@@ -704,7 +694,6 @@ searchable_select_assets();
                     <button type="submit" class="btn btn-outline-primary"><i class="bi bi-upload me-1"></i>Upload</button>
                 </div>
             </form>
-            <?php endif; ?>
         </div></div>
 
         <template id="lineTpl">
@@ -750,7 +739,6 @@ searchable_select_assets();
         <script>
         window.__loadedLines = <?= json_encode($loadedLines, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         (function(){
-          const readOnly = <?= $historicalReadOnly ? 'true' : 'false' ?>;
           const body = document.getElementById('lineBody');
           const tpl = document.getElementById('lineTpl');
           function inclusive(){ return document.getElementById('vm_inc').checked; }
@@ -813,12 +801,6 @@ searchable_select_assets();
           if (ld.length) { ld.forEach(d=>addLine(d)); }
           else { addLine(null); }
           document.getElementById('paid_via').dispatchEvent(new Event('change'));
-          if (readOnly) {
-            document.querySelectorAll('#expForm input, #expForm select, #expForm textarea, #expForm button').forEach(el => {
-              if (el.closest('.d-flex.justify-content-end')) return;
-              el.disabled = true;
-            });
-          }
         })();
         </script>
 <?php erp_expense_require_footer($erpExpenseLayout);
