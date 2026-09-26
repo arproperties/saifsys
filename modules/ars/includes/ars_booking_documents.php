@@ -162,8 +162,13 @@ function ars_booking_documents_catalog(PDO $conn, array $booking): array {
         ];
     }
 
-    $vatAmount = (float)($booking['vat_amount'] ?? 0);
-    $paid = (float)($booking['paid_amount'] ?? 0);
+    // VAT and the headline figure come from what was actually billed, not
+    // from ars_bookings -- an extension invoice can carry VAT the booking row
+    // never sees, and on an extended stay its total_amount is short.
+    $invoiceStatement = ars_booking_invoice_statement($conn, $booking);
+    $vatAmount = (float)$invoiceStatement['vat'];
+    $invoiceTotal = (float)$invoiceStatement['total'];
+    $paid = (float)$invoiceStatement['paid'];
     $invoiceAvailable = $vatAmount > 0.009
         && !in_array($status, ['cancelled', 'expired'], true)
         && ($paid > 0.009 || in_array($status, ['confirmed', 'checked_in', 'checked_out', 'completed'], true));
@@ -171,13 +176,13 @@ function ars_booking_documents_catalog(PDO $conn, array $booking): array {
     $catalog[] = [
         'doc_type' => 'tax_invoice',
         'title' => 'Tax invoice (VAT)',
-        'subtitle' => $invoiceAvailable ? $currency . ' ' . number_format((float)$booking['total_amount'], 2) : null,
+        'subtitle' => $invoiceAvailable ? $currency . ' ' . number_format($invoiceTotal, 2) : null,
         'payment_id' => null,
         'available' => $invoiceAvailable,
         'unavailable_reason' => $invoiceAvailable ? null : 'VAT invoice is available once VAT applies and the booking is confirmed or paid.',
         'currency' => $currency,
         'document_date' => substr((string)($booking['created_at'] ?? ''), 0, 10),
-        'amount' => (float)($booking['total_amount'] ?? 0),
+        'amount' => $invoiceTotal,
     ];
 
     foreach ($catalog as &$item) {
@@ -192,12 +197,223 @@ function ars_booking_documents_catalog(PDO $conn, array $booking): array {
     return $catalog;
 }
 
+/**
+ * One invoice for the whole stay, however many times it was extended.
+ *
+ * ars_bookings.total_amount only ever holds the original stay plus non-room
+ * charges: extension / service / adjustment invoices never write back to it.
+ * A booking extended three times therefore printed "12 nights" priced at the
+ * six-night figure. The posted financial documents are the only record that
+ * knows what was actually billed, so the invoice is assembled from them --
+ * one line per period, one total -- while the documents themselves are left
+ * exactly as posted. Nothing here writes.
+ *
+ * Bookings with no financial documents (adapter off, or older records) keep
+ * the single accommodation line built from ars_bookings, as before.
+ *
+ * @param array<string,mixed> $booking
+ * @return array{lines: list<array{description: string, amount: float}>, subtotal: float, vat: float, vat_rate: float, total: float, paid: float, balance: float, from_documents: bool, fingerprint: string}
+ */
+function ars_booking_invoice_statement(PDO $conn, array $booking): array
+{
+    $bookingId = (int)($booking['id'] ?? 0);
+    $companyId = (int)($booking['company_id'] ?? 0);
+    $unitTitle = trim((string)($booking['listing_title'] ?? $booking['unit_number'] ?? 'Unit'));
+
+    $fallback = static function () use ($booking, $unitTitle): array {
+        $subtotal = (float)($booking['subtotal'] ?? 0);
+        $discount = (float)($booking['discount_amount'] ?? 0) + (float)($booking['length_discount_amount'] ?? 0);
+        $vat = (float)($booking['vat_amount'] ?? 0);
+        $total = (float)($booking['total_amount'] ?? 0);
+        $lines = [[
+            'description' => 'Accommodation (' . (int)($booking['nights'] ?? 0) . ' nights)',
+            'amount' => $subtotal,
+        ]];
+        if ($discount > 0.009) {
+            $lines[] = ['description' => 'Discounts', 'amount' => -$discount];
+        }
+        return [
+            'lines' => $lines,
+            'subtotal' => round($subtotal - $discount, 2),
+            'vat' => $vat,
+            'vat_rate' => (float)($booking['vat_rate'] ?? 0),
+            'total' => $total,
+            'paid' => (float)($booking['paid_amount'] ?? 0),
+            'balance' => (float)($booking['balance_due'] ?? 0),
+            'from_documents' => false,
+            'fingerprint' => 'booking:' . number_format($total, 2, '.', ''),
+        ];
+    };
+
+    if ($bookingId <= 0 || $companyId <= 0) {
+        return $fallback();
+    }
+
+    try {
+        // Same exclusions as the booking screen's roll-up, so the printed
+        // invoice and the Pricing Summary can never quote different figures.
+        $stmt = $conn->prepare("
+            SELECT d.id, d.document_type, d.document_number, d.document_date,
+                   d.subtotal, d.vat_amount, d.total_amount, d.balance_due, d.vat_rate,
+                   e.prior_check_out, e.new_check_out, e.added_nights
+            FROM ars_financial_documents d
+            LEFT JOIN ars_extension_documents e ON e.document_id = d.id
+            WHERE d.booking_id = ? AND d.company_id = ?
+              AND d.status NOT IN ('draft', 'voided', 'reversed')
+            ORDER BY (d.document_type <> 'original_invoice'),
+                     COALESCE(e.new_check_out, d.document_date), d.id
+        ");
+        $stmt->execute([$bookingId, $companyId]);
+        $docs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        return $fallback();
+    }
+
+    if (!$docs) {
+        return $fallback();
+    }
+
+    // The original invoice covers check-in up to wherever the first extension
+    // begins -- not the booking's current check-out, which the extensions moved.
+    $firstExtensionFrom = '';
+    foreach ($docs as $d) {
+        if ((string)$d['document_type'] === 'extension_invoice' && !empty($d['prior_check_out'])) {
+            $extFrom = (string)$d['prior_check_out'];
+            if ($firstExtensionFrom === '' || strtotime($extFrom) < strtotime($firstExtensionFrom)) {
+                $firstExtensionFrom = $extFrom;
+            }
+        }
+    }
+    if ($firstExtensionFrom === '') {
+        // An extension recorded on the Extend tab but never billed still moved
+        // the check-out. Its dates are taken so the original line does not
+        // claim the whole stay at the original price; its money is not, because
+        // nothing was invoiced for it.
+        try {
+            $logStmt = $conn->prepare("
+                SELECT MIN(extended_from) FROM ars_booking_extension_log
+                WHERE booking_id = ? AND company_id = ?
+            ");
+            $logStmt->execute([$bookingId, $companyId]);
+            $firstExtensionFrom = (string)($logStmt->fetchColumn() ?: '');
+        } catch (Throwable $e) {
+            $firstExtensionFrom = '';
+        }
+    }
+
+    $fmt = static function (string $date): string {
+        $ts = strtotime($date);
+        return $ts ? date('d M Y', $ts) : $date;
+    };
+    $nightsBetween = static function (string $from, string $to): int {
+        $a = strtotime($from);
+        $b = strtotime($to);
+        return ($a && $b && $b > $a) ? (int)round(($b - $a) / 86400) : 0;
+    };
+
+    $lines = [];
+    $invoiced = 0.0;
+    $credited = 0.0;
+    $vatTotal = 0.0;
+    $openBalance = 0.0;
+    $vatRate = (float)($booking['vat_rate'] ?? 0);
+    $fingerprintBits = [];
+
+    foreach ($docs as $d) {
+        $type = (string)$d['document_type'];
+        $net = (float)$d['subtotal'];
+        $docVat = (float)$d['vat_amount'];
+        $docTotal = (float)$d['total_amount'];
+        $fingerprintBits[] = (int)$d['id'] . ':' . number_format($docTotal, 2, '.', '');
+
+        if ($type === 'credit_note') {
+            $credited += $docTotal;
+            $openBalance -= (float)$d['balance_due'];
+            $lines[] = [
+                'description' => 'Credit note ' . (string)$d['document_number'],
+                'amount' => -$net,
+            ];
+            $vatTotal -= $docVat;
+            continue;
+        }
+
+        $invoiced += $docTotal;
+        $openBalance += (float)$d['balance_due'];
+        $vatTotal += $docVat;
+        if ($docVat > 0.009 && (float)$d['vat_rate'] > 0) {
+            $vatRate = (float)$d['vat_rate'];
+        }
+
+        if ($type === 'original_invoice') {
+            $from = (string)($booking['check_in'] ?? '');
+            $to = $firstExtensionFrom !== '' ? $firstExtensionFrom : (string)($booking['check_out'] ?? '');
+            $nights = $nightsBetween($from, $to);
+            $desc = 'Accommodation';
+            if ($nights > 0) {
+                $desc .= ' · ' . $fmt($from) . ' to ' . $fmt($to)
+                    . ' (' . $nights . ' ' . ($nights === 1 ? 'night' : 'nights') . ')';
+            }
+            $lines[] = ['description' => $desc, 'amount' => $net];
+            continue;
+        }
+
+        if ($type === 'extension_invoice') {
+            $from = (string)($d['prior_check_out'] ?? '');
+            $to = (string)($d['new_check_out'] ?? '');
+            $nights = (int)($d['added_nights'] ?? 0) ?: $nightsBetween($from, $to);
+            $desc = 'Extension of stay';
+            if ($from !== '' && $to !== '') {
+                $desc .= ' · ' . $fmt($from) . ' to ' . $fmt($to);
+            }
+            if ($nights > 0) {
+                $desc .= ' (' . $nights . ' ' . ($nights === 1 ? 'night' : 'nights') . ')';
+            }
+            $lines[] = ['description' => $desc, 'amount' => $net];
+            continue;
+        }
+
+        // Service / damage / adjustment: the document's own line text is what
+        // the guest was told this charge is for.
+        $desc = '';
+        try {
+            $ls = $conn->prepare("
+                SELECT description FROM ars_financial_document_lines
+                WHERE document_id = ? AND company_id = ? ORDER BY line_no LIMIT 1
+            ");
+            $ls->execute([(int)$d['id'], $companyId]);
+            $desc = trim((string)$ls->fetchColumn());
+        } catch (Throwable $e) {
+            $desc = '';
+        }
+        if ($desc === '') {
+            $desc = ucwords(str_replace('_', ' ', $type));
+        }
+        $lines[] = ['description' => $desc, 'amount' => $net];
+    }
+
+    $total = round($invoiced - $credited, 2);
+    $balance = round($openBalance, 2);
+
+    return [
+        'lines' => $lines,
+        'subtotal' => round($total - $vatTotal, 2),
+        'vat' => round($vatTotal, 2),
+        'vat_rate' => $vatRate,
+        'total' => $total,
+        // Derived from the same two figures the page prints, so the invoice
+        // always adds up even when ars_bookings.paid_amount is stale.
+        'paid' => round($total - $balance, 2),
+        'balance' => $balance,
+        'from_documents' => true,
+        'fingerprint' => 'docs:' . implode(',', $fingerprintBits),
+    ];
+}
 function ars_booking_document_download_path(int $bookingId, string $docType, ?int $paymentId = null): string {
     // Path only — payment_id is returned separately in the API payload.
     return 'stay/bookings/' . $bookingId . '/documents/' . $docType . '/download';
 }
 
-function ars_booking_document_content_hash(array $booking, string $docType, ?int $paymentId): string {
+function ars_booking_document_content_hash(array $booking, string $docType, ?int $paymentId, ?string $statementFingerprint = null): string {
     $guestKey = trim((string)($booking['guest_first_name'] ?? '') . '|' . (string)($booking['guest_last_name'] ?? '')
         . '|' . (string)($booking['guest_email'] ?? '') . '|' . (string)($booking['unit_number'] ?? ''));
     $brandKey = (string)($booking['_doc_brand_stamp'] ?? '');
@@ -210,7 +426,10 @@ function ars_booking_document_content_hash(array $booking, string $docType, ?int
         $brandKey,
         $docType,
         (string)($paymentId ?? ''),
-        'v2',
+        // Extension / service invoices never touch ars_bookings, so without
+        // this the cached invoice PDF would survive a newly billed extension.
+        (string)($statementFingerprint ?? ''),
+        'v3',
     ]));
 }
 
@@ -330,7 +549,8 @@ function ars_booking_document_build_html(
     array $booking,
     array $company,
     string $docType,
-    ?array $payment = null
+    ?array $payment = null,
+    ?array $statement = null
 ): string {
     $guestName = trim((string)($booking['guest_first_name'] ?? '') . ' ' . (string)($booking['guest_last_name'] ?? ''));
     if ($guestName === '') {
@@ -410,29 +630,47 @@ function ars_booking_document_build_html(
     }
 
     if ($docType === 'tax_invoice') {
-        $subtotal = (float)($booking['subtotal'] ?? 0);
-        $disc = (float)($booking['discount_amount'] ?? 0) + (float)($booking['length_discount_amount'] ?? 0);
-        $vat = (float)($booking['vat_amount'] ?? 0);
-        $total = (float)($booking['total_amount'] ?? 0);
+        // One invoice for the booking, one row per period actually billed --
+        // the original stay and every extension, in date order. Built by
+        // ars_booking_invoice_statement() from the posted documents, because
+        // ars_bookings.total_amount stops at the original stay.
+        $st = $statement ?? ['lines' => [], 'subtotal' => 0.0, 'vat' => 0.0, 'vat_rate' => 0.0, 'total' => 0.0, 'paid' => 0.0, 'balance' => 0.0];
+        $vat = (float)$st['vat'];
+        $itemRows = '';
+        foreach ($st['lines'] as $line) {
+            $amt = (float)$line['amount'];
+            $itemRows .= '<tr><td>' . ars_booking_document_h((string)$line['description']) . '</td>'
+                . '<td class="right">' . ($amt < 0 ? '-' : '') . number_format(abs($amt), 2) . '</td></tr>';
+        }
+        if ($itemRows === '') {
+            $itemRows = '<tr><td>Accommodation</td><td class="right">' . number_format((float)$st['subtotal'], 2) . '</td></tr>';
+        }
+        // A no-VAT booking must not print a VAT row at all.
+        $vatRow = $vat > 0.009
+            ? '<tr><td>VAT ' . number_format((float)$st['vat_rate'], 1) . '%</td><td class="right">' . number_format($vat, 2) . '</td></tr>'
+            : '';
+        $totalLabel = $vat > 0.009 ? 'Total inclusive of VAT' : 'Total';
+        $stayTo = (string)($booking['check_out'] ?? '');
         $bodyExtra = '
             <div class="panel">
                 <table class="grid">
                     <tr><td class="label">Invoice to</td><td>' . ars_booking_document_h($guestName) . '<br><span class="muted">' . ars_booking_document_h((string)($booking['guest_email'] ?? '')) . '</span></td></tr>
                     <tr><td class="label">Booking</td><td>' . $bookingNumber . '</td></tr>
-                    <tr><td class="label">Stay</td><td>' . ars_booking_document_h((string)$booking['check_in'] . ' → ' . (string)$booking['check_out']) . '</td></tr>
+                    <tr><td class="label">Unit</td><td>' . $unitTitle . ($building !== '' ? ' · ' . $building : '') . '</td></tr>
+                    <tr><td class="label">Stay</td><td>' . ars_booking_document_h((string)$booking['check_in'] . ' → ' . $stayTo) . '</td></tr>
+                    <tr><td class="label">Nights</td><td>' . (int)($booking['nights'] ?? 0) . '</td></tr>
                 </table>
             </div>
             <table class="items">
                 <thead><tr><th>Description</th><th class="right">Amount (' . $currency . ')</th></tr></thead>
                 <tbody>
-                    <tr><td>Accommodation (' . (int)$booking['nights'] . ' nights) — ' . $unitTitle . '</td><td class="right">' . number_format($subtotal, 2) . '</td></tr>
-                    ' . ($disc > 0 ? '<tr><td>Discounts</td><td class="right">-' . number_format($disc, 2) . '</td></tr>' : '') . '
-                    <tr><td>VAT ' . number_format((float)($booking['vat_rate'] ?? 0), 1) . '%</td><td class="right">' . number_format($vat, 2) . '</td></tr>
-                    <tr class="total"><td>Total inclusive of VAT</td><td class="right">' . number_format($total, 2) . '</td></tr>
+                    ' . $itemRows . '
+                    ' . $vatRow . '
+                    <tr class="total"><td>' . $totalLabel . '</td><td class="right">' . number_format((float)$st['total'], 2) . '</td></tr>
                 </tbody>
             </table>
-            <p class="muted">Paid to date: ' . $currency . ' ' . number_format((float)($booking['paid_amount'] ?? 0), 2)
-            . ' · Balance: ' . $currency . ' ' . number_format((float)($booking['balance_due'] ?? 0), 2) . '</p>
+            <p class="muted">Paid to date: ' . $currency . ' ' . number_format((float)$st['paid'], 2)
+            . ' · Balance: ' . $currency . ' ' . number_format((float)$st['balance'], 2) . '</p>
         ';
     }
 
@@ -555,7 +793,8 @@ function ars_booking_document_get_pdf(
         }
     }
 
-    $hash = ars_booking_document_content_hash($booking, $docType, $paymentId);
+    $statement = ars_booking_invoice_statement($conn, $booking);
+    $hash = ars_booking_document_content_hash($booking, $docType, $paymentId, (string)$statement['fingerprint']);
     $lookup = $conn->prepare('
         SELECT * FROM ars_booking_documents
         WHERE booking_id = ? AND doc_type = ? AND (payment_id <=> ?)
@@ -578,7 +817,7 @@ function ars_booking_document_get_pdf(
         }
     }
 
-    $html = ars_booking_document_build_html($booking, $company, $docType, $payment);
+    $html = ars_booking_document_build_html($booking, $company, $docType, $payment, $statement);
     $bytes = ars_booking_pdf_render($html);
     $token = bin2hex(random_bytes(16));
     $path = ars_booking_document_storage_path($companyId, $bookingId, $token);

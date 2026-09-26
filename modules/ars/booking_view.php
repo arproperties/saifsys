@@ -1828,10 +1828,28 @@ echo $arsWsLifecycleHtml;
                 <?php endif; ?>
                 <div class="row g-3">
                     <div class="col-12 col-sm-6">
+                        <?php
+                        // Every payment row's Total amount is what THAT line charges, not
+                        // the booking total: the Payments table carries what a line leaves
+                        // unpaid down to the next row. So only the very first payment can
+                        // safely default to the stay total. On a booking that already has
+                        // payments, prefilling the stay total adds the whole total in again
+                        // and the outstanding never clears - a later payment settles what is
+                        // already owed, so it charges nothing and defaults to zero.
+                        $payTotalDefault = empty($payments) ? $stayTotal : 0.0;
+                        ?>
                         <label class="form-label fw-semibold" for="payTotalAmount">Total amount (AED)</label>
                         <input type="number" step="0.01" min="0" id="payTotalAmount" class="form-control"
-                               value="<?= number_format($stayTotal, 2, '.', '') ?>"
+                               value="<?= number_format($payTotalDefault, 2, '.', '') ?>"
                                data-summary-total="<?= number_format($stayTotal, 2, '.', '') ?>">
+                        <div class="form-text">
+                            <?php if (empty($payments)): ?>
+                                What the stay totals. The outstanding below is this figure minus what you receive.
+                            <?php else: ?>
+                                Leave at <strong>0</strong> to just clear the outstanding. Enter an amount only if this line
+                                charges something new (extension or extra service) - it is added to the outstanding, not the booking total.
+                            <?php endif; ?>
+                        </div>
                     </div>
                     <div class="col-12 col-sm-6">
                         <label class="form-label fw-semibold" for="payAmount">Received amount (AED) *</label>
@@ -1895,7 +1913,7 @@ echo $arsWsLifecycleHtml;
                     <div class="col-12 col-sm-6">
                         <label class="form-label fw-semibold" for="editPayTotalAmount">Total amount (AED)</label>
                         <input type="number" step="0.01" min="0" id="editPayTotalAmount" class="form-control">
-                        <div class="form-text">What the stay totals on this row. Leave blank to use the Pricing Summary total (AED <?= number_format($stayTotal, 2) ?>).</div>
+                        <div class="form-text">What this row charges. <strong>0</strong> means the payment only clears outstanding; a figure here is added to the outstanding. Leave blank to use the Pricing Summary total (AED <?= number_format($stayTotal, 2) ?>).</div>
                     </div>
                     <div class="col-12 col-sm-6">
                         <label class="form-label fw-semibold" for="editPayAmount">Received amount (AED) *</label>
