@@ -113,6 +113,7 @@ SELECT
   COALESCE(SUM(CASE WHEN a.status='absent'   THEN 1 ELSE 0 END),0) AS absent_days,
   COALESCE(SUM(CASE WHEN a.status='half'     THEN 1 ELSE 0 END),0) AS half_days,
   COALESCE(SUM(CASE WHEN a.status='on_leave' THEN 1 ELSE 0 END),0) AS leave_days,
+  COALESCE(SUM(CASE WHEN a.status='excused_absent' THEN 1 ELSE 0 END),0) AS excused_days,
   COALESCE(SUM(a.hours),0) AS total_hours
 FROM employees e
 LEFT JOIN companies c ON c.id = e.company_id
@@ -127,7 +128,7 @@ GROUP BY e.id, e.employee_code, e.full_name, c.name, d.name, l.name
 ";
 
 if ($only_with_records) {
-    $sql .= " HAVING (present_days + absent_days + half_days + leave_days) > 0";
+    $sql .= " HAVING (present_days + absent_days + half_days + leave_days + excused_days) > 0";
 }
 $sql .= " ORDER BY e.full_name";
 
@@ -241,11 +242,11 @@ if ($export === 'csv' || $export === 'xls') {
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $filename . '"');
         $out = fopen('php://output', 'w');
-        fputcsv($out, ['Employee Code', 'Employee Name', 'Company', 'Department', 'Location', 'Present', 'Absent', 'Half', 'On Leave', 'Total Hours']);
+        fputcsv($out, ['Employee Code', 'Employee Name', 'Company', 'Department', 'Location', 'Present', 'Absent', 'Half', 'On Leave', 'Excused Absent', 'Total Hours']);
         foreach ($rows as $r) {
             fputcsv($out, [
                 $r['employee_code'], $r['full_name'], $r['company_name'], $r['department'], $r['location'],
-                $r['present_days'], $r['absent_days'], $r['half_days'], $r['leave_days'],
+                $r['present_days'], $r['absent_days'], $r['half_days'], $r['leave_days'], $r['excused_days'],
                 number_format((float)$r['total_hours'], 2),
             ]);
         }
@@ -257,7 +258,7 @@ if ($export === 'csv' || $export === 'xls') {
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     echo "<table border='1'><tr>
             <th>Employee Code</th><th>Employee Name</th><th>Company</th><th>Department</th><th>Location</th>
-            <th>Present</th><th>Absent</th><th>Half</th><th>On Leave</th><th>Total Hours</th>
+            <th>Present</th><th>Absent</th><th>Half</th><th>On Leave</th><th>Excused Absent</th><th>Total Hours</th>
           </tr>";
     foreach ($rows as $r) {
         echo "<tr>";
@@ -270,6 +271,7 @@ if ($export === 'csv' || $export === 'xls') {
         echo "<td>" . (int)$r['absent_days'] . "</td>";
         echo "<td>" . (int)$r['half_days'] . "</td>";
         echo "<td>" . (int)$r['leave_days'] . "</td>";
+        echo "<td>" . (int)$r['excused_days'] . "</td>";
         echo "<td>" . number_format((float)$r['total_hours'], 2) . "</td>";
         echo "</tr>";
     }
@@ -412,12 +414,13 @@ echo hr_ui_page_header(
             <th class="text-end">Absent</th>
             <th class="text-end">Half</th>
             <th class="text-end">On Leave</th>
+            <th class="text-end">Excused Absent</th>
             <th class="text-end">Total Hours</th>
           </tr>
         </thead>
         <tbody>
         <?php if (!$rows): ?>
-          <tr><td colspan="10" class="text-center text-muted py-4">No data.</td></tr>
+          <tr><td colspan="11" class="text-center text-muted py-4">No data.</td></tr>
         <?php else: foreach ($rows as $r): ?>
           <tr>
             <td class="fw-semibold"><?= h($r['employee_code']) ?></td>
@@ -429,6 +432,7 @@ echo hr_ui_page_header(
             <td class="text-end"><?= (int)$r['absent_days'] ?></td>
             <td class="text-end"><?= (int)$r['half_days'] ?></td>
             <td class="text-end"><?= (int)$r['leave_days'] ?></td>
+            <td class="text-end"><?= (int)$r['excused_days'] ?></td>
             <td class="text-end"><?= number_format((float)$r['total_hours'], 2) ?></td>
           </tr>
         <?php endforeach; endif; ?>

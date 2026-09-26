@@ -3,6 +3,7 @@
 
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_connect.php';
+require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_export.php';
@@ -138,7 +139,7 @@ $attendanceRows = hr_report_fetch($conn, "
     JOIN employees e ON e.id = a.employee_id
     LEFT JOIN companies c ON c.id = e.company_id
     WHERE a.work_date BETWEEN ? AND ?
-      AND a.status IN ('absent', 'half', 'on_leave')
+      AND a.status IN ('absent', 'half', 'on_leave', 'excused_absent')
       {$companyWhere}
     GROUP BY company_name, a.status
     ORDER BY company_name, a.status
@@ -258,7 +259,7 @@ echo hr_ui_page_header(
           <?php if (!$headcountRows): ?>
             <tr><td colspan="3" class="text-center text-muted py-3">No data.</td></tr>
           <?php else: foreach ($headcountRows as $row): ?>
-            <tr><td><?= h($row['company_name']) ?></td><td><?= h($row['status']) ?></td><td class="num"><?= (int)$row['employee_count'] ?></td></tr>
+            <tr><td><?= h($row['company_name']) ?></td><td><?= h(hr_attendance_status_label($row['status'])) ?></td><td class="num"><?= (int)$row['employee_count'] ?></td></tr>
           <?php endforeach; endif; ?>
           </tbody>
         </table>

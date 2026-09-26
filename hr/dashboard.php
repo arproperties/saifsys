@@ -162,6 +162,12 @@ $attAbsent  = scalar($conn, "SELECT COUNT(*)
                              FROM attendance a
                              JOIN employees e ON e.id = a.employee_id
                              WHERE a.work_date=? AND a.status='absent'" . $companyClause . $currentStatusClause, array_merge([$today], $companyParams, $currentStatusParams));
+// Checked in but not yet approved. Present stays 'approved' only, so without
+// this tile a day's check-ins would be counted nowhere until HR acts on them.
+$attPending = scalar($conn, "SELECT COUNT(*)
+                             FROM attendance a
+                             JOIN employees e ON e.id = a.employee_id
+                             WHERE a.work_date=? AND a.status='pending'" . $companyClause . $currentStatusClause, array_merge([$today], $companyParams, $currentStatusParams));
 
 // Top OT this month
 $topOT = fetchAllAssoc($conn, "
@@ -334,6 +340,7 @@ echo hr_ui_page_header(
             <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attLeave ?></div><div class="small text-muted">On leave</div></div>
             <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attHalf ?></div><div class="small text-muted">Half</div></div>
             <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attAbsent ?></div><div class="small text-muted">Absent</div></div>
+            <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attPending ?></div><div class="small text-muted">Pending approval</div></div>
           </div>
         </div>
       </div>

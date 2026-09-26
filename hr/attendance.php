@@ -4,6 +4,7 @@
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/../includes/audit_bridge.php';
+require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_role(['Owner','Admin','HR'], $conn);
@@ -25,10 +26,19 @@ function calc_hours($in, $out){
     return round($diff, 2);
 }
 
+$attStatuses = hr_attendance_statuses();
+$attStatusKeys = hr_attendance_status_keys();
+$attAccept = '.' . implode(',.', hr_attendance_attach_allowed_extensions());
+
 /* ---------- Quick Actions (POST) ---------- */
 $flash_err = $flash_ok = '';
+$flash_warn = [];
 
-if ($_SERVER['REQUEST_METHOD']==='POST') {
+// A POST over post_max_size arrives with $_POST and $_FILES both empty, so CSRF
+// would fail first and blame the wrong thing. Check the size before anything.
+if (hr_attendance_post_too_large()) {
+    $flash_err = 'The upload was larger than the server allows (' . h(hr_attendance_post_max_label()) . '). Nothing was changed — attach a smaller file.';
+} elseif ($_SERVER['REQUEST_METHOD']==='POST') {
     csrf_verify();
 
     // Quick add (single day)
@@ -39,6 +49,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
         $check_out   = safe_time($_POST['check_out'] ?? '');
         $status      = $_POST['status'] ?? 'approved';
         $notes       = trim($_POST['notes'] ?? '');
+
+        if (!in_array($status, $attStatusKeys, true) || !hr_attendance_status_supported($conn, $status)) {
+            $status = hr_attendance_status_supported($conn, 'pending') ? 'pending' : 'approved';
+        }
 
         if (!$employee_id || !$work_date) {
             $flash_err = 'Employee and Date are required.';
@@ -112,13 +126,22 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
         }
     }
 
-    // Quick status change
+    // Quick status change — reason and at least one supporting file are required.
     if (isset($_POST['action']) && $_POST['action']==='status' && isset($_POST['id'])) {
-        csrf_verify();
-        $id  = (int)$_POST['id'];
-        $new = $_POST['to'] ?? 'approved';
-        if (!in_array($new,['approved','absent','half','on_leave'], true)) {
+        $id   = (int)$_POST['id'];
+        $new  = $_POST['to'] ?? '';
+        $note = trim((string)($_POST['note'] ?? ''));
+        $files = $_FILES['attachments'] ?? null;
+
+        if (!in_array($new, $attStatusKeys, true)) {
             $flash_err = 'Invalid status.';
+        } elseif (!hr_attendance_status_supported($conn, $new)) {
+            $flash_err = 'This database cannot store the ' . hr_attendance_status_label($new)
+                . ' status yet — run migrations/hr_attendance_excused_absent.sql first.';
+        } elseif ($note === '') {
+            $flash_err = 'A reason is required for every status change.';
+        } elseif (!hr_attendance_files_chosen($files)) {
+            $flash_err = 'A supporting document is required for every status change.';
         } else {
             $prev = $conn->prepare("
                 SELECT a.*, e.full_name, e.employee_code, e.company_id
@@ -128,23 +151,51 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
             ");
             $prev->execute([$id]);
             $prevRow = $prev->fetch(PDO::FETCH_ASSOC);
-            $u = $conn->prepare("UPDATE attendance SET status=?, updated_by=?, updated_at=NOW() WHERE id=?");
-            $u->execute([$new,$me_id,$id]);
-            $flash_ok = "Marked as $new.";
-            if ($prevRow) {
+
+            if (!$prevRow) {
+                $flash_err = 'That attendance row no longer exists.';
+            } else {
+                $note = mb_substr($note, 0, HR_ATTENDANCE_NOTE_MAX);
+                $u = $conn->prepare("UPDATE attendance SET status=?, notes=?, updated_by=?, updated_at=NOW() WHERE id=?");
+                $u->execute([$new,$note,$me_id,$id]);
+
+                $changeId = hr_attendance_log_status_change(
+                    $conn,
+                    $id,
+                    $prevRow['status'] ?? null,
+                    $new,
+                    $note,
+                    $prevRow['notes'] ?? null,
+                    $me_id ? (int)$me_id : null
+                );
+
+                $uploadErrors = [];
+                $savedFiles = hr_attendance_attachments_save(
+                    $conn, $id, $changeId, $me_id ? (int)$me_id : null, (array)$files, $uploadErrors
+                );
+
+                $flash_ok = 'Marked as ' . hr_attendance_status_label($new)
+                    . ($savedFiles > 0 ? ' with ' . $savedFiles . ' attachment' . ($savedFiles === 1 ? '' : 's') . '.' : '.');
+                if ($savedFiles === 0) {
+                    $flash_warn[] = 'The status was changed but no file could be stored — attach the document again from Edit.';
+                }
+                foreach ($uploadErrors as $ue) { $flash_warn[] = $ue; }
+
                 $empLabel = trim(($prevRow['full_name'] ?? '') . ' (' . ($prevRow['employee_code'] ?? '') . ')');
                 audit_bridge_hr_ops(
                     'attendance_status_changed',
                     'attendance',
                     $id,
                     'Changed attendance status for ' . $empLabel . ' on ' . ($prevRow['work_date'] ?? '')
-                        . ' from ' . ($prevRow['status'] ?? '') . ' to ' . $new,
+                        . ' from ' . ($prevRow['status'] ?? '') . ' to ' . $new . ' — ' . $note,
                     isset($prevRow['company_id']) ? (int)$prevRow['company_id'] : null,
                     [
                         'from_status' => $prevRow['status'] ?? null,
                         'to_status' => $new,
                         'work_date' => $prevRow['work_date'] ?? null,
                         'employee_id' => (int)($prevRow['employee_id'] ?? 0),
+                        'note' => $note,
+                        'attachments' => $savedFiles,
                     ],
                     $empLabel . ' @ ' . ($prevRow['work_date'] ?? ''),
                     $me_id ? (int)$me_id : null
@@ -155,7 +206,6 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
 
     // Delete
     if (isset($_POST['action']) && $_POST['action']==='delete' && isset($_POST['id'])) {
-        csrf_verify();
         $id = (int)$_POST['id'];
         $prev = $conn->prepare("
             SELECT a.*, e.full_name, e.employee_code, e.company_id
@@ -165,6 +215,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
         ");
         $prev->execute([$id]);
         $prevRow = $prev->fetch(PDO::FETCH_ASSOC);
+        // Files first: the rows go with the FK cascade, the files on disk do not.
+        hr_attendance_attachments_purge($conn, $id);
         $conn->prepare("DELETE FROM attendance WHERE id=?")->execute([$id]);
         $flash_ok = 'Attendance row deleted.';
         if ($prevRow) {
@@ -203,7 +255,7 @@ if ($df) { $where[] = "a.work_date >= ?"; $prms[] = $df; }
 if ($dt) { $where[] = "a.work_date <= ?"; $prms[] = $dt; }
 if ($emp){ $where[] = "a.employee_id = ?"; $prms[] = $emp; }
 hr_add_company_where($where, $prms, $selectedCompanyId, 'e.company_id');
-if ($st !== '' && in_array($st,['approved','absent','half','on_leave'], true)) {
+if ($st !== '' && in_array($st, $attStatusKeys, true)) {
     $where[] = "a.status = ?"; $prms[] = $st;
 }
 // Who recorded it: HR by hand, the staff member themselves, or an import.
@@ -245,8 +297,15 @@ SELECT a.*, e.full_name, e.employee_code, c.name AS company_name
 $stmt->execute($prms);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// One query for every row's files rather than one per row.
+$attachmentsByRow = hr_attendance_attachments_map($conn, array_column($rows, 'id'));
+
+$missingStatuses = hr_attendance_missing_statuses($conn);
+$excusedReady = hr_attendance_status_supported($conn, 'excused_absent');
+
 // Page settings for shared layout
 $pageTitle = 'Attendance';
+$pageStyles = hr_attendance_status_css();
 ?>
 <?php require_once __DIR__ . '/includes/hr_layout_header.php'; ?>
 
@@ -266,6 +325,19 @@ echo hr_ui_page_header(
 
   <?php if ($flash_err): ?><div class="alert alert-danger"><?= h($flash_err) ?></div><?php endif; ?>
   <?php if ($flash_ok):  ?><div class="alert alert-success"><?= h($flash_ok)  ?></div><?php endif; ?>
+  <?php if ($flash_warn): ?>
+    <div class="alert alert-warning">
+      <ul class="mb-0 small"><?php foreach ($flash_warn as $w): ?><li><?= h($w) ?></li><?php endforeach; ?></ul>
+    </div>
+  <?php endif; ?>
+  <?php if ($missingStatuses): ?>
+    <div class="alert alert-warning">
+      <strong><?= h(implode(' and ', $missingStatuses)) ?>
+        <?= count($missingStatuses) === 1 ? 'is' : 'are' ?> not available on this database yet.</strong>
+      Run <code>migrations/hr_attendance_excused_absent.sql</code> to add
+      <?= count($missingStatuses) === 1 ? 'it' : 'them' ?>.
+    </div>
+  <?php endif; ?>
 
   <div class="hr-filter-bar mb-3">
   <form method="get">
@@ -305,7 +377,7 @@ echo hr_ui_page_header(
         <label class="form-label">Status</label>
         <select name="status" class="form-select">
           <?php
-            $opts = [''=>'— Any —','approved'=>'Approved','absent'=>'Absent','half'=>'Half Day','on_leave'=>'On Leave'];
+            $opts = ['' => '— Any —'] + $attStatuses;
             foreach ($opts as $k=>$v) {
               $sel = ($st===$k)?'selected':'';
               echo "<option value=\"".h($k)."\" $sel>".h($v)."</option>";
@@ -361,14 +433,14 @@ echo hr_ui_page_header(
       <div class="col-lg-2">
         <label class="form-label">Status</label>
         <select name="status" class="form-select">
-          <option value="approved">Approved</option>
-          <option value="absent">Absent</option>
-          <option value="half">Half Day</option>
-          <option value="on_leave">On Leave</option>
+          <?php foreach ($attStatuses as $k => $v): ?>
+            <?php if (!hr_attendance_status_supported($conn, $k)) continue; ?>
+            <option value="<?= h($k) ?>"><?= h($v) ?></option>
+          <?php endforeach; ?>
         </select>
       </div>
       <div class="col-12">
-        <input type="text" name="notes" class="form-control" placeholder="Notes (optional)">
+        <input type="text" name="notes" class="form-control" maxlength="255" placeholder="Notes (optional)">
       </div>
       <div class="col-12 d-flex justify-content-end">
         <button class="btn btn-success">Add / Update</button>
@@ -379,6 +451,7 @@ echo hr_ui_page_header(
   <div class="hr-settings-card">
     <div class="settings-header d-flex justify-content-between align-items-center">
       <span>Results (max 500)</span>
+      <span class="small text-muted">Every status change asks for a reason and a document.</span>
     </div>
     <div class="card-body p-0">
     <div class="hr-table-shell border-0 shadow-none rounded-0">
@@ -395,27 +468,48 @@ echo hr_ui_page_header(
             <th>Status</th>
             <th>Source</th>
             <th>Notes</th>
+            <th>Files</th>
             <th class="text-end">Actions</th>
           </tr>
         </thead>
         <tbody>
           <?php if (!$rows): ?>
-            <tr><td colspan="11" class="text-center text-muted py-4">No rows.</td></tr>
+            <tr><td colspan="12" class="text-center text-muted py-4">No rows.</td></tr>
           <?php else: foreach ($rows as $r): ?>
+            <?php
+              $rowId    = (int)$r['id'];
+              $rowEmp   = $r['full_name'].' ('.$r['employee_code'].')';
+              $rowFiles = $attachmentsByRow[$rowId] ?? [];
+            ?>
             <tr>
-              <td><?= (int)$r['id'] ?></td>
+              <td><?= $rowId ?></td>
               <td><?= h($r['work_date']) ?></td>
-              <td><?= h($r['full_name']).' ('.h($r['employee_code']).')' ?></td>
+              <td><?= h($rowEmp) ?></td>
               <td><?= h($r['company_name'] ?: '—') ?></td>
               <td><?= h($r['check_in'] ?: '—') ?></td>
-              <td><?= h($r['check_out']?: '—') ?></td>
+              <td>
+                <?= h($r['check_out']?: '—') ?>
+                <?php
+                  // Break columns only exist once migrations/hr_attendance_break.sql
+                  // has run, so read them defensively. A break is recorded only —
+                  // it is never taken off the hours beside it.
+                  $rowBreakMins  = $r['break_minutes'] ?? null;
+                  $rowBreakStart = $r['break_start'] ?? null;
+                ?>
+                <?php if ($rowBreakStart): ?>
+                  <div class="small text-muted">
+                    Break <?= $rowBreakMins !== null ? (int)$rowBreakMins . ' min' : 'open' ?>
+                    <?php if (!empty($r['break_end'])): ?>
+                      (<?= h(substr((string)$rowBreakStart, 0, 5)) ?>–<?= h(substr((string)$r['break_end'], 0, 5)) ?>)
+                    <?php else: ?>
+                      (from <?= h(substr((string)$rowBreakStart, 0, 5)) ?>)
+                    <?php endif; ?>
+                  </div>
+                <?php endif; ?>
+              </td>
               <td><?= $r['hours']!==null ? number_format((float)$r['hours'],2) : '—' ?></td>
               <td>
-                <?php
-                  $map = ['approved'=>'success','absent'=>'danger','half'=>'warning','on_leave'=>'info'];
-                  $cls = $map[$r['status']] ?? 'secondary';
-                ?>
-                <span class="badge text-bg-<?= $cls ?>"><?= h($r['status']) ?></span>
+                <?= hr_attendance_status_badge_html($r['status']) ?>
                 <?php if ($r['status'] === 'absent' && strpos((string)($r['notes'] ?? ''), 'Worker Availability absent:') === 0): ?>
                   <span class="badge text-bg-info ms-1">From Operation</span>
                 <?php endif; ?>
@@ -431,53 +525,65 @@ echo hr_ui_page_header(
                 <?php endif; ?>
               </td>
               <td><?= h($r['notes'] ?: '') ?></td>
+              <td>
+                <?php if (!$rowFiles): ?>
+                  <span class="text-muted small">—</span>
+                <?php else: foreach ($rowFiles as $f): ?>
+                  <a class="d-inline-block me-1" target="_blank" rel="noopener"
+                     href="<?= h(hr_attendance_attach_href((int)$f['id'])) ?>"
+                     title="<?= h($f['file_name']) ?> (<?= h(hr_attendance_attach_size((int)$f['file_size'])) ?>)">
+                    <i class="bi <?= h(hr_attendance_attach_icon((string)$f['file_name'])) ?>"></i>
+                  </a>
+                <?php endforeach; endif; ?>
+              </td>
               <td class="text-end">
-                <a class="btn btn-sm btn-outline-primary" href="attendance_edit.php?id=<?= (int)$r['id'] ?>">Edit</a>
+                <a class="btn btn-sm btn-outline-primary" href="attendance_edit.php?id=<?= $rowId ?>">Edit</a>
 
-                <form method="post" class="d-inline">
-              <?php csrf_field(); ?>
-                  <input type="hidden" name="action" value="status">
-                  <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                  <input type="hidden" name="to" value="approved">
-                  <button class="btn btn-sm btn-success">Approve</button>
-                </form>
+                <button type="button" class="btn btn-sm btn-success"
+                        data-att-change
+                        data-att-id="<?= $rowId ?>"
+                        data-att-to="approved"
+                        data-att-emp="<?= h($rowEmp) ?>"
+                        data-att-date="<?= h($r['work_date']) ?>">Approve</button>
 
                 <div class="btn-group">
                   <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">More</button>
                   <ul class="dropdown-menu dropdown-menu-end">
-                    <li>
-                      <form method="post" class="px-3 py-1">
-              <?php csrf_field(); ?>
-                        <input type="hidden" name="action" value="status">
-                        <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                        <input type="hidden" name="to" value="absent">
-                        <button class="btn btn-sm btn-outline-danger w-100">Mark Absent</button>
-                      </form>
+                    <li class="px-3 py-1">
+                      <button type="button" class="btn btn-sm btn-outline-danger w-100"
+                              data-att-change data-att-id="<?= $rowId ?>" data-att-to="absent"
+                              data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">Mark Absent</button>
                     </li>
-                    <li>
-                      <form method="post" class="px-3 py-1">
-              <?php csrf_field(); ?>
-                        <input type="hidden" name="action" value="status">
-                        <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                        <input type="hidden" name="to" value="half">
-                        <button class="btn btn-sm btn-outline-warning w-100">Half Day</button>
-                      </form>
+                    <li class="px-3 py-1">
+                      <button type="button" class="btn btn-sm btn-outline-warning w-100"
+                              data-att-change data-att-id="<?= $rowId ?>" data-att-to="half"
+                              data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">Half Day</button>
                     </li>
-                    <li>
-                      <form method="post" class="px-3 py-1">
-              <?php csrf_field(); ?>
-                        <input type="hidden" name="action" value="status">
-                        <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                        <input type="hidden" name="to" value="on_leave">
-                        <button class="btn btn-sm btn-outline-info w-100">On Leave</button>
-                      </form>
+                    <li class="px-3 py-1">
+                      <button type="button" class="btn btn-sm btn-outline-info w-100"
+                              data-att-change data-att-id="<?= $rowId ?>" data-att-to="on_leave"
+                              data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">On Leave</button>
                     </li>
+                    <?php if ($excusedReady): ?>
+                    <li class="px-3 py-1">
+                      <button type="button" class="btn btn-sm btn-outline-hr-excused w-100"
+                              data-att-change data-att-id="<?= $rowId ?>" data-att-to="excused_absent"
+                              data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">Excused Absent</button>
+                    </li>
+                    <?php endif; ?>
+                    <?php if (hr_attendance_status_supported($conn, 'pending') && $r['status'] !== 'pending'): ?>
+                    <li class="px-3 py-1">
+                      <button type="button" class="btn btn-sm btn-outline-secondary w-100"
+                              data-att-change data-att-id="<?= $rowId ?>" data-att-to="pending"
+                              data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">Back to Pending</button>
+                    </li>
+                    <?php endif; ?>
                     <li><hr class="dropdown-divider"></li>
                     <li>
-                      <form method="post" class="px-3 py-1" onsubmit="return confirm('Delete this row?')">
+                      <form method="post" class="px-3 py-1" onsubmit="return confirm('Delete this row? Its notes and attachments go with it.')">
               <?php csrf_field(); ?>
                         <input type="hidden" name="action" value="delete">
-                        <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                        <input type="hidden" name="id" value="<?= $rowId ?>">
                         <button class="btn btn-sm btn-outline-danger w-100">Delete</button>
                       </form>
                     </li>
@@ -492,5 +598,87 @@ echo hr_ui_page_header(
     </div>
     </div>
   </div>
+
+  <!-- Every status change goes through here: reason + document, both required. -->
+  <div class="modal fade" id="attStatusModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <form method="post" enctype="multipart/form-data" class="modal-content">
+        <?php csrf_field(); ?>
+        <input type="hidden" name="action" value="status">
+        <input type="hidden" name="id" id="attStatusId" value="">
+        <input type="hidden" name="to" id="attStatusTo" value="">
+        <div class="modal-header">
+          <h5 class="modal-title">Change attendance status</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="mb-1"><strong id="attStatusEmp"></strong></p>
+          <p class="mb-3 text-muted small">Date: <span id="attStatusDate"></span> — new status: <span id="attStatusBadge"></span></p>
+
+          <div class="mb-3">
+            <label class="form-label">Reason <span class="text-danger">*</span></label>
+            <textarea name="note" id="attStatusNote" class="form-control" rows="2"
+                      maxlength="<?= (int)HR_ATTENDANCE_NOTE_MAX ?>" required
+                      placeholder="Why is this being changed? e.g. Sick leave, medical certificate attached"></textarea>
+            <div class="form-text">Replaces the Notes column. The previous note is kept in the change history.</div>
+          </div>
+
+          <div>
+            <label class="form-label">Supporting document <span class="text-danger">*</span></label>
+            <input type="file" name="attachments[]" id="attStatusFiles" class="form-control" multiple required
+                   accept="<?= h($attAccept) ?>">
+            <div class="form-text">
+              At least one file. PDF, image, Word or Excel — max
+              <?= (int)(HR_ATTENDANCE_ATTACH_MAX_BYTES / 1024 / 1024) ?> MB each,
+              <?= (int)HR_ATTENDANCE_ATTACH_MAX_FILES ?> files per change.
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save change</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+<?php
+$attStatusBadges = [];
+foreach ($attStatuses as $k => $v) { $attStatusBadges[$k] = hr_attendance_status_badge_html($k); }
+$pageScripts = '<script>'
+. 'const ATT_BADGES = ' . json_encode($attStatusBadges, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';'
+. <<<'JS'
+document.addEventListener('click', function (ev) {
+  const btn = ev.target.closest('[data-att-change]');
+  if (!btn) return;
+  ev.preventDefault();
+
+  document.getElementById('attStatusId').value = btn.dataset.attId || '';
+  document.getElementById('attStatusTo').value = btn.dataset.attTo || '';
+  document.getElementById('attStatusEmp').textContent = btn.dataset.attEmp || '';
+  document.getElementById('attStatusDate').textContent = btn.dataset.attDate || '';
+  document.getElementById('attStatusBadge').innerHTML = ATT_BADGES[btn.dataset.attTo] || '';
+
+  const note = document.getElementById('attStatusNote');
+  const files = document.getElementById('attStatusFiles');
+  note.value = '';
+  files.value = '';
+
+  const open = document.querySelector('.dropdown-menu.show');
+  if (open && window.bootstrap) {
+    const toggle = open.parentElement && open.parentElement.querySelector('[data-bs-toggle="dropdown"]');
+    if (toggle) { bootstrap.Dropdown.getOrCreateInstance(toggle).hide(); }
+  }
+
+  const modalEl = document.getElementById('attStatusModal');
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  modalEl.addEventListener('shown.bs.modal', function once() {
+    note.focus();
+    modalEl.removeEventListener('shown.bs.modal', once);
+  });
+});
+JS
+. '</script>';
+?>
 
 <?php require_once __DIR__ . '/includes/hr_layout_footer.php'; ?>

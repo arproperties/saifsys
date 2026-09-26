@@ -6,6 +6,7 @@
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/../includes/audit_bridge.php';
+require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_role(['Owner', 'Admin', 'HR'], $conn);
@@ -155,6 +156,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_apply'])) {
 
     if (!$flash_err && !$employee_ids) {
         $flash_err = 'No current employees matched your Company / Department / Location / Supervisor filters (left staff are excluded).';
+    }
+
+    // Same rule as the single-row actions: no status applied without a reason.
+    if (!$flash_err && !in_array($status, hr_attendance_status_keys(), true)) {
+        $flash_err = 'Invalid status.';
+    }
+    if (!$flash_err && !hr_attendance_status_supported($conn, $status)) {
+        $flash_err = 'This database cannot store the ' . hr_attendance_status_label($status)
+            . ' status yet — run migrations/hr_attendance_excused_absent.sql first.';
+    }
+    if (!$flash_err && $notes === '') {
+        $flash_err = 'A reason is required — it is written onto every row this applies to.';
     }
 
     if (!$flash_err) {
@@ -495,15 +508,20 @@ echo hr_ui_page_header(
             <label class="form-label">Status to apply</label>
             <select name="status" class="form-select">
               <?php
-                $sts = ['approved' => 'Approved (present)', 'absent' => 'Absent', 'half' => 'Half day', 'on_leave' => 'On leave'];
-              foreach ($sts as $k => $v): ?>
+                // Bulk Apply keeps Approved preselected: it exists to record a
+                // decision for many people at once, and Pending is what a row
+                // already is before anyone decides.
+                $sts = hr_attendance_statuses();
+                $sts['approved'] = 'Approved (present)';
+                foreach ($sts as $k => $v):
+                  if (!hr_attendance_status_supported($conn, $k)) continue; ?>
                 <option value="<?= h($k) ?>" <?= $statusCur === $k ? 'selected' : '' ?>><?= h($v) ?></option>
               <?php endforeach; ?>
             </select>
           </div>
           <div class="col-md-8">
-            <label class="form-label">Notes (optional)</label>
-            <input type="text" name="notes" class="form-control" value="<?= h($_POST['notes'] ?? '') ?>" placeholder="Shown on created / updated attendance rows">
+            <label class="form-label">Reason / notes <span class="text-danger">*</span></label>
+            <input type="text" name="notes" class="form-control" required maxlength="255" value="<?= h($_POST['notes'] ?? '') ?>" placeholder="Why — shown on every created / updated attendance row">
           </div>
         </div>
 

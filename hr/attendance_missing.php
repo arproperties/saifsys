@@ -73,7 +73,7 @@ $excused = 0;
 foreach ($rows as $r) {
     $attStatus = (string)($r['att_status'] ?? '');
     // HR has already said what the day is for this person — not a gap.
-    if (in_array($attStatus, ['on_leave', 'absent', 'half'], true)) {
+    if (in_array($attStatus, ['on_leave', 'absent', 'half', 'excused_absent'], true)) {
         $excused++;
         continue;
     }

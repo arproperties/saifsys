@@ -5494,7 +5494,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <?php
                                           $status = strtolower($row['status'] ?? '');
                                           $statusLabel = ucfirst(str_replace('_',' ', $status));
-                                          $badgeMap = ['approved'=>'success','pending'=>'warning','absent'=>'danger','on_leave'=>'info','half'=>'primary'];
+                                          $badgeMap = ['approved'=>'success','pending'=>'secondary','absent'=>'danger','on_leave'=>'info','half'=>'primary','excused_absent'=>'warning'];
                                           $badgeClass = $badgeMap[$status] ?? 'secondary';
                                         ?>
                                         <tr>

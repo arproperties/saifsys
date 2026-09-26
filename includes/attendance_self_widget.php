@@ -7,9 +7,10 @@
  *     require __DIR__ . '/includes/attendance_self_widget.php';
  *
  * It draws itself and nothing else. Everything it needs to decide comes from
- * attendance_self_state(), so it is safe to include on a page where the
- * feature is off, the user has no employee record, or the day is already
- * recorded — in all of those it prints nothing at all.
+ * attendance_self_state(). It shows in every state: the check-in pop-up, the
+ * break screen, the check-out bar, the day already recorded, a day HR has
+ * marked, and a login with no employee record behind it. Only the feature being off, or a field
+ * staff login, prints nothing.
  *
  * The styles are inline on purpose: this has to look right on thirteen
  * different module layouts without depending on any of their stylesheets.
@@ -30,7 +31,11 @@ if (!function_exists('csrf_field')) {
 }
 
 $asState = attendance_self_state($conn);
-if ($asState['stage'] === 'n/a' || $asState['stage'] === 'excused') {
+// The only two silences left: the feature switched off, and field staff, who
+// record their day on the PIN app and would be confused by a second place to
+// do it. Every other state draws something, so the bar is always on screen —
+// a day already recorded and a login with no employee record included.
+if ($asState['reason'] === 'disabled' || $asState['reason'] === 'worker') {
     return;
 }
 
@@ -57,6 +62,34 @@ $asGreeting = $asHour < 12 ? 'Good morning' : ($asHour < 17 ? 'Good afternoon' :
 $asSecs = ($asHour * 3600) + ((int)$asMoment->format('i') * 60) + (int)$asMoment->format('s');
 
 $asBlocking = ($asState['stage'] === 'check_in') && attendance_self_blocking();
+
+// On a break the screen is held whatever the check-in switch says: the person
+// chose to step away, and nobody should be working while marked away.
+$asOnBreak   = ($asState['stage'] === 'break');
+$asBreakSecs = 0;
+if ($asOnBreak) {
+    $asBreakSecs = attendance_self_minutes(substr((string)$asState['break_start'], 0, 5), $asState['now_time']) * 60;
+}
+// One break a day, so the button is offered only until it has been taken.
+$asCanBreak = !empty($asState['breaks_on']) && empty($asState['break_start']);
+$asBreakMins = $asState['break_mins'] !== null ? (int)$asState['break_mins'] : null;
+
+// What HR marked today, in the words the attendance pages use.
+$asStatusLabels = [
+    'on_leave'       => 'On leave',
+    'absent'         => 'Marked absent',
+    'half'           => 'Half day',
+    'excused_absent' => 'Excused absent',
+];
+$asStatusLabel = $asStatusLabels[(string)$asState['att_status']] ?? 'Recorded by HR';
+
+/** A stored time as 9:05 AM, or an em dash when it is empty. */
+if (!function_exists('as_time_label')) {
+    function as_time_label($t) {
+        $t = trim((string)$t);
+        return $t === '' ? '—' : date('g:i A', strtotime($t));
+    }
+}
 
 if (!function_exists('h')) {
     function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
@@ -101,13 +134,77 @@ if (!function_exists('h')) {
   background:#9a3412;cursor:pointer;white-space:nowrap;}
 .as-bar-btn[disabled]{opacity:.55;cursor:default;}
 .as-bar-done{color:#166534;font-size:12.5px;font-weight:600;white-space:nowrap;}
+.as-bar-btn-in{background:#1c1917;}
+.as-bar-btn-alt{background:#f5f0e8;color:#44403c;}
+.as-bar-btns{display:flex;align-items:center;gap:8px;}
+.as-btn-back{background:#166534;}
+.as-bar-note{color:#a8a29e;font-size:12.5px;font-weight:600;white-space:nowrap;}
+.as-bar-warn{color:#9a3412;font-size:12.5px;font-weight:600;white-space:nowrap;}
 @media (max-width:520px){
   .as-bar{left:18px;right:18px;}
   .as-clock{font-size:36px;}
 }
 </style>
 
-<?php if ($asBlocking): ?>
+<?php if ($asOnBreak): ?>
+<div class="as-scrim" id="asBreakScrim" role="dialog" aria-modal="true" aria-labelledby="asBreakTitle">
+  <div class="as-card">
+    <span class="as-badge">On break</span>
+    <h2 id="asBreakTitle">Enjoy your break<?= $asFirst !== '' ? ', ' . h($asFirst) : '' ?></h2>
+    <p class="as-day">Started <?= h(as_time_label($asState['break_start'])) ?></p>
+
+    <div class="as-clock" id="asBreakClock">0:00</div>
+
+    <?php if ($asFlash && empty($asFlash['ok'])): ?>
+      <p class="as-err"><?= h($asFlash['message']) ?></p>
+    <?php endif; ?>
+
+    <p class="as-note">The system is paused until you are back at your desk.</p>
+    <form method="post" action="<?= h($asEndpoint) ?>" id="asFormBack">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="action" value="resume">
+      <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
+      <button type="submit" class="as-btn as-btn-back" id="asBtnBack">I&rsquo;m back</button>
+    </form>
+    <p class="as-foot">Your break is recorded for HR. It is not taken off your hours &mdash; the day is still counted from check-in to check-out.</p>
+
+    <p class="as-who">
+      Signed in as <strong><?= h($asName !== '' ? $asName : 'this account') ?></strong> &middot;
+      <a href="<?= h($asLogout) ?>">Not you? Sign out</a>
+    </p>
+  </div>
+</div>
+<script>
+(function () {
+  // Counts up from however long the break has already run, so reloading the
+  // page or opening another tab shows the same figure.
+  var el = document.getElementById('asBreakClock');
+  var started = Date.now();
+  var base = <?= json_encode($asBreakSecs) ?>;
+  function paint() {
+    var s = base + Math.floor((Date.now() - started) / 1000);
+    var hh = Math.floor(s / 3600), mm = Math.floor(s / 60) % 60, ss = s % 60;
+    var t = (mm < 10 && hh > 0 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+    el.textContent = hh > 0 ? hh + ':' + t : t;
+  }
+  if (el) { paint(); setInterval(paint, 1000); }
+
+  var form = document.getElementById('asFormBack');
+  var btn = document.getElementById('asBtnBack');
+  if (form && btn) {
+    form.addEventListener('submit', function () {
+      btn.disabled = true;
+      btn.textContent = 'One moment…';
+    });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+}());
+</script>
+
+<?php elseif ($asBlocking): ?>
 <div class="as-scrim" id="asScrim" role="dialog" aria-modal="true" aria-labelledby="asTitle">
   <div class="as-card">
     <span class="as-badge">Attendance</span>
@@ -173,21 +270,84 @@ if (!function_exists('h')) {
 }());
 </script>
 
-<?php elseif ($asState['stage'] === 'check_out'): ?>
+<?php elseif ($asState['stage'] === 'check_in'): ?>
 <div class="as-bar">
   <div class="as-bar-txt">
-    <strong>Checked in <?= h(date('g:i A', strtotime((string)$asState['check_in']))) ?></strong>
-    <span>Tap when you leave</span>
+    <strong>Not checked in yet</strong>
+    <?php if (!$asState['ip_allowed']): ?>
+      <span>Office network only</span>
+    <?php elseif ($asFlash && empty($asFlash['ok'])): ?>
+      <span><?= h($asFlash['message']) ?></span>
+    <?php else: ?>
+      <span>Tap when you start</span>
+    <?php endif; ?>
   </div>
-  <form method="post" action="<?= h($asEndpoint) ?>" id="asFormOut">
+  <?php if ($asState['ip_allowed']): ?>
+  <form method="post" action="<?= h($asEndpoint) ?>" id="asFormInBar">
     <?php csrf_field(); ?>
-    <input type="hidden" name="action" value="out">
+    <input type="hidden" name="action" value="in">
     <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
-    <button type="submit" class="as-bar-btn" id="asBtnOut">Check Out</button>
+    <button type="submit" class="as-bar-btn as-bar-btn-in" id="asBtnInBar">Check In</button>
   </form>
+  <?php else: ?>
+  <span class="as-bar-warn">Off network</span>
+  <?php endif; ?>
 </div>
 <script>
 (function () {
+  var form = document.getElementById('asFormInBar');
+  var btn = document.getElementById('asBtnInBar');
+  if (form && btn) {
+    form.addEventListener('submit', function () {
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+    });
+  }
+}());
+</script>
+
+<?php elseif ($asState['stage'] === 'check_out'): ?>
+<div class="as-bar">
+  <div class="as-bar-txt">
+    <strong>Checked in <?= h(as_time_label($asState['check_in'])) ?></strong>
+    <?php if ($asBreakMins !== null): ?>
+      <span>Break <?= h($asBreakMins) ?> min &middot; tap when you leave</span>
+    <?php else: ?>
+      <span>Tap when you leave</span>
+    <?php endif; ?>
+  </div>
+  <div class="as-bar-btns">
+    <?php if ($asCanBreak): ?>
+    <form method="post" action="<?= h($asEndpoint) ?>" id="asFormBreak">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="action" value="break">
+      <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
+      <button type="submit" class="as-bar-btn as-bar-btn-alt" id="asBtnBreak">Break</button>
+    </form>
+    <?php endif; ?>
+    <form method="post" action="<?= h($asEndpoint) ?>" id="asFormOut">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="action" value="out">
+      <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
+      <button type="submit" class="as-bar-btn" id="asBtnOut">Check Out</button>
+    </form>
+  </div>
+</div>
+<script>
+(function () {
+  var bForm = document.getElementById('asFormBreak');
+  var bBtn = document.getElementById('asBtnBreak');
+  if (bForm && bBtn) {
+    bForm.addEventListener('submit', function (e) {
+      if (!window.confirm('Start your break? The system pauses until you tap I\u2019m back.')) {
+        e.preventDefault();
+        return;
+      }
+      bBtn.disabled = true;
+      bBtn.textContent = '…';
+    });
+  }
+
   var form = document.getElementById('asFormOut');
   var btn = document.getElementById('asBtnOut');
   if (form && btn) {
@@ -203,12 +363,34 @@ if (!function_exists('h')) {
 }());
 </script>
 
-<?php elseif ($asState['stage'] === 'done' && $asFlash && !empty($asFlash['ok'])): ?>
+<?php elseif ($asState['stage'] === 'done'): ?>
 <div class="as-bar">
   <div class="as-bar-txt">
-    <strong><?= h(date('g:i A', strtotime((string)$asState['check_in']))) ?> &rarr; <?= h(date('g:i A', strtotime((string)$asState['check_out']))) ?></strong>
-    <span>Recorded for today</span>
+    <strong><?= h(as_time_label($asState['check_in'])) ?> &rarr; <?= h(as_time_label($asState['check_out'])) ?></strong>
+    <span>Recorded for today<?= $asBreakMins !== null ? ' &middot; ' . h($asBreakMins) . ' min break' : '' ?></span>
   </div>
-  <span class="as-bar-done"><?= h($asState['hours']) ?> h</span>
+  <span class="as-bar-done"><?= $asState['hours'] !== null ? h($asState['hours']) . ' h' : 'Done' ?></span>
+</div>
+
+<?php elseif ($asState['stage'] === 'excused'): ?>
+<div class="as-bar">
+  <div class="as-bar-txt">
+    <strong><?= h($asStatusLabel) ?></strong>
+    <?php if (!empty($asState['check_in'])): ?>
+      <span><?= h(as_time_label($asState['check_in'])) ?> &rarr; <?= h(as_time_label($asState['check_out'])) ?></span>
+    <?php else: ?>
+      <span>HR has recorded today for you</span>
+    <?php endif; ?>
+  </div>
+  <span class="as-bar-note">No action needed</span>
+</div>
+
+<?php else: ?>
+<div class="as-bar">
+  <div class="as-bar-txt">
+    <strong>Attendance not set up</strong>
+    <span>Your login is not linked to an employee record</span>
+  </div>
+  <span class="as-bar-warn">Ask HR</span>
 </div>
 <?php endif; ?>

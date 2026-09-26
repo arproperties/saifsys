@@ -7,6 +7,10 @@
  * One row per person per day in `attendance` — the table hr/attendance.php
  * reads and writes, the one v_attendance_daily_emp turns into present days,
  * hours and overtime, and the one payroll runs on. The shape is exactly what
+ * A check-in from the app writes status 'pending' — the time is recorded, the
+ * day is not yet decided. HR's Attendance page approves it (or marks it absent,
+ * half, on leave or excused) and only then does the status move off 'pending'.
+ *
  * HR's own Quick add writes: status 'approved' (present), check_in, check_out,
  * and hours = check_out − check_in rounded to two places. The only difference
  * is `source = 'self'` — an enum value the table already had for exactly this,
@@ -90,7 +94,7 @@ function ops_attendance_payload(?array $row): array
     $state = 'not_checked_in';
     $message = null;
     if ($row) {
-        if (($row['status'] ?? 'approved') !== 'approved' && empty($row['check_in'])) {
+        if (!ops_attendance_status_is_open($row['status'] ?? null) && empty($row['check_in'])) {
             $state = 'hr_marked';
             $message = 'HR has marked today as ' . ops_attendance_status_words((string)$row['status']) . '.';
         } elseif (!empty($row['check_out'])) {
@@ -110,9 +114,19 @@ function ops_attendance_payload(?array $row): array
     ];
 }
 
+/**
+ * Is the day still the worker's to fill in? 'pending' is what a fresh row is,
+ * and 'approved' is HR agreeing they worked — neither blocks a check-in. The
+ * rest mean HR has already decided the day and the app must not overwrite it.
+ */
+function ops_attendance_status_is_open(?string $status): bool
+{
+    return in_array((string)($status ?: 'pending'), ['pending', 'approved'], true);
+}
+
 function ops_attendance_status_words(string $status): string
 {
-    return ['absent' => 'absent', 'half' => 'a half day', 'on_leave' => 'leave'][$status] ?? $status;
+    return ['absent' => 'absent', 'half' => 'a half day', 'on_leave' => 'leave', 'excused_absent' => 'an excused absence', 'pending' => 'not yet approved'][$status] ?? $status;
 }
 
 /**
@@ -137,7 +151,7 @@ function ops_attendance_check_in(PDO $conn, array $employee, int $userId, ?strin
     }
 
     if ($existing && $existing['work_date'] === $today) {
-        if (($existing['status'] ?? 'approved') !== 'approved') {
+        if (!ops_attendance_status_is_open($existing['status'] ?? null)) {
             return [
                 'ok' => false,
                 'error' => 'hr_marked',
@@ -156,7 +170,7 @@ function ops_attendance_check_in(PDO $conn, array $employee, int $userId, ?strin
                 INSERT INTO attendance
                     (employee_id, work_date, check_in, check_out, hours, status, source, notes,
                      created_at, updated_at, created_by, updated_by, company_id)
-                VALUES (?, ?, ?, NULL, NULL, 'approved', 'self', ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, NULL, NULL, 'pending', 'self', ?, ?, ?, ?, ?, ?)
             ")->execute([
                 $employeeId, $today, $now, $notes,
                 date('Y-m-d H:i:s'), date('Y-m-d H:i:s'), $userId, $userId,

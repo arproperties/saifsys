@@ -137,12 +137,37 @@ function attendance_self_employee(PDO $conn): ?array
     return $row;
 }
 
+/**
+ * Whether the break columns are on this database yet.
+ *
+ * The migration is run before the files go up, but a database that has not had
+ * it — a local copy, an older dump — must not break the check-in bar over a
+ * feature it does not have. When this is false the break button simply never
+ * appears and everything else works exactly as before.
+ */
+function attendance_self_breaks_available(PDO $conn): bool
+{
+    static $has = null;
+    if ($has !== null) {
+        return $has;
+    }
+    $has = false;
+    try {
+        $st = $conn->query("SHOW COLUMNS FROM attendance LIKE 'break_start'");
+        $has = (bool)($st && $st->fetch(PDO::FETCH_ASSOC));
+    } catch (PDOException $e) {
+        $has = false;
+    }
+    return $has;
+}
+
 /** Today's attendance row for this employee, or null. */
 function attendance_self_today_row(PDO $conn, int $employeeId, string $workDate): ?array
 {
+    $breakCols = attendance_self_breaks_available($conn) ? ', break_start, break_end, break_minutes' : '';
     try {
         $st = $conn->prepare(
-            "SELECT id, work_date, check_in, check_out, hours, status, source, notes
+            "SELECT id, work_date, check_in, check_out, hours, status, source, notes{$breakCols}
                FROM attendance
               WHERE employee_id = ? AND work_date = ?
               LIMIT 1"
@@ -202,17 +227,24 @@ function attendance_self_ip_allowed(PDO $conn): bool
  * Everything the UI and the gate need to know, worked out once.
  *
  * 'stage' is the thing to act on:
- *   'n/a'        - feature off, or this user has no employee record
+ *   'n/a'        - feature off, field staff, or no employee record
  *   'check_in'   - nothing recorded yet today
  *   'check_out'  - checked in, still here
+ *   'break'      - away from the desk; the only thing they can do is come back
  *   'done'       - checked in and out already
  *   'excused'    - HR has already marked today (leave, absent, half day)
+ *
+ * 'reason' says why a stage is 'n/a', because the widget treats them
+ * differently: 'disabled' and 'worker' print nothing at all, while
+ * 'no_employee' still shows a bar telling the person to talk to HR.
  */
 function attendance_self_state(PDO $conn): array
 {
     $now = attendance_self_now();
     $state = [
         'stage'       => 'n/a',
+        'reason'      => '',
+        'att_status'  => null,
         'employee'    => null,
         'work_date'   => $now->format('Y-m-d'),
         'now_time'    => $now->format('H:i'),
@@ -222,30 +254,46 @@ function attendance_self_state(PDO $conn): array
         'check_out'   => null,
         'hours'       => null,
         'ip_allowed'  => true,
+        'breaks_on'   => false,
+        'break_start' => null,
+        'break_end'   => null,
+        'break_mins'  => null,
     ];
 
     if (!attendance_self_enabled()) {
+        $state['reason'] = 'disabled';
         return $state;
     }
     if (attendance_self_is_worker($conn)) {
-        return $state; // PIN app, not this
+        $state['reason'] = 'worker'; // PIN app, not this
+        return $state;
     }
 
     $employee = attendance_self_employee($conn);
     if (!$employee) {
+        $state['reason'] = 'no_employee';
         return $state;
     }
     $state['employee']   = $employee;
     $state['ip_allowed'] = attendance_self_ip_allowed($conn);
+    $state['breaks_on']  = attendance_self_breaks_available($conn);
 
     $row = attendance_self_today_row($conn, (int)$employee['id'], $state['work_date']);
     if ($row) {
         $state['check_in']  = $row['check_in'] ?: null;
         $state['check_out'] = $row['check_out'] ?: null;
         $state['hours']     = $row['hours'];
+        $state['att_status'] = (string)$row['status'];
+        if ($state['breaks_on']) {
+            $state['break_start'] = $row['break_start'] ?: null;
+            $state['break_end']   = $row['break_end'] ?: null;
+            $state['break_mins']  = isset($row['break_minutes']) && $row['break_minutes'] !== null
+                ? (int)$row['break_minutes']
+                : null;
+        }
 
         // HR has already said what today is. Leave it alone.
-        if (in_array((string)$row['status'], ['on_leave', 'absent', 'half'], true)) {
+        if (in_array((string)$row['status'], ['on_leave', 'absent', 'half', 'excused_absent'], true)) {
             $state['stage'] = 'excused';
             return $state;
         }
@@ -254,7 +302,11 @@ function attendance_self_state(PDO $conn): array
     if (empty($state['check_in'])) {
         $state['stage'] = 'check_in';
     } elseif (empty($state['check_out'])) {
-        $state['stage'] = 'check_out';
+        // A break that was started and not ended outranks everything: until
+        // they tap Back, the only thing they can do is come back.
+        $state['stage'] = (!empty($state['break_start']) && empty($state['break_end']))
+            ? 'break'
+            : 'check_out';
     } else {
         $state['stage'] = 'done';
     }
@@ -342,7 +394,7 @@ function attendance_self_check_in(PDO $conn): array
         $ins = $conn->prepare(
             "INSERT INTO attendance
                 (employee_id, work_date, check_in, check_in_ip, status, source, created_by, updated_by)
-             VALUES (?, ?, ?, ?, 'approved', 'self', ?, ?)
+             VALUES (?, ?, ?, ?, 'pending', 'self', ?, ?)
              ON DUPLICATE KEY UPDATE
                 check_in    = COALESCE(check_in, VALUES(check_in)),
                 check_in_ip = COALESCE(check_in_ip, VALUES(check_in_ip)),
@@ -389,6 +441,9 @@ function attendance_self_check_out(PDO $conn): array
     if (empty($state['check_in'])) {
         return ['ok' => false, 'message' => 'You have not checked in today.'];
     }
+    if ($state['stage'] === 'break') {
+        return ['ok' => false, 'message' => 'End your break first, then check out.'];
+    }
 
     $employeeId = (int)$employee['id'];
     $workDate   = $state['work_date'];
@@ -427,6 +482,126 @@ function attendance_self_check_out(PDO $conn): array
     );
 
     return ['ok' => true, 'message' => 'Checked out at ' . $state['now_label'] . '. ' . $hours . ' hours today.'];
+}
+
+/** Minutes between two H:i times on the same day. Never negative. */
+function attendance_self_minutes(?string $from, ?string $to): int
+{
+    if (!$from || !$to) {
+        return 0;
+    }
+    $a = strtotime('1970-01-01 ' . $from . ' UTC');
+    $b = strtotime('1970-01-01 ' . $to . ' UTC');
+    if ($a === false || $b === false || $b <= $a) {
+        return 0;
+    }
+    return (int)round(($b - $a) / 60);
+}
+
+/**
+ * Start the break. One per person per day.
+ *
+ * The length is recorded but never subtracted: `hours` stays check-in to
+ * check-out, so payroll, the summary and performance read exactly the number
+ * they read before this existed.
+ */
+function attendance_self_break_start(PDO $conn): array
+{
+    $state = attendance_self_state($conn);
+    $employee = $state['employee'];
+    if (!$employee) {
+        return ['ok' => false, 'message' => 'Your login is not linked to an employee record. Please ask HR.'];
+    }
+    if (!$state['breaks_on']) {
+        return ['ok' => false, 'message' => 'Breaks are not switched on yet.'];
+    }
+    if ($state['stage'] === 'break') {
+        return ['ok' => false, 'message' => 'You are already on a break.'];
+    }
+    if ($state['stage'] !== 'check_out') {
+        return ['ok' => false, 'message' => 'Check in before taking a break.'];
+    }
+    if (!empty($state['break_start'])) {
+        return ['ok' => false, 'message' => 'You have already taken your break today.'];
+    }
+
+    $employeeId = (int)$employee['id'];
+    $workDate   = $state['work_date'];
+    $time       = $state['now_time'];
+    $userId     = function_exists('current_user_id') ? (current_user_id() ?: null) : null;
+
+    try {
+        // break_start IS NULL in the WHERE, so two taps in two tabs cannot
+        // move a break that has already started.
+        $upd = $conn->prepare(
+            "UPDATE attendance
+                SET break_start = ?, updated_by = ?, updated_at = NOW()
+              WHERE employee_id = ? AND work_date = ? AND break_start IS NULL
+              LIMIT 1"
+        );
+        $upd->execute([$time, $userId, $employeeId, $workDate]);
+        if ($upd->rowCount() === 0) {
+            return ['ok' => false, 'message' => 'You have already taken your break today.'];
+        }
+    } catch (PDOException $e) {
+        return ['ok' => false, 'message' => 'Could not start your break. Please try again.'];
+    }
+
+    $row = attendance_self_today_row($conn, $employeeId, $workDate);
+    attendance_self_audit(
+        $conn,
+        'attendance_self_break_start',
+        (int)($row['id'] ?? 0),
+        $employee,
+        'Break started at ' . $time . ' on ' . $workDate,
+        ['employee_id' => $employeeId, 'work_date' => $workDate, 'break_start' => $time]
+    );
+
+    return ['ok' => true, 'message' => 'Break started at ' . $state['now_label'] . '.'];
+}
+
+/** End the break and come back to the desk. */
+function attendance_self_break_end(PDO $conn): array
+{
+    $state = attendance_self_state($conn);
+    $employee = $state['employee'];
+    if (!$employee) {
+        return ['ok' => false, 'message' => 'Your login is not linked to an employee record. Please ask HR.'];
+    }
+    if ($state['stage'] !== 'break') {
+        return ['ok' => false, 'message' => 'You are not on a break.'];
+    }
+
+    $employeeId = (int)$employee['id'];
+    $workDate   = $state['work_date'];
+    $time       = $state['now_time'];
+    $started    = substr((string)$state['break_start'], 0, 5);
+    $minutes    = attendance_self_minutes($started, $time);
+    $userId     = function_exists('current_user_id') ? (current_user_id() ?: null) : null;
+
+    try {
+        $upd = $conn->prepare(
+            "UPDATE attendance
+                SET break_end = ?, break_minutes = ?, updated_by = ?, updated_at = NOW()
+              WHERE employee_id = ? AND work_date = ? AND break_end IS NULL
+              LIMIT 1"
+        );
+        $upd->execute([$time, $minutes, $userId, $employeeId, $workDate]);
+    } catch (PDOException $e) {
+        return ['ok' => false, 'message' => 'Could not end your break. Please try again.'];
+    }
+
+    $row = attendance_self_today_row($conn, $employeeId, $workDate);
+    attendance_self_audit(
+        $conn,
+        'attendance_self_break_end',
+        (int)($row['id'] ?? 0),
+        $employee,
+        'Break ended at ' . $time . ' on ' . $workDate . ' (' . $minutes . ' min)',
+        ['employee_id' => $employeeId, 'work_date' => $workDate, 'break_start' => $started, 'break_end' => $time, 'break_minutes' => $minutes]
+    );
+
+    return ['ok' => true, 'message' => 'Welcome back. Break was ' . $minutes . ' minutes.'];
 }
 
 /* ---------------------------------------------------------------------------
@@ -488,11 +663,16 @@ function attendance_self_is_asset(string $path): bool
 }
 
 /**
- * Stop anyone who has not checked in yet and show them the pop-up, on whatever
- * page they asked for. Called once per request from includes/auth.php.
+ * Stop anyone who has not checked in yet, or who is on a break, and show them
+ * the pop-up on whatever page they asked for. Called once per request from
+ * includes/auth.php.
  *
  * Someone on leave, someone HR has already marked, someone with no employee
  * record and anyone who has already checked in all pass through untouched.
+ *
+ * The break wall does not answer to attendance_self_blocking(): that switch is
+ * about forcing people to check in, while a break is something the person
+ * asked for themselves — nobody should be working while marked away.
  */
 function attendance_self_gate_enforce(PDO $conn): void
 {
@@ -502,7 +682,7 @@ function attendance_self_gate_enforce(PDO $conn): void
     }
     $done = true;
 
-    if (!attendance_self_enabled() || !attendance_self_blocking()) {
+    if (!attendance_self_enabled()) {
         return;
     }
     if (PHP_SAPI === 'cli') {
@@ -543,7 +723,9 @@ function attendance_self_gate_enforce(PDO $conn): void
         return; // never lock the whole system out over this
     }
 
-    if ($state['stage'] !== 'check_in') {
+    $wall = ($state['stage'] === 'break')
+        || ($state['stage'] === 'check_in' && attendance_self_blocking());
+    if (!$wall) {
         return;
     }
 
