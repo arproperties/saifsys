@@ -140,6 +140,10 @@ if (!function_exists('h')) {
 .as-btn-back{background:#166534;}
 .as-bar-note{color:#a8a29e;font-size:12.5px;font-weight:600;white-space:nowrap;}
 .as-bar-warn{color:#9a3412;font-size:12.5px;font-weight:600;white-space:nowrap;}
+.as-bar{cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;}
+.as-bar.as-dragging{cursor:grabbing;box-shadow:0 18px 44px rgba(28,25,23,.26);}
+.as-bar button{touch-action:manipulation;}
+.as-bar-grip{margin-left:-6px;color:#d6d0c6;font-size:14px;line-height:1;letter-spacing:-2px;}
 @media (max-width:520px){
   .as-bar{left:18px;right:18px;}
   .as-clock{font-size:36px;}
@@ -272,6 +276,7 @@ if (!function_exists('h')) {
 
 <?php elseif ($asState['stage'] === 'check_in'): ?>
 <div class="as-bar">
+  <span class="as-bar-grip" aria-hidden="true" title="Drag to move">&#8942;&#8942;</span>
   <div class="as-bar-txt">
     <strong>Not checked in yet</strong>
     <?php if (!$asState['ip_allowed']): ?>
@@ -308,6 +313,7 @@ if (!function_exists('h')) {
 
 <?php elseif ($asState['stage'] === 'check_out'): ?>
 <div class="as-bar">
+  <span class="as-bar-grip" aria-hidden="true" title="Drag to move">&#8942;&#8942;</span>
   <div class="as-bar-txt">
     <strong>Checked in <?= h(as_time_label($asState['check_in'])) ?></strong>
     <?php if ($asBreakMins !== null): ?>
@@ -367,6 +373,7 @@ if (!function_exists('h')) {
 
 <?php elseif ($asState['stage'] === 'done'): ?>
 <div class="as-bar">
+  <span class="as-bar-grip" aria-hidden="true" title="Drag to move">&#8942;&#8942;</span>
   <div class="as-bar-txt">
     <strong><?= h(as_time_label($asState['check_in'])) ?> &rarr; <?= h(as_time_label($asState['check_out'])) ?></strong>
     <span>Recorded for today<?= $asBreakMins !== null ? ' &middot; ' . h($asBreakMins) . ' min break' : '' ?></span>
@@ -376,6 +383,7 @@ if (!function_exists('h')) {
 
 <?php elseif ($asState['stage'] === 'excused'): ?>
 <div class="as-bar">
+  <span class="as-bar-grip" aria-hidden="true" title="Drag to move">&#8942;&#8942;</span>
   <div class="as-bar-txt">
     <strong><?= h($asStatusLabel) ?></strong>
     <?php if (!empty($asState['check_in'])): ?>
@@ -389,6 +397,7 @@ if (!function_exists('h')) {
 
 <?php else: ?>
 <div class="as-bar">
+  <span class="as-bar-grip" aria-hidden="true" title="Drag to move">&#8942;&#8942;</span>
   <div class="as-bar-txt">
     <strong>Attendance not set up</strong>
     <span>Your login is not linked to an employee record</span>
@@ -396,3 +405,66 @@ if (!function_exists('h')) {
   <span class="as-bar-warn">Ask HR</span>
 </div>
 <?php endif; ?>
+<script>
+(function () {
+  // The bar can be dragged anywhere on screen, and stays where it was left on
+  // every page. Buttons still work as buttons; double-click puts it back.
+  var bar = document.querySelector('.as-bar');
+  if (!bar) return;
+  var KEY = 'as_bar_pos';
+
+  function place(x, y) {
+    var maxX = Math.max(0, window.innerWidth - bar.offsetWidth);
+    var maxY = Math.max(0, window.innerHeight - bar.offsetHeight);
+    bar.style.left = Math.min(Math.max(0, x), maxX) + 'px';
+    bar.style.top = Math.min(Math.max(0, y), maxY) + 'px';
+    bar.style.right = 'auto';
+    bar.style.bottom = 'auto';
+  }
+  function reset() {
+    bar.style.left = bar.style.top = bar.style.right = bar.style.bottom = '';
+  }
+
+  var saved = null;
+  try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {}
+  if (saved && typeof saved.x === 'number' && typeof saved.y === 'number') {
+    place(saved.x, saved.y);
+  }
+
+  var dx = 0, dy = 0, dragging = false;
+  bar.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0 || e.target.closest('button,a,input,select,textarea')) return;
+    var r = bar.getBoundingClientRect();
+    dx = e.clientX - r.left;
+    dy = e.clientY - r.top;
+    dragging = true;
+    bar.classList.add('as-dragging');
+    bar.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  bar.addEventListener('pointermove', function (e) {
+    if (dragging) place(e.clientX - dx, e.clientY - dy);
+  });
+  function stop() {
+    if (!dragging) return;
+    dragging = false;
+    bar.classList.remove('as-dragging');
+    try {
+      localStorage.setItem(KEY, JSON.stringify({ x: parseFloat(bar.style.left), y: parseFloat(bar.style.top) }));
+    } catch (e) {}
+  }
+  bar.addEventListener('pointerup', stop);
+  bar.addEventListener('pointercancel', stop);
+
+  bar.addEventListener('dblclick', function (e) {
+    if (e.target.closest('button,a,input')) return;
+    reset();
+    try { localStorage.removeItem(KEY); } catch (err) {}
+  });
+
+  // Keep it on screen when the window shrinks.
+  window.addEventListener('resize', function () {
+    if (bar.style.left) place(parseFloat(bar.style.left), parseFloat(bar.style.top));
+  });
+}());
+</script>
