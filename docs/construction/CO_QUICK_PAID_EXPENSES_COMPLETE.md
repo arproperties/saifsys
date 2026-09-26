@@ -17,7 +17,7 @@
 - Journal: Dr Expense · Dr Input VAT (**2130**) · Cr settlement account  
 - Optional Project (project cost when set; otherwise company overhead)  
 - Optional Supplier informational only (profile panel; no AP impact)  
-- Legacy Historical ERP Expenses (`legacy_archive = 1`) read-only forever; journals not rewritten  
+- Legacy Historical ERP Expenses (`legacy_archive = 1`) editable since 2026-09-26; saving reverses and reposts the journal (delete still owner/admin override only)  
 - List filters: Project, Supplier, Expense Account, Payment Method, Date, Status (+ Archive)  
 
 **Confirmed rules:** [`docs/business-rules/CO_QUICK_PAID_EXPENSES.md`](../business-rules/CO_QUICK_PAID_EXPENSES.md)  

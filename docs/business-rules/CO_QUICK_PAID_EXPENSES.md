@@ -64,5 +64,6 @@ No further rules should be invented under this program. Capture new commercial p
 |-------|-------|
 | Rule ID | BR-CO-QPE-005 |
 | Status | **Confirmed** |
-| Confirmed rule | Pre-existing Construction ERP expenses (`legacy_archive = 1`) remain read-only forever. Do not migrate or rewrite their journals. |
-| Date | 2026-07-27 |
+| Confirmed rule | **Revised 2026-09-26:** pre-existing Construction ERP expenses (`legacy_archive = 1`) are editable by anyone with Construction Financial access, exactly like a normal Quick Paid expense. Saving one reverses its journal and reposts it; a legacy AP row therefore moves its credit from Accounts Payable to the chosen cash/bank/credit account. The `Historical` badge and an on-page warning stay, because the user must confirm the bill was not already settled by a Supplier Payment (otherwise the payment is counted twice). Deleting a legacy row still needs the owner/admin override in QPE/Supplier Duplicates. |
+| Superseded rule | 2026-07-27: read-only forever; journals never rewritten. |
+| Date | 2026-09-26 |
