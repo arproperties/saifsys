@@ -45,20 +45,10 @@ function fleet_daily_checklist(): array
             ['key' => 'seatbelt', 'label' => 'Seatbelt works — and you are wearing it'],
         ]],
         ['key' => 'emergency', 'title' => 'Emergency equipment', 'items' => [
-            ['key' => 'first_aid', 'label' => 'First aid kit in the vehicle and stocked'],
-            ['key' => 'extinguisher', 'label' => 'Fire extinguisher charged and within reach'],
-            ['key' => 'triangle', 'label' => 'Warning triangle in the vehicle'],
+            ['key' => 'emergency_kit', 'label' => 'First aid kit (stocked), fire extinguisher (charged) and warning triangle in the vehicle'],
         ]],
         ['key' => 'documents', 'title' => 'Documents', 'items' => [
             ['key' => 'documents', 'label' => 'Registration (Mulkiya) and insurance in the vehicle and valid'],
-        ]],
-        ['key' => 'communication', 'title' => 'Communication', 'items' => [
-            ['key' => 'phone', 'label' => 'Phone charged and working'],
-            ['key' => 'radio', 'label' => 'Company radio works', 'na' => true],
-        ]],
-        ['key' => 'route', 'title' => 'Route', 'items' => [
-            ['key' => 'gps', 'label' => 'GPS / maps working'],
-            ['key' => 'traffic', 'label' => 'Checked traffic and road closures'],
         ]],
         ['key' => 'final', 'title' => 'Before you go', 'items' => [
             ['key' => 'fuel', 'label' => 'Enough fuel for the trip'],
