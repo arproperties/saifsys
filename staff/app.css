@@ -386,3 +386,11 @@ body.viewing { overflow: hidden; }
 .qvoice { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 8px 8px 8px 10px; border-radius: 14px; background: var(--cream-0); font-weight: 700; }
 .qvoice .vbtn { background: var(--navy-500); }
 .qkm { font-size: 30px; font-weight: 700; text-align: center; letter-spacing: .05em; margin-top: 20px; min-height: 68px; }
+.qlang { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border-radius: 999px; background: var(--cream-200); color: var(--navy-700); font-weight: 700; }
+.qlang .icon { width: 18px; height: 18px; }
+.qlangs { display: grid; gap: 12px; margin-top: 8px; }
+.qlangbtn { min-height: 72px; border-radius: 18px; background: var(--cream-0); border: 2px solid var(--cream-400); font-size: 26px; font-weight: 700; color: var(--text); box-shadow: var(--shadow); }
+.qlangbtn:active { border-color: var(--gold-500); background: var(--gold-50); }
+.qlisten { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 16px auto 0; min-height: 60px; padding: 0 24px; border-radius: 999px; background: var(--navy-800); color: var(--gold-500); font-size: 19px; font-weight: 700; }
+.qlisten:active { background: var(--navy-700); }
+.qtext[dir="rtl"] { font-size: 26px; line-height: 1.6; }

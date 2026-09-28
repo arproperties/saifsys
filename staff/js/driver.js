@@ -678,8 +678,112 @@
     file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
     fuel: '<line x1="3" x2="15" y1="22" y2="22"/><line x1="4" x2="14" y1="9" y2="9"/><path d="M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18"/><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2a2 2 0 0 0 2-2V9.83a2 2 0 0 0-.59-1.42L18 5"/>',
     moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+    volume: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
     trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
   });
+
+  // --- Spoken questions, like a phone menu ------------------------------------
+  //
+  // Each card reads its question out loud when it appears, in the language the
+  // driver picked, and the big speaker button reads it again. The clips are
+  // files made once by scripts/staff_check_voice.mjs from audio/check/texts.json
+  // (OpenAI's voice, as in Jarvis). When the office has changed an item's
+  // wording since the clips were made, or a clip will not load, the phone's own
+  // voice reads the office's current words instead — never an outdated question.
+
+  var LANG_KEY = 'staff.check.lang.v1';
+  var voiceTexts = null;
+  fetch('audio/check/texts.json', { cache: 'no-cache' }).then(function (r) { return r.json(); }).then(function (j) { voiceTexts = j; S.render(); }, function () {});
+
+  function lang() { return S.readJson(LANG_KEY, null); }
+  function langInfo() { return (voiceTexts && voiceTexts.languages[lang()]) || { speech: 'en-GB', dir: 'ltr' }; }
+
+  /** A word on the check screen, in the driver's language when there is one. */
+  function word(name) {
+    var ui = voiceTexts && voiceTexts.ui[lang()];
+    return (ui && ui[name]) || (voiceTexts && voiceTexts.ui.en[name]) || T.check[name] || name;
+  }
+
+  /** The question in the driver's language, or null when it no longer matches the office's wording. */
+  function translated(item) {
+    var entry = voiceTexts && voiceTexts.items[item.key];
+    if (!entry || entry.source !== item.label) return null;
+    return entry[lang()] || null;
+  }
+
+  var speaker = typeof Audio !== 'undefined' ? new Audio() : null;
+  var speakToken = 0;
+
+  /** Called inside a tap, so the phone lets later questions play by themselves. */
+  function unlockSpeaker() {
+    if (!speaker || speaker.dataset.unlocked) return;
+    speaker.dataset.unlocked = '1';
+    speaker.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
+    speaker.play().catch(function () { delete speaker.dataset.unlocked; });
+  }
+
+  function hush() {
+    speakToken++;
+    if (speaker) { try { speaker.pause(); } catch (e) { /* ignore */ } }
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+  }
+
+  function phoneVoice(text, speech, done) {
+    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance || !text) { done(); return; }
+    var u = new SpeechSynthesisUtterance(text);
+    u.lang = speech;
+    u.rate = 0.9;
+    u.onend = done;
+    u.onerror = done;
+    window.speechSynthesis.speak(u);
+  }
+
+  /** Play clips one after another: [{clip: 'intro' | item key, text, speech}]. */
+  function sayAll(parts) {
+    hush();
+    var token = speakToken;
+    var i = 0;
+    var next = function () {
+      if (token !== speakToken || i >= parts.length) return;
+      var part = parts[i++];
+      if (!part.clip || !speaker) { phoneVoice(part.text, part.speech, next); return; }
+      speaker.onended = next;
+      speaker.onerror = function () { if (token === speakToken) phoneVoice(part.text, part.speech, next); };
+      speaker.src = 'audio/check/' + lang() + '/' + part.clip + '.mp3';
+      speaker.play().catch(function () { if (token === speakToken) phoneVoice(part.text, part.speech, next); });
+    };
+    next();
+  }
+
+  function promptPart(name) {
+    var text = voiceTexts && voiceTexts.prompts[name] ? voiceTexts.prompts[name][lang()] : '';
+    return { clip: name, text: text, speech: langInfo().speech };
+  }
+
+  function itemPart(item) {
+    var t = translated(item);
+    // Outdated clip: say the office's own words in English rather than an old question.
+    return t ? { clip: item.key, text: t, speech: langInfo().speech } : { clip: null, text: item.label, speech: 'en-GB' };
+  }
+
+  /** Read out whatever the check screen is showing now. */
+  function speakCard(withIntro) {
+    var c = state.check;
+    if (!c || !lang() || c.step === 'lang') return;
+    if (c.step === 'km') { sayAll([promptPart('km')]); return; }
+    var item = c.items[c.i];
+    if (c.answers[item.key] === 'problem') { sayAll([promptPart('problem')]); return; }
+    sayAll((withIntro ? [promptPart('intro')] : []).concat([itemPart(item)]));
+  }
+
+  /** Fetch the chosen language's clips once, so they are on the phone when the signal is not. */
+  function warmClips() {
+    if (!voiceTexts || !lang()) return;
+    Object.keys(voiceTexts.prompts).concat(Object.keys(voiceTexts.items)).forEach(function (k) {
+      fetch('audio/check/' + lang() + '/' + k + '.mp3').catch(function () {});
+    });
+  }
 
   /** Start pressed: the daily check first if today's is still owed, else straight to Start. */
   async function openStart() {
@@ -716,7 +820,10 @@
         error: null,
         saving: false,
       };
+      if (!lang()) state.check.step = 'lang';
       S.go({ app: 'driver', view: 'check' });
+      speakCard(true);
+      warmClips();
       return;
     }
     S.sheet({ title: T.startSheet.title, body: T.startSheet.body, confirm: T.startSheet.confirm, cancel: T.startSheet.cancel, onConfirm: begin });
@@ -739,6 +846,7 @@
     else c.step = 'km';
     S.render();
     window.scrollTo(0, 0);
+    speakCard(false);
   }
 
   function prevCard() {
@@ -747,16 +855,36 @@
     c.error = null;
     if (c.step === 'km') c.step = 'items';
     else if (c.i > 0) c.i -= 1;
-    else { S.back(); return; }
+    else { hush(); S.back(); return; }
     S.render();
     window.scrollTo(0, 0);
+    speakCard(false);
   }
 
   function checkTop(n, total) {
     var pct = Math.round((n / total) * 100);
-    return '<div class="topbar"><button type="button" class="back-btn" data-action="driver:check-prev">' + icon('back') + esc(T.check.back) + '</button>' +
-      '<span class="qcount">' + esc(T.check.counter(Math.min(n, total), total)) + '</span></div>' +
+    var info = voiceTexts && voiceTexts.languages[lang()];
+    return '<div class="topbar"><button type="button" class="back-btn" data-action="driver:check-prev">' + icon('back') + esc(word('back')) + '</button>' +
+      '<span class="qcount">' + (Math.min(n, total)) + ' / ' + total + '</span>' +
+      (info ? '<button type="button" class="qlang" data-action="driver:check-lang">' + icon('globe') + '<span>' + esc(info.name) + '</span></button>' : '') + '</div>' +
       '<div class="qprogress"><span style="width:' + pct + '%"></span></div>';
+  }
+
+  function renderLanguagePicker() {
+    var list = voiceTexts ? Object.keys(voiceTexts.languages) : [];
+    return '<main class="screen qscreen">' +
+      '<div class="topbar"><button type="button" class="back-btn" data-action="driver:check-prev">' + icon('back') + esc(T.check.back) + '</button></div>' +
+      '<div class="qcard"><div class="qicon">' + icon('globe', 'huge') + '</div></div>' +
+      '<div class="screen-body"><div class="qlangs">' +
+      (list.length ? list.map(function (code) {
+        var l = voiceTexts.languages[code];
+        return '<button type="button" class="qlangbtn" dir="' + l.dir + '" data-action="driver:check-pick-lang" data-lang="' + code + '">' + esc(l.name) + '</button>';
+      }).join('') : '<div class="skel" style="height:72px"></div><div class="skel" style="height:72px"></div>') +
+      '</div></div></main>';
+  }
+
+  function listenButton() {
+    return '<button type="button" class="qlisten" data-action="driver:check-listen">' + icon('volume', 'lg') + '<span>' + esc(word('listen')) + '</span></button>';
   }
 
   function problemPanel(item) {
@@ -768,34 +896,35 @@
     }).join('');
     var voice = m.voice
       ? '<div class="qvoice"><button type="button" class="vbtn" data-action="driver:check-voice-play" aria-label="Play">' + icon('play') + '</button>' +
-        '<span class="grow">' + esc(T.check.voice) + ' · 0:' + pad(Math.min(59, m.voice.seconds)) + '</span>' +
+        '<span class="grow">' + esc(word('voice')) + ' · 0:' + pad(Math.min(59, m.voice.seconds)) + '</span>' +
         '<button type="button" class="icon-btn" data-action="driver:check-voice-del" aria-label="Delete">' + icon('trash') + '</button></div>'
       : '';
     return '<div class="qproblem">' +
-      '<div class="h3" style="color:var(--danger)">' + esc(T.check.showTitle) + '</div>' +
-      '<div class="secondary mt-1">' + esc(T.check.showBody) + '</div>' +
+      '<div class="h3" style="color:var(--danger)">' + esc(word('showTitle')) + '</div>' +
       '<div class="qtools">' +
-      '<button type="button" class="qtool" data-action="driver:check-photo"' + (recording ? ' disabled' : '') + '>' + icon('camera', 'lg') + '<span>' + esc(T.check.photo) + '</span></button>' +
+      '<button type="button" class="qtool" data-action="driver:check-photo"' + (recording ? ' disabled' : '') + '>' + icon('camera', 'lg') + '<span>' + esc(word('photo')) + '</span></button>' +
       '<button type="button" class="qtool' + (recording ? ' live' : '') + '" data-action="driver:check-voice">' + icon(recording ? 'pause' : 'mic', 'lg') +
-      '<span>' + (recording ? esc(T.check.stop) + ' <b data-vtime>0:00</b>' : esc(T.check.voice)) + '</span></button>' +
+      '<span>' + (recording ? esc(word('stop')) + ' <b data-vtime>0:00</b>' : esc(word('voice'))) + '</span></button>' +
       '</div>' +
       (photos ? '<div class="qthumbs">' + photos + '</div>' : '') + voice +
-      '<textarea class="field mt-3" id="check-text" rows="2" placeholder="' + esc(T.check.writeInstead) + '">' + esc(m.text) + '</textarea>' +
+      '<textarea class="field mt-3" id="check-text" rows="2" placeholder="' + esc(word('writeInstead')) + '">' + esc(m.text) + '</textarea>' +
       '</div>';
   }
 
   function renderChecklist() {
     var c = state.check;
+    if (c.step === 'lang' || !lang()) return renderLanguagePicker();
     var total = c.items.length + 1;
+    var dir = langInfo().dir;
     var body;
     var footer;
 
     if (c.step === 'km') {
-      body = '<div class="qcard"><div class="qicon">' + icon('gauge', 'huge') + '</div>' +
-        '<div class="qtext">' + esc(T.check.kmTitle) + '</div><div class="secondary mt-1">' + esc(T.check.kmBody) + '</div></div>' +
+      body = '<div class="qcard" dir="' + dir + '"><div class="qicon">' + icon('gauge', 'huge') + '</div>' +
+        '<div class="qtext">' + esc(word('kmTitle')) + '</div></div>' + listenButton() +
         '<input class="field qkm" id="check-km" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="' + esc(T.check.kmPlaceholder) + '" value="' + esc(c.km) + '">' +
         (c.lastKm !== null ? '<div class="secondary center mt-2">' + esc(T.check.kmHint(c.lastKm)) + '</div>' : '');
-      footer = button(c.saving ? T.check.sending : T.check.save, 'driver:check-save', { loading: c.saving });
+      footer = button(c.saving ? T.check.sending : word('save'), 'driver:check-save', { loading: c.saving });
       return '<main class="screen qscreen">' + checkTop(total, total) +
         '<div class="screen-body">' + body + (c.error ? '<div class="card alert">' + esc(c.error) + '</div>' : '') + '</div>' +
         '<div class="footer">' + footer + '</div></main>';
@@ -803,21 +932,24 @@
 
     var item = c.items[c.i];
     var answer = c.answers[item.key];
+    var own = translated(item);
     body = '<div class="qcard" data-key="q' + esc(item.key) + '">' +
       '<div class="qicon' + (answer === 'problem' ? ' bad' : answer === 'ok' ? ' good' : '') + '">' + icon(ITEM_ICON[item.key] || SECTION_ICON[item.sectionKey] || 'check', 'huge') + '</div>' +
-      '<div class="label muted">' + esc(item.section) + '</div>' +
-      '<div class="qtext">' + esc(item.label) + '</div></div>';
+      (own && lang() !== 'en'
+        ? '<div class="qtext" dir="' + dir + '">' + esc(own) + '</div><div class="secondary mt-2">' + esc(item.label) + '</div>'
+        : '<div class="qtext">' + esc(own || item.label) + '</div>') +
+      '</div>' + listenButton();
 
     if (answer === 'problem') {
       body += problemPanel(item);
       footer = '<div class="action-row">' +
-        button(T.check.okAfterAll, 'driver:check-ok', { variant: 'secondary', style: 'flex:2' }) +
-        button(T.check.next, 'driver:check-next', { style: 'flex:3', icon: 'chevron' }) + '</div>';
+        button(word('okAfterAll'), 'driver:check-ok', { variant: 'secondary', style: 'flex:2' }) +
+        button(word('next'), 'driver:check-next', { style: 'flex:3', icon: 'chevron' }) + '</div>';
     } else {
       footer = '<div class="qanswers">' +
-        '<button type="button" class="qbtn ok' + (answer === 'ok' ? ' on' : '') + '" data-action="driver:check-answer" data-value="ok">' + icon('thumbUp', 'lg') + esc(T.check.ok) + '</button>' +
-        '<button type="button" class="qbtn problem" data-action="driver:check-answer" data-value="problem">' + icon('thumbDown', 'lg') + esc(T.check.problem) + '</button>' +
-        (item.na ? '<button type="button" class="btn plain' + (answer === 'na' ? ' on' : '') + '" data-action="driver:check-answer" data-value="na">' + esc(T.check.na) + '</button>' : '') +
+        '<button type="button" class="qbtn ok' + (answer === 'ok' ? ' on' : '') + '" data-action="driver:check-answer" data-value="ok">' + icon('thumbUp', 'lg') + esc(word('ok')) + '</button>' +
+        '<button type="button" class="qbtn problem" data-action="driver:check-answer" data-value="problem">' + icon('thumbDown', 'lg') + esc(word('problem')) + '</button>' +
+        (item.na ? '<button type="button" class="btn plain' + (answer === 'na' ? ' on' : '') + '" data-action="driver:check-answer" data-value="na">' + esc(word('na')) + '</button>' : '') +
         '</div>';
     }
 
@@ -966,8 +1098,11 @@
   // The module
   // -------------------------------------------------------------------------
 
+  var onCheck = false;
+
   function render(route) {
-    if (route.view === 'check' && state.check) return renderChecklist();
+    if (route.view === 'check' && state.check) { onCheck = true; return renderChecklist(); }
+    if (onCheck) { onCheck = false; hush(); } // left with the phone's Back button
     return renderHome();
   }
 
@@ -977,14 +1112,26 @@
       case 'reload': state.loadError = null; state.vehicles = null; S.render(); loadVehicles(); break;
       case 'hide-ended': store.setEndedByOffice(false); S.render(); break;
       case 'hide-gap': gps.gap = null; S.render(); break;
-      case 'confirm-start': openStart(); break;
+      case 'confirm-start': unlockSpeaker(); openStart(); break;
+      case 'check-pick-lang': {
+        S.writeJson(LANG_KEY, el.getAttribute('data-lang'));
+        unlockSpeaker();
+        var cl = state.check;
+        if (cl) { cl.step = cl.i === 0 && !Object.keys(cl.answers).length ? 'items' : cl.back || 'items'; }
+        S.render();
+        speakCard(!cl || !Object.keys(cl.answers).length);
+        warmClips();
+        break;
+      }
+      case 'check-lang': hush(); state.check.back = state.check.step; state.check.step = 'lang'; S.render(); break;
+      case 'check-listen': unlockSpeaker(); speakCard(false); break;
       case 'check-answer': {
         var c = state.check;
         var item = c.items[c.i];
         var value = el.getAttribute('data-value');
         c.answers[item.key] = value;
         c.error = null;
-        if (value === 'problem') { S.render(); break; }
+        if (value === 'problem') { S.render(); speakCard(false); break; }
         delete c.media[item.key];
         nextCard();
         break;
@@ -1013,7 +1160,7 @@
         S.render();
         break;
       }
-      case 'check-voice': toggleVoice(); break;
+      case 'check-voice': hush(); toggleVoice(); break;
       case 'check-voice-play': playVoice(); break;
       case 'check-voice-del': {
         var cv = evidence(state.check.items[state.check.i].key);
@@ -1022,7 +1169,7 @@
         S.render();
         break;
       }
-      case 'check-save': saveCheck(); break;
+      case 'check-save': hush(); saveCheck(); break;
       case 'confirm-stop':
         S.sheet({ title: T.stopSheet.title, body: T.stopSheet.body, confirm: T.stopSheet.confirm, cancel: T.stopSheet.cancel, danger: true, onConfirm: end });
         break;
