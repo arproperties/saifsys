@@ -3863,34 +3863,15 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                             <?php endif; ?>
 
                             <?php if (fleet_tables_ready($conn)):
-                                /* Which apps the PIN opens. The Operations app needs no
-                                   switch; the Driver app does. */
-                                $driverAccess = fleet_app_access_has($conn, $opsPinUserId); ?>
+                                /* Which apps the PIN opens. Both are open to anyone with
+                                   a PIN (Driver since 2026-09-28). */ ?>
                                 <hr class="my-3">
                                 <div class="d-flex flex-wrap align-items-center gap-3">
                                     <div>
                                         <div class="fw-semibold">Driver app
-                                            <?php if ($driverAccess): ?>
-                                                <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1">On</span>
-                                            <?php else: ?>
-                                                <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Off</span>
-                                            <?php endif; ?>
+                                            <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1">Everyone with a PIN</span>
                                         </div>
-                                        <div class="stat-meta">Lets them sign in to the Driver app with this PIN and record vehicle trips.</div>
-                                    </div>
-                                    <div class="ms-auto">
-                                        <?php if ($opsPinNeedsLogin): ?>
-                                            <span class="stat-meta">Set a PIN first.</span>
-                                        <?php else: ?>
-                                            <form method="post" action="employee_app_access_save" class="m-0">
-                                                <?php csrf_field(); ?>
-                                                <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
-                                                <input type="hidden" name="allowed" value="<?= $driverAccess ? '0' : '1' ?>">
-                                                <button class="btn btn-sm <?= $driverAccess ? 'btn-outline-danger' : 'btn-outline-primary' ?>">
-                                                    <i class="bi <?= $driverAccess ? 'bi-x-circle' : 'bi-truck' ?> me-1"></i><?= $driverAccess ? 'Turn off' : 'Turn on' ?>
-                                                </button>
-                                            </form>
-                                        <?php endif; ?>
+                                        <div class="stat-meta">Anyone with a PIN can sign in to the Driver app and record vehicle trips.</div>
                                     </div>
                                 </div>
                             <?php endif; ?>

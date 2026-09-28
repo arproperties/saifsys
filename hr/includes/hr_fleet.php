@@ -86,6 +86,12 @@ function fleet_app_access_has(PDO $conn, int $userId, string $app = FLEET_DRIVER
     if ($userId <= 0) {
         return false;
     }
+    // Since 2026-09-28 the Driver app is open to everyone with a PIN (user's
+    // call). Every caller has already checked the PIN or the token's PIN epoch,
+    // so the per-person switch no longer decides anything for Driver.
+    if ($app === FLEET_DRIVER_APP) {
+        return true;
+    }
     try {
         $stmt = $conn->prepare("SELECT 1 FROM staff_app_access WHERE user_id = ? AND app = ? LIMIT 1");
         $stmt->execute([$userId, $app]);
