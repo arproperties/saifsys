@@ -350,22 +350,61 @@ function fleet_api_handle_check_today(PDO $conn, array $driver): void
     ]);
 }
 
-/** POST checks — {vehicle_id, start_km, answers: {key: ok|problem|na}, notes}. */
+/**
+ * POST checks — {vehicle_id, start_km, answers: {key: ok|problem|na}, notes}.
+ *
+ * As JSON (the APK, /driver/), or as a multipart form from the Staff web app
+ * with `answers` JSON-encoded and the Problem photos and voice notes attached:
+ * media[] files, with media_item[] (the item key), media_kind[] (photo|voice)
+ * and media_duration[] at the same positions.
+ */
 function fleet_api_handle_check_save(PDO $conn, array $driver): void
 {
     if (!fleet_checks_ready($conn)) {
         customer_api_send_error('not_configured', 'This service is not available.', 503);
     }
-    $body = customer_api_read_json_body();
+    $isForm = $_POST !== [] || $_FILES !== [];
+    if (!$isForm && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0 && stripos((string)($_SERVER['CONTENT_TYPE'] ?? ''), 'multipart/') === 0) {
+        // PHP drops the whole form when it is over post_max_size.
+        customer_api_send_error('bad_request', 'The photos and voice messages are too big to send together. Send fewer.', 413);
+    }
+    $body = $isForm ? $_POST : customer_api_read_json_body();
+    $answers = $body['answers'] ?? null;
+    if (is_string($answers)) {
+        $answers = json_decode($answers, true);
+    }
     $vehicle = fleet_api_active_vehicle($conn, (int)($body['vehicle_id'] ?? 0));
+
+    $media = [];
+    $files = $_FILES['media'] ?? null;
+    if (is_array($files) && is_array($files['name'] ?? null)) {
+        $items = (array)($_POST['media_item'] ?? []);
+        $kinds = (array)($_POST['media_kind'] ?? []);
+        $durations = (array)($_POST['media_duration'] ?? []);
+        foreach (array_keys($files['name']) as $i) {
+            $media[] = [
+                'item_key' => (string)($items[$i] ?? ''),
+                'kind' => (string)($kinds[$i] ?? ''),
+                'duration' => $durations[$i] ?? null,
+                'file' => [
+                    'name' => $files['name'][$i],
+                    'type' => $files['type'][$i],
+                    'tmp_name' => $files['tmp_name'][$i],
+                    'error' => $files['error'][$i],
+                    'size' => $files['size'][$i],
+                ],
+            ];
+        }
+    }
 
     $result = fleet_save_daily_check(
         $conn,
         $vehicle,
         $driver,
-        $body['answers'] ?? null,
+        $answers,
         $body['start_km'] ?? null,
-        (string)($body['notes'] ?? '')
+        (string)($body['notes'] ?? ''),
+        $media
     );
     if (!$result['ok']) {
         customer_api_send_error('bad_request', $result['error'], 400);

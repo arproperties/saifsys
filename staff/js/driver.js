@@ -90,21 +90,33 @@
     },
     check: {
       title: 'Daily check',
-      subtitle: function (plate) { return 'Before your first trip today in ' + plate + '.'; },
+      counter: function (n, total) { return n + ' of ' + total; },
       ok: 'OK',
       problem: 'Problem',
-      na: 'N/A',
-      kmTitle: 'Starting kilometres',
-      kmHint: function (km) { return 'Last recorded: ' + km.toLocaleString('en-US') + ' km'; },
-      kmPlaceholder: 'Odometer reading',
-      notesTitle: 'Problems',
-      notesHint: 'Write what is wrong, so the office can fix it.',
-      notesOptional: 'Anything else the office should know (optional)',
+      na: 'Not in this vehicle',
+      showTitle: 'Show the problem',
+      showBody: 'Take a photo, or press the microphone and say what is wrong.',
+      photo: 'Photo',
+      voice: 'Voice',
+      stop: 'Stop',
+      recording: 'Recording…',
+      writeInstead: 'Or write it here (optional)',
+      next: 'Next',
+      okAfterAll: 'It is OK',
+      needEvidence: 'Take a photo or record your voice first.',
+      tooShort: 'Too short. Press the microphone, speak, then press Stop.',
+      maxPhotos: 'That is enough photos for this item.',
+      micBlocked: 'The microphone is blocked. Allow it for this app in your phone settings, then try again.',
+      noMic: 'This phone cannot record voice here. Take a photo instead.',
+      kmTitle: 'Kilometres on the dashboard',
+      kmBody: 'Type the number you see on the dashboard now.',
+      kmHint: function (km) { return 'Last time: ' + km.toLocaleString('en-US') + ' km'; },
+      kmPlaceholder: 'e.g. 45210',
       save: 'Save and start trip',
       back: 'Back',
-      missing: function (n) { return n === 1 ? '1 item still needs an answer.' : n + ' items still need an answer.'; },
-      needKm: 'Enter the starting kilometres.',
-      needNotes: 'Write what the problem is.',
+      needKm: 'Type the kilometres from the dashboard.',
+      sending: 'Sending…',
+      seePhoto: 'see photo / voice',
     },
     genericBody: 'Please try again in a moment.',
     retry: 'Try again',
@@ -630,6 +642,44 @@
   //
   // Once a day per vehicle, before the first trip. The list comes from the
   // server, so wording changes need no app update.
+  //
+  // Built for drivers who find reading and writing hard: ONE question per
+  // screen, a big picture, two big buttons (green OK, red Problem), and it
+  // moves on by itself. Nothing can be skipped. A Problem is shown with a photo
+  // or a voice message rather than typed; typing is there but optional. The
+  // only thing to type is the kilometres.
+
+  var ITEM_ICON = {
+    licence: 'idcard', fit: 'heart', body: 'car', lights: 'bulb', tyre_pressure: 'gauge', tyre_tread: 'tyre',
+    fluids: 'droplet', wipers: 'wiper', windows: 'window', mirrors: 'eye', seatbelt: 'shield',
+    emergency_kit: 'firstaid', documents: 'file', fuel: 'fuel', rest: 'moon',
+  };
+  var SECTION_ICON = {
+    personal: 'user', exterior: 'car', tyres: 'tyre', fluids: 'droplet', glass: 'window', interior: 'shield',
+    emergency: 'firstaid', documents: 'file', final: 'check',
+  };
+  var MAX_PHOTOS = 3;
+  var MAX_VOICE_MS = 60000;
+
+  Object.assign(S.ICON, {
+    thumbUp: '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
+    thumbDown: '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>',
+    idcard: '<rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="12" r="2"/><path d="M14 10h4"/><path d="M14 14h4"/><path d="M5 17a3 3 0 0 1 6 0"/>',
+    heart: '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/><path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"/>',
+    bulb: '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
+    gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+    tyre: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/>',
+    droplet: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+    wiper: '<path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="M16 14v6"/><path d="M8 14v6"/><path d="M12 16v6"/>',
+    window: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 10h20"/>',
+    eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
+    firstaid: '<rect x="2" y="6" width="20" height="14" rx="2"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M12 10v6"/><path d="M9 13h6"/>',
+    file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+    fuel: '<line x1="3" x2="15" y1="22" y2="22"/><line x1="4" x2="14" y1="9" y2="9"/><path d="M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18"/><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2a2 2 0 0 0 2-2V9.83a2 2 0 0 0-.59-1.42L18 5"/>',
+    moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+  });
 
   /** Start pressed: the daily check first if today's is still owed, else straight to Start. */
   async function openStart() {
@@ -649,15 +699,20 @@
     }
     state.busy = false;
     if (today.needed) {
+      var items = [];
+      today.sections.forEach(function (s) {
+        s.items.forEach(function (i) { items.push({ key: i.key, label: i.label, na: !!i.na, section: s.title, sectionKey: s.key }); });
+      });
       state.check = {
         vehicleId: vehicleId,
         plate: vehicle ? vehicle.plate_no : '',
-        sections: today.sections,
-        lastKm: today.last_km,
+        items: items,
+        i: 0,
+        step: 'items',
         answers: {},
+        media: {},
+        lastKm: today.last_km,
         km: '',
-        notes: '',
-        missing: null,
         error: null,
         saving: false,
       };
@@ -667,75 +722,240 @@
     S.sheet({ title: T.startSheet.title, body: T.startSheet.body, confirm: T.startSheet.confirm, cancel: T.startSheet.cancel, onConfirm: begin });
   }
 
-  function checkProblems() {
+  function evidence(key) {
     var c = state.check;
-    return Object.keys(c.answers).filter(function (k) { return c.answers[k] === 'problem'; }).length;
+    return c.media[key] || (c.media[key] = { photos: [], voice: null, text: '' });
+  }
+
+  function hasEvidence(key) {
+    var m = state.check.media[key];
+    return !!m && (m.photos.length > 0 || !!m.voice || m.text.trim() !== '');
+  }
+
+  function nextCard() {
+    var c = state.check;
+    c.error = null;
+    if (c.i < c.items.length - 1) c.i += 1;
+    else c.step = 'km';
+    S.render();
+    window.scrollTo(0, 0);
+  }
+
+  function prevCard() {
+    var c = state.check;
+    stopVoice(true);
+    c.error = null;
+    if (c.step === 'km') c.step = 'items';
+    else if (c.i > 0) c.i -= 1;
+    else { S.back(); return; }
+    S.render();
+    window.scrollTo(0, 0);
+  }
+
+  function checkTop(n, total) {
+    var pct = Math.round((n / total) * 100);
+    return '<div class="topbar"><button type="button" class="back-btn" data-action="driver:check-prev">' + icon('back') + esc(T.check.back) + '</button>' +
+      '<span class="qcount">' + esc(T.check.counter(Math.min(n, total), total)) + '</span></div>' +
+      '<div class="qprogress"><span style="width:' + pct + '%"></span></div>';
+  }
+
+  function problemPanel(item) {
+    var m = evidence(item.key);
+    var recording = vrec.active && vrec.key === item.key;
+    var photos = m.photos.map(function (p, idx) {
+      return '<div class="qthumb" data-key="ph' + idx + '"><img src="' + esc(p.url) + '" alt="">' +
+        '<button type="button" class="remove" data-action="driver:check-photo-del" data-i="' + idx + '" aria-label="Delete">' + icon('close') + '</button></div>';
+    }).join('');
+    var voice = m.voice
+      ? '<div class="qvoice"><button type="button" class="vbtn" data-action="driver:check-voice-play" aria-label="Play">' + icon('play') + '</button>' +
+        '<span class="grow">' + esc(T.check.voice) + ' · 0:' + pad(Math.min(59, m.voice.seconds)) + '</span>' +
+        '<button type="button" class="icon-btn" data-action="driver:check-voice-del" aria-label="Delete">' + icon('trash') + '</button></div>'
+      : '';
+    return '<div class="qproblem">' +
+      '<div class="h3" style="color:var(--danger)">' + esc(T.check.showTitle) + '</div>' +
+      '<div class="secondary mt-1">' + esc(T.check.showBody) + '</div>' +
+      '<div class="qtools">' +
+      '<button type="button" class="qtool" data-action="driver:check-photo"' + (recording ? ' disabled' : '') + '>' + icon('camera', 'lg') + '<span>' + esc(T.check.photo) + '</span></button>' +
+      '<button type="button" class="qtool' + (recording ? ' live' : '') + '" data-action="driver:check-voice">' + icon(recording ? 'pause' : 'mic', 'lg') +
+      '<span>' + (recording ? esc(T.check.stop) + ' <b data-vtime>0:00</b>' : esc(T.check.voice)) + '</span></button>' +
+      '</div>' +
+      (photos ? '<div class="qthumbs">' + photos + '</div>' : '') + voice +
+      '<textarea class="field mt-3" id="check-text" rows="2" placeholder="' + esc(T.check.writeInstead) + '">' + esc(m.text) + '</textarea>' +
+      '</div>';
   }
 
   function renderChecklist() {
     var c = state.check;
-    var sections = c.sections.map(function (s) {
-      return '<h2 class="label muted check-section">' + esc(s.title) + '</h2>' + s.items.map(function (item) {
-        var opts = [['ok', T.check.ok], ['problem', T.check.problem]].concat(item.na ? [['na', T.check.na]] : []);
-        return '<div class="card check-item' + (c.missing === item.key ? ' missing' : '') + '" data-item="' + esc(item.key) + '">' +
-          '<div class="body-lg">' + esc(item.label) + '</div>' +
-          '<div class="seg mt-2" role="radiogroup" aria-label="' + esc(item.label) + '">' + opts.map(function (o) {
-            var on = c.answers[item.key] === o[0];
-            return '<button type="button" role="radio" aria-checked="' + on + '" class="seg-btn ' + o[0] + (on ? ' on' : '') +
-              '" data-action="driver:check-answer" data-key="' + esc(item.key) + '" data-value="' + o[0] + '">' + esc(o[1]) + '</button>';
-          }).join('') + '</div></div>';
-      }).join('');
-    }).join('');
+    var total = c.items.length + 1;
+    var body;
+    var footer;
 
-    return '<main class="screen">' +
-      S.backBar('core:back', T.check.back) +
-      '<h1 class="h1 mt-2">' + esc(T.check.title) + '</h1>' +
-      '<p class="secondary mt-1" style="margin-bottom:0">' + esc(T.check.subtitle(c.plate)) + '</p>' +
-      '<div class="screen-body">' + sections +
-      '<h2 class="label muted check-section">' + esc(T.check.kmTitle) + '</h2>' +
-      '<div class="card"><input class="field" id="check-km" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="' + esc(T.check.kmPlaceholder) + '" value="' + esc(c.km) + '">' +
-      (c.lastKm !== null ? '<div class="small muted mt-2">' + esc(T.check.kmHint(c.lastKm)) + '</div>' : '') + '</div>' +
-      '<h2 class="label muted check-section">' + esc(T.check.notesTitle) + '</h2>' +
-      '<div class="card"><div class="small secondary">' + esc(checkProblems() > 0 ? T.check.notesHint : T.check.notesOptional) + '</div>' +
-      '<textarea class="field mt-2" id="check-notes" rows="3">' + esc(c.notes) + '</textarea></div>' +
-      '<div class="card alert" id="check-error"' + (c.error ? '' : ' hidden') + '>' + esc(c.error || '') + '</div>' +
-      '</div>' +
-      '<div class="footer">' + button(T.check.save, 'driver:check-save', { loading: c.saving }) + '</div>' +
-      '</main>';
+    if (c.step === 'km') {
+      body = '<div class="qcard"><div class="qicon">' + icon('gauge', 'huge') + '</div>' +
+        '<div class="qtext">' + esc(T.check.kmTitle) + '</div><div class="secondary mt-1">' + esc(T.check.kmBody) + '</div></div>' +
+        '<input class="field qkm" id="check-km" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="' + esc(T.check.kmPlaceholder) + '" value="' + esc(c.km) + '">' +
+        (c.lastKm !== null ? '<div class="secondary center mt-2">' + esc(T.check.kmHint(c.lastKm)) + '</div>' : '');
+      footer = button(c.saving ? T.check.sending : T.check.save, 'driver:check-save', { loading: c.saving });
+      return '<main class="screen qscreen">' + checkTop(total, total) +
+        '<div class="screen-body">' + body + (c.error ? '<div class="card alert">' + esc(c.error) + '</div>' : '') + '</div>' +
+        '<div class="footer">' + footer + '</div></main>';
+    }
+
+    var item = c.items[c.i];
+    var answer = c.answers[item.key];
+    body = '<div class="qcard" data-key="q' + esc(item.key) + '">' +
+      '<div class="qicon' + (answer === 'problem' ? ' bad' : answer === 'ok' ? ' good' : '') + '">' + icon(ITEM_ICON[item.key] || SECTION_ICON[item.sectionKey] || 'check', 'huge') + '</div>' +
+      '<div class="label muted">' + esc(item.section) + '</div>' +
+      '<div class="qtext">' + esc(item.label) + '</div></div>';
+
+    if (answer === 'problem') {
+      body += problemPanel(item);
+      footer = '<div class="action-row">' +
+        button(T.check.okAfterAll, 'driver:check-ok', { variant: 'secondary', style: 'flex:2' }) +
+        button(T.check.next, 'driver:check-next', { style: 'flex:3', icon: 'chevron' }) + '</div>';
+    } else {
+      footer = '<div class="qanswers">' +
+        '<button type="button" class="qbtn ok' + (answer === 'ok' ? ' on' : '') + '" data-action="driver:check-answer" data-value="ok">' + icon('thumbUp', 'lg') + esc(T.check.ok) + '</button>' +
+        '<button type="button" class="qbtn problem" data-action="driver:check-answer" data-value="problem">' + icon('thumbDown', 'lg') + esc(T.check.problem) + '</button>' +
+        (item.na ? '<button type="button" class="btn plain' + (answer === 'na' ? ' on' : '') + '" data-action="driver:check-answer" data-value="na">' + esc(T.check.na) + '</button>' : '') +
+        '</div>';
+    }
+
+    return '<main class="screen qscreen">' + checkTop(c.i + 1, total) +
+      '<div class="screen-body">' + body + (c.error ? '<div class="card alert">' + esc(c.error) + '</div>' : '') + '</div>' +
+      '<div class="footer">' + footer + '</div></main>';
   }
 
-  function checkError(message, scrollTo) {
-    state.check.error = message;
+  function addPhoto() {
+    var c = state.check;
+    var key = c.items[c.i].key;
+    var m = evidence(key);
+    if (m.photos.length >= MAX_PHOTOS) { S.toast(T.check.maxPhotos); return; }
+    S.pickFiles('image/*', true, false).then(function (files) {
+      if (!files.length) return null;
+      return S.preparePhoto(files[0]).then(function (p) {
+        m.photos.push({ blob: p.blob, name: p.name, url: URL.createObjectURL(p.blob) });
+        c.error = null;
+        S.render();
+      });
+    }).catch(function (e) { S.toast(e.message || T.genericBody); });
+  }
+
+  // Voice: press once to start, once to stop — easier than holding a finger down.
+  var vrec = { active: false, key: null, recorder: null, stream: null, chunks: [], startedAt: 0, timer: null, type: '', discard: false };
+
+  function toggleVoice() {
+    if (vrec.active) { stopVoice(false); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) { S.toast(T.check.noMic); return; }
+    var key = state.check.items[state.check.i].key;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      var type = S.recorderMime();
+      var r;
+      try { r = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream); } catch (e) { r = new MediaRecorder(stream); }
+      vrec = { active: true, key: key, recorder: r, stream: stream, chunks: [], startedAt: Date.now(), timer: null, type: type, discard: false };
+      r.ondataavailable = function (ev) { if (ev.data && ev.data.size) vrec.chunks.push(ev.data); };
+      r.onstop = voiceStopped;
+      r.start();
+      vrec.timer = setInterval(function () {
+        var held = Date.now() - vrec.startedAt;
+        var el = document.querySelector('[data-vtime]');
+        if (el) el.textContent = '0:' + pad(Math.min(59, Math.floor(held / 1000)));
+        if (held >= MAX_VOICE_MS) stopVoice(false);
+      }, 250);
+      S.render();
+    }, function () { S.toast(T.check.micBlocked); });
+  }
+
+  function stopVoice(discard) {
+    if (!vrec.active) return;
+    vrec.active = false;
+    vrec.discard = discard;
+    vrec.seconds = Math.round((Date.now() - vrec.startedAt) / 1000);
+    clearInterval(vrec.timer);
+    try { vrec.recorder.stop(); } catch (e) { voiceStopped(); }
     S.render();
-    var el = document.querySelector(scrollTo || '#check-error');
-    if (el && message) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
+  function voiceStopped() {
+    if (vrec.stream) vrec.stream.getTracks().forEach(function (t) { t.stop(); });
+    var blob = new Blob(vrec.chunks, { type: (vrec.recorder && vrec.recorder.mimeType) || 'audio/webm' });
+    var key = vrec.key;
+    var seconds = vrec.seconds;
+    if (vrec.discard || !state.check) return;
+    if (seconds < 1 || !blob.size) { S.toast(T.check.tooShort); return; }
+    S.voiceFile(blob, (vrec.recorder && vrec.recorder.mimeType) || vrec.type).then(function (f) {
+      var m = evidence(key);
+      if (m.voice) URL.revokeObjectURL(m.voice.url);
+      m.voice = { blob: f.blob, name: f.name, url: URL.createObjectURL(f.blob), seconds: seconds };
+      state.check.error = null;
+      S.render();
+    }, function () { S.toast(T.genericBody); });
+  }
+
+  var playing = null;
+  function playVoice() {
+    var c = state.check;
+    var m = c.media[c.items[c.i].key];
+    if (!m || !m.voice) return;
+    if (playing) { playing.pause(); playing = null; }
+    playing = new Audio(m.voice.url);
+    playing.play().catch(function () {});
+  }
+
+  /** The notes the server keeps: every problem by name, with anything typed. */
+  function problemNotes() {
+    var c = state.check;
+    return c.items.filter(function (i) { return c.answers[i.key] === 'problem'; }).map(function (i) {
+      var m = c.media[i.key] || { text: '', photos: [], voice: null };
+      var said = m.text.trim();
+      return '• ' + i.label + (said ? ': ' + said : (m.photos.length || m.voice ? ' — ' + T.check.seePhoto : ''));
+    }).join('\n');
   }
 
   async function saveCheck() {
     var c = state.check;
-    var keys = [];
-    c.sections.forEach(function (s) { s.items.forEach(function (i) { keys.push(i.key); }); });
-    var missing = keys.filter(function (k) { return !c.answers[k]; });
-    if (missing.length) {
-      c.missing = missing[0];
-      checkError(T.check.missing(missing.length), '[data-item="' + missing[0] + '"]');
-      return;
-    }
+    if (c.saving) return;
     var km = c.km.replace(/[^\d]/g, '');
-    if (km === '') { checkError(T.check.needKm); return; }
-    if (checkProblems() > 0 && !c.notes.trim()) { checkError(T.check.needNotes); return; }
+    if (km === '') { c.error = T.check.needKm; S.render(); return; }
+
+    var form = new FormData();
+    form.append('vehicle_id', String(c.vehicleId));
+    form.append('start_km', km);
+    form.append('answers', JSON.stringify(c.answers));
+    form.append('notes', problemNotes());
+    c.items.forEach(function (i) {
+      var m = c.media[i.key];
+      if (c.answers[i.key] !== 'problem' || !m) return;
+      m.photos.forEach(function (p) {
+        form.append('media[]', p.blob, p.name);
+        form.append('media_item[]', i.key);
+        form.append('media_kind[]', 'photo');
+        form.append('media_duration[]', '');
+      });
+      if (m.voice) {
+        form.append('media[]', m.voice.blob, m.voice.name);
+        form.append('media_item[]', i.key);
+        form.append('media_kind[]', 'voice');
+        form.append('media_duration[]', String(m.voice.seconds));
+      }
+    });
 
     keepScreenOn(); // still inside the tap
     c.saving = true;
     c.error = null;
     S.render();
     try {
-      await api('checks', { method: 'POST', body: { vehicle_id: c.vehicleId, start_km: Number(km), answers: c.answers, notes: c.notes } });
+      await S.request(API_BASE + '/checks', { method: 'POST', form: form, token: S.token('driver'), timeout: 5 * 60 * 1000 });
     } catch (e) {
       c.saving = false;
-      checkError(e.message || T.genericBody);
+      c.error = e.message || T.genericBody;
+      S.render();
       return;
     }
+    Object.keys(c.media).forEach(function (k) {
+      c.media[k].photos.forEach(function (p) { URL.revokeObjectURL(p.url); });
+      if (c.media[k].voice) URL.revokeObjectURL(c.media[k].voice.url);
+    });
     state.check = null;
     state.selectedId = c.vehicleId;
     S.go({ app: 'driver' }, true);
@@ -759,10 +979,46 @@
       case 'hide-gap': gps.gap = null; S.render(); break;
       case 'confirm-start': openStart(); break;
       case 'check-answer': {
-        var key = el.getAttribute('data-key');
-        state.check.answers[key] = el.getAttribute('data-value');
-        if (state.check.missing === key) state.check.missing = null;
-        state.check.error = null;
+        var c = state.check;
+        var item = c.items[c.i];
+        var value = el.getAttribute('data-value');
+        c.answers[item.key] = value;
+        c.error = null;
+        if (value === 'problem') { S.render(); break; }
+        delete c.media[item.key];
+        nextCard();
+        break;
+      }
+      case 'check-ok': {
+        var ck = state.check;
+        stopVoice(true);
+        ck.answers[ck.items[ck.i].key] = 'ok';
+        delete ck.media[ck.items[ck.i].key];
+        nextCard();
+        break;
+      }
+      case 'check-next': {
+        var cn = state.check;
+        if (vrec.active) stopVoice(false);
+        if (!hasEvidence(cn.items[cn.i].key) && !vrec.active) { cn.error = T.check.needEvidence; S.render(); break; }
+        nextCard();
+        break;
+      }
+      case 'check-prev': prevCard(); break;
+      case 'check-photo': addPhoto(); break;
+      case 'check-photo-del': {
+        var cm = evidence(state.check.items[state.check.i].key);
+        var gone = cm.photos.splice(Number(el.getAttribute('data-i')), 1)[0];
+        if (gone) URL.revokeObjectURL(gone.url);
+        S.render();
+        break;
+      }
+      case 'check-voice': toggleVoice(); break;
+      case 'check-voice-play': playVoice(); break;
+      case 'check-voice-del': {
+        var cv = evidence(state.check.items[state.check.i].key);
+        if (cv.voice) URL.revokeObjectURL(cv.voice.url);
+        cv.voice = null;
         S.render();
         break;
       }
@@ -784,11 +1040,12 @@
   }
 
   function input(e) {
-    if (!state.check) return;
-    if (e.target.id === 'check-km') state.check.km = e.target.value;
-    else if (e.target.id === 'check-notes') { state.check.notes = e.target.value; }
+    var c = state.check;
+    if (!c) return;
+    if (e.target.id === 'check-km') c.km = e.target.value;
+    else if (e.target.id === 'check-text') evidence(c.items[c.i].key).text = e.target.value;
     else return;
-    if (state.check.error) { state.check.error = null; }
+    c.error = null;
     S.render();
   }
 

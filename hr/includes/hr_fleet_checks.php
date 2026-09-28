@@ -109,12 +109,35 @@ function fleet_last_start_km(PDO $conn, int $vehicleId): ?int
     return $km === false ? null : (int)$km;
 }
 
+function fleet_check_media_ready(PDO $conn): bool
+{
+    static $ready = null;
+    if ($ready === null) {
+        try {
+            $conn->query("SELECT 1 FROM fleet_daily_check_media LIMIT 1");
+            $ready = true;
+        } catch (PDOException $e) {
+            $ready = false;
+        }
+    }
+    return $ready;
+}
+
+/** Photos and voice notes per check sent with one save — at most this many. */
+const FLEET_CHECK_MAX_MEDIA = 20;
+
 /**
  * Check and save one day's answers.
  *
+ * $media: photos and voice notes showing a Problem, from the Staff web app —
+ * each ['item_key' => …, 'kind' => 'photo'|'voice', 'file' => one $_FILES
+ * entry, 'duration' => ?int]. A Problem may be shown this way instead of
+ * written, for drivers who cannot write; the notes are still required and the
+ * app fills them with the items' names.
+ *
  * @return array{ok:bool,error:string,check:?array} error is written for the driver to read
  */
-function fleet_save_daily_check(PDO $conn, array $vehicle, array $driver, $answers, $startKm, string $notes): array
+function fleet_save_daily_check(PDO $conn, array $vehicle, array $driver, $answers, $startKm, string $notes, array $media = []): array
 {
     $fail = static fn(string $error): array => ['ok' => false, 'error' => $error, 'check' => null];
 
@@ -142,7 +165,26 @@ function fleet_save_daily_check(PDO $conn, array $vehicle, array $driver, $answe
         return $fail('Write what the problem is, so the office can fix it.');
     }
 
+    // Every file is checked before anything is written, so a bad one cannot
+    // leave a saved check without the rest of its evidence.
+    if (count($media) > FLEET_CHECK_MAX_MEDIA) {
+        return $fail('Too many photos and voice messages. Send at most ' . FLEET_CHECK_MAX_MEDIA . '.');
+    }
+    foreach ($media as $i => $m) {
+        $key = (string)($m['item_key'] ?? '');
+        $kind = (string)($m['kind'] ?? '');
+        if (($clean[$key] ?? '') !== 'problem' || !in_array($kind, ['photo', 'voice'], true) || !is_array($m['file'] ?? null)) {
+            return $fail('A photo or voice message did not match a problem. Try again.');
+        }
+        $check = ops_check_media_upload($m['file'], $kind);
+        if (!$check['ok']) {
+            return $fail($check['error']);
+        }
+        $media[$i]['ext'] = $check['ext'];
+    }
+
     $date = fleet_check_today();
+    $inserted = false;
     $insert = $conn->prepare("
         INSERT INTO fleet_daily_checks
             (company_id, vehicle_id, driver_user_id, driver_name, check_date, start_km, answers, problem_count, notes, created_at)
@@ -161,6 +203,7 @@ function fleet_save_daily_check(PDO $conn, array $vehicle, array $driver, $answe
             $notes !== '' ? mb_substr($notes, 0, 2000) : null,
             fleet_now(),
         ]);
+        $inserted = true;
     } catch (PDOException $e) {
         // Already done today (a retried send whose reply got lost) — that one stands.
         if ((int)($e->errorInfo[1] ?? 0) !== 1062) {
@@ -168,7 +211,74 @@ function fleet_save_daily_check(PDO $conn, array $vehicle, array $driver, $answe
         }
     }
 
-    return ['ok' => true, 'error' => '', 'check' => fleet_daily_check_for($conn, (int)$vehicle['id'], (int)$driver['id'], $date)];
+    $saved = fleet_daily_check_for($conn, (int)$vehicle['id'], (int)$driver['id'], $date);
+    // Files only with the check they were sent with — a repeat of a check
+    // already saved must not pile a second copy onto it.
+    if ($inserted && $saved && $media) {
+        fleet_store_check_media($conn, (int)$saved['id'], $media);
+    }
+
+    return ['ok' => true, 'error' => '', 'check' => $saved];
+}
+
+/**
+ * Keep the checked files of a new check. Before the migration has run the
+ * files are dropped (the check and its notes are saved either way) and it is
+ * logged, so a trip is never refused over a missing table.
+ */
+function fleet_store_check_media(PDO $conn, int $checkId, array $media): void
+{
+    if (!fleet_check_media_ready($conn)) {
+        error_log('fleet_store_check_media: run migrations/fleet_check_media.sql — ' . count($media) . ' file(s) for check ' . $checkId . ' not kept');
+        return;
+    }
+    $root = dirname(__DIR__, 2);
+    $base = $root . '/uploads/fleet_checks';
+    if (!is_dir($base)) {
+        @mkdir($base, 0755, true);
+    }
+    // Not web-readable: HR reads them through hr/fleet_check_media.php.
+    if (!is_file($base . '/.htaccess')) {
+        @file_put_contents($base . '/.htaccess', "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n");
+    }
+    $dirRel = 'uploads/fleet_checks/' . $checkId;
+    if (!is_dir($root . '/' . $dirRel)) {
+        @mkdir($root . '/' . $dirRel, 0755, true);
+    }
+    $insert = $conn->prepare("
+        INSERT INTO fleet_daily_check_media (check_id, item_key, kind, file_path, duration_seconds, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ");
+    foreach ($media as $m) {
+        $rel = $dirRel . '/' . $m['kind'] . '_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $m['ext'];
+        if (!move_uploaded_file((string)$m['file']['tmp_name'], $root . '/' . $rel)) {
+            error_log('fleet_store_check_media: could not move a file for check ' . $checkId);
+            continue;
+        }
+        $duration = is_numeric($m['duration'] ?? null) ? max(1, min(3600, (int)$m['duration'])) : null;
+        $insert->execute([$checkId, (string)$m['item_key'], (string)$m['kind'], $rel, $duration, fleet_now()]);
+    }
+}
+
+/** check_id => list of media rows, for the HR list. */
+function fleet_check_media_for(PDO $conn, array $checkIds): array
+{
+    $checkIds = array_values(array_filter(array_map('intval', $checkIds)));
+    if (!$checkIds || !fleet_check_media_ready($conn)) {
+        return [];
+    }
+    $stmt = $conn->prepare("
+        SELECT id, check_id, item_key, kind, duration_seconds
+        FROM fleet_daily_check_media
+        WHERE check_id IN (" . implode(',', array_fill(0, count($checkIds), '?')) . ")
+        ORDER BY id
+    ");
+    $stmt->execute($checkIds);
+    $out = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $out[(int)$row['check_id']][] = $row;
+    }
+    return $out;
 }
 
 /** Checks for the HR list, newest first. */

@@ -39,6 +39,7 @@ $checks = $ready ? fleet_daily_check_rows($conn, $filters) : [];
 $vehicles = $ready ? fleet_vehicle_options($conn) : [];
 $drivers = $ready ? fleet_driver_options($conn) : [];
 $items = fleet_daily_checklist_items();
+$checkMedia = $ready ? fleet_check_media_for($conn, array_column($checks, 'id')) : [];
 $openProblems = $ready ? fleet_open_problem_count($conn) : 0;
 
 $back = 'fleet_checks?' . http_build_query([
@@ -57,6 +58,8 @@ $pageStyles = '
 .check-answers{columns:2;column-gap:2rem}
 @media (max-width:767px){.check-answers{columns:1}}
 .check-answers li{break-inside:avoid;padding:2px 0}
+.check-media img{width:96px;height:96px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb}
+.check-media audio{height:36px;max-width:260px}
 ';
 require_once __DIR__ . '/includes/hr_layout_header.php';
 
@@ -164,6 +167,18 @@ echo hr_ui_page_header(
                   <span class="badge text-bg-light text-muted" title="<?= htmlspecialchars(date('d M Y H:i', strtotime((string)$c['reviewed_at']))) ?>">Seen<?= $c['reviewed_by_name'] ? ' by ' . htmlspecialchars((string)$c['reviewed_by_name']) : '' ?></span>
                 <?php endif; ?>
                 <div class="mt-1"><?= nl2br(htmlspecialchars((string)$c['notes'])) ?></div>
+                <?php foreach ($checkMedia[(int)$c['id']] ?? [] as $m):
+                    $src = 'fleet_check_media?id=' . (int)$m['id'];
+                    $what = $items[$m['item_key']]['label'] ?? $m['item_key']; ?>
+                  <div class="check-media mt-2">
+                    <div class="text-muted"><?= htmlspecialchars($what) ?></div>
+                    <?php if ($m['kind'] === 'photo'): ?>
+                      <a href="<?= $src ?>" target="_blank" rel="noopener"><img src="<?= $src ?>" alt="Photo of the problem" loading="lazy"></a>
+                    <?php else: ?>
+                      <audio controls preload="none" src="<?= $src ?>"></audio>
+                    <?php endif; ?>
+                  </div>
+                <?php endforeach; ?>
               <?php endif; ?>
             </td>
             <td class="text-end text-nowrap">

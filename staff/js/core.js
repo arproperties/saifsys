@@ -358,6 +358,110 @@
     return null;
   }
 
+  // -------------------------------------------------------------------------
+  // Files from the phone: picking, shrinking photos, making voice notes playable
+  // -------------------------------------------------------------------------
+
+  var picker = null;
+
+  /** Open the phone's camera or file picker. Resolves with the chosen files. */
+  function pickFiles(accept, capture, multiple) {
+    if (picker && picker.parentNode) picker.parentNode.removeChild(picker);
+    return new Promise(function (resolve) {
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = accept;
+      if (capture) input.setAttribute('capture', 'environment');
+      if (multiple) input.multiple = true;
+      input.style.display = 'none';
+      input.addEventListener('change', function () {
+        var list = Array.prototype.slice.call(input.files || []);
+        if (input.parentNode) input.parentNode.removeChild(input);
+        resolve(list);
+      });
+      document.body.appendChild(input);
+      picker = input;
+      input.click();
+    });
+  }
+
+  function extOf(name) { var m = /\.([a-z0-9]+)$/i.exec(name || ''); return m ? m[1].toLowerCase() : ''; }
+
+  /** A photo shrunk for 3G: at most 1600 px, JPEG. Resolves {blob, name}. */
+  function preparePhoto(file, notPhotoMessage) {
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(function (b) { resolve(b); }, 'image/jpeg', 0.7);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    }).then(function (blob) {
+      if (blob) return { blob: blob, name: 'photo.jpg' };
+      var ext = extOf(file.name);
+      if (['jpg', 'jpeg', 'png', 'gif', 'webp'].indexOf(ext) !== -1) return { blob: file, name: 'photo.' + ext };
+      throw new Error(notPhotoMessage || 'Only JPG, PNG, GIF or WEBP photos are allowed.');
+    });
+  }
+
+  function decodeAudio(context, buffer) {
+    return new Promise(function (resolve, reject) {
+      var maybe = context.decodeAudioData(buffer, resolve, reject);
+      if (maybe && maybe.then) maybe.then(resolve, reject);
+    });
+  }
+
+  /**
+   * 16-bit PCM WAV, mono, 22.05 kHz — what the server takes and every phone
+   * plays. Same as the office's web composer (modules/operations/job_view.php).
+   */
+  function toWav(blob) {
+    var Context = window.AudioContext || window.webkitAudioContext;
+    return blob.arrayBuffer().then(function (buffer) {
+      var context = new Context();
+      return decodeAudio(context, buffer).then(function (audio) {
+        if (context.close) context.close();
+        var rate = 22050;
+        var step = audio.sampleRate / rate;
+        var count = Math.max(1, Math.floor(audio.length / step));
+        var tracks = [];
+        for (var c = 0; c < audio.numberOfChannels; c++) tracks.push(audio.getChannelData(c));
+        var view = new DataView(new ArrayBuffer(44 + count * 2));
+        var text = function (o, v) { for (var i = 0; i < v.length; i++) view.setUint8(o + i, v.charCodeAt(i)); };
+        text(0, 'RIFF'); view.setUint32(4, 36 + count * 2, true); text(8, 'WAVE'); text(12, 'fmt ');
+        view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+        view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true); text(36, 'data'); view.setUint32(40, count * 2, true);
+        for (var i = 0; i < count; i++) {
+          var at = Math.floor(i * step);
+          var sum = 0;
+          for (var t = 0; t < tracks.length; t++) sum += tracks[t][at] || 0;
+          var s = Math.max(-1, Math.min(1, sum / tracks.length));
+          view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+        return new Blob([view.buffer], { type: 'audio/wav' });
+      });
+    });
+  }
+
+  /** A finished recording as an uploadable voice note: Safari's AAC stays .m4a, anything else becomes WAV. */
+  function voiceFile(blob, mimeType) {
+    if ((mimeType || '').indexOf('audio/mp4') === 0) return Promise.resolve({ blob: blob, name: 'voice.m4a' });
+    return toWav(blob).then(function (wav) { return { blob: wav, name: 'voice.wav' }; });
+  }
+
+  /** The recorder type to ask for: AAC on iPhones (plays everywhere), the browser's own elsewhere. */
+  function recorderMime() {
+    return isIOS && window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+  }
+
   function mediaFailed(key) { return !!(mediaCache[key] && mediaCache[key].failed); }
   function mediaForget(key) { delete mediaCache[key]; }
 
@@ -727,6 +831,12 @@
     button: button,
     toast: toast,
     media: media,
+    pickFiles: pickFiles,
+    extOf: extOf,
+    preparePhoto: preparePhoto,
+    toWav: toWav,
+    voiceFile: voiceFile,
+    recorderMime: recorderMime,
     mediaFailed: mediaFailed,
     mediaForget: mediaForget,
     register: register,

@@ -356,3 +356,33 @@ body.viewing { overflow: hidden; }
 .viewer-close { position: absolute; top: calc(var(--safe-top) + 12px); right: 12px; width: 52px; height: 52px; border-radius: 50%; background: rgba(255, 255, 255, .16); color: #fff; display: grid; place-items: center; z-index: 1; }
 .viewer-wait { color: #fff; }
 .sheet.tall { max-height: 90dvh; overflow-y: auto; }
+
+/* Driver daily check — one question per card, big picture, big buttons */
+.icon.huge { width: 88px; height: 88px; stroke-width: 1.5; }
+.qcount { font-weight: 700; color: var(--text-2); font-size: 17px; }
+.qprogress { height: 8px; border-radius: 999px; background: var(--cream-400); overflow: hidden; margin-top: 6px; }
+.qprogress span { display: block; height: 100%; background: var(--gold-500); transition: width .2s; }
+.qcard { text-align: center; padding: 28px 8px 8px; }
+.qicon { width: 148px; height: 148px; margin: 0 auto 18px; border-radius: 36px; background: var(--navy-800); color: var(--gold-500); display: grid; place-items: center; }
+.qicon.good { background: var(--success); color: #fff; }
+.qicon.bad { background: var(--danger); color: #fff; }
+.qtext { font-size: 22px; font-weight: 700; line-height: 1.35; margin-top: 8px; }
+.qanswers { display: grid; gap: 12px; }
+.qbtn { display: flex; align-items: center; justify-content: center; gap: 14px; min-height: 76px; border-radius: 18px; font-size: 24px; font-weight: 800; color: #fff; }
+.qbtn.ok { background: var(--success); }
+.qbtn.problem { background: var(--danger); }
+.qbtn.on { box-shadow: 0 0 0 4px rgba(5, 150, 105, .3); }
+.qbtn:active { filter: brightness(.9); }
+.qanswers .btn.plain.on { color: var(--text); text-decoration: underline; }
+.qproblem { margin-top: 16px; padding: 16px; border-radius: 16px; background: #FEF2F2; border: 1.5px solid #FCA5A5; }
+.qtools { display: flex; gap: 12px; margin-top: 14px; }
+.qtool { flex: 1; min-height: 96px; border-radius: 16px; background: var(--cream-0); border: 2px solid var(--cream-400); color: var(--navy-700); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 18px; font-weight: 700; }
+.qtool:disabled { opacity: .4; }
+.qtool.live { background: var(--danger); border-color: var(--danger); color: #fff; }
+.qtool b { font-variant-numeric: tabular-nums; }
+.qthumbs { display: flex; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+.qthumb { position: relative; width: 88px; height: 88px; }
+.qthumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 12px; }
+.qvoice { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 8px 8px 8px 10px; border-radius: 14px; background: var(--cream-0); font-weight: 700; }
+.qvoice .vbtn { background: var(--navy-500); }
+.qkm { font-size: 30px; font-weight: 700; text-align: center; letter-spacing: .05em; margin-top: 20px; min-height: 68px; }
