@@ -1,0 +1,5 @@
+# Staff app (PWA). Its own rewrite scope, so the site-wide rules in the root
+# .htaccess (".php" hiding, trailing-slash stripping) never touch these URLs —
+# on live they bounced /staff/ and /staff back and forth forever.
+RewriteEngine On
+DirectoryIndex index.php

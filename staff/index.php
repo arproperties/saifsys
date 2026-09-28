@@ -1,17 +1,23 @@
 <?php
 /**
- * Driver app — web version (PWA), for iPhones and for phones the APK will not
- * install on. Same PIN, same API (api/mobile/fleet), same trips as the APK.
+ * Staff app — web version (PWA). One app for field staff: after the PIN, the
+ * person picks Driver or Cleaning, and each works exactly as its own app does.
  *
- * Open /driver/ on the phone, then "Add to Home Screen".
+ *   Driver    same API, trips and rules as /driver/ and DRIVER-MOBILE-APP
+ *             (api/mobile/fleet)
+ *   Cleaning  same API, jobs and rules as OPERATION-MOBILE-APP
+ *             (api/mobile/ops)
  *
- * One limit the APK does not have: a web page cannot record GPS with the
- * screen locked or another app in front. The page keeps the screen on while a
- * trip runs and says so when recording has paused.
+ * One PIN signs in to both through api/mobile/staff/signin.php, which hands
+ * back a separate token for each app the person may use. Someone with only one
+ * of them goes straight into it.
  *
- * The app key is printed into the page, exactly as the APK carries it inside
- * the build. It says "this is our app", not who is driving — the PIN and its
- * lockout do that.
+ * Open /staff/ on the phone, then "Add to Home Screen". The APKs and /driver/
+ * carry on working alongside it.
+ *
+ * The app key is printed into the page, exactly as the APKs carry it inside
+ * the build. It says "this is our app", not who is holding the phone — the PIN
+ * and its lockout do that.
  */
 
 declare(strict_types=1);
@@ -20,7 +26,7 @@ require_once dirname(__DIR__) . '/includes/config.php';
 
 $appKey = getenv('OPS_MOBILE_APP_KEY') ?: (defined('OPS_MOBILE_APP_KEY') ? (string)OPS_MOBILE_APP_KEY : '');
 // Dev only: point a local copy of the page at another server's API (the live API allows cross-origin calls).
-$apiBase = getenv('DRIVER_API_BASE') ?: '../api/mobile/fleet';
+$apiRoot = rtrim(getenv('STAFF_API_ROOT') ?: '../api/mobile', '/');
 $version = '1.0.0';
 $asset = static fn(string $file): string => $file . '?v=' . (@filemtime(__DIR__ . '/' . $file) ?: $version);
 
@@ -31,12 +37,12 @@ header('Cache-Control: no-cache');
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Driver</title>
+<title>Staff</title>
 <meta name="theme-color" content="#0E2038">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Driver">
+<meta name="apple-mobile-web-app-title" content="Staff">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -48,14 +54,20 @@ header('Cache-Control: no-cache');
 <body>
 <div id="app"></div>
 <div id="sheet-root"></div>
+<div id="viewer-root"></div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <script>
-window.DRIVER_CONFIG = <?= json_encode([
-    'apiBase' => $apiBase,
+window.STAFF_CONFIG = <?= json_encode([
+    'signinUrl' => $apiRoot . '/staff/signin.php',
+    'opsBase' => $apiRoot . '/ops',
+    'fleetBase' => $apiRoot . '/fleet',
     'appKey' => $appKey,
     'version' => $version,
 ], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 </script>
-<script src="<?= htmlspecialchars($asset('app.js')) ?>"></script>
+<script src="<?= htmlspecialchars($asset('js/core.js')) ?>"></script>
+<script src="<?= htmlspecialchars($asset('js/driver.js')) ?>"></script>
+<script src="<?= htmlspecialchars($asset('js/cleaning.js')) ?>"></script>
+<script src="<?= htmlspecialchars($asset('js/app.js')) ?>"></script>
 </body>
 </html>
