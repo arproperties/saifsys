@@ -1,0 +1,162 @@
+{
+  "_about": "Driver daily check, spoken. One entry per checklist item key (hr/includes/hr_fleet_checks.php). 'source' is the server's wording the clips were made for: when the server's label no longer matches it, the app falls back to the phone's own voice for that item until scripts/staff_check_voice.mjs is run again. Clips: audio/check/{lang}/{key}.mp3.",
+  "languages": {
+    "en": { "name": "English", "speech": "en-GB", "dir": "ltr" },
+    "ur": { "name": "اردو", "speech": "ur-PK", "dir": "rtl" },
+    "hi": { "name": "हिन्दी", "speech": "hi-IN", "dir": "ltr" },
+    "ar": { "name": "العربية", "speech": "ar-AE", "dir": "rtl" },
+    "ml": { "name": "മലയാളം", "speech": "ml-IN", "dir": "ltr" }
+  },
+  "ui": {
+    "en": { "ok": "OK", "problem": "Problem", "na": "Not in this vehicle", "photo": "Photo", "voice": "Voice", "stop": "Stop", "next": "Next", "okAfterAll": "It is OK", "showTitle": "Show the problem", "save": "Save and start trip", "back": "Back", "listen": "Listen again", "kmTitle": "Kilometres on the dashboard", "writeInstead": "Or write it here (optional)", "language": "Language" },
+    "ur": { "ok": "ٹھیک ہے", "problem": "مسئلہ", "na": "اس گاڑی میں نہیں", "photo": "تصویر", "voice": "آواز", "stop": "روکیں", "next": "آگے", "okAfterAll": "ٹھیک ہے", "showTitle": "مسئلہ دکھائیں", "save": "محفوظ کریں اور سفر شروع کریں", "back": "پیچھے", "listen": "دوبارہ سنیں", "kmTitle": "ڈیش بورڈ کے کلومیٹر", "writeInstead": "یا یہاں لکھیں (ضروری نہیں)", "language": "زبان" },
+    "hi": { "ok": "ठीक है", "problem": "समस्या", "na": "इस गाड़ी में नहीं", "photo": "फ़ोटो", "voice": "आवाज़", "stop": "रोकें", "next": "आगे", "okAfterAll": "ठीक है", "showTitle": "समस्या दिखाइए", "save": "सेव करें और सफ़र शुरू करें", "back": "पीछे", "listen": "फिर से सुनें", "kmTitle": "डैशबोर्ड के किलोमीटर", "writeInstead": "या यहाँ लिखिए (ज़रूरी नहीं)", "language": "भाषा" },
+    "ar": { "ok": "سليم", "problem": "مشكلة", "na": "غير موجود في هذه المركبة", "photo": "صورة", "voice": "صوت", "stop": "إيقاف", "next": "التالي", "okAfterAll": "سليم", "showTitle": "أظهر المشكلة", "save": "حفظ وبدء الرحلة", "back": "رجوع", "listen": "استمع مرة أخرى", "kmTitle": "كيلومترات العداد", "writeInstead": "أو اكتب هنا (اختياري)", "language": "اللغة" },
+    "ml": { "ok": "ശരി", "problem": "പ്രശ്നം", "na": "ഈ വാഹനത്തിൽ ഇല്ല", "photo": "ഫോട്ടോ", "voice": "ശബ്ദം", "stop": "നിർത്തുക", "next": "അടുത്തത്", "okAfterAll": "ശരി", "showTitle": "പ്രശ്നം കാണിക്കുക", "save": "സേവ് ചെയ്ത് യാത്ര തുടങ്ങുക", "back": "പിന്നോട്ട്", "listen": "വീണ്ടും കേൾക്കുക", "kmTitle": "ഡാഷ്‌ബോർഡിലെ കിലോമീറ്റർ", "writeInstead": "അല്ലെങ്കിൽ ഇവിടെ എഴുതുക (നിർബന്ധമില്ല)", "language": "ഭാഷ" }
+  },
+  "prompts": {
+    "intro": {
+      "en": "Daily vehicle check. Listen to each question. If everything is fine, press the green button. If there is a problem, press the red button.",
+      "ur": "روزانہ گاڑی کی جانچ۔ ہر سوال غور سے سنیں۔ اگر سب ٹھیک ہے تو ہرا بٹن دبائیں۔ اگر کوئی مسئلہ ہے تو لال بٹن دبائیں۔",
+      "hi": "रोज़ाना गाड़ी की जाँच। हर सवाल ध्यान से सुनिए। अगर सब ठीक है तो हरा बटन दबाइए। अगर कोई समस्या है तो लाल बटन दबाइए।",
+      "ar": "الفحص اليومي للمركبة. استمع إلى كل سؤال. إذا كان كل شيء سليماً اضغط الزر الأخضر. وإذا كانت هناك مشكلة اضغط الزر الأحمر.",
+      "ml": "ദിവസേനയുള്ള വാഹന പരിശോധന. ഓരോ ചോദ്യവും ശ്രദ്ധിച്ച് കേൾക്കുക. എല്ലാം ശരിയാണെങ്കിൽ പച്ച ബട്ടൺ അമർത്തുക. എന്തെങ്കിലും പ്രശ്നമുണ്ടെങ്കിൽ ചുവന്ന ബട്ടൺ അമർത്തുക."
+    },
+    "problem": {
+      "en": "Show the problem. Take a photo with the camera, or press the microphone and say what is wrong. Then press Next.",
+      "ur": "مسئلہ دکھائیں۔ کیمرے سے تصویر لیں، یا مائیک دبا کر بتائیں کہ کیا خرابی ہے۔ پھر آگے کا بٹن دبائیں۔",
+      "hi": "समस्या दिखाइए। कैमरे से फ़ोटो लीजिए, या माइक दबाकर बताइए कि क्या ख़राबी है। फिर आगे का बटन दबाइए।",
+      "ar": "أظهر المشكلة. التقط صورة بالكاميرا، أو اضغط على الميكروفون وقل ما هو العطل. ثم اضغط زر التالي.",
+      "ml": "പ്രശ്നം കാണിക്കുക. ക്യാമറ ഉപയോഗിച്ച് ഒരു ഫോട്ടോ എടുക്കുക, അല്ലെങ്കിൽ മൈക്ക് അമർത്തി എന്താണ് തകരാർ എന്ന് പറയുക. പിന്നെ അടുത്തത് ബട്ടൺ അമർത്തുക."
+    },
+    "km": {
+      "en": "Look at the dashboard, and type the kilometres you see. Then press the yellow button at the bottom.",
+      "ur": "ڈیش بورڈ پر دیکھیں اور جو کلومیٹر نظر آ رہے ہیں وہ نمبر لکھیں۔ پھر نیچے والا پیلا بٹن دبائیں۔",
+      "hi": "डैशबोर्ड पर देखिए और जो किलोमीटर दिख रहे हैं वो नंबर लिखिए। फिर नीचे वाला पीला बटन दबाइए।",
+      "ar": "انظر إلى لوحة العدادات واكتب عدد الكيلومترات الظاهر. ثم اضغط الزر الأصفر في الأسفل.",
+      "ml": "ഡാഷ്‌ബോർഡിൽ നോക്കി കാണുന്ന കിലോമീറ്റർ എഴുതുക. പിന്നെ താഴെയുള്ള മഞ്ഞ ബട്ടൺ അമർത്തുക."
+    }
+  },
+  "items": {
+    "licence": {
+      "source": "Driving licence with you and not expired",
+      "en": "Do you have your driving licence with you, and is it still valid?",
+      "ur": "کیا آپ کا ڈرائیونگ لائسنس آپ کے پاس ہے، اور کیا وہ ابھی درست ہے؟",
+      "hi": "क्या आपका ड्राइविंग लाइसेंस आपके पास है, और क्या वह अभी वैध है?",
+      "ar": "هل رخصة القيادة معك، وهل هي سارية المفعول؟",
+      "ml": "നിങ്ങളുടെ ഡ്രൈവിംഗ് ലൈസൻസ് കയ്യിലുണ്ടോ, അത് ഇപ്പോഴും സാധുവാണോ?"
+    },
+    "fit": {
+      "source": "Fit to drive — no medicine that makes you sleepy",
+      "en": "Are you fit to drive? You have not taken any medicine that makes you sleepy?",
+      "ur": "کیا آپ گاڑی چلانے کے قابل ہیں؟ آپ نے کوئی ایسی دوا تو نہیں لی جس سے نیند آئے؟",
+      "hi": "क्या आप गाड़ी चलाने के लिए ठीक हैं? आपने कोई ऐसी दवा तो नहीं ली जिससे नींद आए?",
+      "ar": "هل أنت لائق للقيادة؟ ولم تتناول أي دواء يسبب النعاس؟",
+      "ml": "നിങ്ങൾ വാഹനം ഓടിക്കാൻ ആരോഗ്യവാനാണോ? ഉറക്കം വരുത്തുന്ന മരുന്നൊന്നും കഴിച്ചിട്ടില്ലല്ലോ?"
+    },
+    "body": {
+      "source": "No new damage, no leaks under the vehicle",
+      "en": "Walk around the vehicle. Is there no new damage, and no leak under the vehicle?",
+      "ur": "گاڑی کے چاروں طرف دیکھیں۔ کیا کوئی نیا نقصان نہیں ہے، اور گاڑی کے نیچے کوئی لیک نہیں ہے؟",
+      "hi": "गाड़ी के चारों तरफ़ देखिए। कोई नया नुक़सान तो नहीं है, और गाड़ी के नीचे कोई लीक तो नहीं?",
+      "ar": "انظر حول المركبة. هل لا يوجد ضرر جديد، ولا تسريب تحت المركبة؟",
+      "ml": "വാഹനത്തിന് ചുറ്റും നോക്കുക. പുതിയ കേടുപാടുകളോ വാഹനത്തിനടിയിൽ ചോർച്ചയോ ഇല്ലല്ലോ?"
+    },
+    "lights": {
+      "source": "Headlights, brake lights and indicators work",
+      "en": "Do the headlights, brake lights and indicators all work?",
+      "ur": "کیا ہیڈ لائٹس، بریک لائٹس اور اشارے سب کام کر رہے ہیں؟",
+      "hi": "क्या हेडलाइट, ब्रेक लाइट और इंडिकेटर सब काम कर रहे हैं?",
+      "ar": "هل المصابيح الأمامية وأضواء الفرامل والإشارات تعمل كلها؟",
+      "ml": "ഹെഡ്‌ലൈറ്റുകൾ, ബ്രേക്ക് ലൈറ്റുകൾ, ഇൻഡിക്കേറ്ററുകൾ എല്ലാം പ്രവർത്തിക്കുന്നുണ്ടോ?"
+    },
+    "tyre_pressure": {
+      "source": "Tyre pressure OK, spare tyre too",
+      "en": "Is the tyre pressure OK, including the spare tyre?",
+      "ur": "کیا ٹائروں میں ہوا ٹھیک ہے، اسپیئر ٹائر میں بھی؟",
+      "hi": "क्या टायरों में हवा ठीक है, स्पेयर टायर में भी?",
+      "ar": "هل ضغط الإطارات جيد، بما في ذلك الإطار الاحتياطي؟",
+      "ml": "ടയറുകളിലെ കാറ്റ് ശരിയാണോ, സ്പെയർ ടയറിലും?"
+    },
+    "tyre_tread": {
+      "source": "Tread OK — no cuts, bulges or bald tyres",
+      "en": "Are the tyres in good condition, with no cuts, bulges or bald tyres?",
+      "ur": "کیا ٹائر ٹھیک حالت میں ہیں؟ کوئی کٹ، ابھار یا گھسا ہوا ٹائر تو نہیں؟",
+      "hi": "क्या टायर ठीक हालत में हैं? कोई कट, उभार या घिसा हुआ टायर तो नहीं?",
+      "ar": "هل الإطارات بحالة جيدة، بدون قطع أو انتفاخ أو تآكل؟",
+      "ml": "ടയറുകൾ നല്ല നിലയിലാണോ? മുറിവുകളോ മുഴകളോ തേഞ്ഞ ടയറുകളോ ഇല്ലല്ലോ?"
+    },
+    "fluids": {
+      "source": "Oil, coolant, brake fluid, washer fluid and power steering fluid OK",
+      "en": "Are the engine oil, coolant, brake fluid, washer fluid and power steering fluid OK?",
+      "ur": "کیا انجن آئل، کولنٹ، بریک آئل، شیشہ دھونے کا پانی اور پاور اسٹیئرنگ آئل ٹھیک ہیں؟",
+      "hi": "क्या इंजन ऑयल, कूलेंट, ब्रेक ऑयल, शीशा धोने का पानी और पावर स्टीयरिंग ऑयल ठीक हैं?",
+      "ar": "هل زيت المحرك وسائل التبريد وزيت الفرامل وماء الغسيل وزيت التوجيه بمستوى جيد؟",
+      "ml": "എഞ്ചിൻ ഓയിൽ, കൂളന്റ്, ബ്രേക്ക് ഓയിൽ, വാഷർ വെള്ളം, പവർ സ്റ്റിയറിംഗ് ഓയിൽ എല്ലാം ശരിയാണോ?"
+    },
+    "wipers": {
+      "source": "Wipers work",
+      "en": "Do the wipers work?",
+      "ur": "کیا وائپر کام کر رہے ہیں؟",
+      "hi": "क्या वाइपर काम कर रहे हैं?",
+      "ar": "هل المساحات تعمل؟",
+      "ml": "വൈപ്പറുകൾ പ്രവർത്തിക്കുന്നുണ്ടോ?"
+    },
+    "windows": {
+      "source": "Windows clean, no cracks",
+      "en": "Are the windows clean, with no cracks?",
+      "ur": "کیا شیشے صاف ہیں، اور ان میں کوئی دراڑ نہیں؟",
+      "hi": "क्या शीशे साफ़ हैं, और उनमें कोई दरार नहीं है?",
+      "ar": "هل الزجاج نظيف وبدون تشققات؟",
+      "ml": "ഗ്ലാസുകൾ വൃത്തിയുള്ളതും വിള്ളലുകൾ ഇല്ലാത്തതുമാണോ?"
+    },
+    "mirrors": {
+      "source": "Mirrors adjusted",
+      "en": "Are the side and rear mirrors adjusted for you?",
+      "ur": "کیا سائیڈ اور پیچھے کے آئینے آپ کے لیے ٹھیک سیٹ ہیں؟",
+      "hi": "क्या साइड और पीछे के आईने आपके लिए ठीक से सेट हैं?",
+      "ar": "هل المرايا الجانبية والخلفية مضبوطة لك؟",
+      "ml": "വശത്തെയും പിന്നിലെയും കണ്ണാടികൾ നിങ്ങൾക്ക് ശരിയായി ക്രമീകരിച്ചിട്ടുണ്ടോ?"
+    },
+    "seatbelt": {
+      "source": "Seatbelt works — and you are wearing it",
+      "en": "Does the seatbelt work, and are you wearing it?",
+      "ur": "کیا سیٹ بیلٹ کام کر رہی ہے، اور کیا آپ نے اسے باندھا ہوا ہے؟",
+      "hi": "क्या सीट बेल्ट काम कर रही है, और क्या आपने उसे पहना हुआ है?",
+      "ar": "هل حزام الأمان يعمل، وهل تضعه الآن؟",
+      "ml": "സീറ്റ് ബെൽറ്റ് പ്രവർത്തിക്കുന്നുണ്ടോ, നിങ്ങൾ അത് ധരിച്ചിട്ടുണ്ടോ?"
+    },
+    "emergency_kit": {
+      "source": "First aid kit (stocked), fire extinguisher (charged) and warning triangle in the vehicle",
+      "en": "Are the first aid kit, the fire extinguisher and the warning triangle in the vehicle?",
+      "ur": "کیا فرسٹ ایڈ باکس، آگ بجھانے والا سلنڈر اور وارننگ ٹرائینگل گاڑی میں موجود ہیں؟",
+      "hi": "क्या फ़र्स्ट एड बॉक्स, आग बुझाने वाला सिलेंडर और चेतावनी त्रिकोण गाड़ी में हैं?",
+      "ar": "هل حقيبة الإسعافات الأولية وطفاية الحريق والمثلث التحذيري موجودة في المركبة؟",
+      "ml": "ഫസ്റ്റ് എയ്ഡ് കിറ്റ്, തീ കെടുത്തുന്ന ഉപകരണം, മുന്നറിയിപ്പ് ത്രികോണം എന്നിവ വാഹനത്തിൽ ഉണ്ടോ?"
+    },
+    "documents": {
+      "source": "Registration (Mulkiya) and insurance in the vehicle and valid",
+      "en": "Are the registration card, the Mulkiya, and the insurance in the vehicle and valid?",
+      "ur": "کیا گاڑی کا ملکیہ اور انشورنس گاڑی میں ہیں، اور درست ہیں؟",
+      "hi": "क्या गाड़ी की मुल्किया और इंश्योरेंस गाड़ी में हैं, और वैध हैं?",
+      "ar": "هل الملكية والتأمين موجودان في المركبة وساريان؟",
+      "ml": "വാഹനത്തിന്റെ മുൽകിയയും ഇൻഷുറൻസും വാഹനത്തിൽ ഉണ്ടോ, അവ സാധുവാണോ?"
+    },
+    "fuel": {
+      "source": "Enough fuel for the trip",
+      "en": "Is there enough fuel for the trip?",
+      "ur": "کیا سفر کے لیے کافی پیٹرول ہے؟",
+      "hi": "क्या सफ़र के लिए काफ़ी पेट्रोल है?",
+      "ar": "هل يوجد وقود كافٍ للرحلة؟",
+      "ml": "യാത്രയ്ക്ക് ആവശ്യമായ ഇന്ധനം ഉണ്ടോ?"
+    },
+    "rest": {
+      "source": "Rested and alert — do not drive tired",
+      "en": "Are you rested and alert? Do not drive when you are tired.",
+      "ur": "کیا آپ نے آرام کیا ہے اور آپ چست ہیں؟ تھکاوٹ میں گاڑی نہ چلائیں۔",
+      "hi": "क्या आपने आराम किया है और आप चुस्त हैं? थकान में गाड़ी मत चलाइए।",
+      "ar": "هل أنت مرتاح ومنتبه؟ لا تقد وأنت متعب.",
+      "ml": "നിങ്ങൾ വിശ്രമിച്ചിട്ടുണ്ടോ, ഉണർവോടെയാണോ? ക്ഷീണിച്ചിരിക്കുമ്പോൾ വാഹനം ഓടിക്കരുത്."
+    }
+  }
+}
