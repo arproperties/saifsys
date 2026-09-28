@@ -1562,7 +1562,6 @@ echo $arsWsLifecycleHtml;
                     <div class="col-6"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#internalNoteModal"><i class="bi bi-sticky me-1"></i>Note</button></div>
                     <div class="col-6"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#documentsActionModal" data-ars-docs-mode="print"><i class="bi bi-printer me-1"></i>Print / PDF</button></div>
                     <div class="col-6"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#documentsActionModal" data-ars-docs-mode="send"><i class="bi bi-envelope-check me-1"></i>Send docs</button></div>
-                    <div class="col-12"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="extension"><i class="bi bi-calendar-range me-1"></i>Extend stay</button></div>
                     <div class="col-12"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="adjustment"><i class="bi bi-sliders me-1"></i>Rate adjustment</button></div>
                     <div class="col-12"><button type="button" class="btn btn-ars-outline btn-sm w-100" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="credit"><i class="bi bi-arrow-counterclockwise me-1"></i>Credit note / stay refund</button></div>
                     </div>
