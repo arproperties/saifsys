@@ -620,6 +620,12 @@ function attendance_self_break_end(PDO $conn): array
  * Auto check-out
  * ------------------------------------------------------------------------- */
 
+/** Whether the 6 PM auto check-out runs. Off for now; kept for later. */
+function attendance_self_auto_checkout_enabled(): bool
+{
+    return false;
+}
+
 /** Everyone still checked in at this time is checked out at it. H:i, company time. */
 function attendance_self_auto_checkout_time(): string
 {
@@ -635,7 +641,7 @@ function attendance_self_auto_checkout_time(): string
 function attendance_self_auto_checkout_maybe(PDO $conn): void
 {
     static $ran = false;
-    if ($ran) {
+    if ($ran || !attendance_self_auto_checkout_enabled()) {
         return;
     }
     $ran = true;
