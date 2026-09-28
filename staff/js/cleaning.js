@@ -37,6 +37,7 @@
 
   var T = {
     title: 'Cleaning',
+    titles: { cleaning: 'Cleaning', maintenance: 'Maintenance' },
     greeting: function (name) { return 'Hello, ' + name; },
     status: { open: 'Not started', in_progress: 'In progress', done: 'Completed', cancelled: 'Cancelled' },
     jobType: { cleaning: 'Cleaning', maintenance: 'Maintenance' },
@@ -1234,9 +1235,9 @@
     if (!signedIn()) return;
     var r = S.state.route;
     if (r.app !== 'cleaning' && r.app !== 'home') { S.render(); return; }
-    if (r.app === 'home') { ensureJobs('today'); S.render(); return; }
+    if (r.app === 'home') { ensureJobs('today'); ensureAttendance(); S.render(); return; }
     var view = r.view || 'list';
-    if (view === 'list') { ensureJobs(ui.tab); ensureAttendance(); if (ui.tab !== 'today') ensureJobs('today'); }
+    if (view === 'list') { ensureJobs(ui.tab); if (ui.tab !== 'today') ensureJobs('today'); }
     if (view === 'requests') ensureJobs('requests');
     if (view === 'job' || view === 'notes') ensureJob(resolveJobId(r.id));
     if (view === 'new') ensurePlaces();
@@ -1311,7 +1312,9 @@
 
   // --- List ---------------------------------------------------------------------
 
+  /** Check in / out. Shown on the main screen, not in the Cleaning list. */
   function attendanceBar() {
+    if (!signedIn()) return '';
     var data = cacheGet('attendance');
     var q = query('attendance');
     var offlineUnknown = !data && q.error && q.error.kind === 'offline';
@@ -1331,18 +1334,34 @@
     return '<div class="att">' + button(T.attendance.checkIn, 'cleaning:check-in', { icon: 'clock' }) + '</div>';
   }
 
-  function renderList() {
+  /**
+   * The home screen has a Cleaning and a Maintenance button; both open these
+   * screens with route.kind set, and each shows only its own type of job.
+   * No kind (someone who only has this one app) shows both.
+   */
+  function ofKind(jobs, kind) {
+    return kind ? jobs.filter(function (j) { return j.job_type === kind; }) : jobs;
+  }
+
+  function countsOf(list, kind) {
+    if (!list) return null;
+    if (kind) return (list.counts_by_type && list.counts_by_type[kind]) || null;
+    return list.counts || null;
+  }
+
+  function renderList(route) {
+    var kind = route.kind || null;
     var s = S.session();
     var firstName = s ? String(s.user.name).trim().split(/\s+/)[0] : '';
     var data = cacheGet('jobs:' + ui.tab);
     var today = cacheGet('jobs:today');
     var q = query('jobs:' + ui.tab);
-    var counts = (data && data.counts) || (today && today.counts) || {};
+    var counts = countsOf(data, kind) || countsOf(today, kind) || {};
     var queued = queueStateByJob();
-    var body = S.installCard() + attendanceBar();
+    var body = S.installCard();
 
     if (counts.requests) {
-      body += '<button type="button" class="requests-bar" data-action="cleaning:requests">' + icon('alert') +
+      body += '<button type="button" class="requests-bar" data-action="cleaning:requests" data-kind="' + esc(kind || '') + '">' + icon('alert') +
         '<span class="grow">' + esc(T.jobs.requestsWaiting(counts.requests)) + '</span>' + icon('chevron') + '</button>';
     }
 
@@ -1353,7 +1372,7 @@
         '<span>' + esc(T.jobs.tabs[tab]) + '</span>' + (n ? '<span class="badge">' + n + '</span>' : '') + '</button>';
     }).join('') + '</div>';
 
-    var jobs = (data && data.jobs) || [];
+    var jobs = ofKind((data && data.jobs) || [], kind);
     if (q.error && !data) body += errorCard(q.error, 'cleaning:reload');
     else if (!data) body += skeletonCards(3);
     else if (!jobs.length) {
@@ -1365,18 +1384,18 @@
     }
 
     return '<main class="screen">' +
-      S.topHeader(S.apps().length > 1 ? T.title : T.greeting(firstName), S.apps().length > 1 ? T.greeting(firstName) + ' · ' + todayLongLabel() : todayLongLabel()) +
+      S.topHeader(S.apps().length > 1 ? (T.titles[kind] || T.title) : T.greeting(firstName), S.apps().length > 1 ? T.greeting(firstName) + ' · ' + todayLongLabel() : todayLongLabel()) +
       '<div class="screen-body">' + body + '</div>' +
-      '<div class="footer">' + button(T.jobs.newJob, 'cleaning:new', { icon: 'plus' }) + '</div>' +
+      '<div class="footer">' + button(T.jobs.newJob, 'cleaning:new', { icon: 'plus', data: 'data-kind="' + esc(kind || '') + '"' }) + '</div>' +
       '</main>';
   }
 
   // --- Requests -----------------------------------------------------------------
 
-  function renderRequests() {
+  function renderRequests(route) {
     var data = cacheGet('jobs:requests');
     var q = query('jobs:requests');
-    var jobs = (data && data.jobs) || [];
+    var jobs = ofKind((data && data.jobs) || [], route.kind || null);
     var body = '<h1 class="h2">' + esc(T.requests.title) + '</h1><p class="secondary mt-1">' + esc(T.requests.intro) + '</p>';
     if (q.error && !data) body += errorCard(q.error, 'cleaning:reload');
     else if (!data) body += skeletonCards(2);
@@ -1699,8 +1718,8 @@
     return (T.jobType[jobType] + ' — ' + places[0].label + (places.length > 1 ? ' +' + (places.length - 1) : '')).slice(0, 255);
   }
 
-  function renderNew() {
-    var n = ui.newJob || (ui.newJob = { jobType: 'cleaning', places: [], picker: false, building: null, search: '' });
+  function renderNew(route) {
+    var n = ui.newJob || (ui.newJob = { jobType: route.kind || 'cleaning', places: [], picker: false, building: null, search: '' });
     if (n.picker) return renderPicker(n);
     var body = '<h1 class="h2">' + esc(T.newJob.title) + '</h1>' +
       '<div class="label muted mt-5">' + esc(T.newJob.typeLabel) + '</div><div class="types mt-2">' +
@@ -1778,9 +1797,9 @@
       case 'tab': ui.tab = el.getAttribute('data-tab'); refreshScreen(); break;
       case 'reload': markStale(''); Object.keys(queries).forEach(function (k) { queries[k].errAt = 0; }); refreshScreen(); break;
       case 'open': S.go({ app: 'cleaning', view: 'job', id: id }); refreshScreen(); break;
-      case 'requests': S.go({ app: 'cleaning', view: 'requests' }); refreshScreen(); break;
+      case 'requests': S.go({ app: 'cleaning', view: 'requests', kind: el.getAttribute('data-kind') || undefined }); refreshScreen(); break;
       case 'claim': claim(id); break;
-      case 'new': ui.newJob = null; S.go({ app: 'cleaning', view: 'new' }); refreshScreen(); break;
+      case 'new': ui.newJob = null; S.go({ app: 'cleaning', view: 'new', kind: el.getAttribute('data-kind') || undefined }); refreshScreen(); break;
       case 'check-in': checkInOut('check-in'); break;
       case 'check-out':
         S.sheet({
@@ -1983,11 +2002,11 @@
 
   function render(route) {
     var view = route.view || 'list';
-    if (view === 'requests') return renderRequests();
+    if (view === 'requests') return renderRequests(route);
     if (view === 'job') return renderJob(route);
     if (view === 'notes') return renderNotes(route);
-    if (view === 'new') return renderNew();
-    return renderList();
+    if (view === 'new') return renderNew(route);
+    return renderList(route);
   }
 
   function afterRender() {
@@ -2027,9 +2046,10 @@
       return Promise.resolve();
     },
     onRefused: function () { authPaused = true; },
-    tileStatus: function () {
-      var today = cacheGet('jobs:today');
-      return today && today.counts ? T.jobs.tileToday(today.counts.today || 0) : null;
+    attendanceBar: attendanceBar,
+    tileStatus: function (kind) {
+      var counts = countsOf(cacheGet('jobs:today'), kind);
+      return counts ? T.jobs.tileToday(counts.today || 0) : null;
     },
   });
 

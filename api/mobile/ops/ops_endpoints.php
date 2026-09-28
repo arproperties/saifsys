@@ -268,9 +268,25 @@ function ops_api_handle_jobs_list(PDO $conn, array $user): void
         $counts[$name] = (int)$countStmt->fetchColumn();
     }
 
+    // The same badges split by job type, for the staff web app's separate
+    // Cleaning and Maintenance buttons. Older apps ignore it.
+    $countsByType = [];
+    foreach (array_keys(ops_job_types()) as $type) {
+        foreach (['today', 'overdue', 'upcoming', 'done', 'requests'] as $name) {
+            [$tabSql, $tabArgs] = ops_api_tab_filter($name, $today);
+            [$countBase, $countArgs] = $name === 'requests'
+                ? [$poolBase, $poolArgs]
+                : [" FROM ops_jobs j WHERE j.assigned_to = ?", [$user['id']]];
+            $countStmt = $conn->prepare('SELECT COUNT(*)' . $countBase . ' AND j.job_type = ?' . $tabSql);
+            $countStmt->execute(array_merge($countArgs, [$type], $tabArgs));
+            $countsByType[$type][$name] = (int)$countStmt->fetchColumn();
+        }
+    }
+
     customer_api_send_ok([
         'jobs' => $jobs,
         'counts' => $counts,
+        'counts_by_type' => $countsByType,
         'today' => $today,
     ]);
 }

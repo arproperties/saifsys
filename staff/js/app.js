@@ -109,11 +109,13 @@
     var s = S.session();
     var tiles = [
       { app: 'driver', title: T.home.driver, hint: T.home.driverHint, icon: 'car' },
-      { app: 'cleaning', title: T.home.cleaning, hint: T.home.cleaningHint, icon: 'sparkles' },
+      { app: 'cleaning', kind: 'cleaning', title: T.home.cleaning, hint: T.home.cleaningHint, icon: 'sparkles' },
+      { app: 'cleaning', kind: 'maintenance', title: T.home.maintenance, hint: T.home.maintenanceHint, icon: 'wrench' },
     ].filter(function (t) { return S.hasApp(t.app); }).map(function (t) {
       var mod = S.modules[t.app];
-      var status = mod && mod.tileStatus ? mod.tileStatus() : null;
-      return '<button type="button" class="app-tile" data-key="' + t.app + '" data-action="app:open" data-app="' + t.app + '">' +
+      var status = mod && mod.tileStatus ? mod.tileStatus(t.kind) : null;
+      var key = t.kind || t.app;
+      return '<button type="button" class="app-tile" data-key="' + key + '" data-action="app:open" data-app="' + t.app + '" data-kind="' + (t.kind || '') + '">' +
         '<span class="app-icon">' + icon(t.icon, 'xl') + '</span>' +
         '<span class="grow"><span class="h2" style="display:block">' + esc(t.title) + '</span>' +
         '<span class="secondary" style="display:block">' + esc(status || t.hint) + '</span></span>' +
@@ -124,6 +126,7 @@
       '<header class="header"><div class="grow"><h1 class="h2">' + esc(T.home.greeting(s ? String(s.user.name).trim().split(/\s+/)[0] : '')) + '</h1></div>' +
       '<button type="button" class="icon-btn" data-action="core:settings" aria-label="' + esc(T.home.settings) + '">' + icon('settings') + '</button></header>' +
       '<div class="screen-body">' + S.installCard() +
+      (S.modules.cleaning && S.modules.cleaning.attendanceBar ? S.modules.cleaning.attendanceBar() : '') +
       '<h2 class="h3 section-title mt-4">' + esc(T.home.pick) + '</h2>' + tiles + '</div>' +
       '</main>';
   }
@@ -132,7 +135,7 @@
 
   function renderSettings() {
     var s = S.session();
-    var names = S.apps().map(function (a) { return a === 'driver' ? T.home.driver : T.home.cleaning; }).join(' · ');
+    var names = S.apps().map(function (a) { return a === 'driver' ? T.home.driver : T.home.cleaning + ' · ' + T.home.maintenance; }).join(' · ');
     return '<main class="screen">' +
       S.backBar('core:back', T.settings.back) +
       '<h1 class="h1 mt-2">' + esc(T.settings.title) + '</h1>' +
@@ -151,7 +154,7 @@
     switch (name) {
       case 'pin-digit': pressDigit(el.getAttribute('data-digit')); break;
       case 'pin-back': pin.value = pin.value.slice(0, -1); pin.error = null; S.render(); break;
-      case 'open': S.go({ app: el.getAttribute('data-app') }); break;
+      case 'open': S.go({ app: el.getAttribute('data-app'), kind: el.getAttribute('data-kind') || undefined }); break;
       case 'confirm-signout': {
         var trip = S.modules.driver && S.modules.driver.hasTrip && S.modules.driver.hasTrip();
         S.sheet({

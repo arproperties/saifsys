@@ -3,7 +3,7 @@
  * signal. The API is never cached — jobs, trips and fixes always go to the
  * server, and the app keeps anything unsent on the phone itself.
  */
-const CACHE = 'staff-v3';
+const CACHE = 'staff-v5';
 const SHELL = ['index.php', 'app.css', 'js/core.js', 'js/driver.js', 'js/cleaning.js', 'js/app.js', 'manifest.json', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'audio/check/texts.json'];
 
 self.addEventListener('install', (event) => {

@@ -36,6 +36,8 @@
       driverHint: 'Vehicle trips',
       cleaning: 'Cleaning',
       cleaningHint: 'Your jobs',
+      maintenance: 'Maintenance',
+      maintenanceHint: 'Your jobs',
       back: 'Home',
       settings: 'Settings',
     },
