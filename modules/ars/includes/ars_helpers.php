@@ -110,12 +110,33 @@ function arsEnsureDocumentBrandingSettings(PDO $conn): void {
     }
 }
 
+/**
+ * Next free booking number for this year (ARS-YY-NNNNN).
+ * Uses the highest number already issued, not a row count: uq_booking_number is
+ * global across companies, and a count goes backwards when a booking is deleted,
+ * re-issuing a number that is still in use.
+ */
 function generateBookingNumber(PDO $conn, int $companyId): string {
-    $year = date('y');
-    $stmt = $conn->prepare("SELECT COUNT(*) + 1 FROM ars_bookings WHERE company_id = ? AND YEAR(created_at) = YEAR(NOW())");
-    $stmt->execute([$companyId]);
-    $seq = (int) $stmt->fetchColumn();
-    return 'ARS-' . $year . '-' . str_pad($seq, 5, '0', STR_PAD_LEFT);
+    $prefix = 'ARS-' . date('y') . '-';
+    $stmt = $conn->prepare("
+        SELECT COALESCE(MAX(CAST(SUBSTRING(booking_number, ?) AS UNSIGNED)), 0)
+        FROM ars_bookings
+        WHERE booking_number LIKE ?
+          AND booking_number REGEXP ?
+    ");
+    $stmt->execute([strlen($prefix) + 1, $prefix . '%', '^' . $prefix . '[0-9]+$']);
+    $seq = (int) $stmt->fetchColumn() + 1;
+
+    // Belt and braces: step past any number already taken (e.g. a concurrent save).
+    $exists = $conn->prepare("SELECT 1 FROM ars_bookings WHERE booking_number = ? LIMIT 1");
+    for ($i = 0; $i < 50; $i++, $seq++) {
+        $candidate = $prefix . str_pad((string) $seq, 5, '0', STR_PAD_LEFT);
+        $exists->execute([$candidate]);
+        if (!$exists->fetchColumn()) {
+            return $candidate;
+        }
+    }
+    return $prefix . str_pad((string) $seq, 5, '0', STR_PAD_LEFT);
 }
 
 function formatArsAmount($amount, string $currency = 'AED'): string {
@@ -173,6 +194,70 @@ function expirePendingBookings(PDO $conn, int $companyId): int {
     }
 
     return $affected;
+}
+
+/**
+ * Whether a unit is occupied/unavailable *today* — a booking (confirmed,
+ * checked-in, or pending) covering today, or a manual/maintenance block
+ * covering today. This is the single source of truth for locking the
+ * unit's "Listed on Portal" flag.
+ *
+ * @return array{occupied: bool, reason: string}
+ */
+function ars_unit_occupancy_lock(PDO $conn, int $unitId, int $companyId): array {
+    $stmt = $conn->prepare("
+        SELECT status
+        FROM ars_bookings
+        WHERE unit_id = ? AND company_id = ?
+          AND status IN ('confirmed','checked_in','pending')
+          AND check_in <= CURDATE() AND COALESCE(actual_check_out, check_out) > CURDATE()
+        ORDER BY FIELD(status, 'checked_in','confirmed','pending')
+        LIMIT 1
+    ");
+    $stmt->execute([$unitId, $companyId]);
+    $bookingStatus = $stmt->fetchColumn();
+
+    $stmt = $conn->prepare("
+        SELECT reason FROM ars_blocked_dates
+        WHERE unit_id = ? AND company_id = ?
+          AND start_date <= CURDATE() AND end_date >= CURDATE()
+        LIMIT 1
+    ");
+    $stmt->execute([$unitId, $companyId]);
+    $blockedReason = $stmt->fetchColumn();
+
+    if ($blockedReason !== false) {
+        return ['occupied' => true, 'reason' => 'Blocked' . ($blockedReason ? ' — ' . $blockedReason : '')];
+    }
+    if ($bookingStatus !== false) {
+        $reason = match ($bookingStatus) {
+            'checked_in' => 'Guest currently checked in',
+            'confirmed'  => 'Reserved for today\'s arrival',
+            'pending'    => 'Pending booking holds today',
+            default      => 'Unit currently unavailable',
+        };
+        return ['occupied' => true, 'reason' => $reason];
+    }
+    return ['occupied' => false, 'reason' => ''];
+}
+
+/**
+ * If the unit is currently occupied/blocked and still flagged as listed,
+ * flip is_listed off so it drops off the public portal immediately —
+ * called whenever occupancy can newly start (check-in, booking confirm/
+ * create, block creation) as well as when the edit page loads.
+ */
+function ars_unit_enforce_portal_lock(PDO $conn, int $unitId, int $companyId): bool {
+    $lock = ars_unit_occupancy_lock($conn, $unitId, $companyId);
+    if (!$lock['occupied']) {
+        return false;
+    }
+    // Matched by id only: re_units.company_id can be the real-estate company
+    // that owns shared inventory, which differs from the ARS company id used
+    // to scope ars_bookings/ars_blocked_dates above (see ars_short_term_units_where).
+    $stmt = $conn->prepare("UPDATE re_units SET is_listed = 0 WHERE id = ? AND is_listed = 1");
+    $stmt->execute([$unitId]);
+    return $stmt->rowCount() > 0;
 }
 
 function arsBookingStatusBadge(string $status): string {
