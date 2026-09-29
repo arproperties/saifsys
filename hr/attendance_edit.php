@@ -73,8 +73,6 @@ if (hr_attendance_post_too_large()) {
         } elseif ($statusChanged && $notes === '') {
             // Same rule as the quick actions on the list page: no silent changes.
             $flash_err = 'Changing the status needs a reason in Notes.';
-        } elseif ($statusChanged && !hr_attendance_files_chosen($files)) {
-            $flash_err = 'Changing the status needs a supporting document attached.';
         } else {
             // recalc hours
             $hours = null;
@@ -111,7 +109,7 @@ if (hr_attendance_post_too_large()) {
                     );
                     if ($saved > 0) {
                         $flash_ok = 'Saved with ' . $saved . ' attachment' . ($saved === 1 ? '' : 's') . '.';
-                    } elseif ($statusChanged) {
+                    } else {
                         $flash_warn[] = 'The change saved but no file could be stored — attach the document again.';
                     }
                     foreach ($uploadErrors as $ue) { $flash_warn[] = $ue; }
@@ -208,10 +206,10 @@ echo hr_ui_page_header(
           <label class="form-label">Notes <span class="text-danger d-none" id="attEditNotesReq">*</span></label>
           <input type="text" name="notes" id="attEditNotes" class="form-control"
                  maxlength="<?= (int)HR_ATTENDANCE_NOTE_MAX ?>" value="<?= h($row['notes']) ?>">
-          <div class="form-text">Changing the status requires a reason here and a document below.</div>
+          <div class="form-text">Changing the status requires a reason here. Documents below are optional.</div>
         </div>
         <div class="col-md-12">
-          <label class="form-label">Attach documents <span class="text-danger d-none" id="attEditFilesReq">*</span></label>
+          <label class="form-label">Attach documents</label>
           <input type="file" name="attachments[]" id="attEditFiles" class="form-control" multiple accept="<?= h($attAccept) ?>">
           <div class="form-text">
             PDF, image, Word or Excel — max <?= (int)(HR_ATTENDANCE_ATTACH_MAX_BYTES / 1024 / 1024) ?> MB each,
@@ -288,16 +286,12 @@ $pageScripts = <<<'JS'
   const sel = document.getElementById('attEditStatus');
   if (!sel) return;
   const notes = document.getElementById('attEditNotes');
-  const files = document.getElementById('attEditFiles');
   const notesReq = document.getElementById('attEditNotesReq');
-  const filesReq = document.getElementById('attEditFilesReq');
 
   function sync() {
     const changed = sel.value !== sel.dataset.current;
     notes.required = changed;
-    files.required = changed;
     notesReq.classList.toggle('d-none', !changed);
-    filesReq.classList.toggle('d-none', !changed);
   }
   sel.addEventListener('change', sync);
   sync();

@@ -126,7 +126,7 @@ if (hr_attendance_post_too_large()) {
         }
     }
 
-    // Quick status change — reason and at least one supporting file are required.
+    // Quick status change — a reason is required; supporting files are optional.
     if (isset($_POST['action']) && $_POST['action']==='status' && isset($_POST['id'])) {
         $id   = (int)$_POST['id'];
         $new  = $_POST['to'] ?? '';
@@ -140,8 +140,6 @@ if (hr_attendance_post_too_large()) {
                 . ' status yet — run migrations/hr_attendance_excused_absent.sql first.';
         } elseif ($note === '') {
             $flash_err = 'A reason is required for every status change.';
-        } elseif (!hr_attendance_files_chosen($files)) {
-            $flash_err = 'A supporting document is required for every status change.';
         } else {
             $prev = $conn->prepare("
                 SELECT a.*, e.full_name, e.employee_code, e.company_id
@@ -170,13 +168,14 @@ if (hr_attendance_post_too_large()) {
                 );
 
                 $uploadErrors = [];
-                $savedFiles = hr_attendance_attachments_save(
+                $filesChosen = hr_attendance_files_chosen($files);
+                $savedFiles = $filesChosen ? hr_attendance_attachments_save(
                     $conn, $id, $changeId, $me_id ? (int)$me_id : null, (array)$files, $uploadErrors
-                );
+                ) : 0;
 
                 $flash_ok = 'Marked as ' . hr_attendance_status_label($new)
                     . ($savedFiles > 0 ? ' with ' . $savedFiles . ' attachment' . ($savedFiles === 1 ? '' : 's') . '.' : '.');
-                if ($savedFiles === 0) {
+                if ($filesChosen && $savedFiles === 0) {
                     $flash_warn[] = 'The status was changed but no file could be stored — attach the document again from Edit.';
                 }
                 foreach ($uploadErrors as $ue) { $flash_warn[] = $ue; }
@@ -451,7 +450,7 @@ echo hr_ui_page_header(
   <div class="hr-settings-card">
     <div class="settings-header d-flex justify-content-between align-items-center">
       <span>Results (max 500)</span>
-      <span class="small text-muted">Every status change asks for a reason and a document.</span>
+      <span class="small text-muted">Every status change asks for a reason.</span>
     </div>
     <div class="card-body p-0">
     <div class="hr-table-shell border-0 shadow-none rounded-0">
@@ -599,7 +598,7 @@ echo hr_ui_page_header(
     </div>
   </div>
 
-  <!-- Every status change goes through here: reason + document, both required. -->
+  <!-- Every status change goes through here: reason required, document optional. -->
   <div class="modal fade" id="attStatusModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <form method="post" enctype="multipart/form-data" class="modal-content">
@@ -624,11 +623,11 @@ echo hr_ui_page_header(
           </div>
 
           <div>
-            <label class="form-label">Supporting document <span class="text-danger">*</span></label>
-            <input type="file" name="attachments[]" id="attStatusFiles" class="form-control" multiple required
+            <label class="form-label">Supporting document <span class="text-muted small">(optional)</span></label>
+            <input type="file" name="attachments[]" id="attStatusFiles" class="form-control" multiple
                    accept="<?= h($attAccept) ?>">
             <div class="form-text">
-              At least one file. PDF, image, Word or Excel — max
+              PDF, image, Word or Excel — max
               <?= (int)(HR_ATTENDANCE_ATTACH_MAX_BYTES / 1024 / 1024) ?> MB each,
               <?= (int)HR_ATTENDANCE_ATTACH_MAX_FILES ?> files per change.
             </div>
