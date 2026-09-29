@@ -97,6 +97,15 @@ if ($method === 'DELETE' && preg_match('#^jobs/(\d+)/photos/(\d+)$#', $route, $m
     ops_api_handle_photo_delete($conn, $user, (int)$m[1], (int)$m[2]);
 }
 
+// R410 gas weighed before and after, per unit. Multipart: stage, kg, photo.
+if ($method === 'POST' && preg_match('#^jobs/(\d+)/gas$#', $route, $m)) {
+    ops_api_handle_job_gas($conn, $user, (int)$m[1]);
+}
+
+if ($method === 'GET' && preg_match('#^gas-photos/(\d+)/(before|after)$#', $route, $m)) {
+    ops_api_handle_gas_photo_serve($conn, $user, (int)$m[1], $m[2]);
+}
+
 if ($method === 'GET' && preg_match('#^photos/(\d+)$#', $route, $m)) {
     ops_api_handle_photo_serve($conn, $user, (int)$m[1]);
 }

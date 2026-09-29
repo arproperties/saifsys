@@ -211,6 +211,10 @@ if (is_file($asWidget)) { require $asWidget; }
         </span>
       </a>
 
+      <a href="<?= h($opsBase) ?>/gas.php" class="slink <?= $currentPage === 'gas.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-fire"></i></span><span class="slabel">Gas (R410)</span>
+      </a>
+
       <a href="<?= h($opsBase) ?>/billing.php" class="slink <?= $currentPage === 'billing.php' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-receipt"></i></span><span class="slabel">Billing</span>
       </a>

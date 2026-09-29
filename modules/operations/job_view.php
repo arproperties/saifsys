@@ -19,6 +19,7 @@ require_once __DIR__ . '/includes/ops_helper.php';
 require_once __DIR__ . '/includes/ops_sources.php';
 require_once __DIR__ . '/includes/ops_billing.php';
 require_once __DIR__ . '/includes/ops_checklist.php';
+require_once __DIR__ . '/includes/ops_gas.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -357,6 +358,66 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 <?php endif; ?>
               </div>
             <?php endif; ?>
+          <?php endif; ?>
+        </div>
+      </div>
+    <?php endif; ?>
+
+    <?php // Maintenance: R410 gas weighed before and after, per unit, from the field app. ?>
+    <?php if (ops_job_has_gas($job)): ?>
+      <?php $gasReadings = ops_gas_readings($conn, (int)$job['id']); ?>
+      <?php $gasTotal = array_sum(array_map(static fn(array $r): float => (float)(ops_gas_used_kg($r) ?? 0), $gasReadings)); ?>
+      <div class="card card-round mb-3">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h6 class="fw-bold mb-0"><i class="bi bi-fire"></i> Gas (R410)</h6>
+            <?php if ($gasReadings): ?>
+              <span class="ops-pill ops-pill-out">Used <?= h(ops_gas_kg_label($gasTotal)) ?></span>
+            <?php endif; ?>
+          </div>
+          <?php if (!$gasReadings): ?>
+            <p class="text-muted small mb-0">
+              <?php if ($job['status'] === 'done' && isset($job['gas_used']) && (string)$job['gas_used'] === '0'): ?>
+                The technician said no gas was used on this job.
+              <?php elseif ($job['status'] === 'done'): ?>
+                No gas recorded.
+              <?php else: ?>
+                The technician weighs the cylinder before and after each unit in the field app, with a photo of the scale.
+              <?php endif; ?>
+            </p>
+          <?php else: ?>
+            <div class="table-responsive">
+              <table class="table ops-table align-middle">
+                <thead>
+                  <tr><th>Unit</th><th>Before</th><th>After</th><th class="text-end">Used</th></tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($gasReadings as $gr): ?>
+                    <?php $grUsed = ops_gas_used_kg($gr); ?>
+                    <tr>
+                      <td class="fw-semibold"><?= h($gr['unit_label']) ?></td>
+                      <td class="num">
+                        <a href="<?= h($opsBase) ?>/gas_photo.php?id=<?= (int)$gr['id'] ?>&stage=before" target="_blank" rel="noopener">
+                          <?= h(ops_gas_kg_label($gr['before_kg'])) ?> <i class="bi bi-image"></i>
+                        </a>
+                        <div class="small text-muted"><?= h(date('d M H:i', strtotime((string)$gr['before_at']))) ?> · <?= h($gr['before_by_name'] ?? '') ?></div>
+                      </td>
+                      <td class="num">
+                        <?php if ($gr['after_kg'] !== null): ?>
+                          <a href="<?= h($opsBase) ?>/gas_photo.php?id=<?= (int)$gr['id'] ?>&stage=after" target="_blank" rel="noopener">
+                            <?= h(ops_gas_kg_label($gr['after_kg'])) ?> <i class="bi bi-image"></i>
+                          </a>
+                          <div class="small text-muted"><?= h(date('d M H:i', strtotime((string)$gr['after_at']))) ?> · <?= h($gr['after_by_name'] ?? '') ?></div>
+                        <?php else: ?>
+                          <span class="text-warning-emphasis small"><i class="bi bi-hourglass-split"></i> Not weighed yet</span>
+                        <?php endif; ?>
+                      </td>
+                      <td class="num fw-bold"><?= $grUsed !== null ? h(ops_gas_kg_label($grUsed)) : '—' ?></td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
           <?php endif; ?>
         </div>
       </div>

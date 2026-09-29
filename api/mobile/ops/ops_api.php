@@ -38,6 +38,7 @@ require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_sources.php
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_billing.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_attendance.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_checklist.php';
+require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_gas.php';
 
 // ops_helper -> auth.php opens a session at include time. This API is
 // stateless, so drop it straight away: no session file is written and no
@@ -935,6 +936,9 @@ function ops_api_job_detail(PDO $conn, array $job, array $user): array
 
     // Unit cleaning jobs only; null everywhere else. See ops_checklist.php.
     $detail['checklist'] = ops_checklist_for_app($conn, $job);
+
+    // Maintenance jobs only; null everywhere else. See ops_gas.php.
+    $detail['gas'] = ops_gas_for_app($conn, $job);
 
     // What the tenant photographed when they raised the request — the leak,
     // the broken socket. Read, never edited; served by request-photos/{id}.

@@ -172,6 +172,44 @@
         maintenanceRaised: 'A maintenance job was raised for this.',
         noProblems: 'No problems reported.',
       },
+      gas: {
+        title: 'Gas (R410)',
+        hint: 'Weigh the cylinder before and after every unit. Take a photo of the scale each time.',
+        weighBefore: 'Weigh gas before using',
+        weighAfter: 'Weigh gas after using',
+        none: 'No gas recorded.',
+        unit: 'Unit',
+        before: 'Before',
+        after: 'After',
+        used: 'Used',
+        waitingAfter: 'Waiting for the after weight',
+        noGasUsed: 'No gas used on this job.',
+        screenBefore: 'Gas — before using',
+        screenAfter: 'Gas — after using',
+        stepUnit: '1. Which unit?',
+        unitPlaceholder: 'Unit number, for example 1204',
+        stepPhoto: function (n) { return n + '. Photo of the scale'; },
+        stepKg: function (n) { return n + '. Weight on the scale'; },
+        takePhoto: 'Take photo of the scale',
+        retake: 'Take again',
+        kgPlaceholder: 'For example 16.75',
+        beforeWas: function (kg) { return 'Before: ' + kg; },
+        usedNow: function (kg) { return 'Used: ' + kg; },
+        moreThanBefore: 'After cannot be more than before. Check the scale.',
+        badKg: 'Type the weight in kg, for example 16.75',
+        save: 'Save weight',
+        needUnit: 'Choose or type the unit first.',
+        needPhoto: 'Take a photo of the scale first.',
+        finishNeedsAfter: 'Weigh the gas after using it before you finish.',
+        askTitle: 'Did you use gas (R410) on this job?',
+        askBody: 'The office checks every cylinder against these weights.',
+        askNo: 'No gas used',
+        askYes: 'Yes, I used gas',
+        forgotTitle: 'Weigh the gas first',
+        forgotBody: 'Tap "Weigh gas before using" on this job, then "after using", for every unit. If you forgot to weigh before, tell the office in Messages.',
+        forgotOk: 'OK',
+        saved: 'Weight saved',
+      },
     },
     notes: {
       title: 'Messages',
@@ -551,7 +589,7 @@
   function nextTempId() { tempSeq = (tempSeq + 1) % 1000; return -((Date.now() % 1e9) * 1000 + tempSeq); }
 
   function fileOf(op) {
-    if (op.kind === 'photo') return op.fileKey;
+    if (op.kind === 'photo' || op.kind === 'gas') return op.fileKey;
     if (op.kind === 'comment' && op.media) return op.media.fileKey;
     return null;
   }
@@ -640,6 +678,7 @@
       if (op.kind === 'finish') {
         body.completion_notes = op.completionNotes || '';
         if (op.checklist) body.checklist = op.checklist;
+        if (op.gasUsed !== undefined) body.gas_used = op.gasUsed ? 1 : 0;
       }
       return api('jobs/' + jobId + '/' + op.kind, { method: 'POST', body: body, requestId: op.id, background: true });
     }
@@ -670,6 +709,26 @@
         return api(path, { method: 'POST', form: form, requestId: op.id, background: true, timeout: UPLOAD_TIMEOUT });
       }).then(function (data) {
         files.del(key);
+        return data;
+      });
+    }
+
+    if (op.kind === 'gas') {
+      return files.get(op.fileKey).then(function (blob) {
+        if (!blob) throw new S.ApiError('bad_request', T.errors.couldNotSend, 400);
+        var form = new FormData();
+        form.append('stage', op.stage);
+        form.append('client_ref', op.ref);
+        form.append('kg', op.kg);
+        form.append('client_at', String(clientAt));
+        if (op.stage === 'before') {
+          if (op.place) { form.append('place_kind', op.place.kind); form.append('place_id', String(op.place.id)); }
+          else form.append('unit_label', op.unitLabel);
+        }
+        form.append('photo', blob, op.fileName);
+        return api('jobs/' + jobId + '/gas', { method: 'POST', form: form, requestId: op.id, background: true, timeout: UPLOAD_TIMEOUT });
+      }).then(function (data) {
+        files.del(op.fileKey);
         return data;
       });
     }
@@ -773,7 +832,7 @@
   /** What the queue is doing to each thing on one job's screen. */
   function jobQueueState(routeJobId) {
     var jobId = resolveJobId(routeJobId);
-    var r = { photos: {}, comments: {}, action: null, sendingKinds: [] };
+    var r = { photos: {}, comments: {}, gas: {}, action: null, sendingKinds: [] };
     var entries = queue.filter(function (o) { return o.jobId === jobId; }).map(function (o) { return [o, null]; })
       .concat(failed.filter(function (f) { return f.op.jobId === jobId; }).map(function (f) { return [f.op, f]; }));
     entries.forEach(function (pair) {
@@ -781,6 +840,7 @@
       var f = pair[1];
       var item = { state: f ? 'failed' : 'sending', reason: f ? f.reason : null, opId: op.id };
       if (op.kind === 'photo') r.photos[op.tempId] = item;
+      else if (op.kind === 'gas') r.gas[op.ref + ':' + op.stage] = item;
       else if (op.kind === 'comment' && op.commentTempId !== undefined) {
         var known = r.comments[op.commentTempId];
         if (!known || (known.state === 'sending' && item.state === 'failed')) r.comments[op.commentTempId] = item;
@@ -809,7 +869,25 @@
     var comments = (job.comments || []).slice();
     var pending = {};
     var order = [];
+    var gas = job.gas ? { used: job.gas.used, readings: (job.gas.readings || []).map(function (x) { return Object.assign({}, x); }) } : null;
     ops.forEach(function (op) {
+      if (op.kind === 'gas') {
+        if (!gas) return;
+        var rd = gas.readings.find(function (x) { return x.client_ref === op.ref; });
+        if (op.stage === 'before' && !rd) {
+          gas.readings.push({
+            id: null, client_ref: op.ref, place_kind: op.place ? op.place.kind : null, place_id: op.place ? op.place.id : null,
+            unit_label: op.unitLabel, before_kg: Number(op.kg), before_at: nowStamp(op.at), before_local: op.fileKey,
+            after_kg: null, after_at: null, used_kg: null,
+          });
+        } else if (op.stage === 'after' && rd && rd.after_kg === null) {
+          rd.after_kg = Number(op.kg);
+          rd.after_at = nowStamp(op.at);
+          rd.after_local = op.fileKey;
+          rd.used_kg = Math.round((rd.before_kg - rd.after_kg) * 1000) / 1000;
+        }
+        return;
+      }
       if (op.kind === 'photo') {
         if (photos.some(function (p) { return p.id === op.tempId; })) return;
         photos.push({
@@ -837,7 +915,7 @@
         created_at: nowStamp(p.op.at), is_material_request: !!p.op.isMaterialRequest, media: p.media,
       });
     });
-    return Object.assign({}, job, { photos: photos, comments: comments });
+    return Object.assign({}, job, { photos: photos, comments: comments, gas: gas });
   }
 
   // -------------------------------------------------------------------------
@@ -860,7 +938,7 @@
     enqueue({ kind: 'resume', jobId: jobId });
   }
 
-  function finishJob(jobId, notes, checklist) {
+  function finishJob(jobId, notes, checklist, gasUsed) {
     patchJob(jobId, function (j) {
       var started = j.started_at ? new Date(j.started_at.replace(' ', 'T')) : new Date();
       var minutes = Math.max(0, Math.round((Date.now() - started.getTime()) / 60000));
@@ -873,6 +951,7 @@
     });
     var op = { kind: 'finish', jobId: jobId, completionNotes: notes };
     if (checklist) op.checklist = checklist;
+    if (gasUsed !== undefined) op.gasUsed = gasUsed;
     enqueue(op);
   }
 
@@ -906,6 +985,18 @@
       enqueue({
         kind: 'photo', jobId: jobId, photoType: photoType, mediaKind: prepared.kind,
         fileKey: key, fileName: prepared.name, tempId: tempId,
+      });
+    });
+  }
+
+  /** One weight: the photo of the scale is kept on the phone until it is sent. */
+  function addGas(jobId, g) {
+    return stash(g.photo.blob).then(function (key) {
+      enqueue({
+        kind: 'gas', jobId: jobId, stage: g.stage, ref: g.ref, kg: g.kg.replace(',', '.'),
+        place: g.stage === 'before' && g.place ? { kind: g.place.kind, id: g.place.id } : null,
+        unitLabel: g.stage === 'before' ? (g.place ? g.place.label : g.unitText.trim()) : '',
+        fileKey: key, fileName: g.photo.name,
       });
     });
   }
@@ -966,6 +1057,7 @@
       is_paused: false, paused_at: null, pause_reason: null, description: null, completion_notes: null,
       started_at: null, finished_at: null, photos: [], materials: [], comments: [],
       checklist: unitClean && definition ? Object.assign({}, definition, { saved: null }) : null, request_photos: [],
+      gas: input.jobType === 'maintenance' ? { readings: [], used: null } : null,
     };
     cacheSet('job:' + tempId, job);
     var today = cacheGet('jobs:today');
@@ -1228,6 +1320,7 @@
     draft: '',
     asking: false,
     newJob: null,
+    gas: null,
     lastThreadCount: -1,
   };
 
@@ -1239,7 +1332,7 @@
     var view = r.view || 'list';
     if (view === 'list') { ensureJobs(ui.tab); if (ui.tab !== 'today') ensureJobs('today'); }
     if (view === 'requests') ensureJobs('requests');
-    if (view === 'job' || view === 'notes') ensureJob(resolveJobId(r.id));
+    if (view === 'job' || view === 'notes' || view === 'gas') ensureJob(resolveJobId(r.id));
     if (view === 'new') ensurePlaces();
     S.render();
   }
@@ -1552,13 +1645,198 @@
     var left = c ? checklistTotal(c) - checklistAnswered(c, draft.items) : 0;
     var needList = job.status === 'in_progress' && left > 0;
     var needNote = job.status === 'in_progress' && !!c && draft.problems.indexOf('other') !== -1 && !draft.problem_note.trim();
-    var finish = needPhoto || needList || needNote;
+    var needGas = job.status === 'in_progress' && !!openGasReading(job);
+    var finish = needPhoto || needList || needNote || needGas;
     return {
       start: startBlocked,
       finish: finish,
       photo: needPhoto,
-      reason: startBlocked ? T.job.startNeedsPhoto : needPhoto ? T.job.finishNeedsPhoto : needList ? T.job.finishNeedsChecklist(left) : T.job.finishNeedsProblemNote,
+      reason: startBlocked ? T.job.startNeedsPhoto : needPhoto ? T.job.finishNeedsPhoto : needList ? T.job.finishNeedsChecklist(left)
+        : needNote ? T.job.finishNeedsProblemNote : T.job.gas.finishNeedsAfter,
     };
+  }
+
+  // --- Gas (R410): weighed before and after, per unit ----------------------------
+
+  function openGasReading(job) {
+    return job.gas ? job.gas.readings.find(function (x) { return x.after_kg === null; }) : null;
+  }
+
+  function kgLabel(kg) {
+    return (Math.round(Number(kg) * 1000) / 1000).toString() + ' kg';
+  }
+
+  /** "16.75" or "16,75" → 16.75; null when it is not a weight the server will take. */
+  function parseKg(text) {
+    var t = String(text || '').trim().replace(',', '.');
+    if (!/^\d{1,3}(\.\d{1,3})?$/.test(t)) return null;
+    var kg = Number(t);
+    return kg > 0 && kg <= 100 ? kg : null;
+  }
+
+  function gasPhotoItem(reading, stage) {
+    var local = stage === 'after' ? reading.after_local : reading.before_local;
+    if (local) return { localKey: local };
+    var path = stage === 'after' ? reading.after_photo_path : reading.before_photo_path;
+    return path ? { url_path: path } : null;
+  }
+
+  function gasThumb(reading, stage) {
+    var item = gasPhotoItem(reading, stage);
+    if (!item) return '';
+    var url = mediaUrl(item);
+    return '<button type="button" class="thumb gthumb" data-action="cleaning:gas-view" data-ref="' + esc(reading.client_ref) + '" data-stage="' + stage + '">' +
+      (url ? '<img src="' + esc(url) + '" alt="">' : '') + '</button>';
+  }
+
+  function gasSection(job, qs) {
+    var g = job.gas;
+    var editable = job.status === 'open' || job.status === 'in_progress';
+    var open = openGasReading(job);
+    var html = '<h2 class="h3">' + esc(T.job.gas.title) + '</h2>';
+    if (editable) html += '<div class="secondary mt-1">' + esc(T.job.gas.hint) + '</div>';
+    if (!g.readings.length && !editable) {
+      html += '<div class="body-lg muted mt-2">' + esc(g.used === false ? T.job.gas.noGasUsed : T.job.gas.none) + '</div>';
+    }
+    g.readings.forEach(function (r) {
+      var qb = qs.gas[r.client_ref + ':before'];
+      var qa = qs.gas[r.client_ref + ':after'];
+      html += '<div class="gas-row" data-key="g' + esc(r.client_ref) + '">' +
+        '<div class="row"><span class="grow"><strong>' + esc(T.job.gas.unit) + ' ' + esc(r.unit_label) + '</strong></span>' +
+        (r.used_kg !== null ? pill(T.job.gas.used + ' ' + kgLabel(r.used_kg), '#7C3AED', 700) : '') + '</div>' +
+        '<div class="gas-pair mt-2">' +
+        '<div class="gas-cell">' + gasThumb(r, 'before') + '<div><div class="small muted">' + esc(T.job.gas.before) + '</div><div class="body-lg"><strong>' + esc(kgLabel(r.before_kg)) + '</strong></div>' +
+        '<div class="small muted">' + esc(clockFromDateTime(r.before_at)) + '</div></div></div>' +
+        '<div class="gas-cell">' + (r.after_kg !== null ? gasThumb(r, 'after') + '<div><div class="small muted">' + esc(T.job.gas.after) + '</div><div class="body-lg"><strong>' + esc(kgLabel(r.after_kg)) + '</strong></div>' +
+          '<div class="small muted">' + esc(clockFromDateTime(r.after_at)) + '</div></div>'
+          : '<div class="small muted">' + esc(T.job.gas.waitingAfter) + '</div>') + '</div>' +
+        '</div>' +
+        (qb ? '<div class="mt-2">' + queueNote(qb) + '</div>' : '') +
+        (qa ? '<div class="mt-2">' + queueNote(qa) + '</div>' : '') +
+        '</div>';
+    });
+    if (editable) {
+      html += '<div class="mt-3">' + (open
+        ? button(T.job.gas.weighAfter + ' — ' + open.unit_label, 'cleaning:gas-after', { icon: 'camera', data: 'data-ref="' + esc(open.client_ref) + '"' })
+        : button(T.job.gas.weighBefore, 'cleaning:gas-before', { variant: 'secondary', icon: 'camera' })) + '</div>';
+    }
+    return html;
+  }
+
+  function gasPlaces(job) {
+    return (job.places || []).slice().sort(function (a, b) { return (a.kind === 'unit' ? 0 : 1) - (b.kind === 'unit' ? 0 : 1); });
+  }
+
+  function startGas(routeJobId, stage, ref) {
+    var job = currentJob(routeJobId);
+    if (!job || !job.gas) return;
+    var places = gasPlaces(job);
+    if (ui.gas && ui.gas.photo && ui.gas.photo.url) URL.revokeObjectURL(ui.gas.photo.url);
+    ui.gas = {
+      jobId: routeJobId, stage: stage,
+      ref: stage === 'before' ? 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) : ref,
+      place: stage === 'before' && places.length === 1 ? places[0] : null,
+      unitText: '', kg: '', photo: null, saving: false,
+    };
+    S.go({ app: 'cleaning', view: 'gas', id: routeJobId });
+    window.scrollTo(0, 0);
+  }
+
+  function gasProblem(g, reading) {
+    if (g.stage === 'before' && !g.place && !g.unitText.trim()) return T.job.gas.needUnit;
+    if (!g.photo) return T.job.gas.needPhoto;
+    var kg = parseKg(g.kg);
+    if (kg === null) return T.job.gas.badKg;
+    if (g.stage === 'after' && reading && kg > reading.before_kg) return T.job.gas.moreThanBefore;
+    return null;
+  }
+
+  function renderGas(route) {
+    var job = currentJob(route.id);
+    var g = ui.gas;
+    var top = S.backBar('core:back', T.job.back);
+    if (!job || !g || g.jobId !== route.id) {
+      // Reopened from history with nothing in hand: back to the job.
+      return '<main class="screen">' + top + '<div class="screen-body"><button type="button" class="btn" data-action="core:back">' + esc(T.job.back) + '</button></div></main>';
+    }
+    var reading = g.stage === 'after' ? (job.gas.readings || []).find(function (x) { return x.client_ref === g.ref; }) : null;
+    var n = 1;
+    var body = '<h1 class="h2">' + esc(g.stage === 'before' ? T.job.gas.screenBefore : T.job.gas.screenAfter) + '</h1>' +
+      '<div class="secondary mt-1">' + esc(jobHeading(job).heading) + '</div>';
+
+    if (g.stage === 'before') {
+      var places = gasPlaces(job);
+      body += '<div class="label muted mt-5">' + esc(T.job.gas.stepUnit) + '</div>';
+      if (places.length) {
+        body += '<div class="chips mt-2">' + places.map(function (p, i) {
+          var on = g.place && g.place.kind === p.kind && g.place.id === p.id;
+          return '<button type="button" class="choice' + (on ? ' on done' : '') + '" data-action="cleaning:gas-place" data-i="' + i + '">' + esc(p.label) + '</button>';
+        }).join('') + '</div>';
+      } else {
+        body += '<input class="field mt-2" id="gas-unit" autocomplete="off" placeholder="' + esc(T.job.gas.unitPlaceholder) + '" value="' + esc(g.unitText) + '">';
+      }
+      n = 2;
+    } else if (reading) {
+      body += '<div class="banner mt-4"><div><strong>' + esc(T.job.gas.unit) + ' ' + esc(reading.unit_label) + '</strong>' +
+        '<div class="small secondary">' + esc(T.job.gas.beforeWas(kgLabel(reading.before_kg))) + '</div></div></div>';
+    }
+
+    body += '<div class="label muted mt-5">' + esc(T.job.gas.stepPhoto(n)) + '</div>';
+    body += g.photo
+      ? '<div class="gas-shot mt-2"><img src="' + esc(g.photo.url) + '" alt=""></div>' +
+        '<button type="button" class="btn plain mt-2" data-action="cleaning:gas-photo">' + icon('camera') + esc(T.job.gas.retake) + '</button>'
+      : '<button type="button" class="add gas-take mt-2" data-action="cleaning:gas-photo">' + icon('camera', 'lg') + '<span>' + esc(T.job.gas.takePhoto) + '</span></button>';
+
+    body += '<div class="label muted mt-5">' + esc(T.job.gas.stepKg(n + 1)) + '</div>' +
+      '<div class="gas-kg mt-2"><input class="field" id="gas-kg" inputmode="decimal" autocomplete="off" placeholder="' + esc(T.job.gas.kgPlaceholder) + '" value="' + esc(g.kg) + '"><span>kg</span></div>';
+
+    var kg = parseKg(g.kg);
+    if (g.stage === 'after' && reading && kg !== null) {
+      body += kg > reading.before_kg
+        ? '<div class="qfail mt-3"><div class="row">' + icon('alert') + '<strong>' + esc(T.job.gas.moreThanBefore) + '</strong></div></div>'
+        : '<div class="mt-3">' + pill(T.job.gas.usedNow(kgLabel(Math.round((reading.before_kg - kg) * 1000) / 1000)), '#7C3AED', 700) + '</div>';
+    }
+
+    var problem = gasProblem(g, reading);
+    return '<main class="screen">' + top + '<div class="screen-body">' + body + '</div>' +
+      '<div class="footer">' + (problem && (g.photo || g.kg) ? '<div class="hint">' + esc(problem) + '</div>' : '') +
+      button(T.job.gas.save, 'cleaning:gas-save', { icon: 'check', disabled: !!problem || g.saving }) + '</div></main>';
+  }
+
+  function saveGas(routeJobId) {
+    var g = ui.gas;
+    var job = currentJob(routeJobId);
+    if (!g || !job) return;
+    var reading = g.stage === 'after' ? job.gas.readings.find(function (x) { return x.client_ref === g.ref; }) : null;
+    var problem = gasProblem(g, reading);
+    if (problem) { S.toast(problem); return; }
+    g.saving = true;
+    S.render();
+    addGas(routeJobId, g).then(function () {
+      if (g.photo && g.photo.url) URL.revokeObjectURL(g.photo.url);
+      ui.gas = null;
+      S.toast(T.job.gas.saved);
+      S.back();
+    }, function (e) {
+      g.saving = false;
+      S.toast(e.message || T.errors.couldNotSend);
+      S.render();
+    });
+  }
+
+  function openFinishSheet(routeJobId, gasUsed) {
+    ui.finishNotes = '';
+    S.sheet({
+      title: T.job.finishSheet.title, body: T.job.finishSheet.body,
+      html: function () {
+        return '<textarea class="field mt-3" id="finish-notes" rows="3" placeholder="' + esc(T.job.finishSheet.notesPlaceholder) + '">' + esc(ui.finishNotes) + '</textarea>';
+      },
+      confirm: T.job.finishSheet.confirm, cancel: T.job.finishSheet.cancel,
+      onConfirm: function () {
+        var current = currentJob(routeJobId);
+        finishJob(routeJobId, ui.finishNotes.trim(), current && current.checklist ? getDraft(routeJobId) : null, gasUsed);
+      },
+    });
   }
 
   function renderJob(route) {
@@ -1607,6 +1885,8 @@
     body += section(null, photos, job.status === 'open' && !job.checklist);
 
     if (job.checklist && (job.status !== 'done' || job.checklist.saved)) body += section(null, checklistSection(job, draft), job.status === 'open');
+
+    if (job.gas && job.status !== 'cancelled') body += section(null, gasSection(job, qs));
 
     if (closed) {
       var used = (job.materials || []).filter(function (m) { return m.kind === 'used'; });
@@ -1825,20 +2105,57 @@
         break;
       case 'pause-reason': S.closeSheet(); pauseJob(r.id, el.getAttribute('data-reason')); break;
       case 'resume': resumeJob(r.id); break;
-      case 'finish':
-        ui.finishNotes = '';
-        S.sheet({
-          title: T.job.finishSheet.title, body: T.job.finishSheet.body,
-          html: function () {
-            return '<textarea class="field mt-3" id="finish-notes" rows="3" placeholder="' + esc(T.job.finishSheet.notesPlaceholder) + '">' + esc(ui.finishNotes) + '</textarea>';
-          },
-          confirm: T.job.finishSheet.confirm, cancel: T.job.finishSheet.cancel,
-          onConfirm: function () {
-            var current = currentJob(r.id);
-            finishJob(r.id, ui.finishNotes.trim(), current && current.checklist ? getDraft(r.id) : null);
-          },
+      case 'finish': {
+        // Maintenance: every job answers "did you use gas?". Weights already
+        // on the job are the answer.
+        if (job && job.gas) {
+          if (job.gas.readings.length) { openFinishSheet(r.id, true); break; }
+          S.sheet({
+            title: T.job.gas.askTitle, body: T.job.gas.askBody,
+            actions: [{ label: T.job.gas.askNo, action: 'cleaning:finish-nogas' }],
+            confirm: T.job.gas.askYes, cancel: T.job.finishSheet.cancel,
+            onConfirm: function () {
+              setTimeout(function () {
+                S.sheet({ title: T.job.gas.forgotTitle, body: T.job.gas.forgotBody, confirm: T.job.gas.forgotOk });
+              }, 0);
+            },
+          });
+          break;
+        }
+        openFinishSheet(r.id);
+        break;
+      }
+      case 'finish-nogas': S.closeSheet(); openFinishSheet(r.id, false); break;
+      case 'gas-before': startGas(r.id, 'before'); break;
+      case 'gas-after': startGas(r.id, 'after', el.getAttribute('data-ref')); break;
+      case 'gas-place': {
+        if (!ui.gas || !job) break;
+        var gp = gasPlaces(job)[Number(el.getAttribute('data-i'))];
+        if (gp) ui.gas.place = gp;
+        S.render();
+        break;
+      }
+      case 'gas-photo': {
+        if (!ui.gas) break;
+        var gs = ui.gas;
+        pickFiles('image/*', true, false).then(function (list) {
+          if (!list.length) return;
+          preparePhoto(list[0]).then(function (p) {
+            if (gs.photo && gs.photo.url) URL.revokeObjectURL(gs.photo.url);
+            gs.photo = { blob: p.blob, name: p.name, url: URL.createObjectURL(p.blob) };
+            S.render();
+          }, function (e) { S.toast(e.message || T.errors.genericBody); });
         });
         break;
+      }
+      case 'gas-save': saveGas(r.id); break;
+      case 'gas-view': {
+        if (!job || !job.gas) break;
+        var gr = job.gas.readings.find(function (x) { return x.client_ref === el.getAttribute('data-ref'); });
+        var gi = gr && gasPhotoItem(gr, el.getAttribute('data-stage'));
+        if (gi) openPhoto(gi);
+        break;
+      }
       case 'capture': {
         var kind = el.getAttribute('data-kind');
         var type = el.getAttribute('data-type');
@@ -1975,6 +2292,12 @@
       ui.draftHeight = ui.draft ? Math.min(140, e.target.scrollHeight) : 0;
       e.target.style.height = ui.draftHeight ? ui.draftHeight + 'px' : '';
       S.render();
+    } else if (id === 'gas-kg' && ui.gas) {
+      ui.gas.kg = e.target.value;
+      S.render();
+    } else if (id === 'gas-unit' && ui.gas) {
+      ui.gas.unitText = e.target.value;
+      S.render();
     } else if (id === 'finish-notes') {
       ui.finishNotes = e.target.value;
     } else if (id === 'cl-note') {
@@ -2005,6 +2328,7 @@
     if (view === 'requests') return renderRequests(route);
     if (view === 'job') return renderJob(route);
     if (view === 'notes') return renderNotes(route);
+    if (view === 'gas') return renderGas(route);
     if (view === 'new') return renderNew(route);
     return renderList(route);
   }

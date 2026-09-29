@@ -1114,6 +1114,40 @@ function ops_api_handle_job_finish(PDO $conn, array $user, int $jobId): void
         }
     }
 
+    // R410 gas on maintenance jobs: a cylinder weighed before use has to be
+    // weighed after, or nobody can say how much went into that unit. Before
+    // the replay guard, like the rules above — the technician can weigh it
+    // and try again.
+    //
+    // gas_used is the answer to the app's "Did you use gas?". An older app
+    // sends nothing and is left alone; weights on the job make it a yes
+    // whatever was sent.
+    $gasUsed = null;
+    if ($job['status'] !== 'done' && ops_job_has_gas($job)) {
+        if (ops_gas_open_count($conn, $jobId) > 0) {
+            customer_api_send_error(
+                'gas_after_required',
+                'Weigh the gas cylinder after using it before finishing this job.',
+                409
+            );
+        }
+        $hasReadings = ops_gas_readings($conn, $jobId) !== [];
+        $said = ops_api_param('gas_used');
+        if ($said !== null && $said !== '') {
+            $gasUsed = (int)(bool)(int)$said;
+        }
+        if ($gasUsed === 1 && !$hasReadings) {
+            customer_api_send_error(
+                'gas_readings_required',
+                'Weigh the gas cylinder before and after using it, then finish.',
+                409
+            );
+        }
+        if ($hasReadings) {
+            $gasUsed = 1;
+        }
+    }
+
     ops_api_guard_replay($conn, $user, $jobId, "jobs/$jobId/finish");
 
     if ($job['status'] === 'done') {
@@ -1157,6 +1191,14 @@ function ops_api_handle_job_finish(PDO $conn, array $user, int $jobId): void
         ops_bill_finished_job($conn, $jobId);
         if ($checklist !== null) {
             ops_checklist_save($conn, $job, (int)$user['id'], $checklist);
+        }
+        if ($gasUsed !== null) {
+            try {
+                $conn->prepare("UPDATE ops_jobs SET gas_used = ? WHERE id = ?")->execute([$gasUsed, $jobId]);
+            } catch (PDOException $e) {
+                // A database without the migration: the job is finished regardless.
+                error_log('ops gas_used save failed: ' . $e->getMessage());
+            }
         }
     }
 
@@ -1254,6 +1296,171 @@ function ops_api_handle_job_photo(PDO $conn, array $user, int $jobId): void
         'photo' => $photo ? ops_api_photo_row($photo, (string)$job['status']) : null,
         'job' => ops_api_job_detail($conn, $fresh, $user),
     ], 201);
+}
+
+// ---------------------------------------------------------------------------
+// POST ops/jobs/{id}/gas — R410 weighed before or after, one photo of the scale
+// ---------------------------------------------------------------------------
+
+/**
+ * stage=before: client_ref, kg, photo, and the unit — place_kind + place_id
+ * from the job's own places, or unit_label typed when the job has none.
+ * stage=after: client_ref of the Before it closes, kg, photo.
+ *
+ * client_ref, not the reading id, because the app queues offline: the After can
+ * be tapped before the Before has reached the server.
+ */
+function ops_api_handle_job_gas(PDO $conn, array $user, int $jobId): void
+{
+    $job = ops_api_job_or_404($conn, $jobId, $user);
+
+    if (!ops_job_has_gas($job)) {
+        customer_api_send_error('validation_error', 'Gas is only recorded on maintenance jobs.', 400);
+    }
+
+    // No request-id replay guard here: client_ref already makes a repeat
+    // harmless, and a guard claimed before a validation error would turn the
+    // person's "Try again" into a silent duplicate that saved nothing.
+
+    if ($job['status'] === 'done' || $job['status'] === 'cancelled') {
+        customer_api_send_error('job_closed', 'This job is finished, so gas cannot be added to it.', 409);
+    }
+
+    $stage = (string)($_POST['stage'] ?? '');
+    if (!in_array($stage, ['before', 'after'], true)) {
+        customer_api_send_error('validation_error', 'Say whether this is the weight before or after.', 400);
+    }
+    $clientRef = trim((string)($_POST['client_ref'] ?? ''));
+    if ($clientRef === '' || strlen($clientRef) > 64) {
+        customer_api_send_error('validation_error', 'This reading has no reference. Update the app and try again.', 400);
+    }
+    $kg = ops_gas_parse_kg($_POST['kg'] ?? '');
+    if ($kg === null) {
+        customer_api_send_error('validation_error', 'Type the weight shown on the scale, in kg — for example 16.75.', 400);
+    }
+    $file = $_FILES['photo'] ?? null;
+    if (!$file || !isset($file['tmp_name']) || is_array($file['tmp_name'])) {
+        customer_api_send_error('validation_error', 'Take a photo of the scale.', 400);
+    }
+
+    $existing = $conn->prepare("SELECT * FROM ops_job_gas_readings WHERE job_id = ? AND client_ref = ? LIMIT 1");
+    $existing->execute([$jobId, $clientRef]);
+    $reading = $existing->fetch(PDO::FETCH_ASSOC) ?: null;
+    $at = ops_api_client_time();
+
+    if ($stage === 'before') {
+        // Already here: a retry whose first answer was lost. Nothing to add.
+        if ($reading) {
+            customer_api_send_ok(['job' => ops_api_job_detail($conn, ops_api_job_or_404($conn, $jobId, $user), $user)]);
+        }
+
+        $placeKind = null;
+        $placeId = null;
+        $buildingId = null;
+        $label = '';
+        $places = ops_job_places($conn, [$jobId])[$jobId] ?? [];
+        $wantKind = (string)($_POST['place_kind'] ?? '');
+        $wantId = (int)($_POST['place_id'] ?? 0);
+        if ($wantId > 0) {
+            foreach ($places as $place) {
+                if ($place['place_kind'] === $wantKind && (int)$place['place_id'] === $wantId) {
+                    $placeKind = $wantKind;
+                    $placeId = $wantId;
+                    $buildingId = $place['building_id'] !== null ? (int)$place['building_id'] : null;
+                    $label = (string)$place['label'];
+                    break;
+                }
+            }
+            if ($placeId === null) {
+                customer_api_send_error('validation_error', 'That unit is not on this job.', 400);
+            }
+        } else {
+            $label = mb_substr(trim((string)($_POST['unit_label'] ?? '')), 0, 255);
+        }
+        if ($label === '') {
+            customer_api_send_error('validation_error', 'Choose or type the unit number.', 400);
+        }
+
+        $stored = ops_gas_store_photo($jobId, $file, 'before');
+        if (!$stored['ok']) {
+            customer_api_send_error('upload_failed', (string)$stored['error'], 400);
+        }
+        try {
+            $conn->prepare("
+                INSERT INTO ops_job_gas_readings
+                    (job_id, company_id, client_ref, place_kind, place_id, building_id, unit_label,
+                     before_kg, before_photo, before_at, before_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ")->execute([
+                $jobId, (int)$job['company_id'], $clientRef, $placeKind, $placeId, $buildingId, $label,
+                $kg, $stored['file_path'], $at, $user['id'],
+            ]);
+        } catch (PDOException $e) {
+            ops_gas_discard_photo($stored['file_path']);
+            // Two copies of the same Before racing: the other one won, which is fine.
+            if ($e->getCode() !== '23000') {
+                throw $e;
+            }
+        }
+    } else {
+        if (!$reading) {
+            customer_api_send_error('conflict', 'The weight before using the gas has not arrived yet. It will be sent again.', 409);
+        }
+        // A retry of an After that already landed.
+        if ($reading['after_kg'] !== null) {
+            customer_api_send_ok(['job' => ops_api_job_detail($conn, ops_api_job_or_404($conn, $jobId, $user), $user)]);
+        }
+        if ($kg > (float)$reading['before_kg']) {
+            customer_api_send_error(
+                'validation_error',
+                'After (' . ops_gas_kg_label($kg) . ') is more than before (' . ops_gas_kg_label($reading['before_kg']) . '). Check the scale and type it again.',
+                400
+            );
+        }
+
+        $stored = ops_gas_store_photo($jobId, $file, 'after');
+        if (!$stored['ok']) {
+            customer_api_send_error('upload_failed', (string)$stored['error'], 400);
+        }
+        $update = $conn->prepare("
+            UPDATE ops_job_gas_readings
+            SET after_kg = ?, after_photo = ?, after_at = ?, after_by = ?
+            WHERE id = ? AND after_kg IS NULL
+        ");
+        $update->execute([$kg, $stored['file_path'], max($at, (string)$reading['before_at']), $user['id'], (int)$reading['id']]);
+        if ($update->rowCount() === 0) {
+            ops_gas_discard_photo($stored['file_path']);
+        }
+    }
+
+    $fresh = ops_api_job_or_404($conn, $jobId, $user);
+    customer_api_send_ok(['job' => ops_api_job_detail($conn, $fresh, $user)], 201);
+}
+
+// ---------------------------------------------------------------------------
+// GET ops/gas-photos/{id}/{before|after} — the photo of the scale
+// ---------------------------------------------------------------------------
+
+function ops_api_handle_gas_photo_serve(PDO $conn, array $user, int $readingId, string $stage): void
+{
+    $stmt = $conn->prepare("SELECT job_id, before_photo, after_photo FROM ops_job_gas_readings WHERE id = ? LIMIT 1");
+    $stmt->execute([$readingId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    // Same own-job rule as every other file this API serves.
+    if (!$row || !ops_api_load_own_job($conn, (int)$row['job_id'], $user)) {
+        customer_api_send_error('not_found', 'That photo is not on your list.', 404);
+    }
+    $file = ops_gas_photo_file($stage === 'after' ? $row['after_photo'] : $row['before_photo']);
+    if ($file === null) {
+        customer_api_send_error('not_found', 'That photo could not be found.', 404);
+    }
+
+    header('Content-Disposition: inline; filename="' . basename($file['path']) . '"');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: private, max-age=600');
+    ops_serve_file_with_ranges($file['path'], $file['type']);
+    exit;
 }
 
 // ---------------------------------------------------------------------------
