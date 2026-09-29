@@ -183,6 +183,7 @@ echo hr_ui_page_header(
             <th>Allow</th>
             <th>Bonus / OT</th>
             <th>Deductions</th>
+            <th title="Deductions above the WPS 15% cap (15% of base + allowance + bonus)">Over WPS Cap</th>
             <th>Net</th>
             <th>Payslip</th>
           </tr>
@@ -207,11 +208,24 @@ echo hr_ui_page_header(
                   ?>
                 </div>
               </td>
+              <?php
+                $earn = (float)$r['base_pay'] + (float)$r['allowance'] + (float)$r['bonus'];
+                $capMax = round($earn * hr_wps_max_deduction_ratio(), 2);
+                $overCap = round((float)$r['deductions'] - $capMax, 2);
+              ?>
+              <td>
+                <?php if ($overCap > 0.005): ?>
+                  <span class="fw-semibold text-danger"><?= number_format($overCap,2) ?></span>
+                  <!-- <div class="small text-muted">Max <?= number_format($capMax,2) ?></div> -->
+                <?php else: ?>
+                  <span class="text-muted">—</span>
+                <?php endif; ?>
+              </td>
               <td class="fw-semibold"><?= number_format($r['net_pay'],2) ?></td>
               <td><a class="btn btn-sm btn-outline-primary" target="_blank" href="payslip.php?run_id=<?= (int)$run_id ?>&employee_id=<?= (int)$r['employee_id'] ?>">Open</a></td>
             </tr>
           <?php endforeach; if(!$items): ?>
-            <tr><td colspan="9" class="text-center text-muted">—</td></tr>
+            <tr><td colspan="10" class="text-center text-muted">—</td></tr>
           <?php endif; ?>
         </tbody>
       </table>
