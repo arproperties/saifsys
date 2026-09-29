@@ -81,6 +81,7 @@
     },
     newJob: {
       title: 'New job',
+      titleFor: { cleaning: 'New cleaning job', maintenance: 'New maintenance job' },
       back: 'Back',
       typeLabel: 'Type',
       placesLabel: 'Where?',
@@ -2001,12 +2002,14 @@
   function renderNew(route) {
     var n = ui.newJob || (ui.newJob = { jobType: route.kind || 'cleaning', places: [], picker: false, building: null, search: '' });
     if (n.picker) return renderPicker(n);
-    var body = '<h1 class="h2">' + esc(T.newJob.title) + '</h1>' +
-      '<div class="label muted mt-5">' + esc(T.newJob.typeLabel) + '</div><div class="types mt-2">' +
+    // Opened from the Cleaning or Maintenance tile: the type is already chosen.
+    var fixed = T.newJob.titleFor[route.kind];
+    var body = '<h1 class="h2">' + esc(fixed || T.newJob.title) + '</h1>' +
+      (fixed ? '' : '<div class="label muted mt-5">' + esc(T.newJob.typeLabel) + '</div><div class="types mt-2">' +
       ['cleaning', 'maintenance'].map(function (t) {
         var on = n.jobType === t;
         return '<button type="button" class="type-btn' + (on ? ' on' : '') + '" data-action="cleaning:new-type" data-type="' + t + '">' + icon(TYPE_ICON[t]) + esc(T.jobType[t]) + '</button>';
-      }).join('') + '</div>' +
+      }).join('') + '</div>') +
       '<div class="label muted mt-5">' + esc(T.newJob.placesLabel) + '</div>' +
       (n.places.length ? '<div class="chips mt-2">' + n.places.map(function (p, i) {
         return '<button type="button" class="chip" data-action="cleaning:new-unplace" data-i="' + i + '"><span class="ellipsis">' + esc(p.label) + '</span>' + icon('close', 'sm') + '</button>';
