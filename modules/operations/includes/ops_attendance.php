@@ -8,8 +8,8 @@
  * reads and writes, the one v_attendance_daily_emp turns into present days,
  * hours and overtime, and the one payroll runs on. The shape is exactly what
  * A check-in from the app writes status 'pending' — the time is recorded, the
- * day is not yet decided. HR's Attendance page approves it (or marks it absent,
- * half, on leave or excused) and only then does the status move off 'pending'.
+ * day is not yet decided. The check out approves it; until then HR can approve
+ * it by hand (or mark it absent, half, on leave or excused).
  *
  * HR's own Quick add writes: status 'approved' (present), check_in, check_out,
  * and hours = check_out − check_in rounded to two places. The only difference
@@ -219,8 +219,11 @@ function ops_attendance_check_out(PDO $conn, array $employee, int $userId, ?stri
         $hours = 24.00;
     }
 
+    // A check out closes a complete day, so it approves itself (pending only;
+    // anything HR already set is left alone).
     $conn->prepare("
-        UPDATE attendance SET check_out = ?, hours = ?, updated_by = ?, updated_at = ?
+        UPDATE attendance SET check_out = ?, hours = ?, updated_by = ?, updated_at = ?,
+               status = IF(status = 'pending', 'approved', status)
         WHERE id = ? AND check_out IS NULL
     ")->execute([date('H:i:00', $outTs), $hours, $userId, date('Y-m-d H:i:s'), (int)$row['id']]);
 

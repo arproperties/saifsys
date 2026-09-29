@@ -464,9 +464,12 @@ function attendance_self_check_out(PDO $conn): array
     }
 
     try {
+        // A real check-out is a complete day, so it approves itself. Only the
+        // 6 PM auto check-out (forgot to tap) is left Pending for HR.
         $upd = $conn->prepare(
             "UPDATE attendance
-                SET check_out = ?, check_out_ip = ?, hours = ?, updated_by = ?, updated_at = NOW()
+                SET check_out = ?, check_out_ip = ?, hours = ?, updated_by = ?, updated_at = NOW(),
+                    status = IF(status = 'pending', 'approved', status)
               WHERE employee_id = ? AND work_date = ?
               LIMIT 1"
         );
