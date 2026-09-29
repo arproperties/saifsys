@@ -33,8 +33,11 @@ try {
         hr_deduction_record_settlement($conn, $id, $amount, 'cash', $settleDate, $uid ? (int)$uid : null, null, null, $notes !== '' ? $notes : 'Cash settlement');
         $msg = 'Fine/deduction cash settlement recorded.';
     } else {
-        hr_loan_record_settlement($conn, $id, $amount, 'cash', $settleDate, $uid ? (int)$uid : null, null, null, $notes !== '' ? $notes : 'Cash settlement');
+        $settlementId = hr_loan_record_settlement($conn, $id, $amount, 'cash', $settleDate, $uid ? (int)$uid : null, null, null, $notes !== '' ? $notes : 'Cash settlement');
         $msg = 'Cash repayment recorded. Outstanding balance reduced.';
+        if ($settlementId > 0) {
+            $_SESSION['loan_cash_receipt_id'] = $settlementId;
+        }
     }
     $conn->commit();
     $_SESSION['cash_advance_msg'] = $msg;
@@ -53,7 +56,7 @@ try {
 // Allow return to cash_advances list (with optional query) or employee profile.
 if ($return !== '') {
     $safeReturn = $return;
-    if (str_starts_with($return, 'employee_view') || str_starts_with($return, 'cash_advances')) {
+    if (str_starts_with($return, 'employee_view') || str_starts_with($return, 'cash_advances') || str_starts_with($return, 'payroll_run_build')) {
         header('Location: ' . $safeReturn);
         exit;
     }

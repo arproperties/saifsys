@@ -7,6 +7,7 @@ require_once __DIR__.'/../lib/Guard.php';
 require_once __DIR__.'/includes/hr_payroll_company_access.php';
 require_once __DIR__.'/includes/hr_schedule_helper.php';
 require_once __DIR__.'/includes/hr_payroll_accounting.php';
+require_once __DIR__.'/includes/hr_loans.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
@@ -122,6 +123,35 @@ $ded_adjust = round($dedTot - $ded_known, 2);
 if (abs($ded_adjust) < 0.01) $ded_adjust = 0.00;
 
 $period = $row['period_from'] . ' → ' . $row['period_to'];
+
+/* Loan info (display only — not part of earnings, deductions or net).
+   Cash repayments are paid by the employee directly to HR, outside WPS. */
+$loanCashPaid = 0.0;
+$loanBalanceAtEnd = null;
+if (hr_loans_schema_ready($conn) && hr_loan_settlements_table_ready($conn)) {
+  $stCash = $conn->prepare("
+    SELECT COALESCE(SUM(amount),0) FROM hr_loan_settlements
+    WHERE employee_id = ? AND method = 'cash' AND settle_date BETWEEN ? AND ?
+  ");
+  $stCash->execute([$row['employee_id'], $row['period_from'], $row['period_to']]);
+  $loanCashPaid = round((float)$stCash->fetchColumn(), 2);
+
+  // Balance as of period end: today's remaining plus anything settled after the period.
+  $stBal = $conn->prepare("
+    SELECT COALESCE(SUM(
+      COALESCE(ca.remaining_balance, ca.amount)
+      + COALESCE((SELECT SUM(s.amount) FROM hr_loan_settlements s WHERE s.loan_id = ca.id AND s.settle_date > ?), 0)
+    ),0)
+    FROM cash_advances ca
+    WHERE ca.employee_id = ?
+      AND ca.status <> 'void'
+      AND (ca.request_status IS NULL OR ca.request_status = 'approved')
+      AND ca.tx_date <= ?
+  ");
+  $stBal->execute([$row['period_to'], $row['employee_id'], $row['period_to']]);
+  $loanBalanceAtEnd = round((float)$stBal->fetchColumn(), 2);
+}
+$showLoanInfo = $loanCashPaid > 0.005 || ($loanBalanceAtEnd !== null && $loanBalanceAtEnd > 0.005) || $adv_applied > 0.005;
 
 function nf($n){ return number_format((float)$n, 2); }
 
@@ -245,6 +275,19 @@ echo hr_ui_page_header(
         <div class="kpi"><?= nf($net) ?></div>
       </div>
     </div>
+
+    <?php if ($showLoanInfo): ?>
+      <div class="mt-3 tile">
+        <h6>Loan / advance <span class="muted small fw-normal">(for information — not included in the totals above)</span></h6>
+        <div class="line"><span>Recovered through this payslip</span><span><?= nf($adv_applied) ?></span></div>
+        <?php if ($loanCashPaid > 0.005): ?>
+          <div class="line"><span>Paid in cash to HR this period</span><span><?= nf($loanCashPaid) ?></span></div>
+        <?php endif; ?>
+        <?php if ($loanBalanceAtEnd !== null): ?>
+          <div class="line"><span>Loan balance at period end</span><span><strong><?= nf($loanBalanceAtEnd) ?></strong></span></div>
+        <?php endif; ?>
+      </div>
+    <?php endif; ?>
 
     <?php if (!empty($row['notes'])): ?>
       <div class="mt-3 muted small">

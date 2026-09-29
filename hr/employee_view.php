@@ -940,7 +940,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_contact_info']
 $cash_msg = $_SESSION['cash_advance_msg'] ?? '';
 $cash_err = $_SESSION['cash_advance_err'] ?? '';
 $ded_msg = $_SESSION['deduction_msg'] ?? '';
-unset($_SESSION['cash_advance_msg'], $_SESSION['cash_advance_err'], $_SESSION['deduction_msg']);
+$cashReceiptId = (int)($_SESSION['loan_cash_receipt_id'] ?? 0);
+unset($_SESSION['cash_advance_msg'], $_SESSION['cash_advance_err'], $_SESSION['deduction_msg'], $_SESSION['loan_cash_receipt_id']);
 
 // Fetch cash advance policy
 $cashAdvancePolicy = null;
@@ -4407,7 +4408,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                               #tab-cashadv .remaining-zero { color: #059669; font-weight: 600; }
                             </style>
 
-                            <?php if($cash_msg): ?><div class="alert alert-success py-2 mt-3"><?= htmlspecialchars($cash_msg) ?></div><?php endif; ?>
+                            <?php if($cash_msg): ?><div class="alert alert-success py-2 mt-3"><?= htmlspecialchars($cash_msg) ?><?php if ($cashReceiptId > 0): ?> <a href="loan_cash_receipt.php?id=<?= $cashReceiptId ?>" class="btn btn-sm btn-outline-success ms-2" target="_blank">Print receipt</a><?php endif; ?></div><?php endif; ?>
                             <?php if($cash_err): ?><div class="alert alert-danger py-2 mt-3"><?= htmlspecialchars($cash_err) ?></div><?php endif; ?>
 
                             <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mt-3 mb-3">
@@ -4772,7 +4773,12 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     <?php else: foreach (array_slice($loanHistoryRows, 0, 40) as $hRow): ?>
                                       <tr>
                                         <td class="text-nowrap"><?= htmlspecialchars((string)$hRow['date']) ?></td>
-                                        <td><?= htmlspecialchars((string)$hRow['label']) ?></td>
+                                        <td>
+                                          <?= htmlspecialchars((string)$hRow['label']) ?>
+                                          <?php if (($hRow['meta']['method'] ?? '') === 'cash' && !empty($hRow['meta']['id'])): ?>
+                                            · <a href="loan_cash_receipt.php?id=<?= (int)$hRow['meta']['id'] ?>" target="_blank">Receipt</a>
+                                          <?php endif; ?>
+                                        </td>
                                         <td class="text-end"><?= number_format((float)$hRow['amount'], 2) ?></td>
                                       </tr>
                                     <?php endforeach; endif; ?>

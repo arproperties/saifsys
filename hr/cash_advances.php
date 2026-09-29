@@ -298,7 +298,7 @@ if ($settlementsReady && $rows) {
     if ($ids) {
         $in = implode(',', array_fill(0, count($ids), '?'));
         $stS = $conn->prepare("
-            SELECT loan_id, settle_date, amount, method, notes
+            SELECT id, loan_id, settle_date, amount, method, notes
             FROM hr_loan_settlements
             WHERE loan_id IN ($in)
             ORDER BY settle_date DESC, id DESC
@@ -354,7 +354,7 @@ echo hr_ui_page_header(
 ?>
 
   <?php if ($m = flash('err')): ?><div class="alert alert-danger"><?= h($m) ?></div><?php endif; ?>
-  <?php if ($m = flash('ok')): ?><div class="alert alert-success"><?= h($m) ?></div><?php endif; ?>
+  <?php if ($m = flash('ok')): ?><div class="alert alert-success"><?= h($m) ?><?php if ($rid = (int)flash('loan_cash_receipt_id')): ?> <a href="loan_cash_receipt.php?id=<?= $rid ?>" class="btn btn-sm btn-outline-success ms-2" target="_blank">Print receipt</a><?php endif; ?></div><?php endif; ?>
 
   <div class="hr-settings-card mb-3">
     <div class="settings-header">How loans &amp; advances work</div>
@@ -648,6 +648,9 @@ echo hr_ui_page_header(
                             via <?= h($s['method']) ?>
                             <?php if (!empty($s['notes'])): ?>
                               <span class="text-muted">(<?= h($s['notes']) ?>)</span>
+                            <?php endif; ?>
+                            <?php if (($s['method'] ?? '') === 'cash'): ?>
+                              · <a href="loan_cash_receipt.php?id=<?= (int)$s['id'] ?>" target="_blank">Receipt</a>
                             <?php endif; ?>
                           </li>
                         <?php endforeach; ?>

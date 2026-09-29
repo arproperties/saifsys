@@ -205,8 +205,45 @@ if ($hasDedRemaining) {
   }
 }
 
+// Open loans per employee, for the "Cash" repayment shortcut (employee pays HR outside WPS).
+$openLoansByEmp = [];
+if (hr_loans_schema_ready($conn) && hr_loan_settlements_table_ready($conn)) {
+  $stOpenLoans = $conn->prepare("
+    SELECT ca.id, ca.employee_id, ca.tx_date, ca.description, COALESCE(ca.remaining_balance, ca.amount) AS remaining
+    FROM cash_advances ca
+    INNER JOIN employees e ON e.id = ca.employee_id AND e.company_id = ?
+    WHERE ca.status = 'open'
+      AND (ca.request_status IS NULL OR ca.request_status = 'approved')
+      AND COALESCE(ca.remaining_balance, ca.amount) > 0.005
+    ORDER BY ca.tx_date ASC, ca.id ASC
+  ");
+  $stOpenLoans->execute([$companyId]);
+  foreach ($stOpenLoans->fetchAll(PDO::FETCH_ASSOC) as $r) {
+    $openLoansByEmp[(int)$r['employee_id']][] = [
+      'id' => (int)$r['id'],
+      'date' => (string)$r['tx_date'],
+      'desc' => (string)($r['description'] ?? ''),
+      'remaining' => round((float)$r['remaining'], 2),
+    ];
+  }
+}
+
 /* ---------------- POST (save / post) ---------------- */
 $msg = $err = '';
+$cashReceiptId = 0;
+$advPrefill = null;
+if (isset($_GET['cash'])) {
+  // Back from loan_settle_cash.php
+  $msg = (string)($_SESSION['ok'] ?? '');
+  $err = (string)($_SESSION['err'] ?? '');
+  $cashReceiptId = (int)($_SESSION['loan_cash_receipt_id'] ?? 0);
+  // WPS part of the agreed repayment, prefilled into Loan/Adv apply (unsaved) once the cash part is recorded.
+  if ($err === '' && preg_match('/^(\d+):(\d+(?:\.\d{1,2})?)$/', (string)($_GET['adv_set'] ?? ''), $mAdv)) {
+    $advPrefill = ['eid' => (int)$mAdv[1], 'amount' => (float)$mAdv[2]];
+  }
+  unset($_SESSION['ok'], $_SESSION['err'], $_SESSION['loan_cash_receipt_id'],
+        $_SESSION['cash_advance_msg'], $_SESSION['cash_advance_err'], $_SESSION['deduction_msg']);
+}
 if (isset($_GET['saved']) && (string)$_GET['saved'] === '1') {
   $msg = 'Draft values saved. Post Run to finalize.';
   if (isset($_GET['override']) && (string)$_GET['override'] === '1') {
@@ -699,7 +736,7 @@ echo hr_ui_page_header(
         <div class="mt-1"><?= htmlspecialchars($err) ?></div>
       </div>
     <?php endif; ?>
-    <?php if ($msg): ?><div class="alert alert-success"><?= htmlspecialchars($msg) ?></div><?php endif; ?>
+    <?php if ($msg): ?><div class="alert alert-success"><?= htmlspecialchars($msg) ?><?php if ($cashReceiptId > 0): ?> <a href="loan_cash_receipt.php?id=<?= $cashReceiptId ?>" class="btn btn-sm btn-outline-success ms-2" target="_blank">Print receipt</a><?php endif; ?></div><?php endif; ?>
 
     <div class="alert alert-danger d-none" id="payrollClientError" role="alert"></div>
 
@@ -786,6 +823,15 @@ echo hr_ui_page_header(
                 <td class="col-apply">
                   <div class="balance-pill <?= $r['adv_open'] > 0 ? '' : 'empty' ?>">Bal <?= number_format($r['adv_open'], 2) ?></div>
                   <input name="adv_apply[<?= $eid ?>]" value="<?= number_format($r['adv_apply'], 2, '.', '') ?>" class="form-control form-control-sm mt-1" min="0" max="<?= number_format($r['adv_open'], 2, '.', '') ?>" placeholder="Apply">
+                  <?php if ($canEditRun && !empty($openLoansByEmp[$eid])): ?>
+                    <button type="button" class="btn btn-link btn-sm p-0 mt-1 small btn-loan-cash"
+                            data-bs-toggle="modal" data-bs-target="#payrollLoanCashModal"
+                            data-employee-id="<?= $eid ?>"
+                            data-adv-open="<?= number_format($r['adv_open'], 2, '.', '') ?>"
+                            data-employee-label="<?= htmlspecialchars($r['name'] . ' (' . $r['code'] . ')') ?>"
+                            data-loans="<?= htmlspecialchars(json_encode($openLoansByEmp[$eid])) ?>"
+                            title="Employee pays cash to HR — reduces the loan, not the salary">+ Cash repayment</button>
+                  <?php endif; ?>
                 </td>
                 <td class="col-apply">
                   <div class="balance-pill <?= $r['ded_open'] > 0 ? '' : 'empty' ?>">Bal <?= number_format($r['ded_open'], 2) ?></div>
@@ -857,6 +903,138 @@ echo hr_ui_page_header(
     </div>
     <?php endif; ?>
 
+    <?php if ($canEditRun && $openLoansByEmp): ?>
+    <div class="modal fade" id="payrollLoanCashModal" tabindex="-1" aria-labelledby="payrollLoanCashModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <form method="post" action="loan_settle_cash.php" class="modal-content" id="payrollLoanCashForm">
+          <?php csrf_field(); ?>
+          <input type="hidden" name="type" value="loan">
+          <input type="hidden" name="employee_id" id="plcEmployeeId" value="">
+          <input type="hidden" name="return" value="payroll_run_build.php?id=<?= (int)$run_id ?>&cash=1">
+          <div class="modal-header">
+            <h5 class="modal-title" id="payrollLoanCashModalLabel">Record cash repayment</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="alert alert-light border small mb-3">
+              The employee pays this <strong>directly to HR</strong>. It reduces the loan only —
+              salary, deductions and net pay on this run do <strong>not</strong> change, so WPS stays within 15%.
+            </div>
+            <div class="alert alert-warning small py-2 mb-3">
+              <strong>Save Draft first</strong> if you changed other rows — unsaved changes in the table will be lost.
+            </div>
+            <div class="mb-2 small text-muted" id="plcEmployeeLabel"></div>
+            <div class="border rounded p-2 mb-3 small bg-light">
+              <div class="d-flex justify-content-between"><span>Earnings this run</span><span id="plcEarn">—</span></div>
+              <div class="d-flex justify-content-between"><span>15% WPS limit</span><span id="plcLimit">—</span></div>
+              <div class="d-flex justify-content-between"><span>Absence + other deductions</span><span id="plcOther">—</span></div>
+              <div class="d-flex justify-content-between fw-semibold border-top mt-1 pt-1"><span>Max loan deduction via payroll</span><span id="plcRoom">—</span></div>
+            </div>
+            <div class="mb-2">
+              <label class="form-label" for="plcAgreed">Agreed repayment this month (AED)</label>
+              <input type="number" step="0.01" min="0" class="form-control" id="plcAgreed" placeholder="e.g. 500">
+            </div>
+            <div class="alert alert-success small py-2 mb-3 d-none" id="plcSplit"></div>
+            <div class="mb-3">
+              <label class="form-label" for="plcLoan">Loan</label>
+              <select class="form-select" name="id" id="plcLoan" required></select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="plcAmount">Amount received (AED)</label>
+              <input type="number" step="0.01" min="0.01" class="form-control" name="amount" id="plcAmount" required>
+              <div class="form-text">Cannot exceed the loan's outstanding balance.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="plcDate">Payment date</label>
+              <input type="date" class="form-control" name="settle_date" id="plcDate" value="<?= date('Y-m-d') ?>" required>
+            </div>
+            <div class="mb-0">
+              <label class="form-label" for="plcNotes">Notes (optional)</label>
+              <input type="text" class="form-control" name="notes" id="plcNotes" placeholder="e.g. Cash received by HR">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="submit" class="btn btn-success">Save cash repayment</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <script>
+    (function () {
+      var modal = document.getElementById('payrollLoanCashModal');
+      if (!modal) return;
+      var sel = document.getElementById('plcLoan');
+      var amt = document.getElementById('plcAmount');
+      function syncMax() {
+        var opt = sel.options[sel.selectedIndex];
+        amt.max = opt ? opt.getAttribute('data-remaining') : '';
+      }
+      sel.addEventListener('change', syncMax);
+      modal.addEventListener('show.bs.modal', function (event) {
+        var btn = event.relatedTarget;
+        if (!btn) return;
+        var loans = [];
+        try { loans = JSON.parse(btn.getAttribute('data-loans') || '[]'); } catch (e) {}
+        document.getElementById('plcEmployeeId').value = btn.getAttribute('data-employee-id') || '';
+        document.getElementById('plcEmployeeLabel').textContent = btn.getAttribute('data-employee-label') || '';
+        sel.innerHTML = '';
+        loans.forEach(function (l) {
+          var o = document.createElement('option');
+          o.value = l.id;
+          o.setAttribute('data-remaining', Number(l.remaining).toFixed(2));
+          o.textContent = 'Loan #' + l.id + ' · ' + l.date + ' · balance AED ' + Number(l.remaining).toFixed(2) + (l.desc ? ' · ' + l.desc : '');
+          sel.appendChild(o);
+        });
+        amt.value = '';
+        syncMax();
+        currentRow = btn.closest('tr');
+        currentEid = btn.getAttribute('data-employee-id') || '';
+        advOpen = parseFloat(btn.getAttribute('data-adv-open') || '0') || 0;
+        agreed.value = '';
+        var a = window.payrollRowAmounts ? window.payrollRowAmounts(currentRow) : null;
+        var earn = a ? a.earnings : 0;
+        var other = a ? Math.max(0, a.deductions - a.advApply) : 0;
+        // Page blocks take-home at or below 85%, so stay just under 15%; whole dirhams keep the cash part round.
+        room = Math.max(0, Math.floor(earn * 0.15 - other - 0.01));
+        document.getElementById('plcEarn').textContent = earn.toFixed(2);
+        document.getElementById('plcLimit').textContent = (earn * 0.15).toFixed(2);
+        document.getElementById('plcOther').textContent = other.toFixed(2);
+        document.getElementById('plcRoom').textContent = room.toFixed(2);
+        splitBox.classList.add('d-none');
+        returnInput.value = baseReturn;
+      });
+
+      var agreed = document.getElementById('plcAgreed');
+      var splitBox = document.getElementById('plcSplit');
+      var returnInput = modal.querySelector('input[name="return"]');
+      var baseReturn = returnInput.value;
+      var currentRow = null, currentEid = '', advOpen = 0, room = 0;
+      agreed.addEventListener('input', function () {
+        var want = parseFloat(agreed.value || '0') || 0;
+        returnInput.value = baseReturn;
+        if (!(want > 0)) { splitBox.classList.add('d-none'); return; }
+        if (want > advOpen + 0.005) {
+          splitBox.className = 'alert alert-danger small py-2 mb-3';
+          splitBox.textContent = 'Agreed amount is more than the loan balance (' + advOpen.toFixed(2) + ').';
+          return;
+        }
+        var viaPayroll = Math.min(want, room);
+        var cash = Math.round((want - viaPayroll) * 100) / 100;
+        splitBox.className = 'alert alert-success small py-2 mb-3';
+        splitBox.innerHTML = 'Deduct in payroll (Loan/Adv apply): <strong>' + viaPayroll.toFixed(2) + '</strong><br>'
+          + 'Collect in cash: <strong>' + cash.toFixed(2) + '</strong>'
+          + (cash > 0.005 ? '' : '<br>No cash needed — the whole amount fits within WPS.');
+        amt.value = cash > 0.005 ? cash.toFixed(2) : '';
+        if (!document.getElementById('plcNotes').value || /^Agreed /.test(document.getElementById('plcNotes').value)) {
+          document.getElementById('plcNotes').value = 'Agreed ' + want.toFixed(2) + ': payroll ' + viaPayroll.toFixed(2) + ' + cash ' + cash.toFixed(2);
+        }
+        returnInput.value = baseReturn + '&adv_set=' + currentEid + ':' + viaPayroll.toFixed(2);
+      });
+    })();
+    </script>
+    <?php endif; ?>
+
     <div class="small text-muted mt-3">
       Loan/advance and fine balances are remaining amounts available to apply.
       Take-home % = net ÷ earnings (starts at 100%). Red at/below 85% take-home.
@@ -898,8 +1076,9 @@ echo hr_ui_page_header(
     const net = earnings - deductions;
     const takeHomePct = earnings > 0.005 ? (net / earnings) * 100 : (deductions > 0.005 ? 0 : 100);
     const name = (row.querySelector('.emp-name')?.textContent || 'Employee').trim();
-    return { name, earnings, deductions, net, takeHomePct, absDed };
+    return { name, earnings, deductions, net, takeHomePct, absDed, advApply };
   }
+  window.payrollRowAmounts = rowAmounts;
 
   function recalcRow(row) {
     if (!row) return;
@@ -999,6 +1178,22 @@ echo hr_ui_page_header(
   });
 
   document.querySelectorAll('#payrollBuildTable tbody tr').forEach(recalcRow);
+
+  const advPrefill = <?= json_encode($advPrefill) ?>;
+  if (advPrefill) {
+    const inp = document.querySelector('input[name="adv_apply[' + advPrefill.eid + ']"]');
+    if (inp) {
+      inp.value = fmt2(advPrefill.amount);
+      inp.classList.add('border-warning', 'border-2');
+      recalcRow(inp.closest('tr'));
+      inp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const note = document.createElement('div');
+      note.className = 'alert alert-warning';
+      note.innerHTML = 'Loan/Adv apply for <strong>' + rowAmounts(inp.closest('tr')).name.replace(/[<>&]/g, '') + '</strong> set to <strong>'
+        + fmt2(advPrefill.amount) + '</strong> (the WPS part). Click <strong>Save Draft</strong> to keep it.';
+      form?.parentNode.insertBefore(note, form);
+    }
+  }
 
   const serverErr = document.getElementById('payrollServerError');
   if (serverErr) {
