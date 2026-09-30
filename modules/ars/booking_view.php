@@ -962,12 +962,12 @@ echo $arsWsLifecycleHtml;
                 if (!empty($pm['gateway_payment_intent_id'])) $pmShowStripe = true;
                 if (!empty($pm['payment_link_url'])) $pmShowLink = true;
             }
-            $pmColspan = 8 + ($pmShowStripe ? 1 : 0) + ($pmShowLink ? 1 : 0);
+            $pmColspan = 9 + ($pmShowStripe ? 1 : 0) + ($pmShowLink ? 1 : 0);
             ?>
             <div class="table-responsive">
                 <table class="table ars-table ars-mobile-cards ars-pay-table mb-0 align-middle">
                     <thead><tr>
-                        <th>Method</th><th class="text-end">Total amount</th><th class="text-end">Received amount</th><th class="text-end">Outstanding</th><th>Reference</th><th class="text-end">Nights</th><th>GL account</th>
+                        <th>Date</th><th>Method</th><th class="text-end">Total amount</th><th class="text-end">Received amount</th><th class="text-end">Outstanding</th><th>Reference</th><th class="text-end">Nights</th><th>GL account</th>
                         <?php if ($pmShowStripe): ?><th>Stripe</th><?php endif; ?>
                         <?php if ($pmShowLink): ?><th>Link</th><?php endif; ?>
                         <th></th>
@@ -981,6 +981,7 @@ echo $arsWsLifecycleHtml;
                         $pmAccName = $pmAccCode !== '' ? (string)($paymentAccountNames[$pmAccCode] ?? '') : '';
                     ?>
                         <tr>
+                            <td data-label="Date" class="text-nowrap"><?= !empty($pm['payment_date']) ? h(date('d M Y', strtotime((string)$pm['payment_date']))) : '&mdash;' ?></td>
                             <td data-label="Method" class="text-nowrap">
                                 <?= h(ucfirst(str_replace('_',' ',$pm['payment_method']))) ?>
                                 <?php if (($pm['payment_gateway'] ?? '') === 'stripe'): ?>
