@@ -87,7 +87,7 @@ $occEndSql = 'COALESCE(b.actual_check_out, b.check_out)';
 $bookingsByUnit = [];
 $stmt = $conn->prepare("
     SELECT b.id, b.unit_id, b.booking_number, b.check_in, b.check_out, b.actual_check_out, b.is_early_checkout, b.status,
-           b.booking_source, b.channel_ref,
+           b.balance_due, b.booking_source, b.channel_ref,
            {$occEndSql} AS occupancy_end,
            g.first_name, g.last_name
     FROM ars_bookings b
@@ -156,6 +156,13 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
             $guest = 'Guest';
         }
         $style = $statusStyle((string)($bk['status'] ?? 'confirmed'));
+        // Same "balance due" rule as the dashboard: confirmed or in-house with money owed.
+        $balanceDue = (float)($bk['balance_due'] ?? 0);
+        $isDue = $balanceDue > 0.009
+            && in_array(strtolower((string)($bk['status'] ?? '')), ['confirmed', 'checked_in', 'checked-in'], true);
+        if ($isDue) {
+            $style['class'] = 'abnb-bar--due';
+        }
 
         $isAirbnb = ($bk['booking_source'] ?? 'direct') === 'airbnb';
         $tooltip = ($isAirbnb ? 'Airbnb' . (!empty($bk['channel_ref']) ? ' ' . $bk['channel_ref'] : '') . ' · ' : '')
@@ -163,6 +170,7 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
             . ' · ' . date('j M', strtotime($checkIn)) . ' → ' . date('j M', strtotime($occEnd))
             . ' · ' . $nights . ' night' . ($nights === 1 ? '' : 's')
             . ' · ' . $style['label']
+            . ($isDue ? ' · Balance due ' . number_format($balanceDue, 2) : '')
             . (!empty($bk['is_early_checkout']) ? ' · Early check-out' : '');
 
         $bars[] = [
@@ -214,6 +222,7 @@ $halfColsStyle = 'grid-template-columns: repeat(' . (2 * $daysInMonth) . ', minm
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--booked"></span> Booked</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--inhouse"></span> Checked in</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--pending"></span> Pending</span>
+        <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--due"></span> Balance due</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--done"></span> Checked out</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--blocked"></span> Blocked</span>
         <span class="abnb-legend-hint">Bars run from check-in midday to check-out midday · prices in <?= h($currency) ?></span>

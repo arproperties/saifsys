@@ -41,6 +41,7 @@
   --abnb-inhouse: var(--ars-status-checked-in, #059669);
   --abnb-pending: var(--ars-status-pending, #d97706);
   --abnb-done: var(--ars-status-checked-out, #64748b);
+  --abnb-due: #ff385c;
 
   background: var(--abnb-surface);
   border: 1px solid var(--abnb-line);
@@ -96,6 +97,7 @@
 #ars-app .abnb-swatch--available { background: #fff; border: 1px solid var(--abnb-line-strong); }
 #ars-app .abnb-swatch--booked { background: var(--abnb-booked); }
 #ars-app .abnb-swatch--inhouse { background: var(--abnb-inhouse); }
+#ars-app .abnb-swatch--due { background: var(--abnb-due); }
 #ars-app .abnb-swatch--pending { background: #fff; border: 1px dashed var(--abnb-pending); }
 #ars-app .abnb-swatch--done { background: #e7e4dc; }
 #ars-app .abnb-swatch--blocked {
@@ -384,6 +386,7 @@
 
 #ars-app .abnb-bar--booked { background: var(--abnb-booked); color: #ffffff; }
 #ars-app .abnb-bar--inhouse { background: var(--abnb-inhouse); color: #ffffff; }
+#ars-app .abnb-bar--due { background: var(--abnb-due); color: #ffffff; }
 
 #ars-app .abnb-bar--done {
   background: #eceae3;
