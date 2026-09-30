@@ -11,12 +11,14 @@
  * shows (jarvis_api_balance_due), never the stored ars_bookings.balance_due.
  *
  *   ?module=ars&action=summary                      the Command Center, in numbers
- *   ?module=ars&action=arrivals&date=               who checks in that day
- *   ?module=ars&action=checkouts&date=              who checks out that day
- *   ?module=ars&action=in_house                     everyone checked in right now
+ *   ?module=ars&action=arrivals&date=&source=       who checks in that day
+ *   ?module=ars&action=checkouts&date=&source=      who checks out that day
+ *   ?module=ars&action=in_house&source=             everyone checked in right now
  *   ?module=ars&action=booking&q=                   one booking in full, or the matches
- *   ?module=ars&action=bookings&from=&to=&status=&by=   a list (by: stay|check_in|check_out|created)
- *   ?module=ars&action=balances&scope=              who still owes (scope: active|all)
+ *   ?module=ars&action=bookings&from=&to=&status=&by=&source=
+ *        no dates: the current bookings (in-house + confirmed); with dates: at most 3 months
+ *        (by: stay|check_in|check_out|created)
+ *   ?module=ars&action=balances&scope=&source=      who still owes (scope: active|all)
  *   ?module=ars&action=guest&q=                     a guest and their stays
  *   ?module=ars&action=unit&q=                      a unit's status and stays, or every unit
  *   ?module=ars&action=availability&from=&to=       units free for those dates
@@ -25,6 +27,10 @@
  *   ?module=ars&action=payments&from=&to=           money received
  *   ?module=ars&action=deposits&status=             security deposits
  *   ?module=ars&action=activity&q=&limit=           the latest booking activity
+ *
+ * source is direct (the default), airbnb or all, on every list of bookings. Direct is
+ * everything not synced from Airbnb, so the lists are direct unless asked otherwise.
+ * Every booking carries its source.
  *
  * Left out on purpose: guest ID numbers and documents, attachments, pricing rules.
  */
@@ -74,7 +80,8 @@ function jarvis_api_balance_due(array $b, array $payments): float
 // ---------- shared ----------
 
 const JARVIS_ARS_ACTIVE = "('confirmed','checked_in')";
-const JARVIS_ARS_LIMIT = 200;
+const JARVIS_ARS_LIMIT = 500;
+const JARVIS_ARS_MAX_DAYS = 92; // three months: a quarter is at most 92 days
 
 /** The ARS company, found the way getArsCompanyId() finds it. */
 function jarvis_ars_company(PDO $conn): int
@@ -143,6 +150,25 @@ function jarvis_ars_occupancy_end(PDO $conn, string $a = 'b'): string
     return jarvis_ars_has_column($conn, 'ars_bookings', 'actual_check_out')
         ? "COALESCE({$a}.actual_check_out, {$a}.check_out)"
         : "{$a}.check_out";
+}
+
+/**
+ * The ?source= filter as SQL on b: direct (default), airbnb or all. booking_source is
+ * 'airbnb' for bookings the Airbnb sync made; anything else is a direct booking.
+ */
+function jarvis_ars_source(PDO $conn): array
+{
+    $source = (string)($_GET['source'] ?? 'direct');
+    if (!in_array($source, ['direct', 'airbnb', 'all'], true)) {
+        jarvis_api_error('bad_source', 'source must be direct, airbnb or all.', 400);
+    }
+    if ($source === 'all') {
+        return [$source, '1=1'];
+    }
+    if (!jarvis_ars_has_column($conn, 'ars_bookings', 'booking_source')) {
+        return [$source, $source === 'direct' ? '1=1' : '1=0']; // no Airbnb sync, so all direct
+    }
+    return [$source, $source === 'airbnb' ? "b.booking_source = 'airbnb'" : "COALESCE(b.booking_source, 'direct') <> 'airbnb'"];
 }
 
 /**
@@ -223,9 +249,7 @@ function jarvis_ars_row(array $r): array
     if (!empty($r['actual_check_out']) && (string)$r['actual_check_out'] !== (string)$r['check_out']) {
         $out['left_early_on'] = $r['actual_check_out'];
     }
-    if (!empty($r['booking_source'])) {
-        $out['source'] = $r['booking_source'];
-    }
+    $out['source'] = ($r['booking_source'] ?? '') === 'airbnb' ? 'airbnb' : 'direct';
     return $out;
 }
 
@@ -339,20 +363,23 @@ if ($action === 'summary') {
 
 if ($action === 'arrivals') {
     $date = jarvis_ars_date('date', $today);
-    $rows = jarvis_ars_fetch($conn, $cid, "b.check_in = ? AND b.status IN ('confirmed','checked_in','pending')", [$date], 'bd.name, u.unit_number, b.booking_number', 500);
-    jarvis_api_send(['ok' => true, 'date' => $date, 'count' => count($rows), 'arrivals' => jarvis_ars_rows($rows)]);
+    [$source, $sw] = jarvis_ars_source($conn);
+    $rows = jarvis_ars_fetch($conn, $cid, "b.check_in = ? AND b.status IN ('confirmed','checked_in','pending') AND $sw", [$date], 'bd.name, u.unit_number, b.booking_number', 500);
+    jarvis_api_send(['ok' => true, 'date' => $date, 'source' => $source, 'count' => count($rows), 'arrivals' => jarvis_ars_rows($rows)]);
 }
 
 if ($action === 'checkouts') {
     // The same rule as the Command Center's "Departures today".
     $date = jarvis_ars_date('date', $today);
-    $rows = jarvis_ars_fetch($conn, $cid, "b.check_out = ? AND b.status IN ('checked_in','checked_out','confirmed')", [$date], 'bd.name, u.unit_number, b.booking_number', 500);
-    jarvis_api_send(['ok' => true, 'date' => $date, 'count' => count($rows), 'checkouts' => jarvis_ars_rows($rows)]);
+    [$source, $sw] = jarvis_ars_source($conn);
+    $rows = jarvis_ars_fetch($conn, $cid, "b.check_out = ? AND b.status IN ('checked_in','checked_out','confirmed') AND $sw", [$date], 'bd.name, u.unit_number, b.booking_number', 500);
+    jarvis_api_send(['ok' => true, 'date' => $date, 'source' => $source, 'count' => count($rows), 'checkouts' => jarvis_ars_rows($rows)]);
 }
 
 if ($action === 'in_house') {
-    $rows = jarvis_ars_fetch($conn, $cid, "b.status = 'checked_in'", [], 'b.check_out, bd.name, u.unit_number', 500);
-    jarvis_api_send(['ok' => true, 'date' => $today, 'count' => count($rows), 'in_house' => jarvis_ars_rows($rows)]);
+    [$source, $sw] = jarvis_ars_source($conn);
+    $rows = jarvis_ars_fetch($conn, $cid, "b.status = 'checked_in' AND $sw", [], 'b.check_out, bd.name, u.unit_number', 500);
+    jarvis_api_send(['ok' => true, 'date' => $today, 'source' => $source, 'count' => count($rows), 'in_house' => jarvis_ars_rows($rows)]);
 }
 
 // ---------- bookings and guests ----------
@@ -427,8 +454,30 @@ if ($action === 'booking') {
 }
 
 if ($action === 'bookings') {
-    $from = jarvis_ars_date('from', $today);
-    $to = jarvis_ars_date('to', jarvis_ars_add_days($from, 30));
+    [$source, $sw] = jarvis_ars_source($conn);
+    $status = (string)($_GET['status'] ?? '');
+    $from = jarvis_ars_date('from', null);
+    $to = jarvis_ars_date('to', null);
+
+    if (!$from && !$to) {
+        // No dates: the bookings that exist right now — guests in-house and every
+        // confirmed booking still to come.
+        $where = $status !== '' ? 'b.status = ?' : 'b.status IN ' . JARVIS_ARS_ACTIVE;
+        $params = $status !== '' ? [$status] : [];
+        $rows = jarvis_ars_fetch($conn, $cid, "$where AND $sw", $params, 'b.check_in, bd.name, u.unit_number');
+        jarvis_api_send(['ok' => true, 'range' => 'current', 'status' => $status ?: 'confirmed + checked_in', 'source' => $source,
+            'count' => count($rows), 'capped_at' => JARVIS_ARS_LIMIT, 'bookings' => jarvis_ars_rows($rows)]);
+    }
+
+    $from = $from ?: $to;
+    $to = $to ?: $from;
+    if ($to < $from) {
+        jarvis_api_error('bad_range', 'to must be on or after from.', 400);
+    }
+    $days = (int)(new DateTime($from))->diff(new DateTime($to))->days + 1;
+    if ($days > JARVIS_ARS_MAX_DAYS) {
+        jarvis_api_error('range_too_long', "At most 3 months per question ($days days asked). Split it into quarters: Jan–Mar, Apr–Jun, Jul–Sep, Oct–Dec.", 400);
+    }
     $by = (string)($_GET['by'] ?? 'stay');
     $cols = ['check_in' => 'b.check_in', 'check_out' => 'b.check_out', 'created' => 'DATE(b.created_at)'];
     if ($by === 'stay') {
@@ -440,13 +489,12 @@ if ($action === 'bookings') {
     } else {
         jarvis_api_error('bad_by', 'by must be stay, check_in, check_out or created.', 400);
     }
-    $status = (string)($_GET['status'] ?? '');
     if ($status !== '') {
         $where .= ' AND b.status = ?';
         $params[] = $status;
     }
-    $rows = jarvis_ars_fetch($conn, $cid, $where, $params, 'b.check_in, bd.name, u.unit_number');
-    jarvis_api_send(['ok' => true, 'from' => $from, 'to' => $to, 'by' => $by, 'status' => $status ?: null,
+    $rows = jarvis_ars_fetch($conn, $cid, "$where AND $sw", $params, 'b.check_in, bd.name, u.unit_number');
+    jarvis_api_send(['ok' => true, 'from' => $from, 'to' => $to, 'by' => $by, 'status' => $status ?: null, 'source' => $source,
         'count' => count($rows), 'capped_at' => JARVIS_ARS_LIMIT, 'bookings' => jarvis_ars_rows($rows)]);
 }
 
@@ -462,9 +510,10 @@ if ($action === 'balances') {
         $where = 'b.status IN ' . JARVIS_ARS_ACTIVE;
         $params = [];
     }
-    $owing = array_values(array_filter(jarvis_ars_rows(jarvis_ars_fetch($conn, $cid, $where, $params, 'b.id', 5000)), fn($b) => $b['balance_due'] > 0.009));
+    [$source, $sw] = jarvis_ars_source($conn);
+    $owing = array_values(array_filter(jarvis_ars_rows(jarvis_ars_fetch($conn, $cid, "$where AND $sw", $params, 'b.id', 5000)), fn($b) => $b['balance_due'] > 0.009));
     usort($owing, fn($a, $b) => $b['balance_due'] <=> $a['balance_due']);
-    jarvis_api_send(['ok' => true, 'scope' => $scope, 'count' => count($owing),
+    jarvis_api_send(['ok' => true, 'scope' => $scope, 'source' => $source, 'count' => count($owing),
         'total' => round(array_sum(array_column($owing, 'balance_due')), 2), 'balances' => $owing]);
 }
 
