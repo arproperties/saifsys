@@ -12,6 +12,7 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/includes/ars_helpers.php';
 require_once __DIR__ . '/includes/ars_unit_history_helper.php';
 require_once __DIR__ . '/includes/ars_permissions.php';
+require_once __DIR__ . '/includes/ars_payment_plan.php';
 require_once __DIR__ . '/../../includes/rbac_department.php';
 require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
@@ -37,6 +38,13 @@ $stmt = $conn->prepare("
 ");
 $stmt->execute([$arsCompanyId, $today]);
 $arrivals = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Monthly plans: an arrival shows as due only for months whose date has come.
+$arrivalPlans = ars_payment_plans_for_bookings($conn, $arsCompanyId, array_column($arrivals, 'id'));
+foreach ($arrivals as $i => $r) {
+    if (isset($arrivalPlans[(int)$r['id']])) {
+        $arrivals[$i]['balance_due'] = ars_payment_plan_row_due_now($arrivalPlans[(int)$r['id']], $r);
+    }
+}
 
 // Departures today
 $stmt = $conn->prepare("
@@ -60,23 +68,32 @@ $stmt->execute([$arsCompanyId]);
 $inHouseCount = (int)$stmt->fetchColumn();
 
 // Unpaid / balance due among active (count + top list share the same definition)
-$unpaidWhere = "company_id = ? AND status IN ('confirmed','checked_in') AND COALESCE(balance_due, 0) > 0.009";
-$stmt = $conn->prepare("SELECT COUNT(*) FROM ars_bookings WHERE {$unpaidWhere}");
-$stmt->execute([$arsCompanyId]);
-$unpaidCount = (int)$stmt->fetchColumn();
-
+// A booking on a monthly plan counts only for the months already due, so the
+// list is filtered in PHP after the plans are applied.
 $stmt = $conn->prepare("
-    SELECT b.id, b.booking_number, b.total_amount, b.paid_amount, b.balance_due, g.first_name, g.last_name, u.unit_number
+    SELECT b.id, b.booking_number, b.check_in, b.check_out, b.total_amount, b.paid_amount, b.balance_due,
+           g.first_name, g.last_name, u.unit_number
     FROM ars_bookings b
     LEFT JOIN ars_guests g ON g.id = b.guest_id
     LEFT JOIN re_units u ON u.id = b.unit_id
     WHERE b.company_id = ? AND b.status IN ('confirmed','checked_in')
       AND COALESCE(b.balance_due, 0) > 0.009
     ORDER BY b.balance_due DESC
-    LIMIT 8
 ");
 $stmt->execute([$arsCompanyId]);
 $unpaid = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$unpaidPlans = ars_payment_plans_for_bookings($conn, $arsCompanyId, array_column($unpaid, 'id'));
+if ($unpaidPlans) {
+    foreach ($unpaid as $i => $r) {
+        if (isset($unpaidPlans[(int)$r['id']])) {
+            $unpaid[$i]['balance_due'] = ars_payment_plan_row_due_now($unpaidPlans[(int)$r['id']], $r);
+        }
+    }
+    $unpaid = array_values(array_filter($unpaid, static fn($r) => (float)$r['balance_due'] > 0.009));
+    usort($unpaid, static fn($a, $b) => (float)$b['balance_due'] <=> (float)$a['balance_due']);
+}
+$unpaidCount = count($unpaid);
+$unpaid = array_slice($unpaid, 0, 8);
 
 // HK dirty / open orders via cleaning make_order bridge
 $hkDirty = [];

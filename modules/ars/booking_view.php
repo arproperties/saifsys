@@ -10,6 +10,7 @@ require_once __DIR__ . '/includes/ars_deposit.php';
 require_once __DIR__ . '/includes/ars_financial_lock.php';
 require_once __DIR__ . '/includes/ars_activity.php';
 require_once __DIR__ . '/includes/ars_early_checkout.php';
+require_once __DIR__ . '/includes/ars_payment_plan.php';
 ars_deposit_ensure_schema($conn);
 ars_early_checkout_ensure_schema($conn);
 
@@ -231,6 +232,8 @@ $depositStatus = $booking['deposit_status'] ?? 'none';
 $created = isset($_GET['created']);
 $flash = (string)($_GET['flash'] ?? '');
 $flashMessages = [
+    'plan_saved' => 'Monthly payment plan saved. Only months whose date has come now count as due.',
+    'plan_cleared' => 'Switched to full payment. The whole open balance is due again.',
     'payment_recorded' => 'Stay payment recorded. Cash/bank journal posted and AR cleared for this amount.',
     'payment_evidence_failed' => 'Payment recorded, but the evidence file did not upload. Use the paperclip on the payment row to attach it again.',
     'deposit_received' => 'Security deposit received. Liability journal posted (not stay revenue).',
@@ -358,6 +361,22 @@ if ($tableHasManualTotal) {
     $balanceDue = round($tableOutstanding, 2);
 }
 
+// Monthly plan: the guest still owes the whole balance, but only months whose
+// date has come are due. $balanceDue stays the real open balance; $dueNow is
+// what the page asks the office to collect today.
+$paymentPlan = ars_payment_plan_get($conn, $arsCompanyId, $bookingId);
+$planSchedule = $paymentPlan
+    ? ars_payment_plan_schedule($paymentPlan, (string)($booking['check_in'] ?? ''), (string)($booking['check_out'] ?? ''), $stayTotal, $balanceDue)
+    : null;
+$dueNow = $planSchedule ? min(max(0.0, $balanceDue), $planSchedule['due_now']) : $balanceDue;
+$planDefaultMonthly = $paymentPlan
+    ? (float)$paymentPlan['monthly_amount']
+    : ars_payment_plan_default_monthly((string)($booking['check_in'] ?? ''), (string)($booking['check_out'] ?? ''), $stayTotal);
+// What the Monthly tab offers as Received: what is due now, else the next month.
+$planReceivedDefault = $planSchedule
+    ? ($dueNow > 0.009 ? $dueNow : (float)$planSchedule['next_due_amount'])
+    : 0.0;
+
 // Extension history is its own record: the Extend tab writes rows into
 // ars_booking_extension_log and reads them back. It is deliberately not
 // derived from the Payments table or from the AR documents, so editing a
@@ -430,7 +449,7 @@ if ($extVatMode === 'none') {
 }
 
 $depositPendingCollect = ($depositAmount > 0 && in_array($depositStatus, ['pending', 'none'], true));
-$collectNow = max(0, $balanceDue) + ($depositPendingCollect ? $depositAmount : 0);
+$collectNow = max(0, $dueNow) + ($depositPendingCollect ? $depositAmount : 0);
 $journalViewBase = '../realestate/accounting/journal_entry_view.php?id=';
 $journalCompanyQs = '&company_id=' . (int)$arsCompanyId;
 
@@ -445,15 +464,15 @@ if ($booking['status'] === 'pending') {
             ? '<button type="button" class="btn btn-ars-outline btn-sm" data-bs-toggle="modal" data-bs-target="#editStayDatesModal"><i class="bi bi-calendar-range me-1"></i>Edit stay dates</button>'
             : '')
         . '<button type="button" class="btn btn-ars-outline btn-sm" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-1"></i>Record payment</button>';
-} elseif (in_array($booking['status'], ['confirmed', 'checked_in'], true) && $balanceDue > 0.009 && $depositPendingCollect) {
+} elseif (in_array($booking['status'], ['confirmed', 'checked_in'], true) && $dueNow > 0.009 && $depositPendingCollect) {
     $nextStepTitle = 'Next: Collect money from guest';
-    $nextStepBody = 'Collect stay balance AED ' . number_format($balanceDue, 2) . ' + security deposit AED ' . number_format($depositAmount, 2) . '. Stay payments post a cash/bank journal; deposits are recorded on the Deposit tab.';
+    $nextStepBody = 'Collect stay ' . ($planSchedule ? 'payment due' : 'balance') . ' AED ' . number_format($dueNow, 2) . ' + security deposit AED ' . number_format($depositAmount, 2) . '. Stay payments post a cash/bank journal; deposits are recorded on the Deposit tab.';
     $nextStepActions = '<button type="button" class="btn btn-ars btn-sm" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-1"></i>Record stay payment</button>'
         . '<button type="button" class="btn btn-ars-outline btn-sm" onclick="openWorkspaceTab(\'deposit\', \'security-deposit\')"><i class="bi bi-shield-lock me-1"></i>Collect deposit</button>'
         . '<button type="button" class="btn btn-outline-secondary btn-sm" onclick="openWorkspaceTab(\'documents\')"><i class="bi bi-journal-check me-1"></i>Accounting trail</button>';
-} elseif (in_array($booking['status'], ['confirmed', 'checked_in'], true) && $balanceDue > 0.009) {
-    $nextStepTitle = 'Next: Collect outstanding balance';
-    $nextStepBody = 'Open balance AED ' . number_format($balanceDue, 2)
+} elseif (in_array($booking['status'], ['confirmed', 'checked_in'], true) && $dueNow > 0.009) {
+    $nextStepTitle = $planSchedule ? 'Next: Collect this month\'s payment' : 'Next: Collect outstanding balance';
+    $nextStepBody = ($planSchedule ? 'Due now AED ' : 'Open balance AED ') . number_format($dueNow, 2)
         . ($openDocsBalance > 0.009
             ? ' (includes unpaid amendment invoices such as additional service / damage / extension).'
             : '.')
@@ -465,7 +484,7 @@ if ($booking['status'] === 'pending') {
     $nextStepBody = 'Stay balance is settled. Collect security deposit AED ' . number_format($depositAmount, 2) . ' (liability hold — not stay revenue).';
     $nextStepActions = '<button type="button" class="btn btn-ars btn-sm" onclick="openWorkspaceTab(\'deposit\', \'security-deposit\')"><i class="bi bi-shield-lock me-1"></i>Collect deposit</button>'
         . '<button type="button" class="btn btn-outline-secondary btn-sm" onclick="openWorkspaceTab(\'documents\')"><i class="bi bi-journal-check me-1"></i>Accounting trail</button>';
-} elseif ($booking['status'] === 'confirmed' && $balanceDue <= 0.009 && !$depositPendingCollect) {
+} elseif ($booking['status'] === 'confirmed' && $dueNow <= 0.009 && !$depositPendingCollect) {
     $nextStepTitle = 'Next: Check the guest in';
     $nextStepBody = 'Stay balance and deposit are settled. Proceed with check-in when the guest arrives.';
     $nextStepActions = '<button type="button" class="btn btn-ars btn-sm" onclick="bookingAction(\'checkin\')"><i class="bi bi-box-arrow-in-right me-1"></i>Check in</button>'
@@ -543,9 +562,9 @@ if ($booking['status'] === 'pending') {
     <?php if ($collectNow > 0.009 && in_array($booking['status'], ['pending', 'confirmed', 'checked_in'], true)): ?>
       <div class="ars-ws-next-step-collect">Amount to collect now: <strong>AED <?= number_format($collectNow, 2) ?></strong>
         <?php
-        $collectHint = 'stay balance';
-        if ($balanceDue > 0.009 && $depositPendingCollect) {
-            $collectHint = 'stay balance + deposit';
+        $collectHint = $planSchedule ? 'payment due this month' : 'stay balance';
+        if ($dueNow > 0.009 && $depositPendingCollect) {
+            $collectHint = ($planSchedule ? 'payment due' : 'stay balance') . ' + deposit';
         } elseif ($depositPendingCollect) {
             $collectHint = 'deposit only';
         }
@@ -577,6 +596,9 @@ if ($booking['status'] === 'pending') {
      data-booking-status="<?= h((string)($booking['status'] ?? '')) ?>"
      data-fin-locked="<?= $finLocked ? '1' : '0' ?>"
      data-open-balance="<?= h(number_format($balanceDue, 2, '.', '')) ?>"
+     data-stay-total="<?= h(number_format($stayTotal, 2, '.', '')) ?>"
+     data-pay-total-default="<?= h(number_format(empty($payments) ? $stayTotal : 0.0, 2, '.', '')) ?>"
+     data-today="<?= h(date('Y-m-d')) ?>"
      data-last-receipt-account="<?= h((string)($lastReceiptAccount ?? '')) ?>"
      data-guest-credit="<?= h(number_format($guestCreditOpen, 2, '.', '')) ?>"
      data-guest-email="<?= h((string)($booking['guest_email'] ?? '')) ?>"
@@ -587,6 +609,11 @@ $arsBvJsV = is_file($arsBvJs) ? (string)filemtime($arsBvJs) : '1';
 $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . rawurlencode($arsBvJsV);
 ?>
 <style>
+/* Monthly payment plan: schedule box and the Full / Monthly switch. */
+.ars-plan-box { border: 1px solid var(--ars-border, #e5e2d9); border-radius: 10px; padding: 8px 12px; background: var(--ars-surface-muted, #faf8f3); }
+.ars-plan-box:empty { display: none; }
+.ars-pay-mode .nav-link { color: var(--ars-primary); border: 1px solid var(--ars-primary); margin: 0 4px; }
+.ars-pay-mode .nav-link.active { background: var(--ars-primary); color: #fff; }
 /* Unified Documents table.
    Only the Actions column gets a fixed, nowrap width; Document takes every
    remaining pixel so long names like ARS-INV-2026-00089 stay on one line. */
@@ -1006,7 +1033,7 @@ echo $arsWsLifecycleHtml;
                             <td data-label="Balance after" class="text-end ars-tabular text-nowrap">
                                 <?php $pmBalAfter = $paymentBalanceAfter[(int)$pm['id']] ?? null; ?>
                                 <?php if ($pmBalAfter === null): ?>&mdash;<?php else: ?>
-                                    <span class="<?= $pmBalAfter > 0.009 ? 'text-danger' : 'text-success' ?>">AED <?= number_format($pmBalAfter, 2) ?></span>
+                                    <span class="<?= $pmBalAfter <= 0.009 ? 'text-success' : ($planSchedule && $dueNow <= 0.009 ? 'text-body' : 'text-danger') ?>">AED <?= number_format($pmBalAfter, 2) ?></span>
                                     <?php $pmCredit = $paymentCreditFrom[(int)$pm['id']] ?? 0.0; ?>
                                     <?php if ($pmCredit > 0.009): ?>
                                     <br><small class="text-info">+<?= number_format($pmCredit, 2) ?> credit</small>
@@ -1551,8 +1578,10 @@ echo $arsWsLifecycleHtml;
             <div class="card-header"><i class="bi bi-lightning-charge me-2"></i>Quick Actions</div>
             <div class="card-body">
                 <div class="d-grid gap-2 ars-quick-actions">
-                    <?php if (!in_array($booking['status'], ['cancelled','expired'], true) && $balanceDue > 0.009): ?>
-                    <button type="button" class="btn btn-ars btn-sm w-100 text-start" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-2"></i>Collect payment (AED <?= number_format($balanceDue, 2) ?>)</button>
+                    <?php if (!in_array($booking['status'], ['cancelled','expired'], true) && $dueNow > 0.009): ?>
+                    <button type="button" class="btn btn-ars btn-sm w-100 text-start" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-2"></i>Collect payment (AED <?= number_format($dueNow, 2) ?>)</button>
+                    <?php elseif (!in_array($booking['status'], ['cancelled','expired'], true) && $balanceDue > 0.009 && $planSchedule): ?>
+                    <button type="button" class="btn btn-ars-outline btn-sm w-100 text-start" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-2"></i>Record payment<?= $planSchedule['next_due_date'] ? ' (next due ' . h(date('d M', strtotime($planSchedule['next_due_date']))) . ')' : '' ?></button>
                     <?php endif; ?>
                     <button type="button" class="btn btn-ars-outline btn-sm w-100 text-start" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="service"><i class="bi bi-plus-circle me-2"></i>Additional Service</button>
                     <button type="button" class="btn btn-ars-outline btn-sm w-100 text-start" data-bs-toggle="modal" data-bs-target="#amendmentModal" data-ars-amend-tab="damage"><i class="bi bi-exclamation-diamond me-2"></i>Damage Charge</button>
@@ -1626,7 +1655,38 @@ echo $arsWsLifecycleHtml;
                 <?php else: ?>
                 <div class="d-flex justify-content-between mb-1"><span class="text-muted">Paid</span><span class="text-success ars-tabular">AED <?= number_format($paidAmount,2) ?></span></div>
                 <?php endif; ?>
+                <?php if ($planSchedule): ?>
+                <div class="d-flex justify-content-between mb-1"><span class="text-muted">Balance (whole stay)</span><span class="ars-tabular">AED <?= number_format($balanceDue,2) ?></span></div>
+                <div class="d-flex justify-content-between fw-bold"><span>Due now</span><span class="ars-tabular <?= $dueNow > 0.009 ? 'text-danger' : 'text-success' ?>">AED <?= number_format($dueNow,2) ?></span></div>
+                <?php if ($planSchedule['overdue'] > 0.009): ?>
+                <div class="small text-danger mt-1"><i class="bi bi-exclamation-triangle me-1"></i>Overdue AED <?= number_format($planSchedule['overdue'], 2) ?></div>
+                <?php endif; ?>
+                <?php if ($planSchedule['next_due_date']): ?>
+                <div class="d-flex justify-content-between mt-1 small"><span class="text-muted">Next due <?= h(date('d M Y', strtotime($planSchedule['next_due_date']))) ?></span><span class="ars-tabular">AED <?= number_format($planSchedule['next_due_amount'], 2) ?></span></div>
+                <?php endif; ?>
+                <div class="ars-plan-box mt-3">
+                    <div class="small fw-semibold mb-1"><i class="bi bi-calendar-month me-1"></i>Monthly plan · AED <?= number_format($planSchedule['monthly_amount'], 2) ?> / month</div>
+                    <?php foreach ($planSchedule['instalments'] as $inst): ?>
+                    <?php
+                    $instBadge = [
+                        'paid' => ['Paid', 'bg-success'],
+                        'due' => ['Due today', 'bg-warning text-dark'],
+                        'overdue' => ['Overdue', 'bg-danger'],
+                        'upcoming' => ['Not due yet', 'bg-light text-muted border'],
+                    ][$inst['state']];
+                    ?>
+                    <div class="d-flex justify-content-between align-items-center small py-1 border-top">
+                        <span><?= h(date('d M Y', strtotime($inst['due_date']))) ?></span>
+                        <span class="d-flex align-items-center gap-2">
+                            <span class="ars-tabular">AED <?= number_format($inst['amount'], 2) ?></span>
+                            <span class="badge <?= $instBadge[1] ?>"><?= h($instBadge[0]) ?></span>
+                        </span>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php else: ?>
                 <div class="d-flex justify-content-between fw-bold"><span>Balance due</span><span class="ars-tabular <?= $balanceDue > 0.009 ? 'text-danger' : 'text-success' ?>">AED <?= number_format($balanceDue,2) ?></span></div>
+                <?php endif; ?>
                 <?php if ($tableHasManualTotal): ?>
                 <!-- <div class="d-flex justify-content-between mt-2 pt-2 border-top">
                     <span class="text-muted small">Per invoices</span>
@@ -1652,8 +1712,8 @@ echo $arsWsLifecycleHtml;
                 </div>
                 <?php endif; ?>
                 <div class="mt-2"><?= arsPaymentStatusBadge($booking['payment_status']) ?></div>
-                <?php if ($balanceDue > 0.009): ?>
-                <button type="button" class="btn btn-ars btn-sm w-100 mt-3" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-1"></i>Collect AED <?= number_format($balanceDue, 2) ?></button>
+                <?php if ($dueNow > 0.009): ?>
+                <button type="button" class="btn btn-ars btn-sm w-100 mt-3" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-1"></i>Collect AED <?= number_format($dueNow, 2) ?></button>
                 <?php endif; ?>
                 <?php if ($depositAmount > 0): ?>
                 <?php
@@ -1680,7 +1740,7 @@ echo $arsWsLifecycleHtml;
                   <div class="d-flex justify-content-between align-items-baseline gap-2">
                     <div>
                       <div class="fw-bold">Amount to collect now</div>
-                      <div class="small text-muted">Stay balance<?= $depositPendingCollect ? ' + pending deposit' : '' ?></div>
+                      <div class="small text-muted"><?= $planSchedule ? 'Payment due' : 'Stay balance' ?><?= $depositPendingCollect ? ' + pending deposit' : '' ?></div>
                     </div>
                     <span class="fw-bold fs-5 ars-tabular" style="color:var(--ars-primary)">AED <?= number_format($collectNow, 2) ?></span>
                   </div>
@@ -1826,8 +1886,35 @@ echo $arsWsLifecycleHtml;
                     Payment allocates automatically to unpaid invoices (original / service / extension) via the Financial Adapter.
                 </div>
                 <?php endif; ?>
+                <?php
+                $planLocked = $paymentPlan && $tableReceived >= (float)$paymentPlan['monthly_amount'] - 0.009;
+                ?>
+                <ul class="nav nav-pills nav-fill mb-3 ars-pay-mode" role="tablist">
+                    <li class="nav-item"><button type="button" class="nav-link<?= $paymentPlan ? '' : ' active' ?>" data-pay-mode="full">Full</button></li>
+                    <li class="nav-item"><button type="button" class="nav-link<?= $paymentPlan ? ' active' : '' ?>" data-pay-mode="monthly">Monthly</button></li>
+                </ul>
                 <div class="row g-3">
-                    <div class="col-12 col-sm-6">
+                    <div class="col-12" data-pay-pane="monthly"<?= $paymentPlan ? '' : ' hidden' ?>>
+                        <label class="form-label fw-semibold" for="payMonthlyAmount">Monthly amount (AED)</label>
+                        <input type="number" step="0.01" min="0" id="payMonthlyAmount" class="form-control"
+                               value="<?= number_format($planDefaultMonthly, 2, '.', '') ?>"<?= $planLocked ? ' readonly' : '' ?>>
+                        <div class="form-text">
+                            <?php if ($planLocked): ?>
+                                A month is already paid, so this amount is fixed. Use <strong>Switch to Full</strong> if it was set wrong.
+                            <?php else: ?>
+                                One payment per month from check-in. The last month takes whatever is left. Only months whose date has come count as due.
+                            <?php endif; ?>
+                        </div>
+                        <div id="payPlanPreview" class="ars-plan-box mt-2 small"></div>
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <button type="button" class="btn btn-ars-outline btn-sm" id="paySavePlanBtn"><i class="bi bi-calendar-check me-1"></i>Save plan only</button>
+                            <?php if ($paymentPlan): ?>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="payClearPlanBtn"><i class="bi bi-arrow-counterclockwise me-1"></i>Switch to Full</button>
+                            <?php endif; ?>
+                        </div>
+                        <div class="form-text">Save plan only sets the months without recording money. Record saves the plan and the payment together.</div>
+                    </div>
+                    <div class="col-12 col-sm-6" data-pay-pane="full"<?= $paymentPlan ? ' hidden' : '' ?>>
                         <?php
                         // Every payment row's Total amount is what THAT line charges, not
                         // the booking total: the Payments table carries what a line leaves
@@ -1853,7 +1940,10 @@ echo $arsWsLifecycleHtml;
                     </div>
                     <div class="col-12 col-sm-6">
                         <label class="form-label fw-semibold" for="payAmount">Received amount (AED) *</label>
-                        <input type="number" step="0.01" id="payAmount" class="form-control" value="<?= number_format(max($balanceDue, $openDocsBalance),2,'.','') ?>">
+                        <input type="number" step="0.01" id="payAmount" class="form-control"
+                               value="<?= number_format($paymentPlan ? $planReceivedDefault : max($balanceDue, $openDocsBalance),2,'.','') ?>"
+                               data-full-default="<?= number_format(max($balanceDue, $openDocsBalance),2,'.','') ?>"
+                               data-monthly-default="<?= $paymentPlan ? number_format($planReceivedDefault,2,'.','') : '' ?>">
                     </div>
                     <div class="col-12 col-sm-6">
                         <label class="form-label fw-semibold">Method</label>

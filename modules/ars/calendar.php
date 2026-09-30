@@ -19,6 +19,7 @@ require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
 require_once __DIR__ . '/includes/ars_pricing.php';
 require_once __DIR__ . '/includes/ars_early_checkout.php';
+require_once __DIR__ . '/includes/ars_payment_plan.php';
 
 $arsCompanyId = arsPageAuth($conn);
 $brand = getBrandSettings($conn);
@@ -87,7 +88,7 @@ $occEndSql = 'COALESCE(b.actual_check_out, b.check_out)';
 $bookingsByUnit = [];
 $stmt = $conn->prepare("
     SELECT b.id, b.unit_id, b.booking_number, b.check_in, b.check_out, b.actual_check_out, b.is_early_checkout, b.status,
-           b.balance_due, b.booking_source, b.channel_ref,
+           b.balance_due, b.total_amount, b.booking_source, b.channel_ref,
            {$occEndSql} AS occupancy_end,
            g.first_name, g.last_name
     FROM ars_bookings b
@@ -97,7 +98,14 @@ $stmt = $conn->prepare("
     ORDER BY b.check_in
 ");
 $stmt->execute([$arsCompanyId, $monthEnd, $firstDay]);
-foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $bk) {
+$calRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// On a monthly plan only months whose date has come are due, so the bar goes
+// red for money due now, not for months still to come.
+$calPlans = ars_payment_plans_for_bookings($conn, $arsCompanyId, array_column($calRows, 'id'));
+foreach ($calRows as $bk) {
+    if (isset($calPlans[(int)$bk['id']])) {
+        $bk['balance_due'] = ars_payment_plan_row_due_now($calPlans[(int)$bk['id']], $bk);
+    }
     $bookingsByUnit[(int)$bk['unit_id']][] = $bk;
 }
 

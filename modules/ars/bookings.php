@@ -10,6 +10,7 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/includes/ars_helpers.php';
 require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
+require_once __DIR__ . '/includes/ars_payment_plan.php';
 require_once __DIR__ . '/../../includes/table_sort.php';
 
 $arsCompanyId = arsPageAuth($conn);
@@ -88,6 +89,21 @@ if (!$exportCsv) {
 $stmt = $conn->prepare($sql);
 $stmt->execute($params);
 $bookings = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Outstanding means due now. On a monthly plan a month still to come is owed
+// but not due, so the row shows (and is kept for) only what is due today.
+if ($view === 'outstanding' && $bookings) {
+    $listPlans = ars_payment_plans_for_bookings($conn, $arsCompanyId, array_column($bookings, 'id'));
+    if ($listPlans) {
+        foreach ($bookings as $i => $b) {
+            if (isset($listPlans[(int)$b['id']])) {
+                $bookings[$i]['balance_due'] = ars_payment_plan_row_due_now($listPlans[(int)$b['id']], $b);
+            }
+        }
+        $bookings = array_values(array_filter($bookings, static fn($b) => (float)$b['balance_due'] > 0.009));
+        usort($bookings, static fn($a, $b) => [(float)$b['balance_due'], $a['check_in']] <=> [(float)$a['balance_due'], $b['check_in']]);
+    }
+}
 
 $exportQuery = $_GET;
 $exportQuery['export'] = 'csv';

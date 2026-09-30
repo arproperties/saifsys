@@ -604,9 +604,16 @@
         excess.toFixed(2) +
         ' will be booked as guest credit, not as invoice payment.';
     }
+    if (payMode() === 'monthly' && !(parseFloat((document.getElementById('payMonthlyAmount') || {}).value) > 0)) {
+      showAlert('Enter the monthly amount.', 'danger', 'payModalAlert');
+      return;
+    }
     if (
       !window.confirm(
-        'Record stay payment of AED ' + amount.toFixed(2) + ' (' + method + ')'
+        (payMode() === 'monthly'
+          ? 'Monthly plan: AED ' + parseFloat(document.getElementById('payMonthlyAmount').value).toFixed(2) + ' per month.\n'
+          : '')
+          + 'Record stay payment of AED ' + amount.toFixed(2) + ' (' + method + ')'
           + ' to ' + receiptAccount
           + (payDate ? ' on ' + payDate : '')
           + '?\n\nThis posts a cash/bank journal on the Real Estate company and financially locks the booking.'
@@ -617,9 +624,16 @@
     }
     setPaymentBusy(true);
     var totalEl = document.getElementById('payTotalAmount');
+    var monthly = payMode() === 'monthly';
     ajaxPost('record_payment', {
       amount: amountEl && amountEl.value !== '' ? amountEl.value : '0',
-      total_amount: totalEl ? totalEl.value : '',
+      // Monthly hides the Total field; the row takes the same default the Full
+      // tab opens on, so a plan never adds the stay total in twice.
+      total_amount: monthly
+        ? ((document.getElementById('ars-booking-view-root') || { getAttribute: function () { return ''; } }).getAttribute('data-pay-total-default') || '')
+        : (totalEl ? totalEl.value : ''),
+      plan_mode: monthly ? 'monthly' : 'full',
+      monthly_amount: monthly ? ((document.getElementById('payMonthlyAmount') || {}).value || '') : '',
       payment_method: method,
       receipt_account_code: receiptAccount,
       payment_date: payDate,
@@ -662,6 +676,190 @@
         setPaymentBusy(false);
         showAlert(err && err.message ? err.message : 'Network error', 'danger', 'payModalAlert');
       });
+  }
+
+  // --- Full / Monthly payment tabs -------------------------------------------
+  // Mirrors ars_payment_plan_schedule() in includes/ars_payment_plan.php so the
+  // preview shows exactly the months the page will show after saving.
+
+  function payMode() {
+    var active = document.querySelector('#addPaymentModal [data-pay-mode].active');
+    return active ? active.getAttribute('data-pay-mode') : 'full';
+  }
+
+  function planDueDates(checkIn, checkOut) {
+    checkIn = String(checkIn || '').slice(0, 10);
+    checkOut = String(checkOut || '').slice(0, 10);
+    if (!checkIn) return [];
+    if (!checkOut || checkOut <= checkIn) return [checkIn];
+    var p = checkIn.split('-').map(Number);
+    var out = [];
+    for (var n = 0; n < 120; n++) {
+      var mIdx = p[1] - 1 + n;
+      var yy = p[0] + Math.floor(mIdx / 12);
+      var mm = (mIdx % 12) + 1;
+      var dim = new Date(yy, mm, 0).getDate();
+      var due = yy + '-' + String(mm).padStart(2, '0') + '-' + String(Math.min(p[2], dim)).padStart(2, '0');
+      if (due >= checkOut) break;
+      out.push(due);
+    }
+    return out;
+  }
+
+  function planSchedule(monthly, checkIn, checkOut, stayTotal, balance, today) {
+    var dates = planDueDates(checkIn, checkOut);
+    if (!dates.length) dates = [today];
+    var received = Math.max(0, stayTotal - Math.max(0, balance));
+    var allocated = 0;
+    var rows = [];
+    dates.forEach(function (due, i) {
+      var left = Math.round((stayTotal - allocated) * 100) / 100;
+      var amount = i === dates.length - 1 ? left : Math.min(monthly, left);
+      amount = Math.max(0, Math.round(amount * 100) / 100);
+      allocated += amount;
+      if (amount <= 0.009 && i !== 0) return;
+      var paid = Math.min(amount, received);
+      received = Math.round((received - paid) * 100) / 100;
+      var unpaid = Math.round((amount - paid) * 100) / 100;
+      var state = unpaid <= 0.009 ? 'paid' : due < today ? 'overdue' : due === today ? 'due' : 'upcoming';
+      rows.push({ due: due, amount: amount, unpaid: Math.max(0, unpaid), state: state });
+    });
+    return rows;
+  }
+
+  function fmtPlanDate(ymd) {
+    var d = new Date(ymd + 'T00:00:00');
+    return isNaN(d) ? ymd : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  function renderPlanPreview() {
+    var box = document.getElementById('payPlanPreview');
+    var root = document.getElementById('ars-booking-view-root');
+    if (!box || !root) return null;
+    var monthly = parseFloat((document.getElementById('payMonthlyAmount') || {}).value);
+    if (!(monthly > 0)) {
+      box.innerHTML = '';
+      return null;
+    }
+    var rows = planSchedule(
+      monthly,
+      root.getAttribute('data-check-in'),
+      root.getAttribute('data-check-out'),
+      parseFloat(root.getAttribute('data-stay-total') || '0'),
+      parseFloat(root.getAttribute('data-open-balance') || '0'),
+      root.getAttribute('data-today') || new Date().toISOString().slice(0, 10)
+    );
+    var labels = { paid: 'Paid', due: 'Due today', overdue: 'Overdue', upcoming: 'Not due yet' };
+    var tones = { paid: 'bg-success', due: 'bg-warning text-dark', overdue: 'bg-danger', upcoming: 'bg-light text-muted border' };
+    box.innerHTML = rows
+      .map(function (r, i) {
+        return '<div class="d-flex justify-content-between align-items-center py-1' + (i ? ' border-top' : '') + '">'
+          + '<span>' + escHtml(fmtPlanDate(r.due)) + '</span>'
+          + '<span class="d-flex align-items-center gap-2"><span class="ars-tabular">AED ' + r.amount.toFixed(2) + '</span>'
+          + '<span class="badge ' + tones[r.state] + '">' + labels[r.state] + '</span></span></div>';
+      })
+      .join('');
+    return rows;
+  }
+
+  // What the Monthly tab offers as Received: due now, else the next month.
+  function planReceivedSuggestion(rows) {
+    if (!rows) return null;
+    var due = 0;
+    rows.forEach(function (r) {
+      if (r.state === 'due' || r.state === 'overdue') due += r.unpaid;
+    });
+    if (due > 0.009) return due;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].state === 'upcoming') return rows[i].unpaid;
+    }
+    return 0;
+  }
+
+  function setPayMode(mode) {
+    var modal = document.getElementById('addPaymentModal');
+    if (!modal) return;
+    modal.querySelectorAll('[data-pay-mode]').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-pay-mode') === mode);
+    });
+    modal.querySelectorAll('[data-pay-pane]').forEach(function (el) {
+      el.hidden = el.getAttribute('data-pay-pane') !== mode;
+    });
+    var amountEl = document.getElementById('payAmount');
+    if (mode === 'monthly') {
+      var suggestion = planReceivedSuggestion(renderPlanPreview());
+      if (amountEl && suggestion !== null) amountEl.value = suggestion.toFixed(2);
+    } else if (amountEl && amountEl.getAttribute('data-full-default') !== null) {
+      amountEl.value = amountEl.getAttribute('data-full-default');
+    }
+  }
+
+  function initPaymentPlanTabs() {
+    var modal = document.getElementById('addPaymentModal');
+    if (!modal) return;
+    modal.querySelectorAll('[data-pay-mode]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        setPayMode(b.getAttribute('data-pay-mode'));
+      });
+    });
+    var monthlyEl = document.getElementById('payMonthlyAmount');
+    if (monthlyEl) {
+      monthlyEl.addEventListener('input', function () {
+        var suggestion = planReceivedSuggestion(renderPlanPreview());
+        var amountEl = document.getElementById('payAmount');
+        if (amountEl && suggestion !== null) amountEl.value = suggestion.toFixed(2);
+      });
+      monthlyEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') e.preventDefault();
+      });
+    }
+    renderPlanPreview();
+
+    var saveBtn = document.getElementById('paySavePlanBtn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function () {
+        var monthly = parseFloat((monthlyEl || {}).value);
+        if (!(monthly > 0)) {
+          showAlert('Enter the monthly amount.', 'danger', 'payModalAlert');
+          return;
+        }
+        saveBtn.disabled = true;
+        ajaxPost('save_payment_plan', { monthly_amount: monthly.toFixed(2) })
+          .then(function (d) {
+            if (d.success) {
+              location.href = 'booking_view.php?id=' + bookingId() + '&flash=plan_saved#ws-money';
+              return;
+            }
+            saveBtn.disabled = false;
+            showAlert(escHtml(d.error || 'Could not save the plan'), 'danger', 'payModalAlert');
+          })
+          .catch(function () {
+            saveBtn.disabled = false;
+            showAlert('Network error', 'danger', 'payModalAlert');
+          });
+      });
+    }
+
+    var clearBtn = document.getElementById('payClearPlanBtn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function () {
+        if (!window.confirm('Switch this booking back to Full payment?\n\nThe whole open balance will show as due again.')) return;
+        clearBtn.disabled = true;
+        ajaxPost('clear_payment_plan', {})
+          .then(function (d) {
+            if (d.success) {
+              location.href = 'booking_view.php?id=' + bookingId() + '&flash=plan_cleared#ws-money';
+              return;
+            }
+            clearBtn.disabled = false;
+            showAlert(escHtml(d.error || 'Could not switch to Full'), 'danger', 'payModalAlert');
+          })
+          .catch(function () {
+            clearBtn.disabled = false;
+            showAlert('Network error', 'danger', 'payModalAlert');
+          });
+      });
+    }
   }
 
   function initPaymentModalGuards() {
@@ -2210,6 +2408,7 @@
     initDepositSettleModal();
     initEditStayDatesModal();
     initPaymentModalGuards();
+    initPaymentPlanTabs();
     initEditPaymentModal();
     initPaymentEvidenceModal();
     initDocumentsModal();

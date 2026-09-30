@@ -9,7 +9,7 @@ require_once dirname(__DIR__, 3) . '/includes/rbac_department.php';
 function ars_core_actions(): array {
     return [
         'confirm', 'cancel', 'void_booking', 'complete',
-        'add_charge', 'record_payment', 'delete_payment', 'edit_payment', 'mark_link_paid',
+        'add_charge', 'record_payment', 'save_payment_plan', 'clear_payment_plan', 'delete_payment', 'edit_payment', 'mark_link_paid',
         'set_security_deposit', 'receive_deposit', 'refund_deposit', 'settle_deposit',
         'preview_stay_dates', 'apply_stay_dates',
         'approve_lifecycle_request', 'reject_lifecycle_request', 'reapply_lifecycle_request',

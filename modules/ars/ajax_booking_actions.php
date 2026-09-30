@@ -11,6 +11,7 @@ require_once __DIR__ . '/includes/ars_permissions.php';
 require_once __DIR__ . '/includes/ars_financial_lock.php';
 require_once __DIR__ . '/includes/ars_activity.php';
 require_once __DIR__ . '/includes/ars_availability.php';
+require_once __DIR__ . '/includes/ars_payment_plan.php';
 require_once __DIR__ . '/../../includes/AuditService.php';
 
 header('Content-Type: application/json');
@@ -53,6 +54,20 @@ if (!$booking) {
     echo json_encode(['success' => false, 'error' => 'Booking not found']);
     exit;
 }
+
+$planLog = static function (array $planResult, float $monthlyAmount) use ($conn, $arsCompanyId, $userId, &$booking, &$bookingId): void {
+    ars_booking_activity_log($conn, [
+        'company_id' => $arsCompanyId,
+        'booking_id' => $bookingId,
+        'booking_number' => $booking['booking_number'] ?? null,
+        'event_category' => 'payment',
+        'event_type' => 'payment_plan_set',
+        'title' => 'Monthly payment plan set',
+        'previous_value' => $planResult['previous'] !== null ? number_format((float)$planResult['previous'], 2, '.', '') : null,
+        'new_value' => number_format($monthlyAmount, 2, '.', ''),
+        'created_by' => $userId,
+    ]);
+};
 
 try {
     switch ($action) {
@@ -531,8 +546,21 @@ try {
                 exit;
             }
 
+            // Monthly tab: the plan is saved with the payment, and a refused
+            // plan change stops the payment too rather than half-saving.
+            $planMode = (string)($_POST['plan_mode'] ?? 'full');
+            $planResult = null;
+
             $conn->beginTransaction();
             try {
+                if ($planMode === 'monthly') {
+                    $planResult = ars_payment_plan_save($conn, $arsCompanyId, $bookingId, (float)($_POST['monthly_amount'] ?? 0), $userId);
+                    if (empty($planResult['success'])) {
+                        $conn->rollBack();
+                        echo json_encode(['success' => false, 'error' => $planResult['error']]);
+                        exit;
+                    }
+                }
                 $conn->prepare("
                     INSERT INTO ars_booking_payments
                         (booking_id, company_id, amount, total_amount, payment_method, receipt_account_code, payment_date, reference_number, payment_link_url, payment_link_status, notes, recorded_by)
@@ -601,7 +629,38 @@ try {
                 'message' => 'We received your payment for booking ' . (string)($booking['booking_number'] ?? ('#' . $bookingId)) . '.',
                 'cta_route' => '/guest/bookings/' . $bookingId,
             ]);
+            if ($planResult && !empty($planResult['changed'])) {
+                $planLog($planResult, (float)$_POST['monthly_amount']);
+            }
             echo json_encode(['success' => true, 'payment_id' => $paymentId]);
+            break;
+
+        case 'save_payment_plan':
+            $monthlyAmount = (float)($_POST['monthly_amount'] ?? 0);
+            $planResult = ars_payment_plan_save($conn, $arsCompanyId, $bookingId, $monthlyAmount, $userId);
+            if (empty($planResult['success'])) {
+                echo json_encode(['success' => false, 'error' => $planResult['error']]);
+                exit;
+            }
+            if (!empty($planResult['changed'])) {
+                $planLog($planResult, $monthlyAmount);
+            }
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'clear_payment_plan':
+            if (ars_payment_plan_clear($conn, $arsCompanyId, $bookingId)) {
+                ars_booking_activity_log($conn, [
+                    'company_id' => $arsCompanyId,
+                    'booking_id' => $bookingId,
+                    'booking_number' => $booking['booking_number'] ?? null,
+                    'event_category' => 'payment',
+                    'event_type' => 'payment_plan_cleared',
+                    'title' => 'Switched to full payment',
+                    'created_by' => $userId,
+                ]);
+            }
+            echo json_encode(['success' => true]);
             break;
 
         case 'set_security_deposit':
