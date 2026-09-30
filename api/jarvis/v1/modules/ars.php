@@ -10,7 +10,7 @@
  * and "today" is Dubai's today. Balances are always the live one the booking page
  * shows (jarvis_api_balance_due), never the stored ars_bookings.balance_due.
  *
- *   ?module=ars&action=summary                      the Command Center, in numbers
+ *   ?module=ars&action=summary                      the Command Center, in numbers (split direct / Airbnb)
  *   ?module=ars&action=arrivals&date=&source=       who checks in that day
  *   ?module=ars&action=checkouts&date=&source=      who checks out that day
  *   ?module=ars&action=in_house&source=             everyone checked in right now
@@ -315,10 +315,20 @@ if ($action === 'summary') {
         return (int)$s->fetchColumn();
     };
 
+    // Both sources together, then split, so the numbers line up with the lists, which
+    // are direct unless Airbnb is asked for.
+    $isAirbnb = jarvis_ars_has_column($conn, 'ars_bookings', 'booking_source') ? "booking_source = 'airbnb'" : '0';
+    $split = function (string $where, array $params) use ($conn, $isAirbnb): array {
+        $s = $conn->prepare("SELECT COUNT(*) AS total, COALESCE(SUM($isAirbnb), 0) AS airbnb FROM ars_bookings WHERE $where");
+        $s->execute($params);
+        $r = $s->fetch(PDO::FETCH_ASSOC);
+        return ['total' => (int)$r['total'], 'direct' => (int)$r['total'] - (int)$r['airbnb'], 'airbnb' => (int)$r['airbnb']];
+    };
+
     // The Command Center's own definitions (modules/ars/index.php).
-    $arrivals = $count("SELECT COUNT(*) FROM ars_bookings WHERE company_id = ? AND check_in = ? AND status IN ('confirmed','checked_in','pending')", [$cid, $today]);
-    $departures = $count("SELECT COUNT(*) FROM ars_bookings WHERE company_id = ? AND check_out = ? AND status IN ('checked_in','checked_out','confirmed')", [$cid, $today]);
-    $inHouse = $count("SELECT COUNT(*) FROM ars_bookings WHERE company_id = ? AND status = 'checked_in'", [$cid]);
+    $arrivals = $split("company_id = ? AND check_in = ? AND status IN ('confirmed','checked_in','pending')", [$cid, $today]);
+    $departures = $split("company_id = ? AND check_out = ? AND status IN ('checked_in','checked_out','confirmed')", [$cid, $today]);
+    $inHouse = $split("company_id = ? AND status = 'checked_in'", [$cid]);
     [$uw, $up] = jarvis_ars_units_where($cid);
     $units = $count("SELECT COUNT(*) FROM re_units u WHERE $uw", $up);
     $occupied = $count("SELECT COUNT(DISTINCT unit_id) FROM ars_bookings WHERE company_id = ? AND status IN " . JARVIS_ARS_ACTIVE . " AND unit_id IS NOT NULL", [$cid]);
@@ -351,8 +361,15 @@ if ($action === 'summary') {
         'units_occupied'        => $occupied,
         'occupancy_percent'     => $units > 0 ? (int)min(100, round($occupied / $units * 100)) : 0,
         'active_stays'          => $active,
-        'balances_due_count'    => count($owing),
-        'balances_due_total'    => round(array_sum(array_column($owing, 'balance_due')), 2),
+        'balances_due'          => (function () use ($owing) {
+            $part = fn($src) => array_filter($owing, fn($b) => $b['source'] === $src);
+            $sum = fn($list) => round(array_sum(array_column($list, 'balance_due')), 2);
+            return [
+                'count' => count($owing), 'total' => $sum($owing),
+                'direct' => ['count' => count($part('direct')), 'total' => $sum($part('direct'))],
+                'airbnb' => ['count' => count($part('airbnb')), 'total' => $sum($part('airbnb'))],
+            ];
+        })(),
         'housekeeping_open'     => $hk,
         'maintenance_open'      => $maint,
         'deposits_pending'      => $deposits,
