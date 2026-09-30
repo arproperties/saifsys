@@ -373,6 +373,47 @@ $depositPendingCollect = ($depositAmount > 0 && in_array($depositStatus, ['pendi
 $collectNow = max(0, $dueNow) + ($depositPendingCollect ? $depositAmount : 0);
 $journalViewBase = '../realestate/accounting/journal_entry_view.php?id=';
 $journalCompanyQs = '&company_id=' . (int)$arsCompanyId;
+$generalLedgerBase = '../realestate/accounting/general_ledger.php?account_id=';
+// ARS journals post to the Real Estate company, so link with the journal's own company_id.
+$depJournalQs = function (int $jid) use (&$depositJournalInfo, $journalCompanyQs): string {
+    return isset($depositJournalInfo[$jid]) ? '&company_id=' . (int)$depositJournalInfo[$jid]['company_id'] : $journalCompanyQs;
+};
+
+// Deposit journals as the ledger sees them: the ledger dates a journal by the day it
+// was entered, not the day the guest paid, so the card shows both plus the accounts.
+$depositJournalInfo = [];
+$depositJournalIds = array_filter([
+    (int)($booking['deposit_journal_id'] ?? 0),
+    (int)($booking['deposit_settlement_journal_id'] ?? 0),
+    (int)($booking['deposit_refund_journal_id'] ?? 0),
+]);
+if ($depositJournalIds) {
+    $ph = implode(',', array_fill(0, count($depositJournalIds), '?'));
+    $st = $conn->prepare("
+        SELECT jh.id, jh.company_id, jh.journal_number, jh.journal_date, jh.created_at,
+               COALESCE(NULLIF(u.fullname, ''), u.username) AS created_by_name
+        FROM re_journal_headers jh
+        LEFT JOIN user u ON u.id = jh.created_by
+        WHERE jh.id IN ($ph)");
+    $st->execute(array_values($depositJournalIds));
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $r['lines'] = [];
+        $depositJournalInfo[(int)$r['id']] = $r;
+    }
+    $st = $conn->prepare("
+        SELECT jl.journal_id, jl.account_id, jl.debit_amount, jl.credit_amount,
+               coa.account_code, coa.account_name
+        FROM re_journal_lines jl
+        JOIN re_chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE jl.journal_id IN ($ph)
+        ORDER BY jl.journal_id, jl.line_number");
+    $st->execute(array_values($depositJournalIds));
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $l) {
+        if (isset($depositJournalInfo[(int)$l['journal_id']])) {
+            $depositJournalInfo[(int)$l['journal_id']]['lines'][] = $l;
+        }
+    }
+}
 
 $nextStepTitle = '';
 $nextStepBody = '';
@@ -1089,14 +1130,37 @@ echo $arsWsLifecycleHtml;
                     <div class="col-6 col-sm-4"><strong class="text-muted d-block small">Still held</strong>AED <?= number_format($heldRemaining,2) ?></div>
                     <?php endif; ?>
                     <?php if ($booking['deposit_journal_id'] ?? null): ?>
-                    <div class="col-6 col-sm-4"><strong class="text-muted d-block small">Receive Journal</strong><span class="badge bg-success">JV#<?= (int)$booking['deposit_journal_id'] ?></span></div>
+                    <div class="col-6 col-sm-4"><strong class="text-muted d-block small">Receive Journal</strong><a class="badge bg-success text-decoration-none" href="<?= h($journalViewBase . (int)$booking['deposit_journal_id'] . $depJournalQs((int)$booking['deposit_journal_id'])) ?>" target="_blank">JV#<?= (int)$booking['deposit_journal_id'] ?></a></div>
                     <?php endif; ?>
                     <?php if ($booking['deposit_settlement_journal_id'] ?? null): ?>
-                    <div class="col-6 col-sm-4"><strong class="text-muted d-block small">Settlement Journal</strong><span class="badge bg-warning text-dark">JV#<?= (int)$booking['deposit_settlement_journal_id'] ?></span></div>
+                    <div class="col-6 col-sm-4"><strong class="text-muted d-block small">Settlement Journal</strong><a class="badge bg-warning text-dark text-decoration-none" href="<?= h($journalViewBase . (int)$booking['deposit_settlement_journal_id'] . $depJournalQs((int)$booking['deposit_settlement_journal_id'])) ?>" target="_blank">JV#<?= (int)$booking['deposit_settlement_journal_id'] ?></a></div>
                     <?php elseif ($booking['deposit_refund_journal_id'] ?? null): ?>
-                    <div class="col-6 col-sm-4"><strong class="text-muted d-block small">Refund Journal</strong><span class="badge bg-info">JV#<?= (int)$booking['deposit_refund_journal_id'] ?></span></div>
+                    <div class="col-6 col-sm-4"><strong class="text-muted d-block small">Refund Journal</strong><a class="badge bg-info text-decoration-none" href="<?= h($journalViewBase . (int)$booking['deposit_refund_journal_id'] . $depJournalQs((int)$booking['deposit_refund_journal_id'])) ?>" target="_blank">JV#<?= (int)$booking['deposit_refund_journal_id'] ?></a></div>
                     <?php endif; ?>
                 </div>
+                <?php foreach ($depositJournalInfo as $dj): ?>
+                <?php
+                    $djEntered = substr((string)$dj['created_at'], 0, 10);
+                    $djLate = ((int)$dj['id'] === (int)($booking['deposit_journal_id'] ?? 0))
+                        && !empty($booking['deposit_received_date'])
+                        && (string)$dj['journal_date'] !== substr((string)$booking['deposit_received_date'], 0, 10);
+                ?>
+                <div class="border rounded p-2 mt-3 small">
+                    <div class="d-flex flex-wrap justify-content-between gap-2 mb-1">
+                        <a class="fw-semibold text-decoration-none" href="<?= h($journalViewBase . (int)$dj['id'] . '&company_id=' . (int)$dj['company_id']) ?>" target="_blank"><?= h($dj['journal_number']) ?> <i class="bi bi-box-arrow-up-right"></i></a>
+                        <span class="text-muted">Ledger date <strong><?= h(date('d M Y', strtotime($dj['journal_date']))) ?></strong> · Entered <?= h(date('d M Y', strtotime($dj['created_at']))) ?><?= $dj['created_by_name'] ? ' by ' . h($dj['created_by_name']) : '' ?></span>
+                    </div>
+                    <?php if ($djLate): ?>
+                    <div class="text-warning-emphasis mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Received <?= h(date('d M', strtotime($booking['deposit_received_date']))) ?>, entered <?= h(date('d M', strtotime($djEntered))) ?> — look for it in the ledger on <?= h(date('d M', strtotime($dj['journal_date']))) ?>.</div>
+                    <?php endif; ?>
+                    <?php foreach ($dj['lines'] as $l): ?>
+                    <div class="d-flex justify-content-between">
+                        <a class="text-decoration-none" href="<?= h($generalLedgerBase . (int)$l['account_id'] . '&company_id=' . (int)$dj['company_id']) ?>" target="_blank"><?= h($l['account_code'] . ' ' . $l['account_name']) ?></a>
+                        <span><?= (float)$l['debit_amount'] > 0 ? 'Dr AED ' . number_format((float)$l['debit_amount'], 2) : 'Cr AED ' . number_format((float)$l['credit_amount'], 2) ?></span>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endforeach; ?>
                 <?php if (!in_array($booking['status'], ['cancelled','expired'])): ?>
                 <div class="d-flex flex-wrap gap-2 mt-3">
                     <?php if ($depositStatus === 'pending'): ?>
