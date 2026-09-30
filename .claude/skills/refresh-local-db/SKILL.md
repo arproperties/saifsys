@@ -73,6 +73,18 @@ mysql -u ainalreem -N --batch -e "SELECT VIEW_DEFINITION FROM information_schema
  | mysql -u ainalreem u385648797_Mainsys_old_YYYYMMDD
 ```
 
+**As of 2026-09-30 all 30 views fail this way, not just one.** Grant the app
+user on the archive first (views run as `DEFINER=u385648797_Usersys`, so without
+the grant they fail with ERROR 1356). Then replay the dump's view section with
+the schema rewritten and the DROPs stripped, 3 passes with `-f` so views that
+depend on later views resolve:
+
+```bash
+L=$(grep -n "Final view structure" <backup> | head -1 | cut -d: -f1)
+for i in 1 2 3; do sed -n "$L,\$p" <backup> | grep -vE '^/\*!50001 DROP (VIEW|TABLE)' \
+  | sed 's/`u385648797_mainsys`\./`<archive>`./g' | mysql -u ainalreem -f <archive> >/dev/null 2>&1; done
+```
+
 Confirm the archive holds the full object count and matching row counts on a few
 real tables **before** dropping anything.
 
