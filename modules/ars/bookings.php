@@ -233,6 +233,7 @@ ars_shell_begin([
                   <div class="truncate font-semibold text-ars-text"><?= h($gName) ?></div>
                   <div class="mt-0.5 flex flex-wrap items-center gap-x-2 text-ars-xs text-ars-muted">
                     <span class="font-medium text-ars-ink"><?= h($b['booking_number']) ?></span>
+                    <?php if (($b['booking_source'] ?? 'direct') === 'airbnb'): ?><?= ars_ui_airbnb_tag() ?><?php endif; ?>
                     <?php if ($phone !== ''): ?><span><?= h($phone) ?></span><?php endif; ?>
                   </div>
                 </div>
@@ -280,7 +281,7 @@ ars_shell_begin([
               <span class="font-semibold text-ars-text"><?= h($gName) ?></span>
               <?= ars_ui_status_badge('booking', $b['status']) ?>
             </div>
-            <div class="mt-1 text-ars-xs font-medium text-ars-ink"><?= h($b['booking_number']) ?></div>
+            <div class="mt-1 flex items-center gap-2 text-ars-xs font-medium text-ars-ink"><?= h($b['booking_number']) ?><?php if (($b['booking_source'] ?? 'direct') === 'airbnb'): ?><?= ars_ui_airbnb_tag() ?><?php endif; ?></div>
             <div class="mt-1.5 text-ars-sm text-ars-muted"><?= h($b['unit_number'] ?? '') ?><?= !empty($b['building_name']) ? ' · ' . h($b['building_name']) : '' ?></div>
             <div class="mt-0.5 flex flex-wrap justify-between gap-2 text-ars-xs text-ars-muted">
               <span><?= h(ars_ds_format_stay($b['check_in'] ?? '', $b['check_out'] ?? '')) ?></span>

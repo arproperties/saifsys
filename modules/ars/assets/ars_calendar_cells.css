@@ -404,6 +404,22 @@
   min-width: 0;
 }
 
+/* Airbnb-sourced booking marker — stays visible on narrow bars */
+#ars-app .abnb-bar-airbnb {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ff385c;
+  color: #ffffff;
+  box-shadow: 0 0 0 1.5px #ffffff;
+  font-size: 0.625rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 #ars-app .abnb-bar-meta {
   margin-left: auto;
   font-size: 0.6875rem;

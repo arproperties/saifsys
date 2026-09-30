@@ -87,6 +87,7 @@ $occEndSql = 'COALESCE(b.actual_check_out, b.check_out)';
 $bookingsByUnit = [];
 $stmt = $conn->prepare("
     SELECT b.id, b.unit_id, b.booking_number, b.check_in, b.check_out, b.actual_check_out, b.is_early_checkout, b.status,
+           b.booking_source, b.channel_ref,
            {$occEndSql} AS occupancy_end,
            g.first_name, g.last_name
     FROM ars_bookings b
@@ -156,7 +157,9 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
         }
         $style = $statusStyle((string)($bk['status'] ?? 'confirmed'));
 
-        $tooltip = $guest . ' · ' . ($bk['booking_number'] ?? '')
+        $isAirbnb = ($bk['booking_source'] ?? 'direct') === 'airbnb';
+        $tooltip = ($isAirbnb ? 'Airbnb' . (!empty($bk['channel_ref']) ? ' ' . $bk['channel_ref'] : '') . ' · ' : '')
+            . $guest . ' · ' . ($bk['booking_number'] ?? '')
             . ' · ' . date('j M', strtotime($checkIn)) . ' → ' . date('j M', strtotime($occEnd))
             . ' · ' . $nights . ' night' . ($nights === 1 ? '' : 's')
             . ' · ' . $style['label']
@@ -173,6 +176,7 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
             'guest' => $guest,
             'nights' => $nights,
             'tooltip' => $tooltip,
+            'airbnb' => $isAirbnb,
         ];
     }
     return $bars;
@@ -276,6 +280,7 @@ $halfColsStyle = 'grid-template-columns: repeat(' . (2 * $daysInMonth) . ', minm
                            style="grid-column: <?= (int)$bar['start'] ?> / <?= (int)$bar['end'] ?>;"
                            href="booking_view.php?id=<?= (int)$bar['id'] ?>"
                            title="<?= h($bar['tooltip']) ?>">
+                            <?php if ($bar['airbnb']): ?><span class="abnb-bar-airbnb" aria-label="Airbnb">A</span><?php endif; ?>
                             <span class="abnb-bar-name"><?= h($bar['guest']) ?></span>
                             <span class="abnb-bar-meta"><?= (int)$bar['nights'] ?>n</span>
                         </a>

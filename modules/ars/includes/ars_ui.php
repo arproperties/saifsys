@@ -199,6 +199,18 @@ if (!function_exists('ars_ui_badge')) {
     }
 }
 
+if (!function_exists('ars_ui_airbnb_tag')) {
+    /** Small Airbnb-coral pill marking a booking that came from Airbnb; optional confirmation code after it. */
+    function ars_ui_airbnb_tag(?string $code = null): string
+    {
+        $code = trim((string)$code);
+        return '<span class="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-ars-xs font-semibold leading-none"'
+            . ' style="background:#ff385c;color:#fff;" title="Airbnb booking' . ($code !== '' ? ' · ' . ars_ui_h($code) : '') . '">'
+            . 'Airbnb' . ($code !== '' ? ' <span style="font-weight:500;opacity:.85;">' . ars_ui_h($code) . '</span>' : '')
+            . '</span>';
+    }
+}
+
 if (!function_exists('ars_ui_status_badge')) {
     /** Booking / HK / Maint / Financial — always icon + text (+ colour). */
     function ars_ui_status_badge(string $domain, string $status, array $opts = []): string
