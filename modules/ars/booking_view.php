@@ -11,6 +11,7 @@ require_once __DIR__ . '/includes/ars_financial_lock.php';
 require_once __DIR__ . '/includes/ars_activity.php';
 require_once __DIR__ . '/includes/ars_early_checkout.php';
 require_once __DIR__ . '/includes/ars_payment_plan.php';
+require_once __DIR__ . '/includes/ars_booking_balance.php';
 ars_deposit_ensure_schema($conn);
 ars_early_checkout_ensure_schema($conn);
 
@@ -148,46 +149,16 @@ try {
 // there. So a booking that was extended shows a total that is short by every
 // extension, while paid_amount counts the money that paid thFem, and balance_due
 // goes negative. When financial documents exist they are the source of truth.
-$docsInvoiced = 0.0;    // invoices raised, excluding credit notes
-$docsCredited = 0.0;    // credit notes raised
-$docsOpenBalance = 0.0; // net still owed by the guest
-$docsInvoiceCount = 0;
-$docsByType = ['original_invoice' => 0.0, 'extension_invoice' => 0.0, 'other_invoice' => 0.0];
-$docsExtensionCount = 0;
-foreach ($financialDocs as $fd) {
-    $fdStatus = strtolower((string)($fd['status'] ?? ''));
-    if (in_array($fdStatus, ['draft', 'voided', 'reversed'], true)) {
-        continue;
-    }
-    $fdType = (string)($fd['document_type'] ?? '');
-    $fdTotal = (float)($fd['total_amount'] ?? 0);
-    $fdBalance = (float)($fd['balance_due'] ?? 0);
-    // A credit note is money owed back to the guest: it reduces both the
-    // invoiced total and the open balance.
-    if ($fdType === 'credit_note') {
-        $docsCredited += $fdTotal;
-        $docsOpenBalance -= $fdBalance;
-        continue;
-    }
-    $docsInvoiced += $fdTotal;
-    $docsOpenBalance += $fdBalance;
-    $docsInvoiceCount++;
-    if ($fdType === 'original_invoice' || $fdType === 'extension_invoice') {
-        $docsByType[$fdType] += $fdTotal;
-        if ($fdType === 'extension_invoice') {
-            $docsExtensionCount++;
-        }
-    } else {
-        $docsByType['other_invoice'] += $fdTotal;
-    }
-}
-$docsInvoiced = round($docsInvoiced, 2);
-$docsCredited = round($docsCredited, 2);
-$docsNetInvoiced = round($docsInvoiced - $docsCredited, 2);
-$docsOpenBalance = round($docsOpenBalance, 2);
-foreach ($docsByType as $dtKey => $dtVal) {
-    $docsByType[$dtKey] = round($dtVal, 2);
-}
+// The roll-up lives in ars_booking_balance.php so the calendar, dashboard and
+// lists use the same figures as this page.
+$docsRollup = ars_booking_docs_rollup($financialDocs);
+$docsInvoiced = $docsRollup['invoiced'];         // invoices raised, excluding credit notes
+$docsCredited = $docsRollup['credited'];         // credit notes raised
+$docsNetInvoiced = $docsRollup['net_invoiced'];
+$docsOpenBalance = $docsRollup['open_balance'];  // net still owed by the guest
+$docsInvoiceCount = $docsRollup['invoice_count'];
+$docsByType = $docsRollup['by_type'];
+$docsExtensionCount = $docsRollup['extension_count'];
 // Only let the ledger drive the summary when it actually holds invoices. A
 // booking carrying nothing but a credit note has no invoiced total to show, so
 // it keeps the ars_bookings figures it has always used.
@@ -288,55 +259,12 @@ $bookingBalance = (float)($booking['balance_due'] ?? 0);
 $stayTotal = $hasFinancialDocs ? $docsNetInvoiced : $bookingTotal;
 $balanceDue = $hasFinancialDocs ? $docsOpenBalance : $bookingBalance;
 
-// Outstanding per payment row. Two shapes, because a typed total and an
-// invoiced total mean different things:
-//
-//   Total amount typed by hand -> each row is its own line for one period, and
-//   what it leaves unpaid carries down to the next row:
-//       outstanding = previous outstanding + (this Total - this Received)
-//   So 470 still owed, then a 910 line with 500 received, shows 880.
-//
-//   No total typed -> the row falls back to the booking's invoiced total, so
-//   the rows are instalments against one figure:
-//       outstanding = invoiced total - everything received down to this row
-//   Carrying shortfalls forward there would add the same total in again on
-//   every row.
-//
-// The cumulative side deliberately does NOT replay invoices by date. Payments
-// are allocated when recorded, not according to document_date, so a backdated
-// payment legitimately settles invoices raised after its own date; walking the
-// timeline by date mis-reports those as unpaid.
-//
-// Either way the figure floors at zero, and what falls below becomes credit.
-$paymentBalanceAfter = [];
-$paymentCreditFrom = [];
-$paymentRowTotal = [];
-$pmRunningReceived = 0.0;
-$pmPriorCredit = 0.0;
-$pmPrevOutstanding = 0.0;
-foreach ($payments as $pmRow) {
-    $pmId = (int)$pmRow['id'];
-    $pmReceived = (float)$pmRow['amount'];
-    $pmManual = !($pmRow['total_amount'] === null || $pmRow['total_amount'] === '');
-    $pmRowTotal = $pmManual ? (float)$pmRow['total_amount'] : $stayTotal;
-    $paymentRowTotal[$pmId] = $pmRowTotal;
-
-    $pmRunningReceived += $pmReceived;
-
-    if ($pmManual) {
-        $pmCarried = round($pmPrevOutstanding + ($pmRowTotal - $pmReceived), 2);
-        $paymentBalanceAfter[$pmId] = max(0.0, $pmCarried);
-        $paymentCreditFrom[$pmId] = max(0.0, round(-$pmCarried, 2));
-        $pmPrevOutstanding = max(0.0, $pmCarried);
-        continue;
-    }
-
-    $pmCreditToDate = max(0.0, round($pmRunningReceived - $pmRowTotal, 2));
-    $paymentBalanceAfter[$pmId] = max(0.0, round($pmRowTotal - $pmRunningReceived, 2));
-    $paymentCreditFrom[$pmId] = round($pmCreditToDate - $pmPriorCredit, 2);
-    $pmPriorCredit = $pmCreditToDate;
-    $pmPrevOutstanding = $paymentBalanceAfter[$pmId];
-}
+// Outstanding per payment row: see ars_payment_rows_walk() for the two shapes
+// (typed total carries down; no total means instalments against one figure).
+$paymentWalk = ars_payment_rows_walk($payments, $stayTotal);
+$paymentBalanceAfter = $paymentWalk['balance_after'];
+$paymentCreditFrom = $paymentWalk['credit_from'];
+$paymentRowTotal = $paymentWalk['row_total'];
 
 // Once a Total amount has been typed on any row, the Payments table is the
 // office's own statement and the Pricing Summary has to agree with it — two
@@ -344,16 +272,9 @@ foreach ($payments as $pmRow) {
 // to remove. Total = Received + Outstanding by construction, so the summary
 // can never disagree with the column it sits beside. Bookings with no typed
 // totals keep the AR-document figures exactly as before.
-$tableReceived = 0.0;
-$tableHasManualTotal = false;
-foreach ($payments as $pmSum) {
-    $tableReceived += (float)$pmSum['amount'];
-    if (!($pmSum['total_amount'] === null || $pmSum['total_amount'] === '')) {
-        $tableHasManualTotal = true;
-    }
-}
-$tableReceived = round($tableReceived, 2);
-$tableOutstanding = empty($paymentBalanceAfter) ? 0.0 : (float)end($paymentBalanceAfter);
+$tableReceived = $paymentWalk['received'];
+$tableHasManualTotal = $paymentWalk['has_manual_total'];
+$tableOutstanding = $paymentWalk['outstanding'];
 $docsStayTotal = $stayTotal;   // kept for the "per invoices" reference line
 $docsBalanceDue = $balanceDue;
 if ($tableHasManualTotal) {
@@ -1711,7 +1632,7 @@ echo $arsWsLifecycleHtml;
                     <span class="text-success small ars-tabular">AED <?= number_format(abs($docsOpenBalance), 2) ?></span>
                 </div>
                 <?php endif; ?>
-                <div class="mt-2"><?= arsPaymentStatusBadge($booking['payment_status']) ?></div>
+                <div class="mt-2"><?= arsPaymentStatusBadge(ars_booking_payment_status_from($stayTotal, $balanceDue, $stayTotal - max(0.0, $balanceDue), (string)($booking['payment_status'] ?? ''))) ?></div>
                 <?php if ($dueNow > 0.009): ?>
                 <button type="button" class="btn btn-ars btn-sm w-100 mt-3" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-1"></i>Collect AED <?= number_format($dueNow, 2) ?></button>
                 <?php endif; ?>

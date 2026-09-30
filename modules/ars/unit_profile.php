@@ -7,6 +7,7 @@ require_once __DIR__ . '/includes/ars_unit_history_helper.php';
 require_once __DIR__ . '/includes/ars_permissions.php';
 require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
+require_once __DIR__ . '/includes/ars_booking_balance.php';
 
 $arsCompanyId = arsPageAuth($conn);
 $brand = getBrandSettings($conn);
@@ -134,6 +135,14 @@ $guests = arsGetGuestOptions($conn, $arsCompanyId);
 
 $bookingRevenue = array_sum(array_map(fn($b) => (float)($b['total_amount'] ?? 0), $bookings));
 $bookingPaid = array_sum(array_map(fn($b) => (float)($b['payment_total'] ?? 0), $bookings));
+// Balance column as each booking page shows it, not the saved balance_due.
+// Only the balance is replaced; Charges and Paid keep their own sources.
+$bookingFigures = ars_booking_balances($conn, $arsCompanyId, $bookings);
+foreach ($bookings as $i => $b) {
+    if (isset($bookingFigures[(int)$b['id']])) {
+        $bookings[$i]['balance_due'] = $bookingFigures[(int)$b['id']]['balance'];
+    }
+}
 $ledgerBalance = array_sum(array_map(fn($o) => (float)($o['ledger_balance'] ?? 0), $occupancies));
 
 $pageTitle = 'Flat Profile — ' . ($unit['unit_number'] ?? '');

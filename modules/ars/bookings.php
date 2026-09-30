@@ -11,6 +11,7 @@ require_once __DIR__ . '/includes/ars_helpers.php';
 require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
 require_once __DIR__ . '/includes/ars_payment_plan.php';
+require_once __DIR__ . '/includes/ars_booking_balance.php';
 require_once __DIR__ . '/../../includes/table_sort.php';
 
 $arsCompanyId = arsPageAuth($conn);
@@ -74,35 +75,32 @@ if ($view === 'arrivals') {
 } elseif ($view === 'inhouse') {
     $sql .= " AND b.status = 'checked_in'";
 } elseif ($view === 'outstanding') {
-    // Same definition as Command Center payment follow-up.
-    $sql .= " AND b.status IN ('confirmed','checked_in') AND COALESCE(b.balance_due, 0) > 0.009";
+    // Same definition as Command Center payment follow-up. Every active
+    // booking is fetched: the saved balance_due misses extension invoices and
+    // typed totals, so the balance is worked out below and filtered in PHP.
+    $sql .= " AND b.status IN ('confirmed','checked_in')";
 }
 
 $sql .= $view === 'outstanding'
-    ? " ORDER BY b.balance_due DESC, b.check_in ASC"
+    ? " ORDER BY b.check_in ASC"
     : " ORDER BY b.created_at DESC";
 $exportCsv = ($_GET['export'] ?? '') === 'csv';
 // The screen caps at 200 rows; the export returns every matching reservation.
-if (!$exportCsv) {
+// Outstanding is not capped, since the cap would land before the filter.
+if (!$exportCsv && $view !== 'outstanding') {
     $sql .= " LIMIT 200";
 }
 $stmt = $conn->prepare($sql);
 $stmt->execute($params);
 $bookings = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Outstanding means due now. On a monthly plan a month still to come is owed
-// but not due, so the row shows (and is kept for) only what is due today.
-if ($view === 'outstanding' && $bookings) {
-    $listPlans = ars_payment_plans_for_bookings($conn, $arsCompanyId, array_column($bookings, 'id'));
-    if ($listPlans) {
-        foreach ($bookings as $i => $b) {
-            if (isset($listPlans[(int)$b['id']])) {
-                $bookings[$i]['balance_due'] = ars_payment_plan_row_due_now($listPlans[(int)$b['id']], $b);
-            }
-        }
-        $bookings = array_values(array_filter($bookings, static fn($b) => (float)$b['balance_due'] > 0.009));
-        usort($bookings, static fn($a, $b) => [(float)$b['balance_due'], $a['check_in']] <=> [(float)$a['balance_due'], $b['check_in']]);
-    }
+// Balances as the booking page shows them. Outstanding means due now: on a
+// monthly plan a month still to come is owed but not due, so the row shows
+// (and is kept for) only what is due today.
+$bookings = ars_booking_rows_apply_balances($conn, $arsCompanyId, $bookings, $view === 'outstanding');
+if ($view === 'outstanding') {
+    $bookings = array_values(array_filter($bookings, static fn($b) => (float)$b['balance_due'] > 0.009));
+    usort($bookings, static fn($a, $b) => [(float)$b['balance_due'], $a['check_in']] <=> [(float)$a['balance_due'], $b['check_in']]);
 }
 
 $exportQuery = $_GET;

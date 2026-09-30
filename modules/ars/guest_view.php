@@ -12,6 +12,7 @@ require_once __DIR__ . '/includes/ars_shell.php';
 require_once __DIR__ . '/includes/ars_ds.php';
 require_once __DIR__ . '/includes/ars_guest_delete.php';
 require_once __DIR__ . '/includes/ars_guest_attachments.php';
+require_once __DIR__ . '/includes/ars_booking_balance.php';
 
 $arsCompanyId = arsPageAuth($conn);
 $brand = getBrandSettings($conn);
@@ -111,6 +112,8 @@ try {
     $bookings = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 } catch (PDOException $e) {
 }
+// Total and balance as each booking page shows them, not the saved columns.
+$bookings = ars_booking_rows_apply_balances($conn, $arsCompanyId, $bookings);
 
 $docCategories = ars_guest_doc_categories();
 $guestDocs = [];
