@@ -103,8 +103,11 @@ function ars_adapter_find_by_idempotency(PDO $conn, int $companyId, string $key)
 function ars_adapter_next_document_number(PDO $conn, int $companyId, string $prefix): string {
     $year = date('Y');
     $like = $prefix . '-' . $year . '-%';
+    // Highest number used, not a row count — a deleted document leaves a gap
+    // and a count would hand out a number that is already taken.
     $stmt = $conn->prepare("
-        SELECT COUNT(*) FROM ars_financial_documents
+        SELECT MAX(CAST(SUBSTRING_INDEX(document_number, '-', -1) AS UNSIGNED))
+        FROM ars_financial_documents
         WHERE company_id = ? AND document_number LIKE ?
     ");
     $stmt->execute([$companyId, $like]);
