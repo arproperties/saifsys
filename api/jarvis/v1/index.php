@@ -25,7 +25,7 @@ declare(strict_types=1);
 define('JARVIS_API', true);
 
 // The modules that have something to answer. Each is modules/<name>.php.
-const JARVIS_MODULES = ['ars', 'realestate'];
+const JARVIS_MODULES = ['ars', 'realestate', 'hr'];
 
 require_once __DIR__ . '/../../../includes/db_connect.php';
 
