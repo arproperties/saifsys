@@ -261,7 +261,27 @@ $balanceDue = $hasFinancialDocs ? $docsOpenBalance : $bookingBalance;
 
 // Outstanding per payment row: see ars_payment_rows_walk() for the two shapes
 // (typed total carries down; no total means instalments against one figure).
-$paymentWalk = ars_payment_rows_walk($payments, $stayTotal);
+// A billed extension gets a line of its own among them, so the invoice it
+// raised shows as outstanding instead of being hidden behind the typed totals.
+$extensionLines = [];
+foreach ($extensionDocs as $extDoc) {
+    if (in_array(strtolower((string)($extDoc['status'] ?? '')), ['draft', 'voided', 'reversed'], true)) {
+        continue;
+    }
+    $extensionLines[] = [
+        'id' => (int)$extDoc['id'],
+        'date' => (string)($extDoc['prior_check_out'] ?: $extDoc['document_date']),
+        'total' => (float)$extDoc['total_amount'],
+        'open' => (float)$extDoc['balance_due'],
+        'from' => (string)$extDoc['prior_check_out'],
+        'to' => (string)$extDoc['new_check_out'],
+        'nights' => (int)$extDoc['added_nights'],
+    ];
+}
+$paymentRows = $hasFinancialDocs
+    ? ars_payment_rows_add_billed_extensions($payments, $extensionLines, $docsNetInvoiced)
+    : $payments;
+$paymentWalk = ars_payment_rows_walk($paymentRows, $stayTotal);
 $paymentBalanceAfter = $paymentWalk['balance_after'];
 $paymentCreditFrom = $paymentWalk['credit_from'];
 $paymentRowTotal = $paymentWalk['row_total'];
@@ -965,7 +985,65 @@ echo $arsWsLifecycleHtml;
                     <?php if (empty($payments)): ?>
                         <tr><td colspan="<?= $pmColspan ?>" class="text-center text-muted py-3">No payments recorded.</td></tr>
                     <?php endif; ?>
-                    <?php foreach ($payments as $pm):
+                    <?php foreach ($paymentRows as $pm):
+                        if (!empty($pm['is_extension_line'])):
+                            $pmBalAfter = $paymentBalanceAfter[(int)$pm['id']] ?? 0.0;
+                    ?>
+                        <tr>
+                            <td data-label="Date" class="text-nowrap"><?= $pm['payment_date'] !== '' ? h(date('d M Y', strtotime($pm['payment_date']))) : '&mdash;' ?></td>
+                            <td data-label="Method">
+                                <span class="badge bg-secondary">Extension</span>
+                                <?php if ($pm['extended_from'] !== '' && $pm['extended_to'] !== ''): ?>
+                                <small class="text-muted d-block text-nowrap"><?= h(date('d M', strtotime($pm['extended_from']))) ?> &rarr; <?= h(date('d M Y', strtotime($pm['extended_to']))) ?></small>
+                                <?php endif; ?>
+                            </td>
+                            <td data-label="Total amount" class="text-end ars-tabular text-nowrap">AED <?= number_format((float)$pm['total_amount'], 2) ?></td>
+                            <td data-label="Received amount" class="text-end text-muted text-nowrap">AED 0.00</td>
+                            <td data-label="Balance after" class="text-end ars-tabular text-nowrap">
+                                <span class="<?= $pmBalAfter <= 0.009 ? 'text-success' : 'text-danger' ?>">AED <?= number_format($pmBalAfter, 2) ?></span>
+                            </td>
+                            <td data-label="Reference">Extension invoice</td>
+                            <td data-label="Nights" class="text-end ars-tabular text-nowrap"><?= $pm['nights'] > 0 ? (int)$pm['nights'] : '&mdash;' ?></td>
+                            <td data-label="GL account">&mdash;</td>
+                            <?php if ($pmShowStripe): ?><td data-label="Stripe">&mdash;</td><?php endif; ?>
+                            <?php if ($pmShowLink): ?><td data-label="Link">&mdash;</td><?php endif; ?>
+                            <td data-label="" class="text-end ars-pay-actions">
+                                <?php
+                                // The same three buttons a payment row has. The line is not a
+                                // saved payment, so attach and edit open the payment form filled
+                                // in for this line (saving it turns the line into a real payment
+                                // row), and delete reverses the extension invoice. Once money is
+                                // against the invoice the payment row carries the buttons instead.
+                                $extLineOpen = (float)$pm['open'];
+                                $extLineTotal = (float)$pm['total_amount'];
+                                // Untouched: the payment row takes the line's Total and replaces
+                                // it. Part-paid: the line stays, so the payment charges nothing.
+                                $extLineFormTotal = $extLineOpen >= $extLineTotal - 0.009 ? $extLineTotal : 0.0;
+                                $extLineLabel = 'Extension ' . ($pm['extended_from'] !== '' ? date('d M', strtotime($pm['extended_from'])) : '')
+                                    . ($pm['extended_to'] !== '' ? ' - ' . date('d M Y', strtotime($pm['extended_to'])) : '');
+                                ?>
+                                <?php if ($extLineOpen > 0.009 && !in_array($booking['status'], ['cancelled','expired'])): ?>
+                                <button type="button" class="btn btn-sm btn-ars-outline" title="Attach payment evidence" aria-label="Attach payment evidence for this extension"
+                                        data-ars-ext-line-pay="evidence"
+                                        data-total="<?= h(number_format($extLineFormTotal, 2, '.', '')) ?>"
+                                        data-amount="<?= h(number_format($extLineOpen, 2, '.', '')) ?>"
+                                        data-label="<?= h($extLineLabel) ?>"><i class="bi bi-paperclip"></i></button>
+                                <button type="button" class="btn btn-sm btn-ars-outline" title="Enter the received amount" aria-label="Enter the received amount for this extension"
+                                        data-ars-ext-line-pay="edit"
+                                        data-total="<?= h(number_format($extLineFormTotal, 2, '.', '')) ?>"
+                                        data-amount="<?= h(number_format($extLineOpen, 2, '.', '')) ?>"
+                                        data-label="<?= h($extLineLabel) ?>"><i class="bi bi-pencil"></i></button>
+                                <?php endif; ?>
+                                <?php if ($extLineOpen >= $extLineTotal - 0.009): ?>
+                                <button type="button" class="btn btn-sm btn-outline-danger" title="Delete this extension charge" aria-label="Delete this extension charge"
+                                        data-ars-ext-line-delete="<?= (int)abs((int)$pm['id']) ?>"
+                                        data-total="<?= h(number_format($extLineTotal, 2)) ?>"><i class="bi bi-trash"></i></button>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php
+                            continue;
+                        endif;
                         $pmAccCode = (string)($pm['receipt_account_code'] ?? '');
                         $pmAccName = $pmAccCode !== '' ? (string)($paymentAccountNames[$pmAccCode] ?? '') : '';
                     ?>

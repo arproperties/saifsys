@@ -132,6 +132,68 @@ function ars_payment_rows_walk(array $payments, float $stayTotal): array {
 }
 
 /**
+ * Add billed extensions to the Payments rows as lines of their own, so a
+ * typed-total table still shows what an extension invoice left owing:
+ * Total = the invoice, Received = 0, and the walk carries it down as
+ * outstanding until a payment clears it. The lines are drawn, never saved --
+ * no payment row, journal or receipt stands behind them.
+ *
+ * Only for a table with typed totals (otherwise the rows already run against
+ * the invoiced total), and only for what the typed totals do not already
+ * cover: an extension the office typed onto a payment row is counted there,
+ * so its line is left out rather than charged twice.
+ *
+ * $extensions: id, date, total, open, from, to, nights -- one per live
+ * extension invoice. Lines carry a negative id so they never collide with a payment.
+ */
+function ars_payment_rows_add_billed_extensions(array $payments, array $extensions, float $netInvoiced): array {
+    $typedTotal = 0.0;
+    $hasManualTotal = false;
+    foreach ($payments as $pm) {
+        if (!(($pm['total_amount'] ?? null) === null || $pm['total_amount'] === '')) {
+            $hasManualTotal = true;
+            $typedTotal += (float)$pm['total_amount'];
+        }
+    }
+    if (!$hasManualTotal || !$extensions) {
+        return $payments;
+    }
+    $uncovered = round($netInvoiced - $typedTotal, 2);
+    $lines = [];
+    foreach ($extensions as $ext) {
+        $total = round((float)($ext['total'] ?? 0), 2);
+        if ($total <= 0.009 || $total > $uncovered + 0.009) {
+            continue;
+        }
+        $uncovered = round($uncovered - $total, 2);
+        $lines[] = [
+            'id' => -(int)$ext['id'],
+            'is_extension_line' => true,
+            'payment_date' => (string)($ext['date'] ?? ''),
+            'amount' => 0,
+            'total_amount' => $total,
+            'extended_from' => (string)($ext['from'] ?? ''),
+            'extended_to' => (string)($ext['to'] ?? ''),
+            'nights' => (int)($ext['nights'] ?? 0),
+            'open' => round((float)($ext['open'] ?? $total), 2),
+        ];
+    }
+    if (!$lines) {
+        return $payments;
+    }
+    // A line sits ahead of the payments dated the same day, so the money
+    // taken that day reads as settling it.
+    $rows = [];
+    foreach (array_merge($lines, $payments) as $i => $row) {
+        $rows[] = [substr((string)($row['payment_date'] ?? ''), 0, 10), $i, $row];
+    }
+    usort($rows, static function (array $a, array $b): int {
+        return [$a[0], $a[1]] <=> [$b[0], $b[1]];
+    });
+    return array_column($rows, 2);
+}
+
+/**
  * Paid / partial / unpaid from the figures actually shown. Statuses the
  * figures cannot express (refunded, failed) are kept as saved.
  */
@@ -178,7 +240,7 @@ function ars_booking_balances(PDO $conn, int $companyId, array $rows): array {
     $docsByBooking = [];
     try {
         $stmt = $conn->prepare("
-            SELECT booking_id, document_type, status, total_amount, balance_due
+            SELECT id, booking_id, document_type, status, document_date, total_amount, balance_due
             FROM ars_financial_documents
             WHERE company_id = ? AND booking_id IN ($in)
         ");
@@ -215,7 +277,38 @@ function ars_booking_balances(PDO $conn, int $companyId, array $rows): array {
     } catch (Throwable $e) {
         error_log('ARS booking balances (payments): ' . $e->getMessage());
     }
+    // The dates each extension invoice covers, so its line lands where the
+    // booking page puts it. Without them the line falls back to the invoice date.
+    $extensionFrom = [];
+    try {
+        $stmt = $conn->prepare("
+            SELECT e.document_id, e.prior_check_out
+            FROM ars_extension_documents e
+            INNER JOIN ars_financial_documents d ON d.id = e.document_id
+            WHERE d.company_id = ? AND d.booking_id IN ($in)
+        ");
+        $stmt->execute(array_merge([$companyId], $ids));
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $e) {
+            $extensionFrom[(int)$e['document_id']] = (string)$e['prior_check_out'];
+        }
+    } catch (Throwable $ignored) {
+    }
     foreach ($paymentsByBooking as $bid => $payments) {
+        $extensions = [];
+        foreach ($docsByBooking[$bid] ?? [] as $d) {
+            if (($d['document_type'] ?? '') !== 'extension_invoice'
+                || in_array(strtolower((string)($d['status'] ?? '')), ['draft', 'voided', 'reversed'], true)) {
+                continue;
+            }
+            $extensions[] = [
+                'id' => (int)$d['id'],
+                'date' => $extensionFrom[(int)$d['id']] ?? (string)$d['document_date'],
+                'total' => (float)$d['total_amount'],
+            ];
+        }
+        if ($extensions && $out[$bid]['source'] === 'invoices') {
+            $payments = ars_payment_rows_add_billed_extensions($payments, $extensions, $out[$bid]['total']);
+        }
         $walk = ars_payment_rows_walk($payments, $out[$bid]['total']);
         if ($walk['has_manual_total']) {
             $out[$bid]['total'] = round($walk['received'] + $walk['outstanding'], 2);

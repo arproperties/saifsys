@@ -433,6 +433,62 @@
       });
   }
 
+  // A billed extension shows on the Payments table as a line, not a saved
+  // payment. Its attach and edit buttons open the payment form filled in for
+  // that line; its delete reverses the extension invoice.
+  function initExtensionLineActions() {
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest) return;
+      var pay = e.target.closest('[data-ars-ext-line-pay]');
+      if (pay) {
+        e.preventDefault();
+        var modalEl = document.getElementById('addPaymentModal');
+        if (!modalEl || !window.bootstrap) return;
+        setPayMode('full');
+        var set = function (id, v) { var el = document.getElementById(id); if (el) el.value = v == null ? '' : v; };
+        set('payTotalAmount', pay.getAttribute('data-total'));
+        set('payAmount', pay.getAttribute('data-amount'));
+        var notesEl = document.getElementById('payNotes');
+        if (notesEl && !notesEl.value) notesEl.value = pay.getAttribute('data-label') || '';
+        if (pay.getAttribute('data-ars-ext-line-pay') === 'evidence') {
+          modalEl.addEventListener('shown.bs.modal', function () {
+            var fileEl = document.getElementById('payEvidenceFile');
+            if (fileEl) {
+              fileEl.scrollIntoView({ block: 'center' });
+              fileEl.focus();
+            }
+          }, { once: true });
+        }
+        window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        return;
+      }
+      var del = e.target.closest('[data-ars-ext-line-delete]');
+      if (!del) return;
+      e.preventDefault();
+      var reason = window.prompt('Delete this extension charge (AED ' + del.getAttribute('data-total') + ')?\n\nIts invoice is reversed and the period goes back to "Not billed" on the Extend tab.\n\nReason (required):');
+      if (reason === null) return;
+      reason = reason.trim();
+      if (!reason) {
+        showAlert('A reason is required to delete an extension charge.', 'danger');
+        return;
+      }
+      del.disabled = true;
+      ajaxPost('delete_extension_bill', { document_id: del.getAttribute('data-ars-ext-line-delete'), reason: reason })
+        .then(function (d) {
+          if (d.success) {
+            location.reload();
+            return;
+          }
+          del.disabled = false;
+          showAlert(d.error || 'Delete failed', 'danger');
+        })
+        .catch(function () {
+          del.disabled = false;
+          showAlert('Network error', 'danger');
+        });
+    });
+  }
+
   function initEditPaymentModal() {
     var modalEl = document.getElementById('editPaymentModal');
     if (!modalEl) return;
@@ -2410,6 +2466,7 @@
     initPaymentModalGuards();
     initPaymentPlanTabs();
     initEditPaymentModal();
+    initExtensionLineActions();
     initPaymentEvidenceModal();
     initDocumentsModal();
     initAttachmentModal();

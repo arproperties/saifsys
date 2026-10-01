@@ -1825,6 +1825,75 @@ try {
             break;
         }
 
+        // Delete an extension charge from the Payments table: reverses the
+        // extension invoice's journal (audit trail kept) and puts the period
+        // back to "not billed" on the Extend tab. Only while nothing has been
+        // received against it — a paid one has its payment deleted first.
+        case 'delete_extension_bill': {
+            require_once __DIR__ . '/includes/ars_accounting.php';
+            require_once __DIR__ . '/includes/ars_financial_adapter.php';
+            ars_ensure_extension_log_table($conn);
+            $documentId = (int)($_POST['document_id'] ?? 0);
+            $reason = trim((string)($_POST['reason'] ?? ''));
+            if ($documentId <= 0 || $reason === '') {
+                echo json_encode(['success' => false, 'error' => 'Extension charge and reason are required.']);
+                exit;
+            }
+            $st = $conn->prepare("
+                SELECT * FROM ars_financial_documents
+                WHERE id = ? AND booking_id = ? AND company_id = ? AND document_type = 'extension_invoice'
+            ");
+            $st->execute([$documentId, $bookingId, $arsCompanyId]);
+            $doc = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$doc || in_array(strtolower((string)$doc['status']), ['draft', 'voided', 'reversed'], true)) {
+                echo json_encode(['success' => false, 'error' => 'Extension charge not found on this booking.']);
+                exit;
+            }
+            if ((float)$doc['balance_due'] < (float)$doc['total_amount'] - 0.009) {
+                echo json_encode(['success' => false, 'error' => 'A payment is recorded against this extension. Delete that payment first.']);
+                exit;
+            }
+            $r = ars_adapter_reverse_document($conn, $arsCompanyId, $documentId, 'Extension charge deleted: ' . $reason, $userId);
+            if (empty($r['success'])) {
+                echo json_encode(['success' => false, 'error' => 'Nothing was changed. ' . ($r['error'] ?? 'Reverse failed')]);
+                exit;
+            }
+            // Nothing is owed on a reversed invoice, and its key is freed so the
+            // same period can be billed again.
+            $conn->prepare("
+                UPDATE ars_financial_documents
+                SET balance_due = 0, idempotency_key = CONCAT(COALESCE(idempotency_key, ''), ':rev', id)
+                WHERE id = ? AND company_id = ?
+            ")->execute([$documentId, $arsCompanyId]);
+            $conn->prepare("UPDATE ars_booking_extension_log SET document_id = NULL WHERE document_id = ? AND booking_id = ? AND company_id = ?")
+                ->execute([$documentId, $bookingId, $arsCompanyId]);
+            try {
+                ars_recalc_booking_totals($conn, $bookingId);
+            } catch (Throwable $ignored) {
+            }
+            $amountLabel = number_format((float)$doc['total_amount'], 2);
+            $arsAudit('booking_updated', 'Deleted extension charge ' . ($doc['document_number'] ?? ('#' . $documentId)) . ' of AED ' . $amountLabel
+                . ' on booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)) . ': ' . $reason, [
+                'old_data' => ['document_id' => $documentId, 'total_amount' => $doc['total_amount'], 'status' => $doc['status']],
+            ]);
+            ars_booking_activity_log($conn, [
+                'company_id' => $arsCompanyId,
+                'booking_id' => $bookingId,
+                'booking_number' => $booking['booking_number'] ?? null,
+                'event_category' => 'payment',
+                'event_type' => 'extension_charge_deleted',
+                'title' => 'Extension charge ' . ($doc['document_number'] ?? ('#' . $documentId)) . ' deleted (AED ' . $amountLabel . ')',
+                'description' => $reason,
+                'previous_value' => number_format((float)$doc['total_amount'], 2, '.', ''),
+                'related_entity_type' => 'ars_financial_document',
+                'related_entity_id' => $documentId,
+                'related_journal_id' => $r['reversal_journal_id'] ?? null,
+                'created_by' => $userId,
+            ]);
+            echo json_encode(['success' => true]);
+            break;
+        }
+
         case 'create_extension_invoice': {
             require_once __DIR__ . '/includes/ars_accounting.php';
             require_once __DIR__ . '/includes/ars_financial_adapter.php';
