@@ -197,9 +197,21 @@ if (is_file($asWidget)) { require $asWidget; }
     <?php require_once dirname(__DIR__, 3) . '/includes/nav_search.php'; ?>
     <?= nav_search_box() ?>
 
+    <?php
+    // One menu per job type, so each can grow its own pages. A job's own
+    // screens light up the menu of the type that job is.
+    $opsOnJobPage = in_array($currentPage, ['index.php', 'job_view.php', 'job_form.php'], true);
+    $opsNavType = '';
+    if ($currentPage === 'index.php') {
+        $opsNavType = is_string($_GET['type'] ?? null) ? $_GET['type'] : '';
+    } elseif ($opsOnJobPage && isset($job) && is_array($job)) {
+        $opsNavType = (string)($job['job_type'] ?? '');
+    }
+    if (!array_key_exists($opsNavType, ops_job_types())) { $opsNavType = ''; }
+    ?>
     <div class="nav-sect mt-3">Operations</div>
-      <a href="<?= h($opsBase) ?>/index.php" class="slink <?= in_array($currentPage, ['index.php', 'job_view.php', 'job_form.php'], true) ? 'active' : '' ?>">
-        <span class="sicon"><i class="bi bi-speedometer2"></i></span><span class="slabel">Jobs &amp; progress</span>
+      <a href="<?= h($opsBase) ?>/index.php" class="slink <?= $opsOnJobPage && $opsNavType === '' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-speedometer2"></i></span><span class="slabel">All jobs</span>
       </a>
       <?php $opsLowStock = ops_low_stock_count($conn, (int)(current_company_id($conn) ?: 0)); ?>
       <a href="<?= h($opsBase) ?>/stock.php" class="slink <?= in_array($currentPage, ['stock.php', 'item_form.php'], true) ? 'active' : '' ?>">
@@ -211,12 +223,22 @@ if (is_file($asWidget)) { require $asWidget; }
         </span>
       </a>
 
-      <a href="<?= h($opsBase) ?>/gas.php" class="slink <?= $currentPage === 'gas.php' ? 'active' : '' ?>">
-        <span class="sicon"><i class="bi bi-fire"></i></span><span class="slabel">Gas (R410)</span>
-      </a>
-
       <a href="<?= h($opsBase) ?>/billing.php" class="slink <?= $currentPage === 'billing.php' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-receipt"></i></span><span class="slabel">Billing</span>
+      </a>
+
+    <div class="nav-sect">Cleaning</div>
+      <a href="<?= h($opsBase) ?>/index.php?type=cleaning" class="slink <?= $opsOnJobPage && $opsNavType === 'cleaning' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-stars"></i></span><span class="slabel">Cleaning jobs</span>
+      </a>
+
+    <div class="nav-sect">Maintenance</div>
+      <a href="<?= h($opsBase) ?>/index.php?type=maintenance" class="slink <?= $opsOnJobPage && $opsNavType === 'maintenance' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-tools"></i></span><span class="slabel">Maintenance jobs</span>
+      </a>
+
+      <a href="<?= h($opsBase) ?>/gas.php" class="slink <?= $currentPage === 'gas.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-fire"></i></span><span class="slabel">Gas (R410)</span>
       </a>
 
     <div class="nav-sect">Other</div>

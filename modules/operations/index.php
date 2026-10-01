@@ -27,6 +27,15 @@ ops_sync_tenant_requests($conn, [$companyId]);
 // Filters
 // ---------------------------------------------------------------------------
 $fType = $_GET['type'] ?? '';
+if (!is_string($fType) || !array_key_exists($fType, ops_job_types())) {
+    $fType = '';
+}
+// The sidebar has a menu per job type (Cleaning, Maintenance). Coming in
+// through one of those, the whole page is about that type — numbers, people
+// and list — and every link on it stays inside it.
+$typeLabel = $fType !== '' ? ops_job_types()[$fType] : '';
+$typeQs = $fType !== '' ? '&type=' . $fType : '';
+$listUrl = $opsBase . '/index.php' . ($fType !== '' ? '?type=' . $fType : '');
 $fStatus = $_GET['status'] ?? '';
 $fAssignee = isset($_GET['assignee']) && $_GET['assignee'] !== '' ? (int)$_GET['assignee'] : null;
 $fFrom = $_GET['from'] ?? '';
@@ -40,7 +49,7 @@ $fWaiting = ($_GET['waiting'] ?? '') === '1';
 $where = ['(j.company_id = ? OR ' . ops_job_open_to_all_sql('j') . ')'];
 $params = [$companyId];
 
-if (array_key_exists($fType, ops_job_types())) {
+if ($fType !== '') {
     $where[] = 'j.job_type = ?';
     $params[] = $fType;
 }
@@ -80,11 +89,16 @@ $whereSql = implode(' AND ', $where);
 
 // ---------------------------------------------------------------------------
 // Headline numbers — always for today / overall, not affected by the filters
+// (except the job type, when the page was opened from a type's own menu)
 // ---------------------------------------------------------------------------
 // PHP's date, not CURDATE(): the live MySQL runs on UTC, so between midnight
 // and 4 AM its "today" is still yesterday.
 $todayDate = date('Y-m-d');
 $lateSql = ops_late_sql();
+$scopeParams = [$companyId];
+if ($fType !== '') {
+    $scopeParams[] = $fType;
+}
 $statsStmt = $conn->prepare("
     SELECT
         COUNT(*) AS total,
@@ -98,8 +112,9 @@ $statsStmt = $conn->prepare("
         SUM(assigned_to IS NULL AND source_type <> 'staff' AND status = 'open') AS pool_count
     FROM ops_jobs
     WHERE (company_id = ? OR " . ops_job_open_to_all_sql('') . ") AND status <> 'cancelled'
+      " . ($fType !== '' ? 'AND job_type = ?' : '') . "
 ");
-$statsStmt->execute([$companyId]);
+$statsStmt->execute($scopeParams);
 $stats = $statsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
 $total = (int)($stats['total'] ?? 0);
@@ -120,11 +135,12 @@ $byPersonStmt = $conn->prepare("
     FROM ops_jobs j
     LEFT JOIN user u ON u.id = j.assigned_to
     WHERE (j.company_id = ? OR " . ops_job_open_to_all_sql('j') . ") AND j.status <> 'cancelled'
+      " . ($fType !== '' ? 'AND j.job_type = ?' : '') . "
       AND j.scheduled_date >= DATE_SUB('{$todayDate}', INTERVAL 30 DAY)
     GROUP BY j.assigned_to, person
     ORDER BY total DESC
 ");
-$byPersonStmt->execute([$companyId]);
+$byPersonStmt->execute($scopeParams);
 $byPerson = $byPersonStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
 // ---------------------------------------------------------------------------
@@ -159,14 +175,14 @@ $jobs = $listStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
 $people = ops_assignable_users($conn, $companyId);
 
-$pageTitle = 'Jobs & progress';
+$pageTitle = $typeLabel !== '' ? $typeLabel . ' jobs' : 'Jobs & progress';
 require __DIR__ . '/includes/ops_layout_header.php';
 ?>
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
-    <div class="page-header-label">Jobs &amp; progress</div>
-    <div class="text-muted small">Cleaning and maintenance work for <?= h($opsCompanyName ?: 'this company') ?></div>
+    <div class="page-header-label"><?= h($pageTitle) ?></div>
+    <div class="text-muted small"><?= h($typeLabel !== '' ? $typeLabel : 'Cleaning and maintenance') ?> work for <?= h($opsCompanyName ?: 'this company') ?></div>
   </div>
   <?php // Jobs are raised on the phone now, by whoever is standing at the site.
         // Scheduling them here in advance is what this replaced: staff move
@@ -190,7 +206,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
       <strong><?= $poolCount ?></strong> job<?= $poolCount > 1 ? 's' : '' ?>
       waiting for someone to claim <?= $poolCount > 1 ? 'them' : 'it' ?> in the app.
     </span>
-    <a href="<?= h($opsBase) ?>/index.php?assignee=0&amp;status=open"
+    <a href="<?= h($opsBase) ?>/index.php?assignee=0&amp;status=open<?= h($typeQs) ?>"
        class="btn btn-sm btn-outline-dark ms-auto">See them</a>
   </div>
 <?php endif; ?>
@@ -220,7 +236,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
       <strong><?= $unassignedToday ?></strong> job<?= $unassignedToday > 1 ? 's' : '' ?>
       due today <?= $unassignedToday > 1 ? 'have' : 'has' ?> nobody on <?= $unassignedToday > 1 ? 'them' : 'it' ?> yet.
     </span>
-    <a href="<?= h($opsBase) ?>/index.php?assignee=0&amp;from=<?= h(date('Y-m-d')) ?>&amp;to=<?= h(date('Y-m-d')) ?>"
+    <a href="<?= h($opsBase) ?>/index.php?assignee=0&amp;from=<?= h(date('Y-m-d')) ?>&amp;to=<?= h(date('Y-m-d')) ?><?= h($typeQs) ?>"
        class="btn btn-sm btn-dark ms-auto">Assign them</a>
   </div>
 <?php endif; ?>
@@ -249,7 +265,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
     <?php /* The one tile that is a job of work rather than a reading: it links
              to exactly the jobs it counts, so a request that came in from the
              field is one click away from being answered. */ ?>
-    <a href="<?= h($opsBase) ?>/index.php?waiting=1"
+    <a href="<?= h($opsBase) ?>/index.php?waiting=1<?= h($typeQs) ?>"
        class="stat-tile d-block text-decoration-none text-reset">
       <div class="stat-value <?= (int)($stats['materials_count'] ?? 0) > 0 ? 'text-warning' : '' ?>">
         <?= (int)($stats['materials_count'] ?? 0) ?>
@@ -298,7 +314,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
                 $pDone = (int)$p['done'];
                 $pPct = $pTotal > 0 ? (int)round($pDone / $pTotal * 100) : 0;
                 $pProg = $pTotal ? (int)round((int)$p['in_progress'] / $pTotal * 100) : 0;
-                $pLink = $opsBase . '/index.php?assignee=' . ($p['assigned_to'] === null ? '0' : (int)$p['assigned_to']);
+                $pLink = $opsBase . '/index.php?assignee=' . ($p['assigned_to'] === null ? '0' : (int)$p['assigned_to']) . $typeQs;
               ?>
               <div class="ops-byperson-row">
                 <a href="<?= h($pLink) ?>" class="ops-byperson-name text-decoration-none" title="<?= h($p['person']) ?>"><?= h($p['person']) ?></a>
@@ -393,7 +409,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
            hands the chosen id to this one. -->
       <form method="post" action="<?= h($appBase) ?>/switch_company.php" id="opsCompanyForm" class="d-none">
         <?php csrf_field(); ?>
-        <input type="hidden" name="return" value="<?= h($opsBase) ?>/index.php">
+        <input type="hidden" name="return" value="<?= h($listUrl) ?>">
         <input type="hidden" name="company_id" id="opsCompanyId" value="<?= (int)$opsCtxId ?>">
       </form>
     <?php endif; ?>
@@ -404,7 +420,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
   <div class="alert alert-warning d-flex flex-wrap align-items-center gap-2">
     <i class="bi bi-box-seam"></i>
     <span>Showing only jobs where someone on site has asked for materials.</span>
-    <a href="<?= h($opsBase) ?>/index.php" class="btn btn-sm btn-light ms-auto">Show all jobs</a>
+    <a href="<?= h($listUrl) ?>" class="btn btn-sm btn-light ms-auto">Show all jobs</a>
   </div>
 <?php endif; ?>
 
