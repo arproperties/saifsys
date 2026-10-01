@@ -159,13 +159,42 @@ function ars_payment_rows_add_billed_extensions(array $payments, array $extensio
         return $payments;
     }
     $uncovered = round($netInvoiced - $typedTotal, 2);
-    $lines = [];
-    foreach ($extensions as $ext) {
-        $total = round((float)($ext['total'] ?? 0), 2);
-        if ($total <= 0.009 || $total > $uncovered + 0.009) {
+    $extensions = array_values(array_filter($extensions, static function (array $ext): bool {
+        return round((float)($ext['total'] ?? 0), 2) > 0.009;
+    }));
+    // Which extensions the typed totals leave uncovered: the set that fills
+    // the gap best, and between equals the one with more still owing -- a
+    // paid extension is the likelier one to have been typed onto its payment.
+    // Taking them in date order instead drops the wrong line as soon as the
+    // first of two extensions is paid.
+    $count = min(count($extensions), 12);
+    $bestMask = 0;
+    $bestSum = 0.0;
+    $bestOpen = 0.0;
+    for ($mask = 1; $mask < (1 << $count); $mask++) {
+        $sum = 0.0;
+        $open = 0.0;
+        for ($i = 0; $i < $count; $i++) {
+            if ($mask & (1 << $i)) {
+                $sum += (float)$extensions[$i]['total'];
+                $open += (float)($extensions[$i]['open'] ?? $extensions[$i]['total']);
+            }
+        }
+        if ($sum > $uncovered + 0.009) {
             continue;
         }
-        $uncovered = round($uncovered - $total, 2);
+        if ($sum > $bestSum + 0.009 || (abs($sum - $bestSum) <= 0.009 && $open > $bestOpen + 0.009)) {
+            $bestMask = $mask;
+            $bestSum = $sum;
+            $bestOpen = $open;
+        }
+    }
+    $lines = [];
+    foreach ($extensions as $i => $ext) {
+        if ($i >= $count || !($bestMask & (1 << $i))) {
+            continue;
+        }
+        $total = round((float)$ext['total'], 2);
         $lines[] = [
             'id' => -(int)$ext['id'],
             'is_extension_line' => true,
@@ -265,7 +294,7 @@ function ars_booking_balances(PDO $conn, int $companyId, array $rows): array {
     $paymentsByBooking = [];
     try {
         $stmt = $conn->prepare("
-            SELECT id, booking_id, amount, total_amount
+            SELECT id, booking_id, payment_date, amount, total_amount
             FROM ars_booking_payments
             WHERE booking_id IN ($in)
             ORDER BY booking_id, payment_date, id
@@ -304,6 +333,7 @@ function ars_booking_balances(PDO $conn, int $companyId, array $rows): array {
                 'id' => (int)$d['id'],
                 'date' => $extensionFrom[(int)$d['id']] ?? (string)$d['document_date'],
                 'total' => (float)$d['total_amount'],
+                'open' => (float)$d['balance_due'],
             ];
         }
         if ($extensions && $out[$bid]['source'] === 'invoices') {
