@@ -170,6 +170,8 @@ $opsFlash = ops_take_flash();
     .ops-byperson-count{ flex:0 0 auto; min-width:2.6rem; text-align:right; font-variant-numeric:tabular-nums; }
     @media (max-width: 767.98px){ .sidebar{ display:none; } }
   </style>
+  <?php if (function_exists('ops_fleet_styles')): ?><style><?= ops_fleet_styles() ?></style><?php endif; ?>
+  <?php if (!empty($pageStyles)): ?><style><?= $pageStyles ?></style><?php endif; ?>
   <?php if (isset($pageHead)) { echo $pageHead; } ?>
 </head>
 <body<?= $brand['dark_mode_enabled'] ? ' class="dark-mode"' : '' ?>>
@@ -240,6 +242,27 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($opsBase) ?>/gas.php" class="slink <?= $currentPage === 'gas.php' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-fire"></i></span><span class="slabel">Gas (R410)</span>
       </a>
+
+    <?php
+    // Pickup points, routes and their report are behind a flag — see fleet_routes_enabled().
+    require_once dirname(__DIR__, 3) . '/hr/includes/hr_fleet.php';
+    $opsFleetNav = [
+        ['Live Map', 'bi-geo-alt', 'fleet_live', ['fleet_live.php'], true],
+        ['Trip History', 'bi-clock-history', 'fleet_history', ['fleet_history.php', 'fleet_trip.php'], true],
+        ['Daily Checks', 'bi-clipboard-check', 'fleet_checks', ['fleet_checks.php'], true],
+        ['Pickup Report', 'bi-card-checklist', 'fleet_pickup_report', ['fleet_pickup_report.php'], fleet_routes_enabled()],
+        ['Vehicles', 'bi-truck', 'vehicles', ['vehicles.php', 'vehicle_view.php'], true],
+        ['Routes', 'bi-signpost-2', 'fleet_routes', ['fleet_routes.php'], fleet_routes_enabled()],
+        ['Pickup Points', 'bi-pin-map', 'fleet_points', ['fleet_points.php'], fleet_routes_enabled()],
+    ];
+    ?>
+    <div class="nav-sect">Fleet</div>
+      <?php foreach ($opsFleetNav as [$fleetLabel, $fleetIcon, $fleetPage, $fleetPages, $fleetShown]): ?>
+        <?php if (!$fleetShown) { continue; } ?>
+        <a href="<?= h($opsBase) ?>/<?= h($fleetPage) ?>.php" class="slink <?= in_array($currentPage, $fleetPages, true) ? 'active' : '' ?>">
+          <span class="sicon"><i class="bi <?= h($fleetIcon) ?>"></i></span><span class="slabel"><?= h($fleetLabel) ?></span>
+        </a>
+      <?php endforeach; ?>
 
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>

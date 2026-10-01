@@ -1,6 +1,6 @@
 <?php
 /**
- * HR Fleet — the bits of page the fleet screens share: map assets, the trip
+ * Fleet — the bits of page the fleet screens (modules/operations) share: map assets, the trip
  * table, flash messages. Rules and queries live in hr_fleet.php.
  */
 
@@ -9,7 +9,6 @@
 // page.
 date_default_timezone_set('Asia/Dubai');
 
-const HR_FLEET_ROLES = ['Owner', 'Admin', 'HR'];
 
 function hr_fleet_palette(): array
 {
@@ -52,7 +51,7 @@ function hr_fleet_player(): void
       <div class="d-flex align-items-center gap-2">
         <button type="button" class="btn btn-primary btn-sm" data-play aria-label="Play or pause"><i class="bi bi-play-fill"></i></button>
         <input type="range" class="form-range flex-grow-1" min="0" max="1000" value="0" data-range aria-label="Position in the trip">
-        <select class="form-select form-select-sm w-auto" data-speed aria-label="Playback speed">
+        <select class="form-select form-select-sm w-auto" data-speed data-no-search aria-label="Playback speed">
           <option value="10">10×</option>
           <option value="30">30×</option>
           <option value="60" selected>60×</option>
@@ -165,7 +164,7 @@ function hr_fleet_trip_table(array $trips, bool $showVehicle, string $back): voi
                   <button class="btn btn-sm btn-outline-danger ms-1">End trip</button>
                 </form>
               <?php elseif ($t['ended_by'] !== null): ?>
-                <span class="badge text-bg-warning" title="Ended from HR, not by the driver">Ended by office</span>
+                <span class="badge text-bg-warning" title="Ended from the office, not by the driver">Ended by office</span>
               <?php endif; ?>
               <a href="fleet_trip?<?= htmlspecialchars(http_build_query(['id' => (int)$t['id'], 'back' => $back])) ?>"
                  class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1" title="Investigate this trip" aria-label="Investigate this trip">
