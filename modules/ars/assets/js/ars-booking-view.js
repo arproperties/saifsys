@@ -117,6 +117,17 @@
     return meta && meta.content ? meta.content : '';
   }
 
+  // Going to an address that differs from the current one only by its #hash
+  // does not reload the page, so a second save on the same tab would leave the
+  // modal stuck. Force the reload in that case.
+  function goTo(url) {
+    var a = document.createElement('a');
+    a.href = url;
+    var samePage = a.href.split('#')[0] === location.href.split('#')[0];
+    location.href = a.href;
+    if (samePage) location.reload();
+  }
+
   function showAlert(msg, type, modalAlertId) {
     type = type || 'danger';
     var icon =
@@ -701,7 +712,7 @@
       .then(function (d) {
         if (d.success) {
           var done = function (flash) {
-            location.href = 'booking_view.php?id=' + bookingId() + '&flash=' + flash + '#ws-money';
+            goTo('booking_view.php?id=' + bookingId() + '&flash=' + flash + '#ws-money');
           };
           if (!evidenceFile || !d.payment_id) {
             done('payment_recorded');
@@ -883,7 +894,7 @@
         ajaxPost('save_payment_plan', { monthly_amount: monthly.toFixed(2) })
           .then(function (d) {
             if (d.success) {
-              location.href = 'booking_view.php?id=' + bookingId() + '&flash=plan_saved#ws-money';
+              goTo('booking_view.php?id=' + bookingId() + '&flash=plan_saved#ws-money');
               return;
             }
             saveBtn.disabled = false;
@@ -904,7 +915,7 @@
         ajaxPost('clear_payment_plan', {})
           .then(function (d) {
             if (d.success) {
-              location.href = 'booking_view.php?id=' + bookingId() + '&flash=plan_cleared#ws-money';
+              goTo('booking_view.php?id=' + bookingId() + '&flash=plan_cleared#ws-money');
               return;
             }
             clearBtn.disabled = false;
@@ -1066,7 +1077,7 @@
     })
       .then(function (d) {
         if (d.success) {
-          location.href = 'booking_view.php?id=' + bookingId() + '&flash=deposit_received#ws-deposit';
+          goTo('booking_view.php?id=' + bookingId() + '&flash=deposit_received#ws-deposit');
           return;
         }
         if (btn) btn.disabled = false;
@@ -1246,7 +1257,7 @@
     })
       .then(function (d) {
         if (d.success) {
-          location.href = 'booking_view.php?id=' + bookingId() + '&flash=deposit_settled#ws-deposit';
+          goTo('booking_view.php?id=' + bookingId() + '&flash=deposit_settled#ws-deposit');
           return;
         }
         if (btn) btn.disabled = false;
@@ -2407,7 +2418,7 @@
         }
         var url = new URL(window.location.href);
         url.searchParams.set('flash', 'stay_dates_updated');
-        window.location.href = url.toString();
+        goTo(url.toString());
       })
       .catch(function (err) {
         editStayShowAlert(err.message || 'Could not apply stay dates.', true);
