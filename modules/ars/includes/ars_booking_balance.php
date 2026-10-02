@@ -347,6 +347,14 @@ function ars_booking_balances(PDO $conn, int $companyId, array $rows): array {
             $out[$bid]['source'] = 'payments';
         }
     }
+    // Cancelled before check-in: nothing owed (same rule as the booking page).
+    foreach ($rows as $r) {
+        $id = (int)($r['id'] ?? 0);
+        if ($id > 0 && in_array((string)($r['status'] ?? ''), ['cancelled', 'expired'], true)) {
+            $out[$id]['total'] = 0.0;
+            $out[$id]['balance'] = 0.0;
+        }
+    }
     return $out;
 }
 

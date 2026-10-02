@@ -105,3 +105,49 @@ function ars_booking_void(PDO $conn, array $booking, ?int $userId, string $reaso
         WHERE id = ?
     ")->execute([$userId, substr('Wrong entry: ' . $reason, 0, 255), $bookingId]);
 }
+
+/**
+ * Cancel: the guest owes nothing. Each open invoice's journal is reversed and the
+ * document marked 'reversed' with nothing due, so the page shows a zero balance.
+ * Payments are left alone (refund or keep them as the office decides).
+ * Caller owns the transaction. Throws on failure.
+ */
+function ars_booking_cancel_close_invoices(PDO $conn, array $booking, ?int $userId): void {
+    require_once __DIR__ . '/ars_accounting.php';
+    $bookingId = (int)$booking['id'];
+
+    $reverse = static function (?int $journalId) use ($conn, $userId): ?int {
+        if (!$journalId) {
+            return null;
+        }
+        $st = $conn->prepare("SELECT is_reversed, reversal_journal_id FROM re_journal_headers WHERE id = ?");
+        $st->execute([$journalId]);
+        $jr = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$jr) {
+            return null;
+        }
+        if ((int)$jr['is_reversed'] === 1) {
+            return $jr['reversal_journal_id'] ? (int)$jr['reversal_journal_id'] : null;
+        }
+        $rev = reverse_journal($journalId, 'Booking cancelled', $userId);
+        if (empty($rev['success'])) {
+            throw new RuntimeException('Journal reversal failed: ' . ($rev['error'] ?? 'unknown'));
+        }
+        return (int)$rev['reversal_journal_id'];
+    };
+
+    $st = $conn->prepare("SELECT * FROM ars_financial_documents WHERE booking_id = ? AND status NOT IN ('draft','voided','reversed','cancelled') FOR UPDATE");
+    $st->execute([$bookingId]);
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $doc) {
+        $revId = $reverse(!empty($doc['journal_id']) ? (int)$doc['journal_id'] : null);
+        $conn->prepare("UPDATE ars_financial_documents SET status = 'reversed', balance_due = 0, reversal_journal_id = COALESCE(reversal_journal_id, ?), updated_at = NOW() WHERE id = ?")
+            ->execute([$revId, (int)$doc['id']]);
+        $conn->prepare("
+            INSERT INTO ars_financial_document_transitions (company_id, document_id, from_status, to_status, changed_by, note)
+            VALUES (?, ?, ?, 'reversed', ?, 'booking cancelled')
+        ")->execute([(int)$doc['company_id'], (int)$doc['id'], $doc['status'], $userId]);
+    }
+    $reverse(!empty($booking['journal_id']) ? (int)$booking['journal_id'] : null);
+
+    $conn->prepare("UPDATE ars_bookings SET balance_due = 0, updated_at = NOW() WHERE id = ?")->execute([$bookingId]);
+}

@@ -369,7 +369,12 @@ try {
             }
             $conn->beginTransaction();
             try {
-                if ($booking['journal_id']) {
+                // Guest never checked in: nothing is owed, so the invoice is closed
+                // and the balance becomes 0. Otherwise only the revenue is reversed.
+                if (in_array($booking['status'], ['pending', 'confirmed'], true)) {
+                    require_once __DIR__ . '/includes/ars_booking_void.php';
+                    ars_booking_cancel_close_invoices($conn, $booking, $userId);
+                } elseif ($booking['journal_id']) {
                     require_once __DIR__ . '/includes/ars_accounting.php';
                     $rev = ars_reverse_booking_journal((int)$booking['journal_id'], $userId);
                     if (empty($rev['success'])) {

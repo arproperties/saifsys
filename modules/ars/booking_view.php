@@ -301,6 +301,13 @@ if ($tableHasManualTotal) {
     $stayTotal  = round($tableReceived + $tableOutstanding, 2);
     $balanceDue = round($tableOutstanding, 2);
 }
+// Cancelled before check-in: the guest owes nothing. (The recalc above
+// rebuilds balance_due from the nightly charges, so it can't be trusted here.)
+$isCancelled = in_array($booking['status'], ['cancelled', 'expired'], true);
+if ($isCancelled) {
+    $stayTotal = 0.0;
+    $balanceDue = 0.0;
+}
 
 // Monthly plan: the guest still owes the whole balance, but only months whose
 // date has come are due. $balanceDue stays the real open balance; $dueNow is
@@ -390,6 +397,11 @@ if ($extVatMode === 'none') {
 }
 
 $depositPendingCollect = ($depositAmount > 0 && in_array($depositStatus, ['pending', 'none'], true));
+// A cancelled or expired booking asks for nothing.
+if (in_array($booking['status'], ['cancelled', 'expired'], true)) {
+    $dueNow = 0.0;
+    $depositPendingCollect = false;
+}
 $collectNow = max(0, $dueNow) + ($depositPendingCollect ? $depositAmount : 0);
 $journalViewBase = '../realestate/accounting/journal_entry_view.php?id=';
 $journalCompanyQs = '&company_id=' . (int)$arsCompanyId;
@@ -1774,7 +1786,7 @@ echo $arsWsLifecycleHtml;
                     <span class="text-success small ars-tabular">AED <?= number_format(abs($docsOpenBalance), 2) ?></span>
                 </div>
                 <?php endif; ?>
-                <div class="mt-2"><?= arsPaymentStatusBadge(ars_booking_payment_status_from($stayTotal, $balanceDue, $stayTotal - max(0.0, $balanceDue), (string)($booking['payment_status'] ?? ''))) ?></div>
+                <div class="mt-2"><?= $isCancelled ? '<span class="badge bg-secondary">Cancelled</span>' : arsPaymentStatusBadge(ars_booking_payment_status_from($stayTotal, $balanceDue, $stayTotal - max(0.0, $balanceDue), (string)($booking['payment_status'] ?? ''))) ?></div>
                 <?php if ($dueNow > 0.009): ?>
                 <button type="button" class="btn btn-ars btn-sm w-100 mt-3" data-bs-toggle="modal" data-bs-target="#addPaymentModal"><i class="bi bi-cash-coin me-1"></i>Collect AED <?= number_format($dueNow, 2) ?></button>
                 <?php endif; ?>
