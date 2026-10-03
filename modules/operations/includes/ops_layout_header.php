@@ -215,14 +215,9 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($opsBase) ?>/index.php" class="slink <?= $opsOnJobPage && $opsNavType === '' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-speedometer2"></i></span><span class="slabel">All jobs</span>
       </a>
-      <?php $opsLowStock = ops_low_stock_count($conn, (int)(current_company_id($conn) ?: 0)); ?>
-      <a href="<?= h($opsBase) ?>/stock.php" class="slink <?= in_array($currentPage, ['stock.php', 'item_form.php'], true) ? 'active' : '' ?>">
-        <span class="sicon"><i class="bi bi-boxes"></i></span>
-        <span class="slabel">Stock
-          <?php if ($opsLowStock > 0): ?>
-            <span class="badge bg-danger ms-1"><?= (int)$opsLowStock ?></span>
-          <?php endif; ?>
-        </span>
+      <?php // Stock is off the menu: what a building holds is kept in Building Inventory. ?>
+      <a href="<?= h($appBase) ?>/modules/building_inventory/index.php?all=1" class="slink">
+        <span class="sicon"><i class="bi bi-box-seam"></i></span><span class="slabel">Building Inventory</span>
       </a>
 
       <a href="<?= h($opsBase) ?>/billing.php" class="slink <?= $currentPage === 'billing.php' ? 'active' : '' ?>">
