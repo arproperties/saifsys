@@ -67,7 +67,6 @@ function fetchAllAssoc(PDO $conn, string $sql, array $p = []) {
 }
 
 // KPIs
-$totalEmp = scalar($conn, "SELECT COUNT(*) FROM employees e WHERE 1=1" . $companyClause, $companyParams);
 $currentWorkforce = scalar($conn, "SELECT COUNT(*) FROM employees e WHERE 1=1" . $companyClause . $currentStatusClause, array_merge($companyParams, $currentStatusParams));
 $leftEmp = scalar($conn, "SELECT COUNT(*) FROM employees e WHERE 1=1" . $companyClause . $leftStatusClause, array_merge($companyParams, $leftStatusParams));
 
@@ -240,8 +239,8 @@ echo hr_ui_page_header(
     <div class="col-6 col-lg-3">
       <?= hr_ui_kpi([
           'label' => 'Workforce status',
-          'value' => ((int)$currentWorkforce) . ' / ' . ((int)$totalEmp),
-          'sub' => 'Current / all · Left: ' . (int)$leftEmp,
+          'value' => (string)(int)$currentWorkforce,
+          'sub' => 'Current staff · Left: ' . (int)$leftEmp,
           'icon' => 'users',
           'href' => $employeesHref,
       ]) ?>
