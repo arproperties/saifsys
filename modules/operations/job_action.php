@@ -69,7 +69,7 @@ $jobUrl = $opsBase . '/job_view.php?id=' . $jobId;
 
 // The job's own company, for everything written to the job itself. Usually the
 // selected company; not for a customer booking, which every company can open
-// (ops_job_open_to_all_sql). Stock still moves from the selected company's store.
+// (ops_job_open_to_all_sql).
 $jobCompanyId = (int)$job['company_id'];
 
 switch ($action) {
@@ -135,56 +135,28 @@ switch ($action) {
     // Materials handed out for this job.
     //
     // There is no material request table and no approval step — the ask comes
-    // in the conversation and this is the office answering it. One stock
-    // movement carries the whole story: what left the store, for which job,
-    // with the note the person types here.
+    // in the conversation and this is the office answering it. What is handed
+    // over comes out of Building Inventory, which the Reem app keeps: Reem
+    // lowers the item's count and writes the line against this job. Nothing
+    // about it is stored here.
     // -----------------------------------------------------------------------
-    case 'use_stock':
-        $itemId = (int)($_POST['item_id'] ?? 0);
-        $qty    = abs((float)($_POST['qty'] ?? 0));
-        $note   = trim((string)($_POST['note'] ?? '')) ?: null;
+    case 'take_inventory':
+        require_once __DIR__ . '/../building_inventory/includes/binv_helper.php';
+        $buildingId = (int)($_POST['building_id'] ?? 0);
+        $itemId     = (int)($_POST['item_id'] ?? 0);
+        $note       = trim((string)($_POST['note'] ?? ''));
 
-        // Photos or a clip of the handover, if any were attached. Voice is not
-        // offered here — see ops_store_stock_move_media().
-        $shots = ops_collect_comment_uploads($_FILES['media'] ?? null);
-
-        if ($itemId <= 0) {
-            ops_flash('Pick an item first.', 'warning');
+        if ($buildingId <= 0 || $itemId <= 0) {
+            ops_flash('Pick a building and an item first.', 'warning');
             $redirect($jobUrl);
         }
-        if (count($shots) > OPS_STOCK_MOVE_MAX_ATTACHMENTS) {
-            ops_flash(
-                'A movement can carry at most ' . OPS_STOCK_MOVE_MAX_ATTACHMENTS . ' photos or clips.',
-                'warning'
-            );
+        try {
+            $left = binv_reem(binv_employee_code($conn, $userId), 'POST',
+                '/' . $buildingId . '/items/' . $itemId . '/take',
+                ['job_id' => $jobId, 'quantity' => (string)($_POST['qty'] ?? ''), 'note' => $note]);
+        } catch (BinvError $e) {
+            ops_flash($e->getMessage(), 'danger');
             $redirect($jobUrl);
-        }
-
-        $res = ops_move_stock($conn, $companyId, $itemId, -$qty, 'out', $jobId, $note, $userId);
-        if (empty($res['ok'])) {
-            ops_flash($res['error'], 'danger');
-            $redirect($jobUrl);
-        }
-
-        // The movement is the record and it is already written. A photo that
-        // will not save must not undo it — the material genuinely left the
-        // shelf — so each file is stored on its own and whatever failed is
-        // named, rather than the whole press being thrown away.
-        $shotFailures = [];
-        foreach ($shots as $file) {
-            $kind = ops_comment_media_kind_for_extension(
-                (string)pathinfo((string)($file['name'] ?? ''), PATHINFO_EXTENSION)
-            );
-            if ($kind !== 'photo' && $kind !== 'video') {
-                $shotFailures[] = ($file['name'] ?: 'A file') . ' — only photos and video can be attached here.';
-                continue;
-            }
-            $saved = ops_store_stock_move_media(
-                $conn, $companyId, (int)$res['move_id'], $jobId, $file, $kind, $userId
-            );
-            if (empty($saved['ok'])) {
-                $shotFailures[] = ($file['name'] ?: 'A file') . ' — ' . ($saved['error'] ?? 'could not be saved.');
-            }
         }
 
         // Handing the thing over is dealing with the ask, the same way a reply
@@ -195,15 +167,9 @@ switch ($action) {
         ");
         $stmt->execute([$jobId, $jobCompanyId]);
 
-        $done = $stmt->rowCount() > 0
-            ? 'Taken out of stock for this job. The job is off the materials waiting list.'
-            : 'Taken out of stock for this job.';
-
-        if ($shotFailures) {
-            ops_flash($done . ' Some attachments did not go: ' . implode(' ', $shotFailures), 'warning');
-        } else {
-            ops_flash($done);
-        }
+        $done = 'Taken from Building Inventory for this job — '
+            . binv_qty_label($left['quantity'] ?? 0, $left['counted_in'] ?? null) . ' of ' . ($left['name'] ?? 'it') . ' left.';
+        ops_flash($stmt->rowCount() > 0 ? $done . ' The job is off the materials waiting list.' : $done);
         $redirect($jobUrl);
         break;
 
@@ -276,8 +242,8 @@ switch ($action) {
         // raises ops_jobs.needs_materials and puts the job on the waiting list.
         // The office answering here is the act of dealing with it, so the reply
         // takes the flag back down — no separate "mark as sorted" step. The
-        // thing itself still comes off the Stock page by hand; that movement is
-        // the record. Only office replies land here: the field app posts its
+        // thing itself is handed over on the Material tab, out of Building
+        // Inventory. Only office replies land here: the field app posts its
         // messages through the API, so a technician cannot clear their own ask.
         $stmt = $conn->prepare("
             UPDATE ops_jobs SET needs_materials = 0
