@@ -33,6 +33,8 @@ define('DEPT_BARBER_POS', 'barber_pos');
 define('DEPT_BARBER_BACKOFFICE', 'barber_backoffice');
 /** Operations: cleaning & maintenance job tracking */
 define('DEPT_OPERATIONS_SUPERVISOR', 'operations_supervisor');
+/** Building Inventory: never ticked on a role — Owner/Admin, or whoever Reem says keeps a building */
+define('DEPT_BUILDING_INVENTORY', 'building_inventory');
 
 // Module constants (if not already defined)
 if (!defined('MODULE_CLEANING')) {
@@ -61,6 +63,9 @@ if (!defined('MODULE_LEGAL')) {
 }
 if (!defined('MODULE_OPERATIONS')) {
     define('MODULE_OPERATIONS', 'operations');
+}
+if (!defined('MODULE_BUILDING_INVENTORY')) {
+    define('MODULE_BUILDING_INVENTORY', 'building_inventory');
 }
 
 /**
@@ -188,7 +193,8 @@ function get_user_departments(int $userId, ?PDO $conn = null): array {
             MODULE_INVENTORY => [DEPT_INVENTORY],
             MODULE_GROCERY => [DEPT_GROCERY_POS, DEPT_GROCERY_BACKOFFICE],
             MODULE_BARBER => [DEPT_BARBER_POS, DEPT_BARBER_BACKOFFICE],
-            MODULE_OPERATIONS => [DEPT_OPERATIONS_SUPERVISOR]
+            MODULE_OPERATIONS => [DEPT_OPERATIONS_SUPERVISOR],
+            MODULE_BUILDING_INVENTORY => [DEPT_BUILDING_INVENTORY]
         ];
     }
     
@@ -213,6 +219,22 @@ function get_user_departments(int $userId, ?PDO $conn = null): array {
         if (!in_array($dept, $departments[$module], true)) {
             $departments[$module][] = $dept;
         }
+    }
+    
+    // Building Inventory is not a role tick. Its data and its rules are in the Reem app:
+    // the module is offered to whoever Reem says keeps at least one building. Asked only
+    // for the person logged in, remembered for ten minutes, and never allowed to break
+    // the launcher. Whatever a role_departments row may say about it is ignored.
+    unset($departments[MODULE_BUILDING_INVENTORY]);
+    try {
+        if ($userId === (int)current_user_id()) {
+            require_once __DIR__ . '/../modules/building_inventory/includes/binv_helper.php';
+            if (binv_launcher_access($conn, $userId)) {
+                $departments[MODULE_BUILDING_INVENTORY] = [DEPT_BUILDING_INVENTORY];
+            }
+        }
+    } catch (Throwable $e) {
+        // Reem not reachable or not set up: the module is simply not offered.
     }
     
     return $departments;
@@ -268,7 +290,8 @@ function get_department_display_name(string $department): string {
         DEPT_GROCERY_BACKOFFICE => 'Grocery — Back office',
         DEPT_BARBER_POS => 'Barber shop — POS',
         DEPT_BARBER_BACKOFFICE => 'Barber shop — Back office',
-        DEPT_OPERATIONS_SUPERVISOR => 'Operations'
+        DEPT_OPERATIONS_SUPERVISOR => 'Operations',
+        DEPT_BUILDING_INVENTORY => 'Items by unit and area'
     ];
     return $names[$department] ?? ucfirst(str_replace('_', ' ', $department));
 }
@@ -314,6 +337,8 @@ function get_module_departments(string $module): array {
         return [DEPT_BARBER_POS, DEPT_BARBER_BACKOFFICE];
     } elseif ($module === MODULE_OPERATIONS) {
         return [DEPT_OPERATIONS_SUPERVISOR];
+    } elseif ($module === MODULE_BUILDING_INVENTORY) {
+        return [DEPT_BUILDING_INVENTORY];
     }
     return [];
 }

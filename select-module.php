@@ -309,6 +309,7 @@ function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
                         'barber' => 'bi-scissors',
                         'ars' => 'bi-house-heart-fill',
                         'operations' => 'bi-clipboard-check-fill',
+                        'building_inventory' => 'bi-box-seam-fill',
                     ];
                     $icon = $icons[$moduleName] ?? 'bi-grid-fill';
                     $deptNames = get_module_selector_summary_labels($moduleName, is_array($module) ? $module : ['module' => $moduleName]);
