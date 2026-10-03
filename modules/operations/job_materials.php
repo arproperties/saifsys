@@ -72,6 +72,25 @@ try {
     $error = $e->getMessage();
 }
 $returnTo = $opsBase . '/job_view.php?id=' . $jobId . '&tab=material';
+
+// Reem lists each real building by its saifsys id, so the job's own building can be
+// picked for the person: the first of the job's places that they keep.
+$jobBuildingIds = [];
+foreach (ops_job_places($conn, [$jobId])[$jobId] ?? [] as $place) {
+    if ($place['building_id'] !== null) {
+        $jobBuildingIds[] = (int)$place['building_id'];
+    }
+}
+$preselect = 0;
+foreach ($buildings as $b) {
+    if (in_array((int)$b['id'], $jobBuildingIds, true)) {
+        $preselect = (int)$b['id'];
+        break;
+    }
+}
+if ($preselect === 0 && count($buildings) === 1) {
+    $preselect = (int)$buildings[0]['id'];
+}
 ?>
 <?php if ($error !== null): ?>
   <div class="alert alert-warning mb-0"><i class="bi bi-exclamation-triangle"></i> <?= h($error) ?></div>
@@ -139,9 +158,9 @@ $returnTo = $opsBase . '/job_view.php?id=' . $jobId . '&tab=material';
             <div class="col-12">
               <label class="form-label small fw-semibold mb-1">Building</label>
               <select name="building_id" id="opsMatBuilding" class="form-select" required>
-                <?php if (count($buildings) > 1): ?><option value="">Choose a building…</option><?php endif; ?>
+                <?php if ($preselect === 0): ?><option value="">Choose a building…</option><?php endif; ?>
                 <?php foreach ($buildings as $b): ?>
-                  <option value="<?= (int)$b['id'] ?>"><?= h($b['name'] ?? '') ?></option>
+                  <option value="<?= (int)$b['id'] ?>"<?= (int)$b['id'] === $preselect ? ' selected' : '' ?>><?= h($b['name'] ?? '') ?></option>
                 <?php endforeach; ?>
               </select>
             </div>
