@@ -1,7 +1,7 @@
 <?php
 /**
- * Recurring Payments — mark one payment paid: the account the money went into, and a
- * file to keep with it (a receipt). Also changes either on a payment already paid.
+ * Recurring Payments — mark one payment paid: the account the money went into, the day
+ * it was received, and a file to keep with it (a receipt). Also changes either on a payment already paid.
  *
  *   pay.php?due=12                      from the month's list
  *   pay.php?due=12&month=2026-09&...    the list's filters ride along, to go back to
@@ -41,13 +41,15 @@ $due = $data['due'];
 $accounts = $data['accounts'] ?? [];
 $paid = ($due['status'] ?? '') === 'paid';
 $picked = (string)($due['account']['id'] ?? '');
+$paidOn = (string)($due['paid_on'] ?? '') ?: (string)($data['today'] ?? date('Y-m-d'));
 $errors = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     $picked = is_string($_POST['account_id'] ?? null) ? $_POST['account_id'] : '';
+    $paidOn = is_string($_POST['paid_on'] ?? null) ? $_POST['paid_on'] : '';
     try {
-        rpay_reem($code, 'POST', '/dues/' . $dueId . '/paid', ['account_id' => $picked]);
+        rpay_reem($code, 'POST', '/dues/' . $dueId . '/paid', ['account_id' => $picked, 'paid_on' => $paidOn]);
         // The file comes second, and its failure is said out loud: the payment is paid either way.
         $fileError = rpay_send_file($code, '/dues/' . $dueId . '/attachment', $_FILES['attachment'] ?? null);
         if ($fileError !== null) {
@@ -93,7 +95,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       <form method="post" class="row g-3" action="<?= h($selfUrl) ?>" enctype="multipart/form-data">
         <?php csrf_field(); ?>
 
-        <div class="col-12">
+        <div class="col-md-8">
           <label class="form-label fw-semibold">Received in</label>
           <select name="account_id" class="form-select" data-search data-placeholder="Pick the account the money went into" required>
             <option value=""></option>
@@ -101,6 +103,11 @@ require __DIR__ . '/includes/rpay_layout_header.php';
               <option value="<?= (int)$a['id'] ?>"<?= $picked === (string)$a['id'] ? ' selected' : '' ?>><?= h($a['name']) ?></option>
             <?php endforeach; ?>
           </select>
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label fw-semibold">Received on</label>
+          <input type="date" name="paid_on" class="form-control" value="<?= h($paidOn) ?>" required>
         </div>
 
         <div class="col-12">

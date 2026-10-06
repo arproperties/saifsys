@@ -150,8 +150,8 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             <td class="num text-end fw-semibold"><?= h(rpay_money($d['amount'] ?? 0)) ?></td>
             <td>
               <span class="badge text-bg-<?= $paid ? 'success' : 'warning' ?>"><?= $paid ? 'Paid' : 'Pending' ?></span>
-              <?php if ($paid && !empty($d['paid_at'])): ?>
-                <div class="small text-muted"><?= h(binv_when($d['paid_at'])) ?><?= !empty($d['paid_by']) ? ' · ' . h($d['paid_by']) : '' ?></div>
+              <?php if ($paid && !empty($d['paid_on'])): ?>
+                <div class="small text-muted"><?= h(rpay_date($d['paid_on'])) ?><?= !empty($d['paid_by']) ? ' · ' . h($d['paid_by']) : '' ?></div>
               <?php endif; ?>
               <?php if ($paid && !empty($d['account']['name'])): ?>
                 <div class="small"><i class="bi bi-wallet2"></i> <?= h($d['account']['name']) ?></div>

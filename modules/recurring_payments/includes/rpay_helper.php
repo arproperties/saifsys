@@ -131,6 +131,16 @@ function rpay_file_url(string $rpayBase, string $kind, int $id): string
     return $rpayBase . '/file.php?kind=' . $kind . '&id=' . $id;
 }
 
+/**
+ * An entry's start as one date: its first month and its day ("2026-10", 5 is 2026-10-05).
+ * The 29th to the 31st in a shorter month is that month's last day, as Reem has it.
+ */
+function rpay_start_date(string $month, int $day): string
+{
+    $d = DateTime::createFromFormat('!Y-m', $month);
+    return $d ? $month . '-' . str_pad((string)max(1, min($day, (int)$d->format('t'))), 2, '0', STR_PAD_LEFT) : '';
+}
+
 /** 150 shows as "AED 150.00". */
 function rpay_money($amount): string
 {

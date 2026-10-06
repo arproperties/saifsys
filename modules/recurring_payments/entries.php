@@ -1,7 +1,8 @@
 <?php
 /**
  * Recurring Payments — the entries: what repeats, where, how much, on which day.
- * Pause, resume, create this month's payment by hand, and delete are passed to Reem,
+ * Pause, resume, create a payment by hand (this month's, or one with its own date, for
+ * an invoice entered late), and delete are passed to Reem,
  * which decides whether each is allowed.
  */
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -27,7 +28,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $entry = rpay_reem($code, 'POST', '/entries/' . $id . '/active', ['active' => $action === 'resume']);
             binv_flash('"' . $entry['title'] . '" ' . ($action === 'resume' ? 'resumed.' : 'paused. No new payments will be created for it.'));
         } elseif ($action === 'create') {
-            $due = rpay_reem($code, 'POST', '/entries/' . $id . '/dues');
+            $date = is_string($_POST['date'] ?? null) ? trim($_POST['date']) : '';
+            $due = rpay_reem($code, 'POST', '/entries/' . $id . '/dues', $date !== '' ? ['date' => $date] : null);
             binv_flash('Payment for ' . rpay_month_label((string)($due['month'] ?? '')) . ' created for "' . ($due['title'] ?? '') . '".');
         } elseif ($action === 'delete') {
             rpay_reem($code, 'DELETE', '/entries/' . $id);
@@ -90,12 +92,13 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             </td>
             <td><span class="badge text-bg-<?= $active ? 'success' : 'secondary' ?>"><?= $active ? 'Active' : 'Paused' ?></span></td>
             <td class="text-end text-nowrap">
-              <?php if ($active && empty($e['has_this_month'])): ?>
-                <form method="post" action="<?= h($selfUrl) ?>" class="d-inline">
+              <?php if ($active): ?>
+                <form method="post" action="<?= h($selfUrl) ?>" class="d-inline-flex gap-1 align-middle">
                   <?php csrf_field(); ?>
                   <input type="hidden" name="entry" value="<?= (int)$e['id'] ?>">
                   <input type="hidden" name="action" value="create">
-                  <button class="btn btn-sm btn-light border" title="Create this month's payment now">Create now</button>
+                  <input type="date" name="date" class="form-control form-control-sm" style="width:auto" title="The date of the payment. Leave empty for this month.">
+                  <button class="btn btn-sm btn-light border" title="Create a payment now: this month's, or the one for the date picked">Create now</button>
                 </form>
               <?php endif; ?>
               <form method="post" action="<?= h($selfUrl) ?>" class="d-inline">

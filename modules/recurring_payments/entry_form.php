@@ -57,15 +57,28 @@ $form = [
     'first_month' => $entry['first_month'] ?? ($data['month'] ?? date('Y-m')),
     'notes' => $entry['notes'] ?? '',
 ];
+// The form asks for one start date; Reem keeps it as a first month and a day of the month.
+$savedStart = rpay_start_date((string)$form['first_month'], (int)$form['day']);
+$form['start_date'] = $savedStart;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
-    foreach (['title', 'building_id', 'new_building', 'unit', 'amount', 'day', 'first_month', 'notes'] as $k) {
+    foreach (['title', 'building_id', 'new_building', 'unit', 'amount', 'start_date', 'notes'] as $k) {
         $form[$k] = is_string($_POST[$k] ?? null) ? $_POST[$k] : '';
     }
     $form['auto_create'] = !empty($_POST['auto_create']);
+    // A start date left as it was keeps the entry's own day: one made for the 31st and
+    // shown as 28 February must not quietly become the 28th.
+    $start = DateTime::createFromFormat('!Y-m-d', $form['start_date']);
+    if ($start && $start->format('Y-m-d') === $form['start_date'] && $form['start_date'] !== $savedStart) {
+        $form['first_month'] = $start->format('Y-m');
+        $form['day'] = $start->format('j');
+    }
 
     try {
+        if (!$start || $start->format('Y-m-d') !== $form['start_date']) {
+            throw new BinvError('Pick the start date');
+        }
         $saved = rpay_reem($code, $entry ? 'PUT' : 'POST', '/entries' . ($entry ? '/' . $id : ''), $form);
         binv_flash('"' . $saved['title'] . '" ' . ($entry ? 'saved.' : 'added.'));
         header('Location: ' . $backUrl);
@@ -131,15 +144,9 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       </div>
 
       <div class="col-md-6">
-        <label class="form-label fw-semibold">Day of the month</label>
-        <input type="number" name="day" class="form-control" step="1" min="1" max="31" value="<?= h($form['day']) ?>" required>
-        <div class="form-text">29, 30 or 31 means the last day in a shorter month.</div>
-      </div>
-
-      <div class="col-md-6">
-        <label class="form-label fw-semibold">First month</label>
-        <input type="month" name="first_month" class="form-control" value="<?= h($form['first_month']) ?>" required>
-        <div class="form-text">Payments start from this month.</div>
+        <label class="form-label fw-semibold">Start date</label>
+        <input type="date" name="start_date" class="form-control" value="<?= h($form['start_date']) ?>" required>
+        <div class="form-text">The first payment is on this date, then on the same day every month. An old date is fine: the payments since then are created at once.</div>
       </div>
 
       <div class="col-md-6 d-flex align-items-center">
