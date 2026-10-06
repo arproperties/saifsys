@@ -1,6 +1,6 @@
 <?php
 /**
- * Set, change or remove an employee's field app PIN.
+ * Set, change or remove an employee's staff app PIN.
  *
  * The PIN is what a cleaner or technician types into the Operations app to
  * reach their jobs — see modules/operations/includes/ops_pin.php for what it
@@ -61,12 +61,12 @@ $actorId = isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null;
 $empLabel = trim((string)($emp['full_name'] ?? '') . ' (' . (string)($emp['employee_code'] ?? ('#' . $empId)) . ')');
 
 /**
- * Both branches audit. Who can open the field app is an access decision, and
+ * Both branches audit. Who can open the staff app is an access decision, and
  * it has to be answerable months later without the PIN itself being in the log.
  */
 if (isset($_POST['remove_pin'])) {
     if ($userId <= 0 || !ops_pin_clear($conn, $userId)) {
-        $_SESSION['flash_error'] = 'That employee had no field app PIN to remove.';
+        $_SESSION['flash_error'] = 'That employee had no staff app PIN to remove.';
         header('Location: ' . $back);
         exit;
     }
@@ -82,7 +82,7 @@ if (isset($_POST['remove_pin'])) {
         $actorId
     );
 
-    $_SESSION['flash_success'] = 'Field app PIN removed. That phone is signed out on its next use.';
+    $_SESSION['flash_success'] = 'Staff app PIN removed. That phone is signed out on its next use.';
     header('Location: ' . $back);
     exit;
 }
@@ -126,7 +126,7 @@ if (!hr_employee_has_login($conn, $userId)) {
         'user',
         $userId,
         'Created login for ' . $empLabel . ' — username ' . $createdLogin['username']
-            . ' (roles: ' . implode(', ', $createdLogin['roles']) . ') while setting a field app PIN',
+            . ' (roles: ' . implode(', ', $createdLogin['roles']) . ') while setting a staff app PIN',
         null,
         [
             'employee_id' => $empId,
@@ -167,7 +167,7 @@ audit_bridge_hr_ops(
 /* The PIN is deliberately not echoed back. Whoever set it just typed it twice,
    so they know it; repeating it here would put it on a screen, into a session
    file and into browser history for no one's benefit. */
-$message = 'Field app PIN saved for ' . ($emp['full_name'] ?: 'this employee')
+$message = 'Staff app PIN saved for ' . ($emp['full_name'] ?: 'this employee')
     . '. Pass it on now — it cannot be looked up again.';
 
 if ($createdLogin) {

@@ -74,6 +74,13 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'pages' => ['employees.php', 'employee_view.php', 'employee_add.php', 'employee_edit.php'],
                 ],
                 [
+                    'key' => 'employee_pins',
+                    'label' => 'Staff app PINs',
+                    'icon' => 'key-round',
+                    'href' => $hrBase . '/employee_pins_bulk',
+                    'pages' => ['employee_pins_bulk.php'],
+                ],
+                [
                     'key' => 'org',
                     'label' => 'Organization',
                     'icon' => 'network',
@@ -197,6 +204,7 @@ function hr_nav_page_title(string $currentPage): string
         'attendance_summary.php' => 'Attendance summary',
         'attendance_edit.php' => 'Edit attendance',
         'attendance_missing.php' => 'Missing check-ins',
+        'employee_pins_bulk.php' => 'Staff app PINs',
         'overtime.php' => 'Overtime',
         'leave_requests.php' => 'Leave requests',
         'leave_types.php' => 'Leave types',

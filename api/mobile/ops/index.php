@@ -45,7 +45,7 @@ if ($route === 'auth/me' && $method === 'GET') {
 if ($route === 'attendance' && $method === 'GET') {
     ops_api_handle_attendance($conn, $user, 'status');
 }
-if ($method === 'POST' && preg_match('#^attendance/(check-in|check-out)$#', $route, $m)) {
+if ($method === 'POST' && preg_match('#^attendance/(check-in|check-out|close-previous)$#', $route, $m)) {
     ops_api_handle_attendance($conn, $user, $m[1]);
 }
 

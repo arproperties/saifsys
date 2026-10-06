@@ -1,6 +1,6 @@
 <?php
 /**
- * Operations field app — the PIN.
+ * Operations staff app — the PIN.
  *
  * One file, used from two very different places: the HR profile page where the
  * office sets a PIN, and api/mobile/ops where a phone spends it. Everything
@@ -100,7 +100,7 @@ function ops_pin_lookup_hash(string $pin): string
 function ops_pin_set(PDO $conn, int $userId, string $pin, ?int $actorId): array
 {
     if (!ops_pin_configured()) {
-        return ['ok' => false, 'error' => 'Field app PINs are not switched on for this server yet. Ask IT to set OPS_MOBILE_PIN_SECRET.'];
+        return ['ok' => false, 'error' => 'Staff app PINs are not switched on for this server yet. Ask IT to set OPS_MOBILE_PIN_SECRET.'];
     }
     if (!ops_pin_format_ok($pin)) {
         return ['ok' => false, 'error' => 'A PIN must be exactly ' . ops_pin_length() . ' digits.'];

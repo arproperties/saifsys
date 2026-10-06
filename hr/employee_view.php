@@ -21,7 +21,7 @@ $isWorkerSelfService = Guard::isWorker($roles);
 $isOwner = in_array('Owner', $roles);
 // Issue loans / record cash repayments: same as cash_advances.php (Owner, Admin, HR).
 $canManageLoans = !$isWorkerSelfService && (bool) array_intersect($roles, ['Owner', 'Admin', 'HR']);
-// Hand out a field app PIN: the same people who can create a login, because it
+// Hand out a staff app PIN: the same people who can create a login, because it
 // is the same decision — who gets into the company's systems from a phone.
 $canManageOpsPin = $canManageLoans;
 
@@ -3786,7 +3786,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 
             <?php if ($canManageOpsPin): ?>
             <?php
-            /* The field app PIN. Read-only about the PIN itself — the value is
+            /* The staff app PIN. Read-only about the PIN itself — the value is
                never recoverable, only replaceable. */
             $opsPinUserId  = (int)($emp['user_id'] ?? 0);
             $opsPinReady   = ops_pin_table_ready($conn);
@@ -3810,11 +3810,11 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 
                             <?php if (!$opsPinReady): ?>
                                 <div class="alert alert-warning mb-0 py-2 small">
-                                    Field app PINs are not set up on this server yet. Run <code>migrations/ops_staff_pin.sql</code>.
+                                    Staff app PINs are not set up on this server yet. Run <code>migrations/ops_staff_pin.sql</code>.
                                 </div>
                             <?php elseif (!ops_pin_configured()): ?>
                                 <div class="alert alert-warning mb-0 py-2 small">
-                                    Field app PINs are switched off. Ask IT to set <code>OPS_MOBILE_PIN_SECRET</code> before handing any out.
+                                    Staff app PINs are switched off. Ask IT to set <code>OPS_MOBILE_PIN_SECRET</code> before handing any out.
                                 </div>
                             <?php elseif ($opsPinStatus): ?>
                                 <div class="d-flex flex-wrap align-items-center gap-3">

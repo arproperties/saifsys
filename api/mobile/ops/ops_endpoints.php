@@ -517,7 +517,7 @@ function ops_api_resolve_places(PDO $conn, int $companyId, $input): array
 }
 
 // ---------------------------------------------------------------------------
-// GET ops/attendance, POST ops/attendance/check-in and /check-out
+// GET ops/attendance, POST ops/attendance/check-in, /check-out and /close-previous
 // ---------------------------------------------------------------------------
 
 /**
@@ -544,6 +544,15 @@ function ops_api_handle_attendance(PDO $conn, array $user, string $action): void
         $result = ops_attendance_check_in($conn, $employee, (int)$user['id'], ops_api_client_time(36 * 3600));
     } elseif ($action === 'check-out') {
         $result = ops_attendance_check_out($conn, $employee, (int)$user['id'], ops_api_client_time(36 * 3600));
+    } elseif ($action === 'close-previous') {
+        // A forgotten check out: the time is what the person says, not a tap.
+        $result = ops_attendance_close_previous(
+            $conn, $employee, (int)$user['id'],
+            trim((string)ops_api_param('work_date', '')), trim((string)ops_api_param('time', ''))
+        );
+        if ($result['ok']) {
+            $result['row'] = ops_attendance_current($conn, (int)$employee['id']);
+        }
     } else {
         $result = ['ok' => true, 'row' => ops_attendance_current($conn, (int)$employee['id'])];
     }
@@ -552,7 +561,10 @@ function ops_api_handle_attendance(PDO $conn, array $user, string $action): void
         customer_api_send_error($result['error'], $result['message'], 409);
     }
 
-    customer_api_send_ok(['attendance' => ops_attendance_payload($result['row'] ?? null)]);
+    customer_api_send_ok(['attendance' => ops_attendance_payload(
+        $result['row'] ?? null,
+        ops_attendance_unclosed($conn, (int)$employee['id'])
+    )]);
 }
 
 // ---------------------------------------------------------------------------
