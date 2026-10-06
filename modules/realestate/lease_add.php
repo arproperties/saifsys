@@ -18,6 +18,36 @@ require_once __DIR__ . '/includes/accounting_mode_helper.php';
 require_once __DIR__ . '/includes/lease_payment_schedule_helper.php';
 require_once __DIR__ . '/includes/invoice_engine.php';
 
+/**
+ * Store the Contract Amount (rent for the whole lease period) and the Annual
+ * Rent typed on the form. Display fields only: schedules, invoices and
+ * accounting keep reading annual_rent.
+ * Does nothing until migrations/re_leases_contract_amount.sql has been run.
+ */
+function lease_save_contract_amount(PDO $conn, int $leaseId, int $companyId, float $contractAmount, ?float $annualRentPerYear): void
+{
+    static $hasColumns = null;
+    try {
+        if ($hasColumns === null) {
+            $hasColumns = (bool)$conn->query("SHOW COLUMNS FROM re_leases LIKE 'contract_amount'")->fetch()
+                && (bool)$conn->query("SHOW COLUMNS FROM re_leases LIKE 'annual_rent_per_year'")->fetch();
+        }
+        if ($hasColumns && $leaseId > 0) {
+            $conn->prepare("UPDATE re_leases SET contract_amount = ?, annual_rent_per_year = ? WHERE id = ? AND company_id = ?")
+                 ->execute([$contractAmount, $annualRentPerYear, $leaseId, $companyId]);
+        }
+    } catch (Throwable $e) {
+        error_log('lease_save_contract_amount: ' . $e->getMessage());
+    }
+}
+
+/** Annual Rent typed on the lease form; null when left empty. */
+function lease_posted_annual_rent_per_year(): ?float
+{
+    $raw = trim((string)($_POST['annual_rent_per_year'] ?? ''));
+    return ($raw !== '' && is_numeric($raw) && (float)$raw > 0) ? round((float)$raw, 2) : null;
+}
+
 require_login();
 require_module_access($conn, MODULE_REALESTATE);
 
@@ -546,6 +576,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $accountingMode,
                     $leaseId, $currentCompanyId
                 ]);
+                lease_save_contract_amount($conn, (int)$leaseId, (int)$currentCompanyId, (float)$annualRent, lease_posted_annual_rent_per_year());
 
                 if ($existingAccountingMode !== null && $existingAccountingMode !== $accountingMode) {
                     re_accounting_log_mode_change(
@@ -1514,6 +1545,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $accountingMode,
                 ]);
                 $leaseId = $conn->lastInsertId();
+                lease_save_contract_amount($conn, (int)$leaseId, (int)$currentCompanyId, (float)$annualRent, lease_posted_annual_rent_per_year());
                 re_accounting_log_mode_change(
                     $conn,
                     $currentCompanyId,
@@ -2272,22 +2304,43 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 </div>
                 <div class="card-body">
                     <div class="row">
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Annual Rent (AED) *</label>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Contract Value (AED) *</label>
                             <input type="number" step="0.01" class="form-control" name="annual_rent" id="annualRent"
-                                   value="<?= h(getFormValue('annual_rent', $lease ? ($lease['annual_rent'] ?? ($lease['monthly_rent'] ?? 0) * 12) : '')) ?>"
+                                   value="<?= h(getFormValue('annual_rent', $lease ? ($lease['contract_amount'] ?? $lease['annual_rent'] ?? ($lease['monthly_rent'] ?? 0) * 12) : '')) ?>"
                                    <?= $formIsMultiUnit ? 'readonly style="background:#f8f9fa"' : '' ?> required>
                             <small class="form-text text-muted" id="annualRentHint">
-                                <?= $formIsMultiUnit ? 'Auto-calculated from unit rents above' : 'Total rent per year' ?>
+                                <?= $formIsMultiUnit ? 'Auto-calculated from unit rents above' : 'Total rent for the whole lease period' ?>
                             </small>
                         </div>
-                        <div class="col-md-4 mb-3">
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Annual Value (AED)</label>
+                            <?php
+                            // Typed by the user. A lease saved before this field existed opens
+                            // with the 12-month share of its contract amount as a starting value.
+                            $annualRentPerYearDefault = '';
+                            if ($lease) {
+                                if (isset($lease['annual_rent_per_year']) && (float)$lease['annual_rent_per_year'] > 0) {
+                                    $annualRentPerYearDefault = $lease['annual_rent_per_year'];
+                                } elseif (!empty($lease['start_date']) && !empty($lease['end_date'])) {
+                                    $arTotal = (float)($lease['contract_amount'] ?? $lease['annual_rent'] ?? 0);
+                                    $arDiff = (new DateTime($lease['start_date']))->diff((new DateTime($lease['end_date']))->modify('+1 day'));
+                                    $arMonths = $arDiff->invert ? 0 : ($arDiff->y * 12 + $arDiff->m + ($arDiff->d >= 15 ? 1 : 0));
+                                    $annualRentPerYearDefault = number_format($arMonths > 12 ? $arTotal * 12 / $arMonths : $arTotal, 2, '.', '');
+                                }
+                            }
+                            ?>
+                            <input type="number" step="0.01" min="0" class="form-control" name="annual_rent_per_year" id="annualRentPerYear"
+                                   value="<?= h(getFormValue('annual_rent_per_year', $annualRentPerYearDefault)) ?>">
+                            <small class="form-text text-muted">Rent for one year (12 months)</small>
+                        </div>
+                        <div class="col-md-3 mb-3">
                             <label class="form-label">Number of Installments *</label>
                             <input type="number" min="1" step="1" class="form-control" name="number_of_installments" id="numberOfInstallments" value="<?= h(getFormValue('number_of_installments', $lease ? ($lease['number_of_installments'] ?? 12) : 12)) ?>" required>
                             <small class="form-text text-muted">How many payments for this lease</small>
                         </div>
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Monthly Rent (AED)</label>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Installment Value (AED)</label>
                             <input type="text" class="form-control" id="monthlyRentDisplay" readonly value="0.00">
                             <small class="form-text text-muted">Calculated automatically</small>
                         </div>
@@ -2855,6 +2908,27 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 return amounts;
             }
 
+            // Number of Installments can include a security-deposit cheque that was
+            // saved as a rent row. That cheque carries no rent, so it must not
+            // dilute the per-installment figure. Counted only when leaving it out
+            // makes the figure match the saved rent cheques. Display only.
+            function countDepositChequesSavedAsRent(securityDeposit, effectiveAnnual, installments) {
+                if (!allInstallments || !allInstallments.length || securityDeposit <= 0 || installments < 2) return 0;
+                const amounts = allInstallments
+                    .filter(i => (i.installment_type || 'rent') === 'rent')
+                    .map(i => Math.round((parseFloat(i.amount) || 0) * 100) / 100);
+                if (amounts.length !== installments) return 0;
+                const depositRows = amounts.filter(a => Math.abs(a - securityDeposit) < 0.005).length;
+                if (depositRows !== 1) return 0;
+                const tally = {};
+                amounts.forEach(a => { tally[a] = (tally[a] || 0) + 1; });
+                const typical = parseFloat(Object.keys(tally).sort((a, b) => tally[b] - tally[a])[0]);
+                if (Math.abs(typical - securityDeposit) < 0.005) return 0;
+                const withoutDeposit = effectiveAnnual / (installments - 1);
+                const withDeposit = effectiveAnnual / installments;
+                return (Math.abs(withoutDeposit - typical) <= 1 && Math.abs(withDeposit - typical) > 1) ? 1 : 0;
+            }
+
             function isInstallmentLocked(inst) {
                 if (!inst) return false;
                 return (inst.payment_id && Number(inst.payment_id) > 0)
@@ -3087,7 +3161,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         annualInput.readOnly = false;
                         annualInput.style.background = '';
                     }
-                    if (annualHint) annualHint.textContent = 'Total rent per year';
+                    if (annualHint) annualHint.textContent = 'Total rent for the whole lease period';
                 }
 
                 if (radSingle) radSingle.addEventListener('change', function() { if (this.checked) switchToSingle(); });
@@ -3263,7 +3337,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     effectiveAnnual += totalVat;
                 }
 
-                const perInstallment = effectiveAnnual / installments;
+                const depositCheques = countDepositChequesSavedAsRent(secDep, effectiveAnnual, installments);
+                const perInstallment = effectiveAnnual / Math.max(1, installments - depositCheques);
 
                 // Fees going to 1st installment (or combined fees cheque)
                 let toFirst = 0;
@@ -3583,6 +3658,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 }
                 let rentInstallments = [];
                 let installmentDates = [];
+                let savedRentRowsMatchCount = false;
 
                 if (allInstallments && allInstallments.length > 0) {
                     rentInstallments = allInstallments.filter(i => {
@@ -3591,6 +3667,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         if (isClearlyMistaggedCombinedFees(i)) return true;
                         return !nonRentTypes.has(i.installment_type || '');
                     });
+                    savedRentRowsMatchCount = rentInstallments.length === installments;
                     if (rentInstallments.length > installments) {
                         rentInstallments = rentInstallments.slice(0, installments);
                     }
@@ -3780,6 +3857,10 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         : (existingCheque ? (existingCheque.cheque_date || installmentDate) : installmentDate);
                     let chequeAmount = installmentAmount;
                     if (preserveRentDates && rentInst && isInstallmentLocked(rentInst)) {
+                        chequeAmount = parseFloat(rentInst.amount) || installmentAmount;
+                    } else if (preserveRentDates && rentInst && savedRentRowsMatchCount) {
+                        // Opening a lease must show the schedule as it was saved. Amounts
+                        // are only recalculated after something that drives them changes.
                         chequeAmount = parseFloat(rentInst.amount) || installmentAmount;
                     } else if (preserveRentDates && existingCheque && isInstallmentLocked(rentInst)) {
                         chequeAmount = parseFloat(existingCheque.cheque_amount) || installmentAmount;
