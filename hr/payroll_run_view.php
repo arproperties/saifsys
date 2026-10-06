@@ -410,7 +410,7 @@ echo hr_ui_page_header(
             <th>Allow</th>
             <th>Bonus / OT</th>
             <th>Deductions</th>
-            <th title="Deductions above the WPS 15% cap (15% of base + allowance + bonus)">Over WPS Cap</th>
+            <th title="Deductions above the WPS 15% cap (15% of base + allowance)">Over WPS Cap</th>
             <th>Net</th>
             <th>Payslip</th>
           </tr>
@@ -462,7 +462,7 @@ echo hr_ui_page_header(
                 </div>
               </td>
               <?php
-                $earn = (float)$r['base_pay'] + (float)$r['allowance'] + (float)$r['bonus'];
+                $earn = (float)$r['base_pay'] + (float)$r['allowance'];
                 $capMax = round($earn * hr_wps_max_deduction_ratio(), 2);
                 $overCap = round((float)$r['deductions'] - $capMax, 2);
               ?>
