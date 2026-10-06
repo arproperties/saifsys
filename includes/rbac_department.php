@@ -35,6 +35,8 @@ define('DEPT_BARBER_BACKOFFICE', 'barber_backoffice');
 define('DEPT_OPERATIONS_SUPERVISOR', 'operations_supervisor');
 /** Building Inventory: never ticked on a role — Owner/Admin, or whoever Reem says keeps a building */
 define('DEPT_BUILDING_INVENTORY', 'building_inventory');
+/** Recurring Payments: the same - never ticked on a role, offered to whoever Reem says keeps a building */
+define('DEPT_RECURRING_PAYMENTS', 'recurring_payments');
 
 // Module constants (if not already defined)
 if (!defined('MODULE_CLEANING')) {
@@ -66,6 +68,9 @@ if (!defined('MODULE_OPERATIONS')) {
 }
 if (!defined('MODULE_BUILDING_INVENTORY')) {
     define('MODULE_BUILDING_INVENTORY', 'building_inventory');
+}
+if (!defined('MODULE_RECURRING_PAYMENTS')) {
+    define('MODULE_RECURRING_PAYMENTS', 'recurring_payments');
 }
 
 /**
@@ -194,7 +199,8 @@ function get_user_departments(int $userId, ?PDO $conn = null): array {
             MODULE_GROCERY => [DEPT_GROCERY_POS, DEPT_GROCERY_BACKOFFICE],
             MODULE_BARBER => [DEPT_BARBER_POS, DEPT_BARBER_BACKOFFICE],
             MODULE_OPERATIONS => [DEPT_OPERATIONS_SUPERVISOR],
-            MODULE_BUILDING_INVENTORY => [DEPT_BUILDING_INVENTORY]
+            MODULE_BUILDING_INVENTORY => [DEPT_BUILDING_INVENTORY],
+            MODULE_RECURRING_PAYMENTS => [DEPT_RECURRING_PAYMENTS]
         ];
     }
     
@@ -231,6 +237,19 @@ function get_user_departments(int $userId, ?PDO $conn = null): array {
             require_once __DIR__ . '/../modules/building_inventory/includes/binv_helper.php';
             if (binv_launcher_access($conn, $userId)) {
                 $departments[MODULE_BUILDING_INVENTORY] = [DEPT_BUILDING_INVENTORY];
+            }
+        }
+    } catch (Throwable $e) {
+        // Reem not reachable or not set up: the module is simply not offered.
+    }
+
+    // Recurring Payments: the same rule, asked of Reem the same way.
+    unset($departments[MODULE_RECURRING_PAYMENTS]);
+    try {
+        if ($userId === (int)current_user_id()) {
+            require_once __DIR__ . '/../modules/recurring_payments/includes/rpay_helper.php';
+            if (rpay_launcher_access($conn, $userId)) {
+                $departments[MODULE_RECURRING_PAYMENTS] = [DEPT_RECURRING_PAYMENTS];
             }
         }
     } catch (Throwable $e) {
@@ -291,7 +310,8 @@ function get_department_display_name(string $department): string {
         DEPT_BARBER_POS => 'Barber shop — POS',
         DEPT_BARBER_BACKOFFICE => 'Barber shop — Back office',
         DEPT_OPERATIONS_SUPERVISOR => 'Operations',
-        DEPT_BUILDING_INVENTORY => 'Items by unit and area'
+        DEPT_BUILDING_INVENTORY => 'Items by unit and area',
+        DEPT_RECURRING_PAYMENTS => 'Monthly payments by building'
     ];
     return $names[$department] ?? ucfirst(str_replace('_', ' ', $department));
 }
@@ -339,6 +359,8 @@ function get_module_departments(string $module): array {
         return [DEPT_OPERATIONS_SUPERVISOR];
     } elseif ($module === MODULE_BUILDING_INVENTORY) {
         return [DEPT_BUILDING_INVENTORY];
+    } elseif ($module === MODULE_RECURRING_PAYMENTS) {
+        return [DEPT_RECURRING_PAYMENTS];
     }
     return [];
 }

@@ -22,6 +22,7 @@ define('MODULE_BARBER', 'barber');
 define('MODULE_LEGAL', 'legal');
 define('MODULE_OPERATIONS', 'operations');
 define('MODULE_BUILDING_INVENTORY', 'building_inventory');
+define('MODULE_RECURRING_PAYMENTS', 'recurring_payments');
 
 /**
  * Get user's accessible modules based on departments
@@ -76,7 +77,7 @@ function get_user_modules(PDO $conn, int $userId): array {
     // Don't add empty modules for non-Owner/Admin users
     $roles = current_user_roles($conn);
     if (in_array('Owner', $roles, true) || in_array('Admin', $roles, true)) {
-        $allModules = [MODULE_CLEANING, MODULE_REALESTATE, MODULE_CONSTRUCTION, MODULE_HR, MODULE_FINANCE, MODULE_INVENTORY, MODULE_ARS, MODULE_GROCERY, MODULE_BARBER, MODULE_LEGAL, MODULE_OPERATIONS, MODULE_BUILDING_INVENTORY];
+        $allModules = [MODULE_CLEANING, MODULE_REALESTATE, MODULE_CONSTRUCTION, MODULE_HR, MODULE_FINANCE, MODULE_INVENTORY, MODULE_ARS, MODULE_GROCERY, MODULE_BARBER, MODULE_LEGAL, MODULE_OPERATIONS, MODULE_BUILDING_INVENTORY, MODULE_RECURRING_PAYMENTS];
         $existingModules = array_column($modules, 'module');
         foreach ($allModules as $module) {
             if (!in_array($module, $existingModules, true)) {
@@ -112,7 +113,7 @@ function get_user_company_modules(PDO $conn, int $userId, int $companyId): array
         $moduleName = $module['module'];
         
         // Shared modules are always available (HR, Finance, Inventory, Legal for RE companies)
-        if ($moduleName === MODULE_HR || $moduleName === MODULE_FINANCE || $moduleName === MODULE_INVENTORY || $moduleName === MODULE_OPERATIONS || $moduleName === MODULE_BUILDING_INVENTORY) {
+        if ($moduleName === MODULE_HR || $moduleName === MODULE_FINANCE || $moduleName === MODULE_INVENTORY || $moduleName === MODULE_OPERATIONS || $moduleName === MODULE_BUILDING_INVENTORY || $moduleName === MODULE_RECURRING_PAYMENTS) {
             $companyModules[] = $module;
             continue;
         }
@@ -255,7 +256,8 @@ function get_module_display_name(string $module): string {
         MODULE_BARBER => 'Barber shop',
         MODULE_LEGAL => 'Legal Department',
         MODULE_OPERATIONS => 'Operations',
-        MODULE_BUILDING_INVENTORY => 'Building Inventory'
+        MODULE_BUILDING_INVENTORY => 'Building Inventory',
+        MODULE_RECURRING_PAYMENTS => 'Recurring Payments'
     ];
     return $names[$module] ?? ucfirst($module);
 }
@@ -279,6 +281,7 @@ function get_module_selector_summary_labels(string $moduleName, array $moduleEnt
         MODULE_LEGAL => ['Legal Department'],
         MODULE_OPERATIONS => ['Cleaning', 'Maintenance'],
         MODULE_BUILDING_INVENTORY => ['Items by unit and area'],
+        MODULE_RECURRING_PAYMENTS => ['Monthly payments by building'],
     ];
 
     $departments = $moduleEntry['departments'] ?? [];
@@ -348,7 +351,8 @@ function get_department_route(string $module, string $department): ?string {
         DEPT_BARBER_POS => '/modules/barber/pos.php',
         DEPT_BARBER_BACKOFFICE => '/modules/barber/dashboard.php',
         DEPT_OPERATIONS_SUPERVISOR => '/modules/operations/index.php',
-        DEPT_BUILDING_INVENTORY => '/modules/building_inventory/index.php'
+        DEPT_BUILDING_INVENTORY => '/modules/building_inventory/index.php',
+        DEPT_RECURRING_PAYMENTS => '/modules/recurring_payments/index.php'
     ];
     
     if (isset($deptRoutes[$department])) {
@@ -477,7 +481,8 @@ function get_module_route(string $module, ?int $userId = null): string {
         MODULE_BARBER => '/modules/barber',
         MODULE_LEGAL => '/modules/legal/legal_dashboard.php',
         MODULE_OPERATIONS => '/modules/operations',
-        MODULE_BUILDING_INVENTORY => '/modules/building_inventory'
+        MODULE_BUILDING_INVENTORY => '/modules/building_inventory',
+        MODULE_RECURRING_PAYMENTS => '/modules/recurring_payments'
     ];
     
     $route = $routes[$module] ?? '/';
