@@ -57,6 +57,22 @@ if ($searchQuery) {
     $params[] = $searchParam;
 }
 
+// The Annual Rent typed on the lease form. Leases saved before that field existed
+// show the 12-month share of the contract amount (display only, as lease_view.php).
+function leases_list_annual_rent(array $lease): float
+{
+    if ((float)($lease['annual_rent_per_year'] ?? 0) > 0) {
+        return (float)$lease['annual_rent_per_year'];
+    }
+    $total = (float)($lease['contract_amount'] ?? $lease['annual_rent'] ?? (($lease['monthly_rent'] ?? 0) * 12));
+    if (empty($lease['start_date']) || empty($lease['end_date'])) {
+        return $total;
+    }
+    $diff = (new DateTime($lease['start_date']))->diff((new DateTime($lease['end_date']))->modify('+1 day'));
+    $months = $diff->invert ? 0 : ($diff->y * 12 + $diff->m + ($diff->d >= 15 ? 1 : 0));
+    return $months > 12 ? round($total * 12 / $months, 2) : $total;
+}
+
 // Get statistics
 $stats = $conn->prepare("
     SELECT 
@@ -296,7 +312,7 @@ foreach ($leases as $exportLease) {
         'tenant' => lease_tenant_display_name($exportLease),
         'start_date' => $startTs ? date('Y-m-d', $startTs) : '',
         'end_date' => $endTs ? date('Y-m-d', $endTs) : '',
-        'annual_rent' => number_format((float)($exportLease['annual_rent'] ?? (($exportLease['monthly_rent'] ?? 0) * 12)), 2, '.', ''),
+        'annual_rent' => number_format(leases_list_annual_rent($exportLease), 2, '.', ''),
         'status' => $statusLabel,
         'payments' => lease_payments_export_summary($exportLease),
     ];
@@ -504,7 +520,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     </td>
                                     <td><?= date('Y-m-d', strtotime($lease['start_date'])) ?></td>
                                     <td><?= date('Y-m-d', strtotime($lease['end_date'])) ?></td>
-                                    <td><strong><?= number_format($lease['annual_rent'] ?? ($lease['monthly_rent'] * 12), 2) ?> AED</strong></td>
+                                    <td><strong><?= number_format(leases_list_annual_rent($lease), 2) ?> AED</strong></td>
                                     <td>
                                         <?php
                                         $statusClass = [

@@ -1688,6 +1688,24 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 <td><?= !empty($lease['balcony']) ? 'Yes' : 'No' ?></td>
                             </tr>
                             <?php endif; ?>
+                            <?php
+                            // The stored rent is for the whole contract. Annual Rent is the
+                            // 12-month share of it on a lease longer than 12 months (display only).
+                            $contractRentTotal = (float)($lease['contract_amount'] ?? $lease['annual_rent'] ?? ($lease['monthly_rent'] * 12));
+                            $leaseTermMonths = 0;
+                            if (!empty($lease['start_date']) && !empty($lease['end_date'])) {
+                                $termDiff = (new DateTime($lease['start_date']))->diff((new DateTime($lease['end_date']))->modify('+1 day'));
+                                $leaseTermMonths = $termDiff->invert ? 0 : ($termDiff->y * 12 + $termDiff->m + ($termDiff->d >= 15 ? 1 : 0));
+                            }
+                            $annualRentFactor = $leaseTermMonths > 12 ? 12 / $leaseTermMonths : 1;
+                            // The Annual Rent typed on the lease form wins; older leases fall back to the share.
+                            $annualRentShown = (float)($lease['annual_rent_per_year'] ?? 0) > 0
+                                ? (float)$lease['annual_rent_per_year']
+                                : $contractRentTotal * $annualRentFactor;
+                            $leaseTermLabel = $leaseTermMonths % 12 === 0
+                                ? ($leaseTermMonths / 12) . ' years'
+                                : $leaseTermMonths . ' months';
+                            ?>
                             <tr>
                                 <th>Lease Period:</th>
                                 <td>
@@ -1715,10 +1733,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <?php endif; ?>
                             <tr>
                                 <th>Annual Rent:</th>
-                                <td><strong><?= number_format($lease['annual_rent'] ?? ($lease['monthly_rent'] * 12), 2) ?> AED</strong>
+                                <td><strong><?= number_format($annualRentShown, 2) ?> AED</strong>
                                 <?php if (!empty($lease['is_multi_unit']) && !empty($leaseUnits)): ?>
                                     <small class="text-muted">(combined total for <?= count($leaseUnits) ?> units)</small>
                                 <?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th>Contract Amount:</th>
+                                <td><?= number_format($contractRentTotal, 2) ?> AED
+                                    <?php if ($leaseTermMonths > 12): ?>
+                                    <small class="text-muted">(<?= h($leaseTermLabel) ?>)</small>
+                                    <?php endif; ?>
                                 </td>
                             </tr>
                             <tr>

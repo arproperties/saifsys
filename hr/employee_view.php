@@ -940,6 +940,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_contact_info']
 $cash_msg = $_SESSION['cash_advance_msg'] ?? '';
 $cash_err = $_SESSION['cash_advance_err'] ?? '';
 $ded_msg = $_SESSION['deduction_msg'] ?? '';
+$bonus_msg = $_SESSION['bonus_msg'] ?? '';
+$bonus_err = $_SESSION['bonus_err'] ?? '';
+unset($_SESSION['bonus_msg'], $_SESSION['bonus_err']);
 $cashReceiptId = (int)($_SESSION['loan_cash_receipt_id'] ?? 0);
 unset($_SESSION['cash_advance_msg'], $_SESSION['cash_advance_err'], $_SESSION['deduction_msg'], $_SESSION['loan_cash_receipt_id']);
 
@@ -1485,6 +1488,195 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['reject_cash_adv'])) {
     exit;
 }
 
+// ADD bonus (payroll_run_build.php pays unpaid bonuses dated up to the run's period end, on top of Bonus+)
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_bonus'])) {
+    csrf_verify();
+    if (!$canManageLoans) {
+        http_response_code(403);
+        die('Access denied. Only Owner, Admin, or HR can add a bonus.');
+    }
+    $bonusAmount = round((float)($_POST['bonus_amount'] ?? 0), 2);
+    $bonusDesc   = trim((string)($_POST['bonus_description'] ?? ''));
+    if ($bonusAmount <= 0) {
+        $_SESSION['bonus_err'] = 'Enter a bonus amount greater than zero.';
+    } elseif ($bonusDesc === '') {
+        $_SESSION['bonus_err'] = 'Enter a description for the bonus.';
+    } else {
+        try {
+            $stmt = $conn->prepare("
+                INSERT INTO employee_bonuses (employee_id, bonus_date, amount, description, created_by)
+                VALUES (?,?,?,?,?)
+            ");
+            $stmt->execute([(int)$emp['id'], date('Y-m-d'), $bonusAmount, mb_substr($bonusDesc, 0, 500), (int)($_SESSION['user']['id'] ?? 0) ?: null]);
+            $bonusId = (int)$conn->lastInsertId();
+            $_SESSION['bonus_msg'] = 'Bonus added.';
+            audit_bridge_hr_ops(
+                'bonus_created',
+                'employee_bonuses',
+                $bonusId > 0 ? $bonusId : (int)$emp['id'],
+                'Added bonus for ' . ($emp['full_name'] ?? $emp['employee_code'])
+                    . ' — AED ' . number_format($bonusAmount, 2),
+                isset($emp['company_id']) ? (int)$emp['company_id'] : null,
+                [
+                    'employee_id' => (int)$emp['id'],
+                    'amount' => $bonusAmount,
+                    'description' => $bonusDesc,
+                ],
+                'Bonus #' . ($bonusId > 0 ? $bonusId : '?'),
+                isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
+            );
+        } catch (Throwable $e) {
+            error_log('add_bonus failed: ' . $e->getMessage());
+            $_SESSION['bonus_err'] = 'Could not save the bonus. Please try again.';
+        }
+    }
+    header('Location: employee_view.php?id=' . urlencode($employee_id) . '#tab-bonus');
+    exit;
+}
+
+// EDIT / DELETE bonus
+if ($_SERVER['REQUEST_METHOD']==='POST' && (isset($_POST['edit_bonus']) || isset($_POST['del_bonus']))) {
+    csrf_verify();
+    if (!$canManageLoans) {
+        http_response_code(403);
+        die('Access denied. Only Owner, Admin, or HR can change a bonus.');
+    }
+    $isBonusDelete = isset($_POST['del_bonus']);
+    $bonusId = (int)($isBonusDelete ? $_POST['del_bonus'] : $_POST['edit_bonus']);
+    try {
+        // Scoped to this employee, so an id from another profile does nothing.
+        $prevBonus = $conn->prepare("SELECT * FROM employee_bonuses WHERE id=? AND employee_id=? LIMIT 1");
+        $prevBonus->execute([$bonusId, (int)$emp['id']]);
+        $prevBonusRow = $prevBonus->fetch(PDO::FETCH_ASSOC);
+        if (!$prevBonusRow) {
+            $_SESSION['bonus_err'] = 'That bonus was not found.';
+        } elseif (!empty($prevBonusRow['paid_run_id']) && !$isBonusDelete) {
+            // Already paid through a posted payroll run; changing it would not change the payslip.
+            $_SESSION['bonus_err'] = 'This bonus was paid in payroll run #' . (int)$prevBonusRow['paid_run_id'] . ' and can no longer be changed.';
+        } elseif (!empty($prevBonusRow['paid_run_id'])) {
+            // Paid by mistake: take it back out of the posted run. The run's item
+            // drops by the bonus, a reversing journal is posted for that amount,
+            // and the bonus is deleted. Cash runs only; a WPS run's bank file
+            // already went out with it.
+            require_once __DIR__ . '/includes/hr_payroll_accounting.php';
+            $paidRunId = (int)$prevBonusRow['paid_run_id'];
+            $paidAmount = round((float)$prevBonusRow['amount'], 2);
+            $conn->beginTransaction();
+            try {
+                $paidRunStmt = $conn->prepare("SELECT * FROM payroll_runs WHERE id=? LIMIT 1");
+                $paidRunStmt->execute([$paidRunId]);
+                $paidRun = $paidRunStmt->fetch(PDO::FETCH_ASSOC);
+                if (!$paidRun) {
+                    throw new RuntimeException('Payroll run #' . $paidRunId . ' was not found.');
+                }
+                if (($paidRun['payroll_type'] ?? 'wps') !== 'cash') {
+                    throw new RuntimeException('This bonus was paid in a WPS run and cannot be deleted here.');
+                }
+                $paidItemStmt = $conn->prepare("SELECT id, bonus, profile_bonus, notes FROM payroll_items WHERE payroll_run_id=? AND employee_id=? LIMIT 1 FOR UPDATE");
+                $paidItemStmt->execute([$paidRunId, (int)$emp['id']]);
+                $paidItem = $paidItemStmt->fetch(PDO::FETCH_ASSOC);
+                if (!$paidItem || (float)$paidItem['profile_bonus'] + 0.005 < $paidAmount) {
+                    throw new RuntimeException('Payroll run #' . $paidRunId . ' does not hold this bonus.');
+                }
+                $paidNote = 'Bonus -' . number_format($paidAmount, 2) . ' (removed after posting)';
+                $paidNotes = trim((string)($paidItem['notes'] ?? ''));
+                $paidNotes = $paidNotes !== '' ? $paidNotes . ' | ' . $paidNote : $paidNote;
+                $conn->prepare("UPDATE payroll_items SET bonus = bonus - ?, profile_bonus = profile_bonus - ?, net_pay = net_pay - ?, notes = ? WHERE id = ?")
+                     ->execute([$paidAmount, $paidAmount, $paidAmount, mb_substr($paidNotes, 0, 255), (int)$paidItem['id']]);
+                $conn->prepare("DELETE FROM employee_bonuses WHERE id=? AND employee_id=?")->execute([$bonusId, (int)$emp['id']]);
+                $reversalJournalId = hr_payroll_post_bonus_adjustment(
+                    $conn, $paidRun, $paidAmount, $bonusId,
+                    isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null,
+                    true
+                );
+                $conn->commit();
+            } catch (Throwable $e) {
+                if ($conn->inTransaction()) {
+                    $conn->rollBack();
+                }
+                throw $e;
+            }
+            $_SESSION['bonus_msg'] = 'Paid bonus deleted. Payroll run #' . $paidRunId . ' reduced by ' . number_format($paidAmount, 2)
+                . ' and reversing journal #' . $reversalJournalId . ' posted.';
+            audit_bridge_hr_ops(
+                'bonus_paid_deleted',
+                'employee_bonuses',
+                $bonusId,
+                'Deleted paid bonus for ' . ($emp['full_name'] ?? $emp['employee_code'])
+                    . ' — AED ' . number_format($paidAmount, 2) . ' taken out of payroll run #' . $paidRunId,
+                isset($emp['company_id']) ? (int)$emp['company_id'] : null,
+                [
+                    'employee_id' => (int)$emp['id'],
+                    'bonus_date' => $prevBonusRow['bonus_date'],
+                    'amount' => $prevBonusRow['amount'],
+                    'description' => $prevBonusRow['description'],
+                    'payroll_run_id' => $paidRunId,
+                    'reversal_journal_id' => $reversalJournalId,
+                ],
+                'Bonus #' . $bonusId,
+                isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
+            );
+        } elseif ($isBonusDelete) {
+            $conn->prepare("DELETE FROM employee_bonuses WHERE id=? AND employee_id=?")->execute([$bonusId, (int)$emp['id']]);
+            $_SESSION['bonus_msg'] = 'Bonus deleted.';
+            audit_bridge_hr_ops(
+                'bonus_deleted',
+                'employee_bonuses',
+                $bonusId,
+                'Deleted bonus for ' . ($emp['full_name'] ?? $emp['employee_code'])
+                    . ' — AED ' . number_format((float)$prevBonusRow['amount'], 2),
+                isset($emp['company_id']) ? (int)$emp['company_id'] : null,
+                [
+                    'employee_id' => (int)$emp['id'],
+                    'bonus_date' => $prevBonusRow['bonus_date'],
+                    'amount' => $prevBonusRow['amount'],
+                    'description' => $prevBonusRow['description'],
+                ],
+                'Bonus #' . $bonusId,
+                isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
+            );
+        } else {
+            $bonusAmount = round((float)($_POST['bonus_amount'] ?? 0), 2);
+            $bonusDesc   = trim((string)($_POST['bonus_description'] ?? ''));
+            if ($bonusAmount <= 0) {
+                $_SESSION['bonus_err'] = 'Enter a bonus amount greater than zero.';
+            } elseif ($bonusDesc === '') {
+                $_SESSION['bonus_err'] = 'Enter a description for the bonus.';
+            } else {
+                $bonusDesc = mb_substr($bonusDesc, 0, 500);
+                $conn->prepare("UPDATE employee_bonuses SET amount=?, description=? WHERE id=? AND employee_id=?")
+                     ->execute([$bonusAmount, $bonusDesc, $bonusId, (int)$emp['id']]);
+                $_SESSION['bonus_msg'] = 'Bonus updated.';
+                audit_bridge_hr_ops(
+                    'bonus_updated',
+                    'employee_bonuses',
+                    $bonusId,
+                    'Updated bonus for ' . ($emp['full_name'] ?? $emp['employee_code'])
+                        . ' — AED ' . number_format((float)$prevBonusRow['amount'], 2)
+                        . ' to AED ' . number_format($bonusAmount, 2),
+                    isset($emp['company_id']) ? (int)$emp['company_id'] : null,
+                    [
+                        'employee_id' => (int)$emp['id'],
+                        'old_amount' => $prevBonusRow['amount'],
+                        'old_description' => $prevBonusRow['description'],
+                        'amount' => $bonusAmount,
+                        'description' => $bonusDesc,
+                    ],
+                    'Bonus #' . $bonusId,
+                    isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
+                );
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('bonus change failed: ' . $e->getMessage());
+        $_SESSION['bonus_err'] = ($e instanceof RuntimeException && !($e instanceof PDOException))
+            ? 'Could not save the change: ' . $e->getMessage()
+            : 'Could not save the change. Please try again.';
+    }
+    header('Location: employee_view.php?id=' . urlencode($employee_id) . '#tab-bonus');
+    exit;
+}
+
 // ADD other deduction
 if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_deduction'])) {
     csrf_verify();
@@ -1640,6 +1832,134 @@ if (hr_loans_schema_ready($conn)) {
   ")->fetchColumn();
 
   $cashAvail = max(0,$cashIssued-$cashApplied);
+}
+
+// Bonuses for this employee. Empty if the table is not there yet.
+$bonusRows = [];
+$bonusTotal = 0.0;
+try {
+  $bq = $conn->prepare("
+    SELECT b.id, b.bonus_date, b.amount, b.description, b.paid_run_id,
+           COALESCE(pr.payroll_type, 'wps') AS paid_run_type,
+           COALESCE(NULLIF(u.fullname,''), u.username) AS added_by
+    FROM employee_bonuses b
+    LEFT JOIN user u ON u.id = b.created_by
+    LEFT JOIN payroll_runs pr ON pr.id = b.paid_run_id
+    WHERE b.employee_id = ?
+    ORDER BY b.bonus_date DESC, b.id DESC
+  ");
+  $bq->execute([(int)$emp['id']]);
+  $bonusRows = $bq->fetchAll(PDO::FETCH_ASSOC);
+  foreach ($bonusRows as $bonusRow) {
+    $bonusTotal += (float)$bonusRow['amount'];
+  }
+} catch (Throwable $e) {
+  $bonusRows = [];
+}
+
+// Who last changed each bonus, from the audit log. "Added by" stays the person
+// who created it; a later edit by someone else is shown under it.
+$bonusUpdatedBy = [];
+if ($bonusRows) try {
+  $bonusIdList = array_map(static fn($r) => (string)(int)$r['id'], $bonusRows);
+  $bu = $conn->prepare("
+    SELECT a.object_id, UNIX_TIMESTAMP(a.created_at) AS ts,
+           COALESCE(NULLIF(u.fullname,''), u.username, a.user_name) AS by_name
+    FROM audit_log a
+    LEFT JOIN user u ON u.id = a.user_id
+    WHERE a.action = 'bonus_updated' AND a.object_type = 'employee_bonuses'
+      AND a.object_id IN (" . implode(',', array_fill(0, count($bonusIdList), '?')) . ")
+    ORDER BY a.id ASC
+  ");
+  $bu->execute($bonusIdList);
+  $bonusUpdatedTz = new DateTimeZone('Asia/Dubai');
+  foreach ($bu->fetchAll(PDO::FETCH_ASSOC) as $buRow) {
+    // Ascending, so the last edit wins.
+    $bonusUpdatedBy[(int)$buRow['object_id']] = [
+      'by' => trim((string)($buRow['by_name'] ?? '')),
+      'when' => (new DateTime('@' . (int)$buRow['ts']))->setTimezone($bonusUpdatedTz)->format('d M Y, h:i A'),
+    ];
+  }
+} catch (Throwable $e) {
+  $bonusUpdatedBy = [];
+}
+
+// Bonus history for the History button: who added, changed or deleted a bonus,
+// read back from the audit log entries the bonus actions write.
+$bonusHistory = [];
+if ($canManageLoans) try {
+  $bh = $conn->prepare("
+    SELECT a.action, a.object_id, a.new_data, a.user_name, UNIX_TIMESTAMP(a.created_at) AS ts,
+           COALESCE(NULLIF(u.fullname,''), u.username, a.user_name) AS by_name
+    FROM audit_log a
+    LEFT JOIN user u ON u.id = a.user_id
+    WHERE a.action IN ('bonus_created','bonus_updated','bonus_deleted','bonus_paid_deleted','payroll_bonus_added_after_post')
+      AND a.new_data LIKE ?
+    ORDER BY a.id DESC
+    LIMIT 500
+  ");
+  $bh->execute(['%' . (int)$emp['id'] . '%']);
+  $bonusHistoryTz = new DateTimeZone('Asia/Dubai');
+  foreach ($bh->fetchAll(PDO::FETCH_ASSOC) as $bhRow) {
+    $bhData = json_decode((string)$bhRow['new_data'], true);
+    if (!is_array($bhData)) continue;
+    $bhMoney = static fn($v): string => number_format((float)$v, 2);
+    $bhDesc = rtrim(trim((string)($bhData['description'] ?? '')), '.');
+    $bhLabel = '';
+    $bhClass = 'secondary';
+    $bhText = '';
+    if ($bhRow['action'] === 'payroll_bonus_added_after_post') {
+      $bhEmpIds = array_map('intval', (array)($bhData['employee_ids'] ?? []));
+      if (!in_array((int)$emp['id'], $bhEmpIds, true)) continue;
+      $bhLabel = 'Paid';
+      $bhClass = 'primary';
+      // The amount is the whole press, so only quote it when this employee
+      // was the only one. The run is the audited object.
+      $bhText = (count($bhEmpIds) === 1 ? 'Bonus ' . $bhMoney($bhData['amount'] ?? 0) : 'Waiting bonus')
+        . ' added to posted payroll run #' . (int)$bhRow['object_id']
+        . (!empty($bhData['journal_id']) ? ' (journal #' . (int)$bhData['journal_id'] . ')' : '') . '.';
+    } else {
+      if ((int)($bhData['employee_id'] ?? 0) !== (int)$emp['id']) continue;
+      if ($bhRow['action'] === 'bonus_created') {
+        $bhLabel = 'Added';
+        $bhClass = 'success';
+        $bhText = 'Added bonus ' . $bhMoney($bhData['amount'] ?? 0) . ($bhDesc !== '' ? ' — ' . $bhDesc : '') . '.';
+      } elseif ($bhRow['action'] === 'bonus_updated') {
+        $bhLabel = 'Updated';
+        $bhClass = 'warning';
+        $bhParts = [];
+        if (abs((float)($bhData['old_amount'] ?? 0) - (float)($bhData['amount'] ?? 0)) > 0.005) {
+          $bhParts[] = 'amount from ' . $bhMoney($bhData['old_amount'] ?? 0) . ' to ' . $bhMoney($bhData['amount'] ?? 0);
+        }
+        $bhOldDesc = rtrim(trim((string)($bhData['old_description'] ?? '')), '.');
+        if ($bhOldDesc !== $bhDesc) {
+          $bhParts[] = 'description from "' . $bhOldDesc . '" to "' . $bhDesc . '"';
+        }
+        $bhText = $bhParts
+          ? 'Changed ' . implode(' and ', $bhParts) . '.'
+          : 'Saved bonus ' . $bhMoney($bhData['amount'] ?? 0) . ' with no change.';
+      } elseif ($bhRow['action'] === 'bonus_deleted') {
+        $bhLabel = 'Deleted';
+        $bhClass = 'danger';
+        $bhText = 'Deleted bonus ' . $bhMoney($bhData['amount'] ?? 0) . ($bhDesc !== '' ? ' — ' . $bhDesc : '') . '.';
+      } else {
+        $bhLabel = 'Deleted (paid)';
+        $bhClass = 'danger';
+        $bhText = 'Deleted paid bonus ' . $bhMoney($bhData['amount'] ?? 0) . ($bhDesc !== '' ? ' — ' . $bhDesc : '')
+          . '. Taken out of payroll run #' . (int)($bhData['payroll_run_id'] ?? 0)
+          . (!empty($bhData['reversal_journal_id']) ? ' (reversing journal #' . (int)$bhData['reversal_journal_id'] . ')' : '') . '.';
+      }
+    }
+    $bonusHistory[] = [
+      'when' => (new DateTime('@' . (int)$bhRow['ts']))->setTimezone($bonusHistoryTz)->format('d M Y, h:i A'),
+      'by' => trim((string)($bhRow['by_name'] ?? '')) ?: '—',
+      'label' => $bhLabel,
+      'class' => $bhClass,
+      'text' => $bhText,
+    ];
+  }
+} catch (Throwable $e) {
+  $bonusHistory = [];
 }
 
 $hasDedRemainingCol = false;
@@ -3657,6 +3977,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
         <li class="nav-item">
           <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-cashadv" type="button">Loans / Advances</button>
         </li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-bonus" type="button">Bonus</button></li>
         <?php if (!$workerReadOnly): ?>
         <li class="nav-item">
           <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-deduct" type="button">Deductions</button>
@@ -4830,9 +5151,101 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                               </div>
                             </div>
                           </div>
-                          
-                          
-                          
+
+                          <!-- Bonus -->
+                          <div class="tab-pane fade" id="tab-bonus">
+                            <div class="card mt-3">
+                              <div class="card-body">
+                                <div class="d-flex align-items-center mb-3">
+                                  <h6 class="mb-0">Bonus</h6>
+                                  <div class="ms-auto small text-muted">
+                                    Total: <strong><?= number_format($bonusTotal,2) ?></strong>
+                                  </div>
+                                </div>
+
+                                <?php if($bonus_msg): ?><div class="alert alert-success py-2"><?= htmlspecialchars($bonus_msg) ?></div><?php endif; ?>
+                                <?php if($bonus_err): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($bonus_err) ?></div><?php endif; ?>
+
+                                <?php if ($canManageLoans): ?>
+                                <form method="post" class="row g-2 mb-3">
+                                  <?php csrf_field(); ?>
+                                  <input type="hidden" name="add_bonus" value="1">
+                                  <div class="col-md-3">
+                                    <label class="form-label">Amount <span class="text-danger">*</span></label>
+                                    <input type="number" name="bonus_amount" step="0.01" min="0.01" class="form-control" required>
+                                  </div>
+                                  <div class="col-md-9">
+                                    <label class="form-label">Description <span class="text-danger">*</span></label>
+                                    <input type="text" name="bonus_description" maxlength="500" class="form-control" required>
+                                  </div>
+                                  <div class="col-12">
+                                    <button class="btn btn-primary">Add Bonus</button>
+                                    <button type="button" class="btn btn-outline-secondary ms-1" data-bs-toggle="modal" data-bs-target="#bonusHistoryModal"><i class="bi bi-clock-history"></i> History</button>
+                                  </div>
+                                </form>
+                                <?php endif; ?>
+
+                                <div class="table-responsive">
+                                  <table class="table table-bordered align-middle table-sm">
+                                    <thead class="table-light">
+                                      <tr>
+                                        <th style="width:110px;">Date</th>
+                                        <th style="width:130px;">Amount</th>
+                                        <th>Description</th>
+                                        <th style="width:200px;">Added by</th>
+                                        <?php if ($canManageLoans): ?>
+                                        <th style="width:210px;" class="text-end">Actions</th>
+                                        <?php endif; ?>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      <?php if (!$bonusRows): ?>
+                                      <tr><td colspan="<?= $canManageLoans ? 5 : 4 ?>" class="text-center text-muted py-4">No bonuses yet.</td></tr>
+                                      <?php else: foreach ($bonusRows as $bonusRow): ?>
+                                      <tr>
+                                        <td><?= htmlspecialchars((string)$bonusRow['bonus_date']) ?></td>
+                                        <td><?= number_format((float)$bonusRow['amount'],2) ?></td>
+                                        <td><?= htmlspecialchars((string)$bonusRow['description']) ?></td>
+                                        <td>
+                                          <?= htmlspecialchars((string)($bonusRow['added_by'] ?? '—')) ?>
+                                          <?php $bonusUpd = $bonusUpdatedBy[(int)$bonusRow['id']] ?? null; if ($bonusUpd && $bonusUpd['by'] !== ''): ?>
+                                          <div class="small text-muted" title="<?= htmlspecialchars($bonusUpd['when']) ?>">Updated by <?= htmlspecialchars($bonusUpd['by']) ?></div>
+                                          <?php endif; ?>
+                                        </td>
+                                        <?php if ($canManageLoans): ?>
+                                        <td class="text-end">
+                                          <?php if (!empty($bonusRow['paid_run_id'])): ?>
+                                          <a class="small text-success" href="payroll_run_view.php?id=<?= (int)$bonusRow['paid_run_id'] ?>">Paid · Run #<?= (int)$bonusRow['paid_run_id'] ?></a>
+                                          <?php if ($bonusRow['paid_run_type'] === 'cash'): ?>
+                                          <form method="post" class="d-inline ms-1" onsubmit="return confirm('This bonus is already paid in payroll run #<?= (int)$bonusRow['paid_run_id'] ?>. Delete it? The run\'s bonus and net pay go down by <?= number_format((float)$bonusRow['amount'],2) ?> and a reversing accounting journal is posted.')">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="del_bonus" value="<?= (int)$bonusRow['id'] ?>">
+                                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Delete</button>
+                                          </form>
+                                          <?php endif; ?>
+                                          <?php else: ?>
+                                          <button type="button" class="btn btn-sm btn-outline-primary"
+                                                  data-bs-toggle="modal" data-bs-target="#bonusEditModal"
+                                                  data-bonus-id="<?= (int)$bonusRow['id'] ?>"
+                                                  data-bonus-amount="<?= number_format((float)$bonusRow['amount'],2,'.','') ?>"
+                                                  data-bonus-description="<?= htmlspecialchars((string)$bonusRow['description'], ENT_QUOTES, 'UTF-8') ?>"><i class="bi bi-pencil-square"></i> Edit</button>
+                                          <form method="post" class="d-inline" onsubmit="return confirm('Delete this bonus?')">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="del_bonus" value="<?= (int)$bonusRow['id'] ?>">
+                                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Delete</button>
+                                          </form>
+                                          <?php endif; ?>
+                                        </td>
+                                        <?php endif; ?>
+                                      </tr>
+                                      <?php endforeach; endif; ?>
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
                           <?php if (!$workerReadOnly): ?>
                           <!-- Deductions -->
                           <div class="tab-pane fade" id="tab-deduct">
@@ -5833,6 +6246,85 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 
 <!-- Add/Edit Document Modal (existing) -->
 <?php if (!$workerReadOnly): ?>
+<?php if ($canManageLoans): ?>
+<div class="modal fade" id="bonusEditModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <form method="post" class="modal-content">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="edit_bonus" id="bonusEditId" value="">
+      <div class="modal-header">
+        <h5 class="modal-title">Edit Bonus</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">Amount <span class="text-danger">*</span></label>
+          <input type="number" name="bonus_amount" id="bonusEditAmount" step="0.01" min="0.01" class="form-control" required>
+        </div>
+        <div>
+          <label class="form-label">Description <span class="text-danger">*</span></label>
+          <input type="text" name="bonus_description" id="bonusEditDescription" maxlength="500" class="form-control" required>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+<div class="modal fade" id="bonusHistoryModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-clock-history"></i> Bonus History</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <?php if (!$bonusHistory): ?>
+          <div class="text-center text-muted py-4">No bonus history yet.</div>
+        <?php else: ?>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th style="width:170px;">Date</th>
+                <th style="width:160px;">By</th>
+                <th style="width:120px;">Action</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($bonusHistory as $bonusHist): ?>
+              <tr>
+                <td class="text-nowrap"><?= htmlspecialchars($bonusHist['when']) ?></td>
+                <td><?= htmlspecialchars($bonusHist['by']) ?></td>
+                <td><span class="badge text-bg-<?= htmlspecialchars($bonusHist['class']) ?>"><?= htmlspecialchars($bonusHist['label']) ?></span></td>
+                <td><?= htmlspecialchars($bonusHist['text']) ?></td>
+              </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php endif; ?>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+document.getElementById('bonusEditModal').addEventListener('show.bs.modal', function (e) {
+  var btn = e.relatedTarget;
+  if (!btn) return;
+  document.getElementById('bonusEditId').value = btn.getAttribute('data-bonus-id');
+  document.getElementById('bonusEditAmount').value = btn.getAttribute('data-bonus-amount');
+  document.getElementById('bonusEditDescription').value = btn.getAttribute('data-bonus-description');
+});
+</script>
+<?php endif; ?>
+
 <div class="modal fade" id="docModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <form class="modal-content" method="post" enctype="multipart/form-data">
