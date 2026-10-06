@@ -5,6 +5,7 @@
 require_once __DIR__.'/../includes/auth.php';
 require_once __DIR__.'/../includes/db_connect.php';
 require_once __DIR__.'/../includes/company_helper.php';
+require_once __DIR__.'/../includes/audit_bridge.php';
 require_once __DIR__.'/includes/hr_payroll_company_access.php';
 require_once __DIR__.'/includes/hr_payroll_accounting.php';
 require_once __DIR__.'/includes/hr_wps_guards.php';
@@ -51,6 +52,114 @@ if ($hasValidationOverride && !empty($run['validation_override_failures'])) {
     }
 }
 
+// A posted run is the "latest" while no later run exists for the company and
+// payroll type. Only there can a bonus added afterwards still be attached.
+$runEditable = in_array($status, ['open', 'draft'], true);
+$isLatestRun = false;
+try {
+  $later = $conn->prepare("
+    SELECT COUNT(*) FROM payroll_runs
+    WHERE company_id = ? AND COALESCE(payroll_type, 'wps') = ? AND period_from > ?
+  ");
+  $later->execute([(int)($run['company_id'] ?? 0), $payrollType, $to]);
+  $isLatestRun = !(int)$later->fetchColumn();
+} catch (Throwable $e) {
+  $isLatestRun = false;
+}
+// Cash only: a WPS run's bank file already went out with the old net pay.
+$canAddPendingBonus = !$runEditable && $isLatestRun && $payrollType === 'cash'
+    && !empty($run['accounting_journal_id']);
+
+$viewMsg = (string)($_SESSION['payroll_view_msg'] ?? '');
+$viewErr = (string)($_SESSION['payroll_view_err'] ?? '');
+unset($_SESSION['payroll_view_msg'], $_SESSION['payroll_view_err']);
+
+// Add the waiting profile bonuses to this posted run: the saved items grow by
+// the bonus, the bonuses are marked paid here, and the added amount gets its
+// own journal. The run's original journal is not touched.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pending_bonus'])) {
+  csrf_verify();
+  if (!$canAddPendingBonus) {
+    $_SESSION['payroll_view_err'] = 'A bonus can only be added to the latest posted Cash run.';
+  } else {
+    // From a row's "+ ... next run" button: that employee only. From the note's
+    // button: everyone waiting.
+    $onlyEmployeeId = (int)($_POST['bonus_employee_id'] ?? 0);
+    $conn->beginTransaction();
+    try {
+      $pend = $conn->prepare("
+        SELECT eb.id, eb.employee_id, eb.amount, pi.id AS item_id, pi.notes
+        FROM employee_bonuses eb
+        INNER JOIN employees e ON e.id = eb.employee_id AND e.company_id = ?
+        INNER JOIN payroll_items pi ON pi.payroll_run_id = ? AND pi.employee_id = eb.employee_id
+        WHERE eb.paid_run_id IS NULL AND COALESCE(e.payment_type, 'wps') = ?
+          " . ($onlyEmployeeId > 0 ? "AND eb.employee_id = ?" : "") . "
+        ORDER BY eb.id
+        FOR UPDATE
+      ");
+      $pendParams = [(int)$run['company_id'], $run_id, $payrollType];
+      if ($onlyEmployeeId > 0) {
+        $pendParams[] = $onlyEmployeeId;
+      }
+      $pend->execute($pendParams);
+      $byItem = [];
+      $bonusIds = [];
+      foreach ($pend->fetchAll(PDO::FETCH_ASSOC) as $p) {
+        $itemId = (int)$p['item_id'];
+        $byItem[$itemId]['amount'] = round(($byItem[$itemId]['amount'] ?? 0) + (float)$p['amount'], 2);
+        $byItem[$itemId]['notes'] = (string)($p['notes'] ?? '');
+        $byItem[$itemId]['employee_id'] = (int)$p['employee_id'];
+        $bonusIds[] = (int)$p['id'];
+      }
+      if (!$bonusIds) {
+        throw new RuntimeException('No waiting bonus was found for the employees in this run.');
+      }
+      $addTotal = 0.0;
+      $updItem = $conn->prepare("
+        UPDATE payroll_items
+        SET bonus = bonus + ?, profile_bonus = profile_bonus + ?, net_pay = net_pay + ?, notes = ?
+        WHERE id = ?
+      ");
+      foreach ($byItem as $itemId => $add) {
+        $note = 'Bonus ' . number_format($add['amount'], 2) . ' (added after posting)';
+        $notes = $add['notes'] !== '' ? $add['notes'] . ' | ' . $note : $note;
+        $updItem->execute([$add['amount'], $add['amount'], $add['amount'], mb_substr($notes, 0, 255), $itemId]);
+        $addTotal += $add['amount'];
+      }
+      $addTotal = round($addTotal, 2);
+      $conn->prepare("UPDATE employee_bonuses SET paid_run_id = ? WHERE paid_run_id IS NULL AND id IN ("
+          . implode(',', array_fill(0, count($bonusIds), '?')) . ")")
+        ->execute(array_merge([$run_id], $bonusIds));
+      $bonusJournalId = hr_payroll_post_bonus_adjustment($conn, $run, $addTotal, $bonusIds[0], current_user_id());
+      $conn->commit();
+      $_SESSION['payroll_view_msg'] = 'Bonus ' . number_format($addTotal, 2) . ' added to this run. Accounting journal #' . $bonusJournalId . ' posted.';
+      audit_bridge_hr_ops(
+        'payroll_bonus_added_after_post',
+        'payroll_runs',
+        $run_id,
+        'Added bonus AED ' . number_format($addTotal, 2) . ' to posted payroll run #' . $run_id,
+        (int)$run['company_id'],
+        [
+          'amount' => $addTotal,
+          'bonus_ids' => $bonusIds,
+          'employee_ids' => array_values(array_column($byItem, 'employee_id')),
+          'journal_id' => $bonusJournalId,
+        ],
+        'Run #' . $run_id,
+        current_user_id()
+      );
+    } catch (Throwable $ex) {
+      if ($conn->inTransaction()) {
+        $conn->rollBack();
+      }
+      error_log('add_pending_bonus failed: ' . $ex->getMessage());
+      $_SESSION['payroll_view_err'] = 'Could not add the bonus: ' . $ex->getMessage();
+    }
+  }
+  header('Location: payroll_run_view.php?id=' . (int)$run_id);
+  exit;
+}
+
 // Items
 $rows = $conn->prepare("
   SELECT pi.*, e.employee_code, e.full_name
@@ -61,6 +170,79 @@ $rows = $conn->prepare("
 ");
 $rows->execute([$run_id]);
 $items = $rows->fetchAll(PDO::FETCH_ASSOC);
+
+// Unpaid profile bonuses (employee Bonus tab) dated up to the end of this period.
+// They only reach payroll_items when Build / Post saves, so while the run is
+// editable list the ones it does not hold: not saved yet, or the employee is
+// paid through the other payroll type. A posted run needs no notice; whatever
+// it did not pay carries into the next run.
+$bonusNotSaved = [];
+$bonusOtherType = [];
+if ($runEditable) try {
+  $savedProfileBonus = [];
+  foreach ($items as $r) {
+    $savedProfileBonus[(int)$r['employee_id']] = (float)($r['profile_bonus'] ?? 0);
+  }
+  $bq = $conn->prepare("
+    SELECT e.id, e.employee_code, e.full_name, COALESCE(e.payment_type, 'wps') AS payment_type,
+           COALESCE(SUM(eb.amount),0) AS amt
+    FROM employee_bonuses eb
+    INNER JOIN employees e ON e.id = eb.employee_id AND e.company_id = ?
+    WHERE eb.paid_run_id IS NULL AND eb.bonus_date <= ?
+    GROUP BY e.id, e.employee_code, e.full_name, e.payment_type
+    ORDER BY e.full_name
+  ");
+  $bq->execute([(int)($run['company_id'] ?? 0), $to]);
+  $liveBonusEmp = [];
+  foreach ($bq->fetchAll(PDO::FETCH_ASSOC) as $b) {
+    $b['amt'] = round((float)$b['amt'], 2);
+    $liveBonusEmp[(int)$b['id']] = true;
+    if ($b['payment_type'] !== $payrollType) {
+      $bonusOtherType[] = $b;
+    } elseif (abs($b['amt'] - ($savedProfileBonus[(int)$b['id']] ?? 0)) > 0.005) {
+      $bonusNotSaved[] = $b;
+    }
+  }
+  // Saved with a bonus that has since been deleted or paid by another run.
+  foreach ($items as $r) {
+    if ((float)($r['profile_bonus'] ?? 0) > 0.005 && empty($liveBonusEmp[(int)$r['employee_id']])) {
+      $bonusNotSaved[] = ['id' => (int)$r['employee_id'], 'employee_code' => $r['employee_code'], 'full_name' => $r['full_name'], 'payment_type' => $payrollType, 'amt' => 0.0];
+    }
+  }
+} catch (Throwable $e) {
+  // employee_bonuses is not there until migrations/hr_employee_bonuses.sql has run.
+  $bonusNotSaved = [];
+  $bonusOtherType = [];
+}
+
+// On the latest posted run, show the unpaid bonuses still waiting for the next
+// run. The posted amounts stay as they are; this is only a heads-up.
+$bonusPending = [];
+if (!$runEditable && $isLatestRun) try {
+  $bq = $conn->prepare("
+    SELECT e.id, e.employee_code, e.full_name, COALESCE(SUM(eb.amount),0) AS amt
+    FROM employee_bonuses eb
+    INNER JOIN employees e ON e.id = eb.employee_id AND e.company_id = ?
+    WHERE eb.paid_run_id IS NULL AND COALESCE(e.payment_type, 'wps') = ?
+    GROUP BY e.id, e.employee_code, e.full_name
+    ORDER BY e.full_name
+  ");
+  $bq->execute([(int)($run['company_id'] ?? 0), $payrollType]);
+  $bonusPending = $bq->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+  $bonusPending = [];
+}
+$bonusPendingByEmp = [];
+foreach ($bonusPending as $b) {
+  $bonusPendingByEmp[(int)$b['id']] = (float)$b['amt'];
+}
+// The button only helps employees who have a row in this run.
+$bonusAddable = false;
+if ($canAddPendingBonus) {
+  foreach ($items as $r) {
+    if (!empty($bonusPendingByEmp[(int)$r['employee_id']])) { $bonusAddable = true; break; }
+  }
+}
 
 // Totals
 $tot = ['base'=>0,'allow'=>0,'bonus'=>0,'ded'=>0,'net'=>0,'adv'=>0,'oth'=>0];
@@ -151,6 +333,51 @@ echo hr_ui_page_header(
   </div>
   <?php endif; ?>
 
+  <?php if ($bonusNotSaved || $bonusOtherType): ?>
+  <div class="alert alert-warning mb-3 no-print">
+    <?php if ($bonusNotSaved): ?>
+      <div class="fw-semibold">
+        Bonus added or changed since this run was saved — open Build / Post and save to update it:
+      </div>
+      <ul class="mb-0 ps-3">
+        <?php foreach ($bonusNotSaved as $b): ?>
+          <li><?= htmlspecialchars($b['full_name']) ?> <span class="text-muted">(<?= htmlspecialchars((string)$b['employee_code']) ?>)</span> — <?= number_format($b['amt'], 2) ?></li>
+        <?php endforeach; ?>
+      </ul>
+    <?php endif; ?>
+    <?php if ($bonusOtherType): ?>
+      <div class="fw-semibold<?= $bonusNotSaved ? ' mt-2' : '' ?>">Bonus for employees paid through the other payroll type — not part of this <?= htmlspecialchars(hr_payroll_run_type_label($payrollType)) ?> run:</div>
+      <ul class="mb-0 ps-3">
+        <?php foreach ($bonusOtherType as $b): ?>
+          <li><?= htmlspecialchars($b['full_name']) ?> <span class="text-muted">(<?= htmlspecialchars((string)$b['employee_code']) ?>)</span> — <?= number_format($b['amt'], 2) ?>, paid in the <?= htmlspecialchars(hr_payroll_run_type_label($b['payment_type'] === 'cash' ? 'cash' : 'wps')) ?> run</li>
+        <?php endforeach; ?>
+      </ul>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
+
+  <?php if ($viewMsg !== ''): ?><div class="alert alert-success mb-3 no-print"><?= htmlspecialchars($viewMsg) ?></div><?php endif; ?>
+  <?php if ($viewErr !== ''): ?><div class="alert alert-danger mb-3 no-print"><?= htmlspecialchars($viewErr) ?></div><?php endif; ?>
+
+  <?php if ($bonusPending): ?>
+  <div class="alert alert-info mb-3 no-print">
+    <div class="fw-semibold">Bonus waiting for the next <?= htmlspecialchars(hr_payroll_run_type_label($payrollType)) ?> run — this run is already posted, so it is not included here:</div>
+    <ul class="mb-0 ps-3">
+      <?php foreach ($bonusPending as $b): ?>
+        <li><?= htmlspecialchars($b['full_name']) ?> <span class="text-muted">(<?= htmlspecialchars((string)$b['employee_code']) ?>)</span> — <?= number_format((float)$b['amt'], 2) ?></li>
+      <?php endforeach; ?>
+    </ul>
+    <?php if ($bonusAddable): ?>
+    <form method="post" class="mt-2" onsubmit="return confirm('Add the waiting bonus to this posted run? Net pay and the payslip go up, and an extra accounting journal is posted. This cannot be undone here.')">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="add_pending_bonus" value="1">
+      <button class="btn btn-sm btn-primary">Add all to this run</button>
+      <span class="small text-muted ms-2">Or click one employee's "+ … next run" in the table to add only theirs. Left alone, the next run pays it.</span>
+    </form>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
+
   <div class="hr-settings-card mb-3">
     <div class="settings-header">Summary</div>
     <div class="card-body">
@@ -196,7 +423,33 @@ echo hr_ui_page_header(
               <td><?= htmlspecialchars($r['full_name']) ?></td>
               <td><?= number_format($r['base_pay'],2) ?></td>
               <td><?= number_format($r['allowance'],2) ?></td>
-              <td><?= number_format($r['bonus'],2) ?></td>
+              <td>
+                <?= number_format($r['bonus'],2) ?>
+                <div class="small text-muted">
+                  <?php
+                    $bits=[];
+                    $pb=(float)($r['profile_bonus']??0);
+                    $ot=(float)($r['overtime']??0);
+                    $bp=round((float)$r['bonus']-$ot-$pb,2);
+                    if($ot) $bits[]="OT ".$ot;
+                    if($bp>0.005) $bits[]="Bonus+ ".$bp;
+                    if($pb) $bits[]="Bonus ".$pb;
+                    echo ($pb && $bits)?implode(' | ',$bits):'';
+                  ?>
+                </div>
+                <?php $pend=(float)($bonusPendingByEmp[(int)$r['employee_id']]??0); if($pend>0.005): ?>
+                  <?php if ($canAddPendingBonus): ?>
+                  <form method="post" class="no-print" onsubmit="return confirm('Add <?= number_format($pend,2) ?> bonus for <?= htmlspecialchars(addslashes((string)$r['full_name']), ENT_QUOTES, 'UTF-8') ?> to this posted run? Net pay and the payslip go up, and an extra accounting journal is posted.')">
+                    <?php csrf_field(); ?>
+                    <input type="hidden" name="add_pending_bonus" value="1">
+                    <input type="hidden" name="bonus_employee_id" value="<?= (int)$r['employee_id'] ?>">
+                    <button class="btn btn-link btn-sm p-0 text-decoration-underline" title="Add this employee's waiting bonus to this run now. If you leave it, the next run pays it.">+ <?= number_format($pend,2) ?> next run</button>
+                  </form>
+                  <?php else: ?>
+                  <div class="small text-primary" title="Added after this run was posted. Paid in the next run; not part of this run's totals.">+ <?= number_format($pend,2) ?> next run</div>
+                  <?php endif; ?>
+                <?php endif; ?>
+              </td>
               <td>
                 <?= number_format($r['deductions'],2) ?>
                 <div class="small text-muted">

@@ -443,3 +443,90 @@ function hr_payroll_post_accounting(PDO $conn, array $run, ?int $createdBy = nul
     hr_payroll_mark_accounting_success($conn, $runId, $journalId, $accountingSystem);
     return $journalId;
 }
+
+/**
+ * Extra journal for profile bonuses added to a run after it was posted
+ * (payroll_run_view.php "Add to this run"). The run's own journal is left as it
+ * is; this posts only the added amount, against the same accounts.
+ *
+ * $refId must be unique per call (the first bonus id being added): the shared
+ * engine allows one posted journal per reference.
+ *
+ * $reverse posts the opposite entry, for a paid bonus deleted from the
+ * employee's Bonus tab ($refId is then that bonus id).
+ */
+function hr_payroll_post_bonus_adjustment(PDO $conn, array $run, float $amount, int $refId, ?int $createdBy = null, bool $reverse = false): int
+{
+    $runId = (int)$run['id'];
+    $companyId = (int)($run['company_id'] ?? 1);
+    $payrollType = (($run['payroll_type'] ?? 'wps') === 'cash') ? 'cash' : 'wps';
+    $company = hr_payroll_company($conn, $companyId);
+    $accountingSystem = hr_payroll_accounting_system_for_company($company);
+    $amount = round($amount, 2);
+    if ($amount <= 0) {
+        throw new RuntimeException('Bonus amount must be greater than zero.');
+    }
+    $memo = ($reverse ? 'Bonus removed from ' : 'Bonus added to ') . hr_payroll_run_type_label($payrollType) . " #{$runId} ("
+        . $run['period_from'] . ' to ' . $run['period_to'] . ')';
+    $creditDesc = ($payrollType === 'cash' ? 'Cash payroll payable/payment - ' : 'WPS payroll payable/payment - ') . $memo;
+    $today = date('Y-m-d');
+    $expDebit = $reverse ? 0 : $amount;
+    $expCredit = $reverse ? $amount : 0;
+
+    if ($accountingSystem === 'shared') {
+        $accounts = hr_payroll_shared_accounting_accounts($conn, $companyId, $payrollType);
+        $result = create_and_post_journal(
+            $companyId,
+            'expense',
+            $reverse ? 'payroll_bonus_removed' : 'payroll_bonus',
+            $refId,
+            [
+                [
+                    'account_id' => (int)$accounts['salary_expense']['id'],
+                    'description' => "Salary expense - {$memo}",
+                    'reference' => "PAYROLL-{$runId}",
+                    'debit' => $expDebit,
+                    'credit' => $expCredit,
+                ],
+                [
+                    'account_id' => (int)$accounts['credit']['id'],
+                    'description' => $creditDesc,
+                    'reference' => "PAYROLL-{$runId}",
+                    'debit' => $expCredit,
+                    'credit' => $expDebit,
+                ],
+            ],
+            $memo,
+            $today,
+            $createdBy
+        );
+        if (empty($result['success']) || empty($result['journal_id'])) {
+            throw new RuntimeException('Shared accounting post failed: ' . ($result['error'] ?? 'Unknown error'));
+        }
+        return (int)$result['journal_id'];
+    }
+
+    $accounts = hr_payroll_accounting_accounts($conn, $companyId, $payrollType);
+    // 'adjustment', not 'payroll': hr_payroll_existing_journal_id() expects one payroll journal per run.
+    return gl_create_journal($conn, [
+        'date' => $today,
+        'source' => 'adjustment',
+        'source_id' => $runId,
+        'company_id' => $companyId,
+        'memo' => $memo,
+        'created_by' => $createdBy,
+    ], [
+        [
+            'account_id' => (int)$accounts['salary_expense']['id'],
+            'desc' => "Salary expense - {$memo}",
+            'debit' => $expDebit,
+            'credit' => $expCredit,
+        ],
+        [
+            'account_id' => (int)$accounts['credit']['id'],
+            'desc' => $creditDesc,
+            'debit' => $expCredit,
+            'credit' => $expDebit,
+        ],
+    ]);
+}

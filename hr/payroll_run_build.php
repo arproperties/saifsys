@@ -156,6 +156,42 @@ if (hr_loans_schema_ready($conn)) {
   }
 }
 
+// Unpaid bonuses from the employee profile (Bonus tab) dated up to the end of
+// this run period. A bonus dated inside a period that was already posted is
+// still unpaid, so it carries into the next run. They are paid on top of the
+// typed Bonus+ and kept apart in payroll_items.profile_bonus, so a bonus added,
+// changed or deleted after a draft was saved is picked up without touching what
+// was typed. Posting stamps employee_bonuses.paid_run_id so each bonus is paid
+// once. Off until migrations/hr_employee_bonuses.sql has run.
+$bonusByEmp = [];
+$bonusIdsByEmp = [];
+$hasProfileBonusCol = false;
+try {
+  $chkBonusCol = $conn->query("SHOW COLUMNS FROM payroll_items LIKE 'profile_bonus'");
+  $chkBonusPaid = $conn->query("SHOW COLUMNS FROM employee_bonuses LIKE 'paid_run_id'");
+  $hasProfileBonusCol = (bool)($chkBonusCol && $chkBonusCol->fetch(PDO::FETCH_ASSOC))
+      && (bool)($chkBonusPaid && $chkBonusPaid->fetch(PDO::FETCH_ASSOC));
+} catch (Throwable $e) {
+  $hasProfileBonusCol = false;
+}
+if ($hasProfileBonusCol) try {
+  $stBonus = $conn->prepare("
+    SELECT eb.id, eb.employee_id, eb.amount
+    FROM employee_bonuses eb
+    INNER JOIN employees e ON e.id = eb.employee_id AND e.company_id = ?
+    WHERE eb.paid_run_id IS NULL AND eb.bonus_date <= ?
+  ");
+  $stBonus->execute([$companyId, $to]);
+  foreach ($stBonus->fetchAll(PDO::FETCH_ASSOC) as $r) {
+    $bonusEid = (int)$r['employee_id'];
+    $bonusByEmp[$bonusEid] = round(($bonusByEmp[$bonusEid] ?? 0) + (float)$r['amount'], 2);
+    $bonusIdsByEmp[$bonusEid][] = (int)$r['id'];
+  }
+} catch (Throwable $e) {
+  $bonusByEmp = [];
+  $bonusIdsByEmp = [];
+}
+
 // Other deductions (fines etc.) — prefer remaining_balance when available
 $dedGiven = [];
 $dedApplied = [];
@@ -281,6 +317,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
       $a     = n($allow[$eid]      ?? $e['allowance']);
       $otA   = n($ot_amt[$eid]     ?? ($otByEmp[$eid]['amount'] ?? 0));
       $bonp  = n($bonus_plus[$eid] ?? 0);
+      $bonProfile = (float)($bonusByEmp[$eid] ?? 0);
       $abs   = round((float)($abs_days[$eid] ?? ($absByEmp[$eid] ?? 0)), 2);
       if ($abs < 0) {
         $abs = 0.0;
@@ -300,7 +337,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
       $daily  = hr_schedule_salary_daily_rate($b + $a, $scheduleByEmp[$eid] ?? []);
       $absDed = $abs * $daily;
 
-      $bonus = $otA + $bonp;
+      $bonus = $otA + $bonp + $bonProfile;
       $ded   = $advA + $dedA + $absDed;
       $net   = ($b + $a + $bonus) - $ded;
 
@@ -317,17 +354,18 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
 
       $ins = $conn->prepare("
         INSERT INTO payroll_items
-          (payroll_run_id, employee_id, base_pay, allowance, bonus, overtime, ot_hours, unpaid_leave_days, deductions, net_pay, notes, adv_applied, other_applied)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+          (payroll_run_id, employee_id, base_pay, allowance, bonus, overtime, ot_hours, unpaid_leave_days, deductions, net_pay, notes, adv_applied, other_applied" . ($hasProfileBonusCol ? ", profile_bonus" : "") . ")
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?" . ($hasProfileBonusCol ? ",?" : "") . ")
       ");
       $notes = [];
       if ($otA)   $notes[] = "OT ".number_format($otA,2);
       if ($bonp)  $notes[] = "Bonus+".number_format($bonp,2);
+      if ($bonProfile) $notes[] = "Bonus ".number_format($bonProfile,2);
       if ($advA)  $notes[] = "Loan-".number_format($advA,2);
       if ($dedA)  $notes[] = "Ded-".number_format($dedA,2);
       if ($abs > 0.005) $notes[] = "Abs(".rtrim(rtrim(number_format($abs, 2, '.', ''), '0'), '.')." d)-".number_format($absDed,2);
 
-      $ins->execute([
+      $insParams = [
         $run_id,
         $eid,
         $b,
@@ -341,7 +379,11 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
         implode(' | ',$notes),
         $advA,
         $dedA
-      ]);
+      ];
+      if ($hasProfileBonusCol) {
+        $insParams[] = $bonProfile;
+      }
+      $ins->execute($insParams);
       $postedItemIds[$eid] = (int)$conn->lastInsertId();
     }
 
@@ -433,6 +475,19 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
             $left -= $take;
           }
         }
+      }
+
+      // Mark the profile bonuses this run paid, so no later run pays them again.
+      $paidBonusIds = [];
+      foreach ($emps as $e) {
+        foreach ($bonusIdsByEmp[(int)$e['id']] ?? [] as $paidBonusId) {
+          $paidBonusIds[] = $paidBonusId;
+        }
+      }
+      if ($paidBonusIds) {
+        $conn->prepare("UPDATE employee_bonuses SET paid_run_id = ? WHERE paid_run_id IS NULL AND id IN ("
+            . implode(',', array_fill(0, count($paidBonusIds), '?')) . ")")
+          ->execute(array_merge([$run_id], $paidBonusIds));
       }
 
       $conn->prepare("UPDATE payroll_runs SET status='finalized' WHERE id=?")->execute([$run_id]);
@@ -565,7 +620,12 @@ foreach ($emps as $e){
   $autoOT  = $otByEmp[$eid] ?? ['hours'=>0,'amount'=>0];
   $otAmount = $saved && $saved['overtime'] !== null ? (float)$saved['overtime'] : (float)$autoOT['amount'];
   $bonusTotal = $saved ? (float)$saved['bonus'] : $otAmount;
-  $bonusPlus = max(0.0, $bonusTotal - $otAmount);
+  // The profile part is live while the run is editable; a posted run keeps
+  // what it was saved with. Bonus+ is whatever was typed on top.
+  $bonusProfileSaved = $saved ? (float)($saved['profile_bonus'] ?? 0) : 0.0;
+  $bonusProfile = ($canEditRun || !$saved) ? (float)($bonusByEmp[$eid] ?? 0) : $bonusProfileSaved;
+  $bonusPlus = max(0.0, $bonusTotal - $otAmount - $bonusProfileSaved);
+  $bonusChanged = $saved && $canEditRun && abs($bonusProfile - $bonusProfileSaved) > 0.005;
   $autoAbs = $saved && $saved['unpaid_leave_days'] !== null
     ? round((float)$saved['unpaid_leave_days'], 2)
     : round((float)($absByEmp[$eid] ?? 0), 2);
@@ -579,7 +639,7 @@ foreach ($emps as $e){
   $scheduleSummary = $scheduleByEmp[$eid] ?? ['has_schedule'=>false,'expected_days'=>0,'expected_hours'=>0.0];
   $daily  = hr_schedule_salary_daily_rate($b + $a, $scheduleSummary);
   $absDed = $autoAbs * $daily;
-  $bonus  = $otAmount + $bonusPlus;
+  $bonus  = $otAmount + $bonusPlus + $bonusProfile;
   $ded    = $advApply + $dedApply + $absDed;
   $net    = ($b + $a + $bonus) - $ded;
 
@@ -589,6 +649,8 @@ foreach ($emps as $e){
     'base'=>$b, 'allow'=>$a,
     'ot_hours'=>(float)$autoOT['hours'], 'ot_amount'=>$otAmount,
     'bonus_plus'=>$bonusPlus,
+    'bonus_profile'=>$bonusProfile,
+    'bonus_changed'=>$bonusChanged,
     'abs_days'=>$autoAbs, 'abs_ded'=>$absDed,
     'daily_rate'=>$daily,
     'scheduled_days'=>(int)($scheduleSummary['expected_days'] ?? 0),
@@ -819,7 +881,7 @@ echo hr_ui_page_header(
                     <input name="ot_amt[<?= $eid ?>]" value="<?= number_format($r['ot_amount'], 2, '.', '') ?>" class="form-control form-control-sm" title="OT amount">
                   </div>
                 </td>
-                <td class="col-money"><input name="bonus_plus[<?= $eid ?>]" value="<?= number_format($r['bonus_plus'], 2, '.', '') ?>" class="form-control form-control-sm"></td>
+                <td class="col-money"><input name="bonus_plus[<?= $eid ?>]" value="<?= number_format($r['bonus_plus'], 2, '.', '') ?>" class="form-control form-control-sm"><?php if ($r['bonus_profile'] > 0 || $r['bonus_changed']): ?><div class="small <?= $r['bonus_changed'] ? 'text-warning' : 'text-muted' ?>" data-profile-bonus="<?= number_format($r['bonus_profile'], 2, '.', '') ?>">+ <?= number_format($r['bonus_profile'], 2) ?> profile bonus<?= $r['bonus_changed'] ? ' (changed — save to keep)' : '' ?></div><?php endif; ?></td>
                 <td class="col-apply">
                   <div class="balance-pill <?= $r['adv_open'] > 0 ? '' : 'empty' ?>">Bal <?= number_format($r['adv_open'], 2) ?></div>
                   <input name="adv_apply[<?= $eid ?>]" value="<?= number_format($r['adv_apply'], 2, '.', '') ?>" class="form-control form-control-sm mt-1" min="0" max="<?= number_format($r['adv_open'], 2, '.', '') ?>" placeholder="Apply">
@@ -1070,7 +1132,8 @@ echo hr_ui_page_header(
     const scheduledDays = num(row.dataset.scheduledDays || '0');
     const daily = scheduledDays > 0 ? ((base + allow) / scheduledDays) : ((base + allow) / 30.0);
     const absDed = absDays * daily;
-    const bonus = otAmt + bonusPlus;
+    const bonusProfile = num(row.querySelector('[data-profile-bonus]')?.dataset.profileBonus);
+    const bonus = otAmt + bonusPlus + bonusProfile;
     const earnings = base + allow + bonus;
     const deductions = advApply + dedApply + absDed;
     const net = earnings - deductions;
