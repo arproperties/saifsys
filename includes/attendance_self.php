@@ -32,10 +32,30 @@ function attendance_self_enabled(): bool
 /**
  * Whether a person who has not checked in is stopped from using the system.
  * Only has any effect while attendance_self_enabled() is true.
+ *
+ * Only during working hours. Somebody who opens the system late at night is
+ * not arriving at work: stopping them made them tap Check In to get past, and
+ * that tap became a 10:36 PM arrival nobody ever checked out of. Outside the
+ * hours they are let straight through, and the bar still offers Check In for
+ * anyone who really is starting then.
  */
 function attendance_self_blocking(): bool
 {
-    return true;
+    return attendance_self_within_hours();
+}
+
+/** The hours in which a check-in is asked for: from, and up to but not including. H:i, company time. */
+function attendance_self_gate_hours(): array
+{
+    return ['05:00', '20:00'];
+}
+
+/** Whether a time (H:i, company time; default now) falls inside those hours. */
+function attendance_self_within_hours(?string $time = null): bool
+{
+    [$from, $to] = attendance_self_gate_hours();
+    $time = $time ?? attendance_self_now()->format('H:i');
+    return $time >= $from && $time < $to;
 }
 
 /**
@@ -180,6 +200,45 @@ function attendance_self_today_row(PDO $conn, int $employeeId, string $workDate)
     return $row ?: null;
 }
 
+/** How many days back a forgotten check-out is asked about. Older is HR's. */
+function attendance_self_unclosed_days(): int
+{
+    return 7;
+}
+
+/**
+ * The latest earlier day this person checked in on and never checked out of,
+ * or null.
+ *
+ * Only days still 'pending': once HR has approved or marked a day it is
+ * decided, and nobody is asked about it or allowed to write over it. The same
+ * rule the operations app uses (ops_attendance_unclosed), so a day forgotten
+ * in one place is asked about in whichever the person opens first.
+ */
+function attendance_self_unclosed_row(PDO $conn, int $employeeId, string $today): ?array
+{
+    $breakCols = attendance_self_breaks_available($conn) ? ', break_start, break_end' : '';
+    $earliest = (new DateTimeImmutable($today, attendance_self_tz()))
+        ->modify('-' . attendance_self_unclosed_days() . ' days')
+        ->format('Y-m-d');
+    try {
+        $st = $conn->prepare(
+            "SELECT id, work_date, check_in, check_out, status, source, notes{$breakCols}
+               FROM attendance
+              WHERE employee_id = ? AND work_date < ? AND work_date >= ?
+                AND check_in IS NOT NULL AND check_out IS NULL
+                AND source = 'self' AND status = 'pending'
+              ORDER BY work_date DESC
+              LIMIT 1"
+        );
+        $st->execute([$employeeId, $today, $earliest]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        return null;
+    }
+    return $row ?: null;
+}
+
 /** The caller's IP, as far as it can be trusted. */
 function attendance_self_client_ip(): string
 {
@@ -228,6 +287,8 @@ function attendance_self_ip_allowed(PDO $conn): bool
  *
  * 'stage' is the thing to act on:
  *   'n/a'        - feature off, field staff, or no employee record
+ *   'close_previous' - an earlier day was never checked out; they say when
+ *                  they left before anything else is offered
  *   'check_in'   - nothing recorded yet today
  *   'check_out'  - checked in, still here
  *   'break'      - away from the desk; the only thing they can do is come back
@@ -259,6 +320,7 @@ function attendance_self_state(PDO $conn): array
         'break_end'   => null,
         'break_mins'  => null,
         'auto_out'    => false,
+        'unclosed'    => null,
     ];
 
     if (!attendance_self_enabled()) {
@@ -315,6 +377,20 @@ function attendance_self_state(PDO $conn): array
             : 'check_out';
     } else {
         $state['stage'] = 'done';
+    }
+
+    // A day left open comes before everything except an open break — someone
+    // on a break has to be able to come back first. Asked in working hours
+    // only, for the same reason the check-in is: at night nobody is held up.
+    if ($state['stage'] !== 'break' && attendance_self_within_hours($state['now_time'])) {
+        $unclosed = attendance_self_unclosed_row($conn, (int)$employee['id'], $state['work_date']);
+        if ($unclosed) {
+            $state['unclosed'] = [
+                'work_date' => (string)$unclosed['work_date'],
+                'check_in'  => substr((string)$unclosed['check_in'], 0, 5),
+            ];
+            $state['stage'] = 'close_previous';
+        }
     }
 
     return $state;
@@ -383,6 +459,9 @@ function attendance_self_check_in(PDO $conn): array
     if ($state['stage'] === 'excused') {
         return ['ok' => false, 'message' => 'HR has already recorded today for you.'];
     }
+    if ($state['stage'] === 'close_previous') {
+        return ['ok' => false, 'message' => 'First enter the time you left on the day you did not check out.'];
+    }
     if ($state['stage'] !== 'check_in') {
         return ['ok' => false, 'message' => 'You have already checked in today.'];
     }
@@ -444,6 +523,9 @@ function attendance_self_check_out(PDO $conn): array
     if ($state['stage'] === 'excused') {
         return ['ok' => false, 'message' => 'HR has already recorded today for you.'];
     }
+    if ($state['stage'] === 'close_previous') {
+        return ['ok' => false, 'message' => 'First enter the time you left on the day you did not check out.'];
+    }
     if (empty($state['check_in'])) {
         return ['ok' => false, 'message' => 'You have not checked in today.'];
     }
@@ -491,6 +573,92 @@ function attendance_self_check_out(PDO $conn): array
     );
 
     return ['ok' => true, 'message' => 'Checked out at ' . $state['now_label'] . '. ' . $hours . ' hours today.'];
+}
+
+/**
+ * Close an earlier day the person forgot to check out of, at the time they say
+ * they left.
+ *
+ * This is their word, not a tap at the door, so it is held to more: the time
+ * has to fall after that day's check-in and on that same day, and the day is
+ * left 'pending' for HR instead of approving itself the way a real check-out
+ * does. The notes say it was entered afterwards, and when.
+ *
+ * A break still open on that day is ended at the same time.
+ */
+function attendance_self_close_previous(PDO $conn, string $workDate, string $time): array
+{
+    if (!attendance_self_enabled()) {
+        return ['ok' => false, 'message' => 'Self check-in is not switched on.'];
+    }
+
+    $state = attendance_self_state($conn);
+    $employee = $state['employee'];
+    if (!$employee) {
+        return ['ok' => false, 'message' => 'Your login is not linked to an employee record. Please ask HR.'];
+    }
+    $workDate = trim($workDate);
+    $time     = substr(trim($time), 0, 5);
+    if (!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $time)) {
+        return ['ok' => false, 'message' => 'Choose the time you left.'];
+    }
+    // Only ever the day the screen asked about. Posted twice, or closed by HR
+    // or on the operations app in the meantime, there is nothing left to do.
+    if (empty($state['unclosed']) || $state['unclosed']['work_date'] !== $workDate) {
+        return ['ok' => true, 'message' => 'That day is already closed.'];
+    }
+
+    $employeeId = (int)$employee['id'];
+    $row = attendance_self_unclosed_row($conn, $employeeId, $state['work_date']);
+    if (!$row || (string)$row['work_date'] !== $workDate) {
+        return ['ok' => true, 'message' => 'That day is already closed.'];
+    }
+
+    $checkIn = substr((string)$row['check_in'], 0, 5);
+    $hours   = attendance_self_hours($checkIn, $time);
+    if ($hours === null) {
+        return ['ok' => false, 'message' => 'The time you left must be after your check-in at ' . date('g:i A', strtotime($checkIn)) . '.'];
+    }
+
+    $what  = 'Check out time entered by staff on ' . attendance_self_now()->format('j M') . ' (forgot to check out)';
+    $notes = trim((string)$row['notes']);
+    $notes = mb_substr(($notes !== '' ? $notes . ' · ' : '') . $what, 0, 255);
+    $ip     = attendance_self_client_ip();
+    $userId = function_exists('current_user_id') ? (current_user_id() ?: null) : null;
+
+    $set    = 'check_out = ?, check_out_ip = ?, hours = ?, notes = ?, updated_by = ?, updated_at = NOW()';
+    $params = [$time, $ip, $hours, $notes, $userId];
+    $breakEnd = null;
+    if (!empty($row['break_start']) && empty($row['break_end'])) {
+        // Still marked away when the day ended: the break ends with the day,
+        // or where it began if they say they left before it started.
+        $breakStart = substr((string)$row['break_start'], 0, 5);
+        $breakEnd   = $time > $breakStart ? $time : $breakStart;
+        $set .= ', break_end = ?, break_minutes = ?';
+        $params[] = $breakEnd;
+        $params[] = attendance_self_minutes($breakStart, $breakEnd);
+    }
+    $params[] = (int)$row['id'];
+
+    try {
+        // check_out IS NULL again here, so two tabs cannot both write a time.
+        $upd = $conn->prepare("UPDATE attendance SET {$set} WHERE id = ? AND check_out IS NULL LIMIT 1");
+        $upd->execute($params);
+    } catch (PDOException $e) {
+        return ['ok' => false, 'message' => 'Could not save the time. Please try again.'];
+    }
+
+    attendance_self_audit(
+        $conn,
+        'attendance_self_close_previous',
+        (int)$row['id'],
+        $employee,
+        'Entered check-out ' . $time . ' for ' . $workDate . ' (' . $hours . ' h) — forgot to check out',
+        ['employee_id' => $employeeId, 'work_date' => $workDate, 'check_in' => $checkIn, 'check_out' => $time,
+         'hours' => $hours, 'break_end' => $breakEnd, 'ip' => $ip, 'source' => 'self']
+    );
+
+    return ['ok' => true, 'message' => 'Saved. You left at ' . date('g:i A', strtotime($time)) . ' — ' . $hours . ' hours.'];
 }
 
 /** Minutes between two H:i times on the same day. Never negative. */
@@ -807,9 +975,9 @@ function attendance_self_is_asset(string $path): bool
 }
 
 /**
- * Stop anyone who has not checked in yet, or who is on a break, and show them
- * the pop-up on whatever page they asked for. Called once per request from
- * includes/auth.php.
+ * Stop anyone who has not checked in yet, who left an earlier day without
+ * checking out, or who is on a break, and show them the pop-up on whatever
+ * page they asked for. Called once per request from includes/auth.php.
  *
  * Someone on leave, someone HR has already marked, someone with no employee
  * record and anyone who has already checked in all pass through untouched.
@@ -868,7 +1036,7 @@ function attendance_self_gate_enforce(PDO $conn): void
     }
 
     $wall = ($state['stage'] === 'break')
-        || ($state['stage'] === 'check_in' && attendance_self_blocking());
+        || (in_array($state['stage'], ['check_in', 'close_previous'], true) && attendance_self_blocking());
     if (!$wall) {
         return;
     }

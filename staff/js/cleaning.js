@@ -65,6 +65,11 @@
       checkOutBody: 'This is your last entry today. You cannot check in again until tomorrow.',
       checkOutConfirm: 'Yes, check out',
       checkOutCancel: 'Not yet',
+      forgotTitle: function (day, yesterday) { return 'You did not check out ' + (yesterday ? 'yesterday' : 'on ' + day); },
+      forgotBody: function (time) { return 'You checked in at ' + time + '. What time did you leave? Save it, then check in for today.'; },
+      forgotSave: 'Save',
+      forgotPick: 'Choose the time you left.',
+      forgotTooEarly: function (time) { return 'The time you left must be after your check in at ' + time + '.'; },
     },
     requests: {
       title: 'Tenant requests',
@@ -665,7 +670,7 @@
       });
     }
     if (op.kind === 'attendance') {
-      return api('attendance/' + op.action, { method: 'POST', body: { client_at: op.at }, requestId: op.id, background: true });
+      return api('attendance/' + op.action, { method: 'POST', body: { client_at: op.at, work_date: op.workDate, time: op.time }, requestId: op.id, background: true });
     }
 
     var jobId = resolveJobId(op.jobId);
@@ -956,10 +961,35 @@
     enqueue(op);
   }
 
+  /**
+   * The saved attendance, unless it is a finished day from an earlier date —
+   * that says nothing about today, and must not hide Check in.
+   */
+  function attendanceNow() {
+    var data = cacheGet('attendance');
+    if (data && data.state === 'checked_out' && data.work_date && data.work_date !== nowStamp().slice(0, 10)) return null;
+    return data;
+  }
+
+  /** An earlier day with no check out: record when they left. Check in comes after. */
+  function closePrevious() {
+    var data = cacheGet('attendance');
+    var open = data && data.unclosed;
+    if (!open) return;
+    var el = document.getElementById('att-left');
+    var time = String((el && el.value) || ui.leftAt || '').slice(0, 5);
+    if (!/^\d\d:\d\d$/.test(time)) { S.toast(T.attendance.forgotPick); return; }
+    if (time <= open.check_in) { S.toast(T.attendance.forgotTooEarly(open.check_in)); return; }
+    ui.leftAt = '';
+    cacheSet('attendance', Object.assign({}, data, { unclosed: null }));
+    enqueue({ kind: 'attendance', jobId: 0, action: 'close-previous', workDate: open.work_date, time: time });
+  }
+
   function checkInOut(action) {
     var stamp = nowStamp();
     var hm = stamp.slice(11, 16);
-    var old = cacheGet('attendance');
+    var old = attendanceNow();
+    if (old && old.unclosed) return;
     if (action === 'check-in') {
       if (!old || old.state === 'not_checked_in') {
         cacheSet('attendance', { state: 'checked_in', work_date: stamp.slice(0, 10), check_in: hm, check_out: null, hours: null, message: null });
@@ -1317,6 +1347,7 @@
 
   var ui = {
     tab: 'today',
+    leftAt: '',
     finishNotes: '',
     draft: '',
     asking: false,
@@ -1409,13 +1440,23 @@
   /** Check in / out. Shown on the main screen, not in the Cleaning list. */
   function attendanceBar() {
     if (!signedIn()) return '';
-    var data = cacheGet('attendance');
+    var saved = cacheGet('attendance');
+    var data = attendanceNow();
     var q = query('attendance');
-    var offlineUnknown = !data && q.error && q.error.kind === 'offline';
-    if (q.error && !data && !offlineUnknown) {
+    var offlineUnknown = !saved && q.error && q.error.kind === 'offline';
+    if (q.error && !saved && !offlineUnknown) {
       return '<div class="att note">' + icon('alert') + '<span class="grow">' + esc(q.error.message) + '</span></div>';
     }
-    if (!data && !offlineUnknown) return '';
+    if (!saved && !offlineUnknown) return '';
+    // A day left open comes first: nothing else is offered until it is closed.
+    if (saved && saved.unclosed) {
+      var open = saved.unclosed;
+      var yesterday = Math.round((parseDate(open.work_date) - startOfToday()) / 86400000) === -1;
+      return '<div class="att note forgot"><strong>' + esc(T.attendance.forgotTitle(dayLabel(open.work_date), yesterday)) + '</strong>' +
+        '<div>' + esc(T.attendance.forgotBody(open.check_in || '')) + '</div>' +
+        '<div class="att-row"><input type="time" class="field" id="att-left" value="' + esc(ui.leftAt || '') + '">' +
+        '<button type="button" class="btn auto" data-action="cleaning:close-previous">' + esc(T.attendance.forgotSave) + '</button></div></div>';
+    }
     if (data && data.state === 'hr_marked') return '<div class="att note">' + icon('user') + '<span class="grow">' + esc(data.message) + '</span></div>';
     if (data && data.state === 'checked_out') {
       return '<div class="att note"><span class="ok">' + icon('check') + '</span><span class="grow">' +
@@ -2084,6 +2125,7 @@
       case 'claim': claim(id); break;
       case 'new': ui.newJob = null; S.go({ app: 'cleaning', view: 'new', kind: el.getAttribute('data-kind') || undefined }); refreshScreen(); break;
       case 'check-in': checkInOut('check-in'); break;
+      case 'close-previous': closePrevious(); break;
       case 'check-out':
         S.sheet({
           title: T.attendance.checkOutTitle, body: T.attendance.checkOutBody,
@@ -2289,7 +2331,9 @@
   function input(e) {
     var id = e.target.id;
     var r = S.state.route;
-    if (id === 'msg-input') {
+    if (id === 'att-left') {
+      ui.leftAt = e.target.value;
+    } else if (id === 'msg-input') {
       ui.draft = e.target.value;
       e.target.style.height = 'auto';
       ui.draftHeight = ui.draft ? Math.min(140, e.target.scrollHeight) : 0;

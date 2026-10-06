@@ -8,7 +8,7 @@
  *
  * It draws itself and nothing else. Everything it needs to decide comes from
  * attendance_self_state(). It shows in every state: the check-in pop-up, the
- * break screen, the check-out bar, the day already recorded, a day HR has
+ * forgotten check-out pop-up, the break screen, the check-out bar, the day already recorded, a day HR has
  * marked, and a login with no employee record behind it. Only the feature being off, or a field
  * staff login, prints nothing.
  *
@@ -62,6 +62,16 @@ $asGreeting = $asHour < 12 ? 'Good morning' : ($asHour < 17 ? 'Good afternoon' :
 $asSecs = ($asHour * 3600) + ((int)$asMoment->format('i') * 60) + (int)$asMoment->format('s');
 
 $asBlocking = ($asState['stage'] === 'check_in') && attendance_self_blocking();
+
+// A day left without a check-out: they say when they left before anything else.
+$asClosePrev = ($asState['stage'] === 'close_previous') && !empty($asState['unclosed']);
+$asPrevDay = '';
+if ($asClosePrev) {
+    $asPrevDate = new DateTimeImmutable($asState['unclosed']['work_date'], attendance_self_tz());
+    $asPrevDay = $asPrevDate->format('Y-m-d') === $asMoment->modify('-1 day')->format('Y-m-d')
+        ? 'yesterday'
+        : 'on ' . $asPrevDate->format('l, j M');
+}
 
 // On a break the screen is held whatever the check-in switch says: the person
 // chose to step away, and nobody should be working while marked away.
@@ -122,6 +132,11 @@ if (!function_exists('h')) {
   font-size:13px;text-align:left;line-height:1.45;}
 .as-ok{margin:0 0 16px;padding:10px 13px;border-radius:11px;background:#f0fdf4;color:#166534;
   font-size:13px;text-align:left;line-height:1.45;}
+
+.as-time{display:block;width:100%;box-sizing:border-box;margin:0 0 14px;padding:13px 14px;border:1.5px solid #e2dbd0;
+  border-radius:13px;background:#fff;color:#1c1917;font:inherit;font-size:20px;font-weight:650;text-align:center;
+  font-variant-numeric:tabular-nums;}
+.as-time:focus{outline:none;border-color:#9a3412;box-shadow:0 0 0 3px rgba(154,52,18,.15);}
 
 .as-bar{position:fixed;right:18px;bottom:18px;z-index:19000;display:flex;align-items:center;gap:13px;
   background:#fffdfa;border:1px solid #eae5dd;border-radius:15px;padding:11px 13px 11px 16px;
@@ -199,6 +214,51 @@ if (!function_exists('h')) {
     form.addEventListener('submit', function () {
       btn.disabled = true;
       btn.textContent = 'One moment…';
+    });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+}());
+</script>
+
+<?php elseif ($asClosePrev): ?>
+<div class="as-scrim" id="asPrevScrim" role="dialog" aria-modal="true" aria-labelledby="asPrevTitle">
+  <div class="as-card">
+    <span class="as-badge">Attendance</span>
+    <h2 id="asPrevTitle">You did not check out <?= h($asPrevDay) ?></h2>
+    <p class="as-day">You checked in at <?= h(as_time_label($asState['unclosed']['check_in'])) ?></p>
+
+    <?php if ($asFlash && empty($asFlash['ok'])): ?>
+      <p class="as-err" style="margin-top:16px;"><?= h($asFlash['message']) ?></p>
+    <?php endif; ?>
+
+    <p class="as-note" style="margin-top:18px;">What time did you leave? Enter it to finish that day, then you can check in for today.</p>
+    <form method="post" action="<?= h($asEndpoint) ?>" id="asFormPrev">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="action" value="close">
+      <input type="hidden" name="work_date" value="<?= h($asState['unclosed']['work_date']) ?>">
+      <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
+      <input type="time" name="time" class="as-time" id="asPrevTime" required aria-label="Time you left">
+      <button type="submit" class="as-btn as-btn-out" id="asBtnPrev">Save</button>
+    </form>
+    <p class="as-foot">The time must be after your check-in, on that same day. HR will review it. If you left after midnight, enter 11:59 PM and tell HR.</p>
+
+    <p class="as-who">
+      Signed in as <strong><?= h($asName !== '' ? $asName : 'this account') ?></strong> &middot;
+      <a href="<?= h($asLogout) ?>">Not you? Sign out</a>
+    </p>
+  </div>
+</div>
+<script>
+(function () {
+  var form = document.getElementById('asFormPrev');
+  var btn = document.getElementById('asBtnPrev');
+  if (form && btn) {
+    form.addEventListener('submit', function () {
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
     });
   }
 

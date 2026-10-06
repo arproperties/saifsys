@@ -2,7 +2,8 @@
 /**
  * API: staff self check-in / check-out.
  *
- * Takes a POST with action=in, out, break or resume.
+ * Takes a POST with action=in, out, break, resume or close (a forgotten
+ * check-out: work_date and the time they left).
  *
  * Answers a plain form submit with a redirect back to where the person was,
  * so the pop-up keeps working with JavaScript switched off, and answers a
@@ -71,6 +72,8 @@ if ($action === 'in') {
     $result = attendance_self_break_start($conn);
 } elseif ($action === 'resume') {
     $result = attendance_self_break_end($conn);
+} elseif ($action === 'close') {
+    $result = attendance_self_close_previous($conn, (string)($_POST['work_date'] ?? ''), (string)($_POST['time'] ?? ''));
 } else {
     attendance_self_respond(false, 'Unknown action.', $wantsJson, 400);
     exit;

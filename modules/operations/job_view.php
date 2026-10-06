@@ -57,7 +57,7 @@ $comStmt = $conn->prepare("
 $comStmt->execute([$jobId]);
 $comments = $comStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-// Photos and voice notes sent from the field app. A message can be nothing but
+// Photos and voice notes sent from the staff app. A message can be nothing but
 // its attachment — many of the staff using the app cannot write English — so a
 // comment with an empty `comment` is normal, not corrupt.
 $commentMedia = [];
@@ -228,7 +228,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
   <div class="tab-pane fade <?= $tab === 'details' ? 'show active' : '' ?>"
        id="opsPane-details" role="tabpanel" aria-labelledby="opsTab-details">
 
-    <!-- Details and time. The clock is read-only; the field app runs it. -->
+    <!-- Details and time. The clock is read-only; the staff app runs it. -->
     <div class="card card-round mb-3">
       <div class="card-body">
         <h6 class="fw-bold mb-3">Details</h6>
@@ -278,10 +278,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
         </div>
 
         <?php // The clock belongs to the person doing the work: starting,
-              // finishing and moving the status all happen in the field app,
+              // finishing and moving the status all happen in the staff app,
               // not from the office. ?>
         <?php if ($isOpen): ?>
-          <p class="text-muted small mb-0">Started and finished by the staff member in the field app.</p>
+          <p class="text-muted small mb-0">Started and finished by the staff member in the staff app.</p>
         <?php endif; ?>
 
         <?php if (!empty($job['completion_notes'])): ?>
@@ -300,7 +300,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <div class="card-body">
           <h6 class="fw-bold mb-3"><i class="bi bi-list-check"></i> Cleaning checklist</h6>
           <?php if (!$checklist): ?>
-            <p class="text-muted small mb-0">The cleaner ticks this in the field app. It is saved when the job is finished.</p>
+            <p class="text-muted small mb-0">The cleaner ticks this in the staff app. It is saved when the job is finished.</p>
           <?php else: ?>
             <div class="row g-3">
               <?php foreach (ops_cleaning_checklist() as $section): ?>
@@ -342,7 +342,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
       </div>
     <?php endif; ?>
 
-    <?php // Maintenance: R410 gas weighed before and after, per unit, from the field app. ?>
+    <?php // Maintenance: R410 gas weighed before and after, per unit, from the staff app. ?>
     <?php if (ops_job_has_gas($job)): ?>
       <?php $gasReadings = ops_gas_readings($conn, (int)$job['id']); ?>
       <?php $gasTotal = array_sum(array_map(static fn(array $r): float => (float)(ops_gas_used_kg($r) ?? 0), $gasReadings)); ?>
@@ -361,7 +361,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
               <?php elseif ($job['status'] === 'done'): ?>
                 No gas recorded.
               <?php else: ?>
-                The technician weighs the cylinder before and after each unit in the field app, with a photo of the scale.
+                The technician weighs the cylinder before and after each unit in the staff app, with a photo of the scale.
               <?php endif; ?>
             </p>
           <?php else: ?>
@@ -482,7 +482,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
     <!-- Conversation -->
     <?php
       /*
-       * The office end of the same conversation the field app shows.
+       * The office end of the same conversation the staff app shows.
        *
        * It is deliberately the app's screen, not a web form that happens to
        * hold messages: photos and videos in a grid, one on its own shown big,
