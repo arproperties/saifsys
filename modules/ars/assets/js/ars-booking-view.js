@@ -272,37 +272,64 @@
       : '';
   }
 
-  function checkoutBooking() {
-    var planned = plannedCheckOut();
+  function todayYmd() {
     var today = new Date();
-    var yyyy = today.getFullYear();
-    var mm = String(today.getMonth() + 1).padStart(2, '0');
-    var dd = String(today.getDate()).padStart(2, '0');
-    var actual = yyyy + '-' + mm + '-' + dd;
-    var early = planned !== '' && actual < planned;
-    var msg;
-    if (early) {
-      msg =
-        'Early check-out\n\n' +
-        'Planned check-out: ' +
-        planned +
-        '\nActual check-out: ' +
-        actual +
-        '\n\n' +
-        'No stay money will be refunded for unused nights.\n' +
-        'Security deposit is handled separately on the Deposit tab.\n' +
-        'Cleaning will be scheduled for ' +
-        actual +
-        '.\n\nContinue with check-out?';
-    } else {
-      msg = 'Check out this guest now?';
+    return today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+  }
+
+  // What the chosen check-out date means, spelled out under the date box.
+  function refreshCheckoutHint() {
+    var dateEl = document.getElementById('checkoutDate');
+    var hintEl = document.getElementById('checkoutDateHint');
+    if (!dateEl || !hintEl) return;
+    var planned = plannedCheckOut();
+    var actual = dateEl.value;
+    if (!actual) {
+      hintEl.textContent = '';
+      return;
     }
-    if (!window.confirm(msg)) return;
-    var btns = document.querySelectorAll('[data-ars-action="checkout"]');
+    var lines = [];
+    if (planned !== '' && actual < planned) {
+      lines.push('Early check-out: planned ' + planned + ', actual ' + actual + '. No stay money is refunded for unused nights.');
+    } else if (planned !== '' && actual > planned) {
+      lines.push('Later than the planned check-out (' + planned + '). Extra nights are not billed here; add them on the Extend tab first if they are owed.');
+    }
+    if (actual < todayYmd()) {
+      lines.push('The cleaning work order is still made for today.');
+    }
+    lines.push('The security deposit is handled separately on the Deposit tab.');
+    hintEl.textContent = lines.join(' ');
+  }
+
+  // Check Out asks for the date the guest actually left: staff are not always
+  // there on the day, so it can be set back, but never into the future.
+  function checkoutBooking() {
+    var modalEl = document.getElementById('checkoutModal');
+    var dateEl = document.getElementById('checkoutDate');
+    if (!modalEl || !dateEl || !window.bootstrap || !window.bootstrap.Modal) {
+      if (window.confirm('Check out this guest now?')) submitCheckout('');
+      return;
+    }
+    var root = document.getElementById('ars-booking-view-root');
+    var today = todayYmd();
+    dateEl.max = today;
+    dateEl.min = root ? root.getAttribute('data-check-in') || '' : '';
+    dateEl.value = today;
+    var alertEl = document.getElementById('checkoutModalAlert');
+    if (alertEl) {
+      alertEl.className = 'd-none';
+      alertEl.innerHTML = '';
+    }
+    refreshCheckoutHint();
+    window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  }
+
+  function submitCheckout(actual) {
+    var btns = document.querySelectorAll('[data-ars-action="checkout"], #checkoutConfirmBtn');
     btns.forEach(function (b) {
       b.disabled = true;
     });
-    ajaxPost('checkout')
+    ajaxPost('checkout', { actual_check_out: actual })
       .then(function (d) {
         if (d.success) {
           var flash = d.is_early_checkout ? 'early_checkout' : 'checked_out';
@@ -312,14 +339,32 @@
         btns.forEach(function (b) {
           b.disabled = false;
         });
-        showAlert(d.error || 'Check-out failed', 'danger');
+        showAlert(d.error || 'Check-out failed', 'danger', 'checkoutModalAlert');
       })
       .catch(function (err) {
         btns.forEach(function (b) {
           b.disabled = false;
         });
-        showAlert(err && err.message ? err.message : 'Network error', 'danger');
+        showAlert(err && err.message ? err.message : 'Network error', 'danger', 'checkoutModalAlert');
       });
+  }
+
+  function initCheckoutModal() {
+    var dateEl = document.getElementById('checkoutDate');
+    if (dateEl) {
+      dateEl.addEventListener('change', refreshCheckoutHint);
+      dateEl.addEventListener('input', refreshCheckoutHint);
+    }
+    var btn = document.getElementById('checkoutConfirmBtn');
+    if (btn) {
+      btn.addEventListener('click', function () {
+        if (!dateEl || !dateEl.value) {
+          showAlert('Choose the check-out date.', 'danger', 'checkoutModalAlert');
+          return;
+        }
+        submitCheckout(dateEl.value);
+      });
+    }
   }
 
   function bookingAction(action) {
@@ -2503,6 +2548,7 @@
     initActivityFilters();
     initDepositSettleModal();
     initEditStayDatesModal();
+    initCheckoutModal();
     initPaymentModalGuards();
     initPaymentPlanTabs();
     initEditPaymentModal();

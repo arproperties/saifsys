@@ -1913,6 +1913,28 @@ echo $arsWsLifecycleHtml;
     </div>
 </div>
 
+<!-- Check Out Modal -->
+<div class="modal fade" id="checkoutModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header" style="background:var(--ars-primary);color:#fff">
+                <h5 class="modal-title"><i class="bi bi-box-arrow-right me-2"></i>Check out guest</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="checkoutModalAlert" class="d-none"></div>
+                <label class="form-label fw-semibold" for="checkoutDate">Check-out date</label>
+                <input type="date" id="checkoutDate" class="form-control">
+                <div class="small text-muted mt-2" id="checkoutDateHint"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-ars" id="checkoutConfirmBtn"><i class="bi bi-box-arrow-right me-1"></i>Check out</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Add Charge Modal -->
 <div class="modal fade" id="addChargeModal" tabindex="-1">
     <div class="modal-dialog">

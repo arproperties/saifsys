@@ -205,7 +205,26 @@ try {
             require_once __DIR__ . '/includes/ars_early_checkout.php';
             ars_early_checkout_ensure_schema($conn);
 
-            $actualOut = date('Y-m-d');
+            // Staff may check out after the day the guest actually left (an off
+            // day, say), so the date can be typed; it defaults to today.
+            $todayOut = (new DateTime('now', new DateTimeZone('Asia/Dubai')))->format('Y-m-d');
+            $actualOut = trim((string)($_POST['actual_check_out'] ?? ''));
+            if ($actualOut === '') {
+                $actualOut = $todayOut;
+            }
+            $dOut = DateTime::createFromFormat('Y-m-d', $actualOut);
+            if (!$dOut || $dOut->format('Y-m-d') !== $actualOut) {
+                echo json_encode(['success' => false, 'error' => 'Choose a valid check-out date.']);
+                exit;
+            }
+            if ($actualOut > $todayOut) {
+                echo json_encode(['success' => false, 'error' => 'Check-out date cannot be in the future.']);
+                exit;
+            }
+            if ($actualOut < (string)$booking['check_in']) {
+                echo json_encode(['success' => false, 'error' => 'Check-out date cannot be before check-in.']);
+                exit;
+            }
             $plannedOut = ars_booking_planned_check_out($booking);
             $isEarly = ars_checkout_would_be_early($booking, $actualOut);
 
@@ -234,7 +253,9 @@ try {
                 $stmt->execute([$booking['unit_id']]);
                 $unit = $stmt->fetch(PDO::FETCH_ASSOC);
                 if ($unit) {
-                    $cleanResult = ars_trigger_checkout_cleaning($conn, $booking, $unit, $settings, $userId);
+                    // The cleaning is still to be done, so its work order is dated
+                    // today even when the check-out itself is backdated.
+                    $cleanResult = ars_trigger_checkout_cleaning($conn, array_merge($booking, ['actual_check_out' => $todayOut]), $unit, $settings, $userId);
                 } else {
                     $cleanResult = [
                         'success' => false,
