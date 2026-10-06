@@ -16,7 +16,7 @@ require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/rpay_helper.php';
 
 require_login(get_application_web_root() . '/login');
-$code = binv_boot($conn)['code'];
+$code = rpay_boot($conn);
 
 $rpayBase = get_application_web_root() . '/modules/recurring_payments';
 
@@ -50,9 +50,6 @@ try {
 }
 $month = (string)($data['month'] ?? date('Y-m'));
 $buildings = $data['buildings'] ?? [];
-if (!$buildings) {
-    rpay_stop(new BinvError('No building is yours to keep payments for. In Reem, the master names the administrator of each building.', 403));
-}
 $units = $data['units'] ?? [];
 $dues = $data['dues'] ?? [];
 $totals = $data['totals'] ?? [];

@@ -243,19 +243,9 @@ function get_user_departments(int $userId, ?PDO $conn = null): array {
         // Reem not reachable or not set up: the module is simply not offered.
     }
 
-    // Recurring Payments: the same rule, asked of Reem the same way.
-    unset($departments[MODULE_RECURRING_PAYMENTS]);
-    try {
-        if ($userId === (int)current_user_id()) {
-            require_once __DIR__ . '/../modules/recurring_payments/includes/rpay_helper.php';
-            if (rpay_launcher_access($conn, $userId)) {
-                $departments[MODULE_RECURRING_PAYMENTS] = [DEPT_RECURRING_PAYMENTS];
-            }
-        }
-    } catch (Throwable $e) {
-        // Reem not reachable or not set up: the module is simply not offered.
-    }
-    
+    // Recurring Payments is an ordinary role tick, for the accountants: it has its own
+    // buildings and asks Reem nothing about who keeps which.
+
     return $departments;
 }
 
@@ -508,6 +498,8 @@ function rbac_department_selection_to_structure(array $selectedDeptCodes): array
             $module = MODULE_LEGAL;
         } elseif ($deptCode === DEPT_OPERATIONS_SUPERVISOR) {
             $module = MODULE_OPERATIONS;
+        } elseif ($deptCode === DEPT_RECURRING_PAYMENTS) {
+            $module = MODULE_RECURRING_PAYMENTS;
         }
         if ($module) {
             if (!isset($departmentsStructure[$module])) {

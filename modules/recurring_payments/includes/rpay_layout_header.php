@@ -115,6 +115,9 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($rpayBase) ?>/entries.php" class="slink <?= in_array($currentPage, ['entries.php', 'entry_form.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-arrow-repeat"></i></span><span class="slabel">Entries</span>
       </a>
+      <a href="<?= h($rpayBase) ?>/buildings.php" class="slink <?= $currentPage === 'buildings.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-building"></i></span><span class="slabel">Buildings</span>
+      </a>
 
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>

@@ -2,13 +2,15 @@
 /**
  * Recurring Payments — shared helpers.
  *
- * saifsys only draws the screens. The entries, the monthly payments, the day each one
- * is created, and who may see a building's payments all live in the Reem app. Every
- * read and every change on these pages is one call to Reem, through its door for
- * saifsys: /api/from-saifsys/recurring-payments.
+ * saifsys only draws the screens. The buildings (the module's own list, nothing to do
+ * with any other building list), the entries, the monthly payments and the day each one
+ * is created all live in the Reem app. Every read and every change on these pages is
+ * one call to Reem, through its door for saifsys: /api/from-saifsys/recurring-payments.
  *
- * Nothing is stored in the saifsys database and no rule is decided here. What Reem
- * refuses, it refuses with a sentence, and that sentence is what the page shows.
+ * Nothing is stored in the saifsys database. Who may open the module is a role tick
+ * here (it is the accountants'); everyone let in sees all of it. Every other rule is
+ * Reem's: what it refuses, it refuses with a sentence, and that sentence is what the
+ * page shows.
  *
  * The line to Reem, the employee-code lookup, the error class and the flash message
  * are Building Inventory's; this module only names its own route.
@@ -17,6 +19,7 @@
 require_once dirname(__DIR__, 2) . '/building_inventory/includes/binv_helper.php';
 
 const RPAY_REEM_PATH = '/api/from-saifsys/recurring-payments';
+const RPAY_NAME_MAX = 80;
 const RPAY_TITLE_MAX = 120; // input lengths only, so the box stops where Reem would cut
 const RPAY_UNIT_MAX = 80;
 const RPAY_NOTES_MAX = 500;
@@ -36,29 +39,14 @@ function rpay_reem(string $code, string $method, string $path = '', ?array $json
 }
 
 /**
- * Whether the launcher should offer this module to a login: true when Reem says they
- * keep at least one building. Remembered in the session for ten minutes, asked with a
- * short wait, and any trouble at all means no - the launcher must never hang or break
- * because Reem is slow.
+ * Every page starts here: only a login whose role has Recurring Payments ticked goes on.
+ * Returns the employee code Reem knows the person by.
  */
-function rpay_launcher_access(PDO $conn, int $userId): bool
+function rpay_boot(PDO $conn): string
 {
-    if ($userId <= 0 || !binv_reem_configured() || session_status() !== PHP_SESSION_ACTIVE) {
-        return false;
-    }
-    $kept = $_SESSION['rpay_launcher'] ?? null;
-    if (is_array($kept) && (int)($kept['user'] ?? 0) === $userId && time() - (int)($kept['at'] ?? 0) < 600) {
-        return !empty($kept['ok']);
-    }
-    $ok = false;
-    try {
-        $code = binv_employee_code($conn, $userId);
-        $ok = $code !== '' && count(rpay_reem($code, 'GET', '/entries', null, 4)['buildings'] ?? []) > 0;
-    } catch (Throwable $e) {
-        $ok = false;
-    }
-    $_SESSION['rpay_launcher'] = ['user' => $userId, 'at' => time(), 'ok' => $ok];
-    return $ok;
+    require_once dirname(__DIR__, 3) . '/includes/rbac_department.php';
+    require_department_access(MODULE_RECURRING_PAYMENTS, DEPT_RECURRING_PAYMENTS, $conn);
+    return binv_boot($conn)['code'];
 }
 
 /** A page that cannot go on: Reem's reason, in a plain block, and stop. */

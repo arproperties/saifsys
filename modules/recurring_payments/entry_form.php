@@ -15,7 +15,7 @@ require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/rpay_helper.php';
 
 require_login(get_application_web_root() . '/login');
-$code = binv_boot($conn)['code'];
+$code = rpay_boot($conn);
 
 $rpayBase = get_application_web_root() . '/modules/recurring_payments';
 $id = (int)($_GET['id'] ?? 0);
@@ -28,9 +28,6 @@ try {
     rpay_stop($e);
 }
 $buildings = $data['buildings'] ?? [];
-if (!$buildings) {
-    rpay_stop(new BinvError('No building is yours to keep payments for. In Reem, the master names the administrator of each building.', 403));
-}
 
 $entry = null;
 if ($id > 0) {
@@ -52,6 +49,7 @@ $errors = [];
 $form = [
     'title' => $entry['title'] ?? '',
     'building_id' => $entry ? (string)($entry['building']['id'] ?? '') : '',
+    'new_building' => '',
     'unit' => $entry['unit'] ?? '',
     'amount' => $entry ? number_format((float)($entry['amount'] ?? 0), 2, '.', '') : '',
     'day' => $entry ? (string)($entry['day'] ?? 1) : '1',
@@ -62,7 +60,7 @@ $form = [
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
-    foreach (['title', 'building_id', 'unit', 'amount', 'day', 'first_month', 'notes'] as $k) {
+    foreach (['title', 'building_id', 'new_building', 'unit', 'amount', 'day', 'first_month', 'notes'] as $k) {
         $form[$k] = is_string($_POST[$k] ?? null) ? $_POST[$k] : '';
     }
     $form['auto_create'] = !empty($_POST['auto_create']);
@@ -103,12 +101,18 @@ require __DIR__ . '/includes/rpay_layout_header.php';
 
       <div class="col-md-6">
         <label class="form-label fw-semibold">Building</label>
-        <select name="building_id" class="form-select" data-search data-placeholder="Pick a building" required>
+        <select name="building_id" class="form-select" data-search data-placeholder="Pick a building">
           <option value=""></option>
           <?php foreach ($buildings as $b): ?>
             <option value="<?= (int)$b['id'] ?>"<?= (string)$form['building_id'] === (string)$b['id'] ? ' selected' : '' ?>><?= h($b['name']) ?></option>
           <?php endforeach; ?>
         </select>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">Or a new building <span class="text-muted fw-normal small">(optional)</span></label>
+        <input type="text" name="new_building" class="form-control" maxlength="<?= RPAY_NAME_MAX ?>"
+               value="<?= h($form['new_building']) ?>" placeholder="Type its name to add it">
       </div>
 
       <div class="col-md-6">

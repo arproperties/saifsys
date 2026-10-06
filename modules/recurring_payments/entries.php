@@ -13,7 +13,7 @@ require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/rpay_helper.php';
 
 require_login(get_application_web_root() . '/login');
-$code = binv_boot($conn)['code'];
+$code = rpay_boot($conn);
 
 $rpayBase = get_application_web_root() . '/modules/recurring_payments';
 $selfUrl = $rpayBase . '/entries.php';
@@ -46,9 +46,6 @@ try {
     rpay_stop($e);
 }
 $entries = $data['entries'] ?? [];
-if (!($data['buildings'] ?? [])) {
-    rpay_stop(new BinvError('No building is yours to keep payments for. In Reem, the master names the administrator of each building.', 403));
-}
 
 $pageTitle = 'Entries';
 require __DIR__ . '/includes/rpay_layout_header.php';
