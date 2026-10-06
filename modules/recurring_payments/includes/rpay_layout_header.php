@@ -109,7 +109,7 @@ if (is_file($asWidget)) { require $asWidget; }
     <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
 
     <div class="nav-sect mt-3">Recurring Payments</div>
-      <a href="<?= h($rpayBase) ?>/index.php" class="slink <?= $currentPage === 'index.php' ? 'active' : '' ?>">
+      <a href="<?= h($rpayBase) ?>/index.php" class="slink <?= in_array($currentPage, ['index.php', 'pay.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Payments</span>
       </a>
       <a href="<?= h($rpayBase) ?>/entries.php" class="slink <?= in_array($currentPage, ['entries.php', 'entry_form.php'], true) ? 'active' : '' ?>">
@@ -117,6 +117,12 @@ if (is_file($asWidget)) { require $asWidget; }
       </a>
       <a href="<?= h($rpayBase) ?>/buildings.php" class="slink <?= $currentPage === 'buildings.php' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-building"></i></span><span class="slabel">Buildings</span>
+      </a>
+      <a href="<?= h($rpayBase) ?>/accounts.php" class="slink <?= in_array($currentPage, ['accounts.php', 'account.php'], true) ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-wallet2"></i></span><span class="slabel">Accounts</span>
+      </a>
+      <a href="<?= h($rpayBase) ?>/transfers.php" class="slink <?= $currentPage === 'transfers.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-arrow-left-right"></i></span><span class="slabel">Transfers</span>
       </a>
 
     <div class="nav-sect">Other</div>

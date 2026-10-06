@@ -2,9 +2,9 @@
 /**
  * Recurring Payments — shared helpers.
  *
- * saifsys only draws the screens. The buildings (the module's own list, nothing to do
- * with any other building list), the entries, the monthly payments and the day each one
- * is created all live in the Reem app. Every read and every change on these pages is
+ * saifsys only draws the screens. The buildings and the accounts (the module's own
+ * lists, nothing to do with any other building list or chart of accounts), the entries,
+ * the monthly payments, the transfers and their files all live in the Reem app. Every read and every change on these pages is
  * one call to Reem, through its door for saifsys: /api/from-saifsys/recurring-payments.
  *
  * Nothing is stored in the saifsys database. Who may open the module is a role tick
@@ -23,6 +23,8 @@ const RPAY_NAME_MAX = 80;
 const RPAY_TITLE_MAX = 120; // input lengths only, so the box stops where Reem would cut
 const RPAY_UNIT_MAX = 80;
 const RPAY_NOTES_MAX = 500;
+const RPAY_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const RPAY_FILE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 
 /**
  * One call to Reem's recurring payments, as the person with this employee code.
@@ -35,7 +37,12 @@ function rpay_reem(string $code, string $method, string $path = '', ?array $json
     if (!binv_reem_configured()) {
         throw new BinvError('Recurring Payments is not connected to Reem yet: REEM_URL and REEM_DOOR_KEY are missing from config.php.', 503);
     }
-    return binv_reem($code, $method, $path, $json, null, false, $timeout, RPAY_REEM_PATH);
+    try {
+        return binv_reem($code, $method, $path, $json, null, false, $timeout, RPAY_REEM_PATH);
+    } catch (BinvError $e) {
+        // Building Inventory's wording for a 404 is about buildings somebody keeps; here it is just gone.
+        throw $e->status === 404 ? new BinvError('That could not be found. It may have been deleted.', 404) : $e;
+    }
 }
 
 /**
@@ -60,6 +67,68 @@ function rpay_stop(BinvError $e): void
             <p><a href="' . h($back) . '">Back to modules</a></p>
           </div>';
     exit;
+}
+
+/**
+ * A page with a file box was posted bigger than the server takes: PHP hands over nothing
+ * at all, so say that instead of failing as a missing CSRF token.
+ */
+function rpay_too_big(string $backUrl): void
+{
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$_POST && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+        binv_flash('That attachment is bigger than the server allows. Nothing was saved.', 'danger');
+        header('Location: ' . $backUrl);
+        exit;
+    }
+}
+
+/**
+ * Give the file chosen on a form to a paid line or a transfer in Reem.
+ * A picture is made ready the way Building Inventory's photos are; a PDF goes as it is.
+ *
+ * @param string     $path '/dues/7/attachment' or '/transfers/3/attachment'
+ * @param array|null $file the $_FILES entry
+ * @return string|null what went wrong, in a sentence; null when it was kept or no file was chosen
+ */
+function rpay_send_file(string $code, string $path, ?array $file): ?string
+{
+    if (!$file || (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+        return null;
+    }
+    if ((int)$file['error'] !== UPLOAD_ERR_OK || !is_uploaded_file((string)($file['tmp_name'] ?? ''))) {
+        return in_array((int)$file['error'], [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+            ? 'The attachment is bigger than the server allows.'
+            : 'The attachment did not upload. Please try again.';
+    }
+    $src = (string)$file['tmp_name'];
+    $send = null;
+    try {
+        $mime = (string)(new finfo(FILEINFO_MIME_TYPE))->file($src);
+        if ($mime === 'application/pdf') {
+            if ((int)filesize($src) > RPAY_FILE_MAX_BYTES) {
+                return 'The attachment must be 8 MB or smaller.';
+            }
+            $send = ['path' => $src, 'mime' => $mime, 'temp' => false];
+        } elseif (in_array($mime, RPAY_FILE_TYPES, true)) {
+            $send = binv_photo_prepare($src);
+        } else {
+            return 'The attachment must be a picture (JPG, PNG) or a PDF.';
+        }
+        binv_reem($code, 'POST', $path, null, $send, false, 60, RPAY_REEM_PATH);
+        return null;
+    } catch (BinvError $e) {
+        return $e->getMessage();
+    } finally {
+        if ($send && $send['temp']) {
+            @unlink($send['path']);
+        }
+    }
+}
+
+/** The link that shows the file of a paid line ('due') or of a transfer. */
+function rpay_file_url(string $rpayBase, string $kind, int $id): string
+{
+    return $rpayBase . '/file.php?kind=' . $kind . '&id=' . $id;
 }
 
 /** 150 shows as "AED 150.00". */

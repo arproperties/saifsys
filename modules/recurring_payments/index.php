@@ -2,7 +2,7 @@
 /**
  * Recurring Payments — one month's payments, and marking them paid.
  * Reem creates each line on its entry's day of the month; this page lists what Reem
- * has and passes on "paid" / "pending".
+ * has and puts a line back to pending. Marking one paid is pay.php.
  *
  *   index.php                                  this month, every building
  *   index.php?month=2026-09&building=3&unit=Shop+3&status=pending
@@ -31,11 +31,11 @@ $selfUrl = $rpayBase . '/index.php' . ($filters ? '?' . http_build_query($filter
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
+    // Only "set pending" is done here; marking paid has its own page, for the account and the file.
     $dueId = (int)($_POST['due'] ?? 0);
-    $to = ($_POST['action'] ?? '') === 'pending' ? 'pending' : 'paid';
     try {
-        $due = rpay_reem($code, 'POST', '/dues/' . $dueId . '/' . $to);
-        binv_flash('"' . ($due['title'] ?? 'Payment') . '" is now ' . $to . '.');
+        $due = rpay_reem($code, 'POST', '/dues/' . $dueId . '/pending');
+        binv_flash('"' . ($due['title'] ?? 'Payment') . '" is now pending. The money is out of its account again.');
     } catch (BinvError $e) {
         binv_flash($e->getMessage(), 'danger');
     }
@@ -54,6 +54,7 @@ $units = $data['units'] ?? [];
 $dues = $data['dues'] ?? [];
 $totals = $data['totals'] ?? [];
 $status = $filters['status'] ?? '';
+$payUrl = $rpayBase . '/pay.php?' . ($filters ? http_build_query($filters) . '&' : '') . 'due=';
 
 $pageTitle = 'Payments';
 require __DIR__ . '/includes/rpay_layout_header.php';
@@ -152,19 +153,24 @@ require __DIR__ . '/includes/rpay_layout_header.php';
               <?php if ($paid && !empty($d['paid_at'])): ?>
                 <div class="small text-muted"><?= h(binv_when($d['paid_at'])) ?><?= !empty($d['paid_by']) ? ' · ' . h($d['paid_by']) : '' ?></div>
               <?php endif; ?>
+              <?php if ($paid && !empty($d['account']['name'])): ?>
+                <div class="small"><i class="bi bi-wallet2"></i> <?= h($d['account']['name']) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($d['attachment'])): ?>
+                <a class="small text-decoration-none" target="_blank" rel="noopener" href="<?= h(rpay_file_url($rpayBase, 'due', (int)$d['id'])) ?>"><i class="bi bi-paperclip"></i> Attachment</a>
+              <?php endif; ?>
             </td>
-            <td class="text-end">
-              <form method="post" action="<?= h($selfUrl) ?>" class="d-inline">
-                <?php csrf_field(); ?>
-                <input type="hidden" name="due" value="<?= (int)$d['id'] ?>">
-                <?php if ($paid): ?>
-                  <input type="hidden" name="action" value="pending">
-                  <button class="btn btn-sm btn-light border text-nowrap">Set pending</button>
-                <?php else: ?>
-                  <input type="hidden" name="action" value="paid">
-                  <button class="btn btn-sm btn-success text-nowrap"><i class="bi bi-check-lg"></i> Mark paid</button>
-                <?php endif; ?>
-              </form>
+            <td class="text-end text-nowrap">
+              <?php if ($paid): ?>
+                <a href="<?= h($payUrl . (int)$d['id']) ?>" class="btn btn-sm btn-light border">Change</a>
+                <form method="post" action="<?= h($selfUrl) ?>" class="d-inline">
+                  <?php csrf_field(); ?>
+                  <input type="hidden" name="due" value="<?= (int)$d['id'] ?>">
+                  <button class="btn btn-sm btn-light border">Set pending</button>
+                </form>
+              <?php else: ?>
+                <a href="<?= h($payUrl . (int)$d['id']) ?>" class="btn btn-sm btn-success"><i class="bi bi-check-lg"></i> Mark paid</a>
+              <?php endif; ?>
             </td>
           </tr>
         <?php endforeach; ?>
