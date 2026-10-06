@@ -25,6 +25,7 @@ if ($route === 'auth/pin' && $method === 'POST') {
 }
 
 $driver = fleet_api_current_driver($conn);
+usage_track_identify('driver', $route, (int)$driver['id']);
 
 if ($route === 'auth/me' && $method === 'GET') {
     customer_api_send_ok(['user' => $driver]);

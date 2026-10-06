@@ -1327,6 +1327,9 @@ require __DIR__ . '/includes/admin/admin_layout_header.php';
       <div class="col-md-4 col-lg-3"><a class="admin-info-card" href="<?= get_base_path() ?>/settings.php?tab=history"><div class="d-flex align-items-center gap-2 mb-2"><i data-lucide="history" style="width:18px;height:18px;color:var(--admin-primary)"></i><strong>Audit</strong></div><p class="small text-muted mb-0">Activity center</p></a></div>
       <div class="col-md-4 col-lg-3"><a class="admin-info-card" href="<?= get_base_path() ?>/settings.php?tab=module_hub"><div class="d-flex align-items-center gap-2 mb-2"><i data-lucide="external-link" style="width:18px;height:18px;color:var(--admin-primary)"></i><strong>Module links</strong></div><p class="small text-muted mb-0">HR, RE, Construction, ARS</p></a></div>
       <div class="col-md-4 col-lg-3"><a class="admin-info-card" href="<?= get_base_path() ?>/settings.php?tab=branding"><div class="d-flex align-items-center gap-2 mb-2"><i data-lucide="palette" style="width:18px;height:18px;color:var(--admin-primary)"></i><strong>Branding</strong></div><p class="small text-muted mb-0">Global look &amp; feel</p></a></div>
+      <?php if (has_role('Owner', $conn)): ?>
+      <div class="col-md-4 col-lg-3"><a class="admin-info-card" href="<?= get_base_path() ?>/admin/usage_report.php"><div class="d-flex align-items-center gap-2 mb-2"><i data-lucide="activity" style="width:18px;height:18px;color:var(--admin-primary)"></i><strong>Usage report</strong></div><p class="small text-muted mb-0">Which pages &amp; app are used</p></a></div>
+      <?php endif; ?>
     </div>
     <div class="admin-settings-card">
       <div class="settings-header d-flex justify-content-between align-items-center">

@@ -36,6 +36,7 @@ if ($route === 'dev/log' && $method === 'POST' && ops_api_dev_mode()) {
 // Everything past this point is scoped to one person, always — and that person
 // is named by a verified token claim, never by anything the caller sends.
 $user = ops_api_current_user($conn);
+usage_track_identify('cleaning', $route, (int)$user['id']);
 
 if ($route === 'auth/me' && $method === 'GET') {
     ops_api_handle_me($conn, $user);
