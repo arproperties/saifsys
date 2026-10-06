@@ -73,15 +73,16 @@ function binv_employee_code(PDO $conn, int $userId): string
  * @param array|null $photo ['path' => file on this server, 'mime' => its type] — sent as the upload "photo"
  * @param bool       $bytes true: answer [the raw body, its Content-Type] instead of decoded JSON
  * @param int        $timeout seconds
+ * @param string     $base  the Reem route this module talks to; other screens-only modules pass their own
  * @return mixed
  */
-function binv_reem(string $code, string $method, string $path = '', ?array $json = null, ?array $photo = null, bool $bytes = false, int $timeout = 20)
+function binv_reem(string $code, string $method, string $path = '', ?array $json = null, ?array $photo = null, bool $bytes = false, int $timeout = 20, string $base = BINV_REEM_PATH)
 {
     if (!binv_reem_configured()) {
         throw new BinvError('Building Inventory is not connected to Reem yet: REEM_URL and REEM_DOOR_KEY are missing from config.php.', 503);
     }
     $headers = ['X-Saifsys-Key: ' . REEM_DOOR_KEY, 'X-Saifsys-Employee: ' . $code, 'Accept: application/json'];
-    $ch = curl_init(rtrim(REEM_URL, '/') . BINV_REEM_PATH . $path);
+    $ch = curl_init(rtrim(REEM_URL, '/') . $base . $path);
     curl_setopt_array($ch, [
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_RETURNTRANSFER => true,
@@ -101,13 +102,11 @@ function binv_reem(string $code, string $method, string $path = '', ?array $json
     $response = curl_exec($ch);
     if ($response === false) {
         error_log('building inventory: Reem did not answer: ' . curl_error($ch));
-        curl_close($ch);
         throw new BinvError('Reem did not answer. Try again in a moment.', 502);
     }
     $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     $type = strtolower(trim(explode(';', (string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE))[0]));
     $body = (string)substr($response, (int)curl_getinfo($ch, CURLINFO_HEADER_SIZE));
-    curl_close($ch);
 
     if ($status >= 200 && $status < 300 && $bytes) {
         return [$body, $type];
