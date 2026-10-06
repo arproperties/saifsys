@@ -570,6 +570,13 @@ function ars_adapter_create_extension_invoice_impl(PDO $conn, array $booking, ar
         return ars_adapter_fail('Nightly rate missing', 'validation_failed');
     }
     $net = round($rate * $added, 2);
+    // An agreed total for the whole period (e.g. 4,000 for 30 nights) does not
+    // always divide into a 2-decimal nightly rate, so the Extend tab may pass
+    // the total itself; the rate then only describes the line.
+    $agreed = round((float)($opts['amount'] ?? 0), 2);
+    if ($agreed > 0) {
+        $net = $agreed;
+    }
     $amounts = ars_adapter_vat_split($net, $booking);
     $lines = [[
         'line_type' => 'room',

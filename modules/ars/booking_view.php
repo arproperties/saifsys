@@ -1319,8 +1319,9 @@ echo $arsWsLifecycleHtml;
                                placeholder="0.00">
                     </div>
                     <div class="col-6 col-md-2">
-                        <label class="form-label fw-semibold">Total</label>
-                        <div class="form-control-plaintext fw-semibold ars-tabular" id="extendAmountTotal">—</div>
+                        <label class="form-label fw-semibold" for="extendAmountTotal">Total</label>
+                        <input type="number" id="extendAmountTotal" class="form-control ars-tabular fw-semibold" min="0" step="0.01"
+                               placeholder="0.00">
                     </div>
                     <div class="col-6 col-md-1">
                         <button type="button" class="btn btn-ars btn-sm w-100" id="extendSubmitBtn">
@@ -1329,7 +1330,7 @@ echo $arsWsLifecycleHtml;
                     </div>
                 </div>
                 <div class="small text-muted mt-2" id="extendAmountHint">
-                    Price x nights is what this period is worth. Adding it records the price —
+                    Type a price per night, or type the agreed Total for the whole period. Adding it records the price —
                     nothing is billed until you press <strong>Bill</strong> on the row below.
                 </div>
                 <div class="mt-3">

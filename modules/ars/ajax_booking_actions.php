@@ -1714,6 +1714,21 @@ try {
                 exit;
             }
             $amount = $rate === null ? null : round($rate * $nights, 2);
+            // A typed Total wins over price x nights: the office agrees a
+            // figure for the period (4,000 for 30 nights) that no 2-decimal
+            // nightly rate multiplies back to. The rate is then derived.
+            $totalRaw = trim((string)($_POST['amount'] ?? ''));
+            if ($totalRaw !== '') {
+                $typedTotal = round((float)$totalRaw, 2);
+                if ($typedTotal < 0) {
+                    echo json_encode(['success' => false, 'error' => 'Total cannot be negative.']);
+                    exit;
+                }
+                if ($typedTotal > 0) {
+                    $amount = $typedTotal;
+                    $rate = round($typedTotal / $nights, 2);
+                }
+            }
             $conn->prepare("
                 INSERT INTO ars_booking_extension_log
                     (booking_id, company_id, extended_from, extended_to, nights, rate_per_night, amount, note, created_by)
@@ -1766,6 +1781,9 @@ try {
             $r = ars_adapter_create_extension_invoice($conn, $booking, [
                 'user_id' => $userId,
                 'rate' => $rate,
+                // Bill what the row says, not rate x nights: a typed total
+                // need not multiply back from the rounded rate.
+                'amount' => round((float)($entry['amount'] ?? 0), 2),
                 'prior_check_out' => (string)$entry['extended_from'],
                 'new_check_out' => (string)$entry['extended_to'],
                 // The log owns the booking's dates; ars_sync_checkout_to_extension_log()

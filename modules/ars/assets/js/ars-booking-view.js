@@ -1839,9 +1839,14 @@
     return 'AED ' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
-  // Price x nights, shown as you type. The hint carries the VAT the invoice
-  // will add, so the figure the guest is quoted is on screen too.
-  function refreshExtendPreview() {
+  // True once the office types the Total itself (an agreed figure for the
+  // whole period); the price per night is then worked back from it.
+  var extendTotalTyped = false;
+
+  // Price x nights, shown as you type — or, with a typed Total, the price per
+  // night it works out to. The hint carries the VAT the invoice will add, so
+  // the figure the guest is quoted is on screen too.
+  function refreshExtendPreview(e) {
     var nightsEl = document.getElementById('extendNightsAdded');
     if (!nightsEl) return;
     var nights = extendNightsBetween();
@@ -1849,23 +1854,40 @@
 
     var totalEl = document.getElementById('extendAmountTotal');
     if (!totalEl) return;
+    var rateEl = document.getElementById('extendRate');
+    var fromTotal = !!(e && e.target === totalEl);
+    if (fromTotal) extendTotalTyped = totalEl.value !== '';
+    else if (e && e.target === rateEl) extendTotalTyped = false;
+
     var rate = extendRateValue();
-    var total = nights > 0 ? Math.round(rate * nights * 100) / 100 : 0;
-    totalEl.textContent = total > 0 ? extendMoney(total) : '—';
+    var total;
+    if (extendTotalTyped) {
+      total = parseFloat(totalEl.value);
+      if (isNaN(total) || total < 0) total = 0;
+      total = Math.round(total * 100) / 100;
+      rate = nights > 0 ? Math.round((total / nights) * 100) / 100 : 0;
+      if (rateEl) rateEl.value = rate > 0 ? rate.toFixed(2) : '';
+    } else {
+      total = nights > 0 ? Math.round(rate * nights * 100) / 100 : 0;
+      // Leave the box alone while it is being cleared by hand.
+      if (!fromTotal) totalEl.value = total > 0 ? total.toFixed(2) : '';
+    }
 
     var hintEl = document.getElementById('extendAmountHint');
     var form = document.getElementById('extendForm');
     if (!hintEl || !form) return;
     var base =
-      'Price x nights is what this period is worth. Adding it records the price — ' +
+      'Type a price per night, or type the agreed Total for the whole period. Adding it records the price — ' +
       'nothing is billed until you press <strong>Bill</strong> on the row below.';
-    if (total <= 0) {
+    if (total <= 0 || nights <= 0) {
       hintEl.innerHTML = base;
       return;
     }
     var vatRate = parseFloat(form.getAttribute('data-ars-ext-vat-rate') || '0') || 0;
     var vatMode = form.getAttribute('data-ars-ext-vat-mode') || 'exclusive';
-    var sum = extendMoney(rate) + ' x ' + nights + ' night(s) = <strong>' + extendMoney(total) + '</strong>';
+    var sum = extendTotalTyped
+      ? '<strong>' + extendMoney(total) + '</strong> for ' + nights + ' night(s) (about ' + extendMoney(rate) + ' a night)'
+      : extendMoney(rate) + ' x ' + nights + ' night(s) = <strong>' + extendMoney(total) + '</strong>';
     if (vatRate > 0 && vatMode === 'exclusive') {
       var vat = Math.round(total * vatRate) / 100;
       sum += ' + ' + vatRate + '% VAT ' + extendMoney(vat) + ' = ' + extendMoney(total + vat) + ' on the invoice';
@@ -1887,10 +1909,12 @@
     }
     if (btn) btn.disabled = true;
     var rateEl = document.getElementById('extendRate');
+    var totalEl = document.getElementById('extendAmountTotal');
     ajaxPost('save_extension_entry', {
       extended_from: fromEl.value,
       extended_to: toEl.value,
       rate_per_night: rateEl ? rateEl.value : '',
+      amount: extendTotalTyped && totalEl ? totalEl.value : '',
       note: noteEl ? noteEl.value : ''
     })
       .then(function (d) {
@@ -1976,6 +2000,11 @@
     if (rateEl) {
       rateEl.addEventListener('change', refreshExtendPreview);
       rateEl.addEventListener('input', refreshExtendPreview);
+    }
+    var totalEl = document.getElementById('extendAmountTotal');
+    if (totalEl) {
+      totalEl.addEventListener('change', refreshExtendPreview);
+      totalEl.addEventListener('input', refreshExtendPreview);
     }
     var btn = document.getElementById('extendSubmitBtn');
     if (btn) btn.addEventListener('click', submitExtension);
