@@ -25,7 +25,11 @@ if ($route === 'auth/pin' && $method === 'POST') {
 }
 
 $driver = fleet_api_current_driver($conn);
-usage_track_identify('driver', $route, (int)$driver['id']);
+// Counting only: the tracker is loaded by includes/db_connect.php, which is
+// not in git, so a server without that edit must still answer.
+if (function_exists('usage_track_identify')) {
+    usage_track_identify('driver', $route, (int)$driver['id']);
+}
 
 if ($route === 'auth/me' && $method === 'GET') {
     customer_api_send_ok(['user' => $driver]);
