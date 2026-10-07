@@ -90,20 +90,34 @@ if (!function_exists('re_obligation_monthly_periods')) {
     function re_obligation_monthly_periods(string $startDate, string $endDate): array
     {
         try {
-            $cursor = new DateTimeImmutable($startDate);
+            $leaseStart = new DateTimeImmutable($startDate);
             $leaseEnd = new DateTimeImmutable($endDate);
         } catch (Throwable $e) {
             return [];
         }
 
-        if ($cursor > $leaseEnd) {
+        if ($leaseStart > $leaseEnd) {
             return [];
         }
 
+        // Each period is counted from the lease start day, not from the previous
+        // period: a start on the 29th-31st must not stick to the 28th after February.
+        $anchorDay = (int)$leaseStart->format('d');
+        $firstOfMonth = $leaseStart->modify('first day of this month');
+        $periodStart = static function (int $n) use ($firstOfMonth, $anchorDay): DateTimeImmutable {
+            $month = $firstOfMonth->modify('+' . $n . ' month');
+            return $month->setDate(
+                (int)$month->format('Y'),
+                (int)$month->format('m'),
+                min($anchorDay, (int)$month->format('t'))
+            );
+        };
+
         $periods = [];
         $guard = 0;
+        $cursor = $leaseStart;
         while ($cursor <= $leaseEnd && $guard < 240) {
-            $next = re_obligation_add_month_safe($cursor);
+            $next = $periodStart($guard + 1);
             $periodEnd = $next->modify('-1 day');
             if ($periodEnd > $leaseEnd) {
                 $periodEnd = $leaseEnd;

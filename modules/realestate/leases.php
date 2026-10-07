@@ -23,7 +23,7 @@ $currentCompanyId = current_company_id($conn) ?: 1;
 re_lease_activate_due_renewals($conn, $currentCompanyId, current_user_id());
 
 // Get filter parameters
-$statusFilter = $_GET['status'] ?? 'all';
+$statusFilter = $_GET['status'] ?? 'active';
 $buildingFilter = !empty($_GET['building_id']) ? (int)$_GET['building_id'] : null;
 $searchQuery = !empty($_GET['search']) ? trim($_GET['search']) : '';
 
@@ -229,7 +229,7 @@ $leases = $conn->prepare("
     LEFT JOIN re_lease_renewal_workflows rw_new ON rw_new.new_lease_id = l.id AND rw_new.status = 'converted'
     WHERE " . implode(' AND ', $where) . "
     GROUP BY l.id
-    ORDER BY l.start_date DESC
+    ORDER BY l.start_date DESC, l.id DESC
 ");
 $chequeAggParams = [$currentCompanyId];
 if ($multiChequeLinksReady) {
@@ -530,7 +530,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     </div>
                     <?php if ($buildingFilter || $searchQuery): ?>
                     <div class="col-12">
-                        <a href="leases.php<?= $statusFilter !== 'all' ? '?status=' . h(urlencode($statusFilter)) : '' ?>" class="btn btn-sm btn-outline-secondary">
+                        <a href="leases.php?status=<?= h(urlencode($statusFilter)) ?>" class="btn btn-sm btn-outline-secondary">
                             <i class="bi bi-x-circle"></i> Clear Filters
                         </a>
                     </div>
@@ -543,9 +543,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
         <div class="card card-round">
             <nav class="lease-tabs">
                 <?php foreach ($statusTabs as $tabKey => $tabLabel):
-                    $tabQuery = array_filter(['status' => $tabKey === 'all' ? null : $tabKey, 'building_id' => $buildingFilter, 'search' => $searchQuery]);
+                    $tabQuery = array_filter(['status' => $tabKey, 'building_id' => $buildingFilter, 'search' => $searchQuery]);
                 ?>
-                    <a href="leases.php<?= $tabQuery ? '?' . h(http_build_query($tabQuery)) : '' ?>" class="<?= $statusFilter === $tabKey ? 'active' : '' ?>">
+                    <a href="leases.php?<?= h(http_build_query($tabQuery)) ?>" class="<?= $statusFilter === $tabKey ? 'active' : '' ?>">
                         <?= h($tabLabel) ?> <span class="tab-count"><?= number_format((int)($statusTabCounts[$tabKey] ?? 0)) ?></span>
                     </a>
                 <?php endforeach; ?>

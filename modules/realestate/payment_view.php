@@ -157,6 +157,123 @@ try {
     $receiptAllocations = [];
 }
 
+// Credit parked by this receipt: show where it went since (oldest credit is used first),
+// instead of the frozen figure from the day the receipt was saved. Display only.
+$receiptDisplayAllocations = $receiptAllocations;
+$receiptCreditLeft = $receiptTenantCreditTotal;
+if ($receiptTenantCreditTotal > 0.005 && !empty($payment['tenant_id'])) {
+    try {
+        $stmt = $conn->prepare("
+            SELECT id, amount_aed, type, payment_id, reference
+            FROM re_tenant_credit_transactions
+            WHERE company_id = ? AND tenant_id = ?
+            ORDER BY id ASC
+        ");
+        $stmt->execute([$currentCompanyId, (int)$payment['tenant_id']]);
+        $creditPockets = [];
+        $creditUses = [];
+        $creditFound = false;
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $rowAmount = round(abs((float)($row['amount_aed'] ?? 0)), 2);
+            if ($rowAmount <= 0.005) {
+                continue;
+            }
+            if ((string)$row['type'] === 'credit') {
+                $isMine = (int)($row['payment_id'] ?? 0) === $paymentId;
+                $creditPockets[] = ['mine' => $isMine, 'remaining' => $rowAmount];
+                $creditFound = $creditFound || $isMine;
+                continue;
+            }
+            if ((string)$row['type'] !== 'debit') {
+                continue;
+            }
+            $need = $rowAmount;
+            foreach ($creditPockets as &$pocket) {
+                if ($need <= 0.005) {
+                    break;
+                }
+                if ($pocket['remaining'] <= 0.005) {
+                    continue;
+                }
+                $take = min($pocket['remaining'], $need);
+                $pocket['remaining'] = round($pocket['remaining'] - $take, 2);
+                $need = round($need - $take, 2);
+                if ($pocket['mine']) {
+                    $creditUses[] = ['amount' => $take, 'reference' => (string)($row['reference'] ?? '')];
+                }
+            }
+            unset($pocket);
+        }
+
+        if ($creditFound) {
+            $receiptCreditLeft = 0.0;
+            foreach ($creditPockets as $pocket) {
+                if ($pocket['mine']) {
+                    $receiptCreditLeft += $pocket['remaining'];
+                }
+            }
+            $receiptCreditLeft = round(min($receiptCreditLeft, $receiptTenantCreditTotal), 2);
+
+            $invoiceLookup = $conn->prepare("
+                SELECT i.id, i.invoice_number, i.due_date, i.total_amount, i.outstanding_amount,
+                       (SELECT GROUP_CONCAT(ii.item_name ORDER BY ii.display_order, ii.id SEPARATOR ', ')
+                        FROM re_invoice_items ii
+                        WHERE ii.invoice_id = i.id AND ii.company_id = i.company_id) AS item_names
+                FROM re_invoices i
+                WHERE i.company_id = ? AND i.invoice_number = ?
+                LIMIT 1
+            ");
+            $receiptDisplayAllocations = [];
+            foreach ($receiptAllocations as $allocation) {
+                if (($allocation['target_type'] ?? '') !== 'tenant_credit') {
+                    $receiptDisplayAllocations[] = $allocation;
+                }
+            }
+            foreach ($creditUses as $use) {
+                $usedInvoice = null;
+                if (preg_match('/invoice\s+(\S+)\s*$/i', $use['reference'], $m)) {
+                    $invoiceLookup->execute([$currentCompanyId, $m[1]]);
+                    $usedInvoice = $invoiceLookup->fetch(PDO::FETCH_ASSOC) ?: null;
+                }
+                if ($usedInvoice) {
+                    $receiptDisplayAllocations[] = [
+                        'target_type' => 'invoice',
+                        'invoice_id' => $usedInvoice['id'],
+                        'invoice_number' => $usedInvoice['invoice_number'],
+                        'invoice_due_date' => $usedInvoice['due_date'],
+                        'invoice_items' => $usedInvoice['item_names'],
+                        'invoice_total' => $usedInvoice['total_amount'],
+                        'invoice_outstanding' => $usedInvoice['outstanding_amount'],
+                        'amount_allocated' => $use['amount'],
+                        'from_credit' => true,
+                    ];
+                } else {
+                    $receiptDisplayAllocations[] = [
+                        'target_type' => 'tenant_credit',
+                        'amount_allocated' => $use['amount'],
+                        'credit_used_note' => $use['reference'] !== '' ? $use['reference'] : 'Tenant credit used',
+                    ];
+                }
+            }
+            if ($receiptCreditLeft > 0.005) {
+                $receiptDisplayAllocations[] = [
+                    'target_type' => 'tenant_credit',
+                    'amount_allocated' => $receiptCreditLeft,
+                ];
+            }
+        }
+    } catch (Throwable $e) {
+        $receiptDisplayAllocations = $receiptAllocations;
+        $receiptCreditLeft = $receiptTenantCreditTotal;
+    }
+}
+
+// The allocation box above already shows this receipt's credit and where it went;
+// do not repeat the original parked figure in "Payment allocation & purpose".
+if ($receiptTenantCreditTotal > 0.005) {
+    $advanceToCredit = 0.0;
+}
+
 $multiChequeLinks = [];
 try {
     require_once __DIR__ . '/includes/receipt_multi_cheque_helper.php';
@@ -357,7 +474,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             </div>
         </div>
 
-        <?php if (!empty($receiptAllocations)): ?>
+        <?php // "Invoice Mode Allocation Details" is hidden on request; set to true to show it again.
+        $showInvoiceAllocationBox = false; ?>
+        <?php if ($showInvoiceAllocationBox && !empty($receiptAllocations)): ?>
         <div class="card mb-4 border-primary">
             <div class="card-header bg-primary text-white">
                 <h5 class="mb-0"><i class="bi bi-diagram-3"></i> Invoice Mode Allocation Details</h5>
@@ -378,8 +497,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     </div>
                     <div class="col-md-4">
                         <div class="border rounded p-2">
-                            <div class="small text-muted">Tenant Credit</div>
-                            <strong class="<?= $receiptTenantCreditTotal > 0.005 ? 'text-info' : '' ?>"><?= number_format($receiptTenantCreditTotal, 2) ?> AED</strong>
+                            <div class="small text-muted">Tenant Credit Left</div>
+                            <strong class="<?= $receiptCreditLeft > 0.005 ? 'text-info' : '' ?>"><?= number_format($receiptCreditLeft, 2) ?> AED</strong>
                         </div>
                     </div>
                 </div>
@@ -396,20 +515,27 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($receiptAllocations as $allocation): ?>
+                            <?php foreach ($receiptDisplayAllocations as $allocation): ?>
                                 <?php
                                     $targetType = (string)($allocation['target_type'] ?? '');
                                     $targetLabel = 'Tenant Credit';
                                     $targetUrl = '';
                                     $dueDate = '-';
-                                    $desc = 'Unallocated balance credited to tenant';
-                                    $targetTotal = (float)$payment['amount'];
-                                    $remaining = 0.0;
+                                    $desc = 'Advance held, not used yet';
+                                    $targetTotal = null;
+                                    $remaining = null;
+                                    if ($targetType === 'tenant_credit' && !empty($allocation['credit_used_note'])) {
+                                        $targetLabel = 'Tenant Credit used';
+                                        $desc = (string)$allocation['credit_used_note'];
+                                    }
                                     if ($targetType === 'invoice') {
                                         $targetLabel = 'Invoice ' . (string)($allocation['invoice_number'] ?? ('#' . $allocation['invoice_id']));
                                         $targetUrl = !empty($allocation['invoice_id']) ? 'billing_invoice_view.php?id=' . (int)$allocation['invoice_id'] : '';
                                         $dueDate = $allocation['invoice_due_date'] ?: '-';
                                         $desc = $allocation['invoice_items'] ?: 'Issued invoice';
+                                        if (!empty($allocation['from_credit'])) {
+                                            $desc .= ' (paid from advance)';
+                                        }
                                         $targetTotal = (float)($allocation['invoice_total'] ?? 0);
                                         $remaining = (float)($allocation['invoice_outstanding'] ?? 0);
                                     } elseif ($targetType === 'obligation') {
@@ -432,8 +558,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     <td><?= h($dueDate) ?></td>
                                     <td><?= h($desc ?: '-') ?></td>
                                     <td class="text-end text-success fw-semibold"><?= number_format((float)$allocation['amount_allocated'], 2) ?> AED</td>
-                                    <td class="text-end"><?= number_format($targetTotal, 2) ?> AED</td>
-                                    <td class="text-end"><?= number_format($remaining, 2) ?> AED</td>
+                                    <td class="text-end"><?= $targetTotal === null ? '-' : number_format($targetTotal, 2) . ' AED' ?></td>
+                                    <td class="text-end"><?= $remaining === null ? '-' : number_format($remaining, 2) . ' AED' ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
