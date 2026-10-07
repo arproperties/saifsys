@@ -1439,12 +1439,70 @@ try {
     $companyBankAccounts = [];
 }
 
+$reLayoutFluid = true;
 require_once __DIR__ . '/includes/re_layout_header.php';
 ?>
 
-        <div class="d-flex justify-content-between align-items-center mb-4">
+<style>
+    /* Presentation only: outlined cards, compact action bar, tidy tables, phone layout */
+    .lease-view-page .page-header-label { overflow-wrap: anywhere; }
+    .lease-view-page .lease-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .lease-view-page .lease-actions .btn { font-size: .85rem; padding: .4rem .75rem; border-radius: 8px; white-space: nowrap; }
+
+    .lease-view-page .lv-tabs {
+        flex-direction: row; flex-wrap: nowrap; gap: .25rem; overflow-x: auto; padding: 0 .75rem;
+    }
+    .lease-view-page .lv-tabs[hidden] { display: none; }
+    .lease-view-page .lv-tabs button {
+        display: flex; align-items: center; gap: .4rem; white-space: nowrap;
+        padding: .85rem .75rem; background: none; border: 0; border-bottom: 2px solid transparent;
+        font-size: .9rem; font-weight: 600; color: #6b7280;
+    }
+    .lease-view-page .lv-tabs button:hover { color: var(--primary); }
+    .lease-view-page .lv-tabs button.active { color: var(--primary); border-bottom-color: var(--primary); }
+    body.dark-mode .lease-view-page .lv-tabs button.active,
+    body.dark-mode .lease-view-page .lv-tabs button:hover { color: var(--accent); }
+    body.dark-mode .lease-view-page .lv-tabs button.active { border-bottom-color: var(--accent); }
+    /* hidden on screen only, so printing still gives the whole lease */
+    @media screen { .lease-view-page .lv-hidden { display: none !important; } }
+
+    .lease-view-page .card {
+        --bs-card-border-radius: 14px; --bs-card-inner-border-radius: 13px;
+        box-shadow: var(--shadow-sm);
+    }
+    .lease-view-page .card:not([class*="border-"]) { border-color: #cbd2dc; }
+    .lease-view-page .card-header { padding: .85rem 1.25rem; }
+    .lease-view-page .card-header:not([class*="bg-"]) { background: rgba(100, 116, 139, .07); }
+    .lease-view-page .card-header h5 { font-size: 1rem; font-weight: 600; margin-bottom: 0; }
+    .lease-view-page .card-body > .row .border.rounded { border-color: #cbd2dc !important; border-radius: 10px !important; height: 100%; }
+
+    .lease-view-page .table { font-size: .9rem; }
+    .lease-view-page .table > thead > tr > th {
+        font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+        color: #6b7280; white-space: nowrap;
+    }
+    .lease-view-page .table-borderless > tbody > tr > th,
+    .lease-view-page .table-borderless > tr > th { font-weight: 600; color: #6b7280; font-size: .85rem; }
+    .lease-view-page .table-borderless > tbody > tr > td { overflow-wrap: anywhere; }
+    .lease-view-page .form-control,
+    .lease-view-page .form-select { border-color: #9aa4b2; }
+    body.dark-mode .lease-view-page .card:not([class*="border-"]) { border-color: #475569; }
+
+    @media (max-width: 767.98px) {
+        .lease-view-page .page-header-label { font-size: 1.4rem; }
+        .lease-view-page .lease-actions .btn { flex: 1 1 calc(50% - .5rem); white-space: normal; }
+        .lease-view-page .card-header { padding: .75rem 1rem; }
+        .lease-view-page .card-body { padding: 1rem; }
+        /* summary boxes: two per row instead of one long column */
+        .lease-view-page .row > .col-md-3 { width: 50%; }
+        .lease-view-page .row.text-center:not(.g-3) > .col-md-3 { margin-bottom: .75rem; }
+    }
+</style>
+
+<div class="lease-view-page">
+        <div class="d-flex flex-column gap-3 mb-4">
             <div class="page-header-label">Lease <?= h($lease['lease_number'] ?: 'L-' . $lease['id']) ?></div>
-            <div class="btn-group">
+            <div class="lease-actions">
                 <a href="lease_add.php?id=<?= $leaseId ?>" class="btn btn-outline-primary">
                     <i class="bi bi-pencil"></i> Edit Lease
                 </a>
@@ -1511,111 +1569,15 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             <?php unset($_SESSION['error']); ?>
         <?php endif; ?>
 
-        <?php if ($showAccountingModeBadge): ?>
-            <div class="alert <?= $accountingMode === 'invoice' ? 'alert-info' : 'alert-warning' ?> mb-4">
-                <div class="d-flex flex-column flex-lg-row justify-content-between gap-3">
-                    <div>
-                        <div class="fw-bold">
-                            Accounting Mode:
-                            <span class="badge bg-<?= $accountingMode === 'invoice' ? 'primary' : 'secondary' ?>">
-                                <?= $accountingMode === 'invoice' ? 'Invoice Mode' : 'Legacy Mode' ?>
-                            </span>
-                        </div>
-                        <div class="small mt-1">
-                            <?php if ($accountingMode === 'invoice'): ?>
-                                This lease uses the new obligation, invoice, receipt, and allocation accounting engine. Installments and cheques are operational schedules only.
-                            <?php else: ?>
-                                This lease uses the old legacy accounting flow. It is preserved for historical safety.
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                    <?php if ($accountingMode === 'invoice'): ?>
-                        <div class="d-flex flex-wrap gap-2 align-items-start">
-                            <a class="btn btn-sm btn-outline-primary" href="accounting/obligation_preview.php?lease_id=<?= $leaseId ?>">Obligations</a>
-                            <a class="btn btn-sm btn-outline-primary" href="accounting/invoice_preview.php?lease_id=<?= $leaseId ?>">Invoice Candidates</a>
-                            <a class="btn btn-sm btn-outline-primary" href="accounting/receipt_allocation.php?lease_id=<?= $leaseId ?>">Receipts & Allocations</a>
-                            <a class="btn btn-sm btn-outline-secondary" href="accounting/revenue_recognition.php?lease_id=<?= $leaseId ?>">Recognition Diagnostics</a>
-                            <a class="btn btn-sm btn-outline-secondary" href="accounting/security_deposit_diagnostics.php?lease_id=<?= (int)$leaseId ?>">Deposit Diagnostics</a>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-        <?php endif; ?>
+        <nav class="card lv-tabs no-print mb-4" id="lvTabs" hidden>
+            <button type="button" data-lv-target="overview"><i class="bi bi-info-circle"></i> Overview &amp; Payments</button>
+            <button type="button" data-lv-target="services"><i class="bi bi-lightning-charge"></i> Services &amp; Penalties</button>
+            <button type="button" data-lv-target="credit"><i class="bi bi-wallet2"></i> Credit &amp; Refunds</button>
+            <button type="button" data-lv-target="move"><i class="bi bi-arrow-left-right"></i> Move &amp; Renewal</button>
+            <button type="button" data-lv-target="documents"><i class="bi bi-folder2-open"></i> Documents</button>
+        </nav>
 
-        <?php if ($accountingMode === 'invoice'): ?>
-            <div class="row g-3 mb-4">
-                <div class="col-md-3">
-                    <div class="card h-100 border-primary">
-                        <div class="card-body">
-                            <div class="small text-muted">Obligations</div>
-                            <div class="h5 mb-0"><?= (int)$invoiceModeSummary['obligations_total'] ?></div>
-                            <div class="small">Open: <?= number_format((float)$invoiceModeSummary['obligations_open_amount'], 2) ?> AED</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="card h-100 border-info">
-                        <div class="card-body">
-                            <div class="small text-muted">Invoice Candidates</div>
-                            <div class="h5 mb-0"><?= (int)$invoiceModeSummary['candidates_total'] ?></div>
-                            <div class="small">Eligible today: <?= (int)$invoiceModeSummary['candidates_eligible'] ?></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="card h-100 border-success">
-                        <div class="card-body">
-                            <div class="small text-muted">Issued Invoices</div>
-                            <div class="h5 mb-0"><?= (int)$invoiceModeSummary['issued_invoices'] ?></div>
-                            <div class="small">Open invoice balance: <?= number_format((float)$invoiceModeSummary['open_invoice_amount'], 2) ?> AED</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="card h-100 border-secondary">
-                        <div class="card-body">
-                            <div class="small text-muted">Receipts / Deposit</div>
-                            <div class="h5 mb-0"><?= (int)$invoiceModeSummary['receipts_total'] ?></div>
-                            <div class="small">Security deposit open: <?= number_format((float)$invoiceModeSummary['security_deposit_open'], 2) ?> AED</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        <?php endif; ?>
-
-        <div class="card mb-4 border-warning">
-            <div class="card-header bg-warning text-dark">
-                <h5 class="mb-0"><i class="bi bi-clipboard-data"></i> Operational Collection Comparison</h5>
-            </div>
-            <div class="card-body">
-                <div class="alert alert-light border small">
-                    For Invoice Mode, official accounting balance comes from invoices, receipts, allocations, and GL. This operational schedule is not the official accounting balance.
-                    <?php if (abs((float)$operationalSummary['difference']) > 0.02): ?>
-                        <br><strong>Difference note:</strong> this means the operational cheque/payment schedule total does not match the lease terms. A financial reset does not recreate the schedule; use Edit Pending Row / Repair schedule if the operational schedule should be corrected.
-                        <?php if (!empty($operationalScheduleHasExtraRentRow)): ?>
-                            <br><strong>Detected issue:</strong> this lease has more rent cheque rows than configured (<?= (int)$rentLikeRowCount ?> vs <?= (int)$expectedRentInstallmentCount ?>). This often happens when the fees installment was counted as rent. Open <a href="lease_add.php?id=<?= (int)$leaseId ?>">Edit Lease</a> and click <strong>Save</strong> to repair the schedule (paid rows are preserved).
-                        <?php endif; ?>
-                    <?php elseif ((float)($operationalSummary['service_charge_schedule_adjustment'] ?? 0) > 0.02): ?>
-                        <br><strong>Extra services note:</strong> <?= number_format((float)$operationalSummary['service_charge_schedule_adjustment'], 2) ?> AED from applied service charges merged into cheques is included in both Expected and Scheduled totals above.
-                    <?php endif; ?>
-                    <?php if ($legacyExtraServiceTotal > 0): ?>
-                        <br><strong>Extra services note:</strong> this lease still has old extra-service values (<?= h(implode(', ', $legacyExtraServiceNotes)) ?>). In the new flow, these should be recreated from <a href="billing_service_charges.php?lease_id=<?= (int)$leaseId ?>">Service Charges Management</a>, not kept inside the lease.
-                    <?php endif; ?>
-                </div>
-                <div class="row g-3 text-center">
-                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Expected Lease Collection</div><strong><?= number_format($operationalSummary['expected_total'], 2) ?></strong> AED</div></div>
-                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Scheduled Payment Total</div><strong><?= number_format($operationalSummary['scheduled_total'], 2) ?></strong> AED</div></div>
-                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Difference</div><strong class="<?= abs($operationalSummary['difference']) > 0.02 ? 'text-danger' : 'text-success' ?>"><?= number_format($operationalSummary['difference'], 2) ?></strong> AED</div></div>
-                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Issued Invoices Total</div><strong><?= number_format($operationalSummary['issued_invoices_total'], 2) ?></strong> AED</div></div>
-                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Receipts Collected</div><strong><?= number_format($operationalSummary['receipts_collected_total'], 2) ?></strong> AED</div></div>
-                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Allocated Total</div><strong><?= number_format($operationalSummary['allocated_total'], 2) ?></strong> AED</div></div>
-                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Unallocated Receipts</div><strong><?= number_format($operationalSummary['unallocated_receipt_total'], 2) ?></strong> AED</div></div>
-                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Security Deposit Expected / Allocated</div><strong><?= number_format($operationalSummary['security_deposit_expected'], 2) ?> / <?= number_format($operationalSummary['security_deposit_allocated'], 2) ?></strong> AED</div></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="row">
+        <div class="row" data-lv-tab="overview">
             <!-- Lease Information -->
             <div class="col-md-6 mb-4">
                 <div class="card">
@@ -1853,9 +1815,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 </div>
             </div>
 
-            <!-- Tenant Information -->
-            <div class="col-md-6 mb-4">
-                <div class="card">
+            <!-- Tenant Information, then Renewal Terms and Notes beside the lease details -->
+            <div class="col-md-6">
+                <div class="card mb-4">
                     <div class="card-header">
                         <h5>Tenant Information</h5>
                     </div>
@@ -1883,11 +1845,139 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         </a>
                     </div>
                 </div>
+
+                <!-- Renewal Terms -->
+                <?php if (!empty($lease['renewal_terms'])): ?>
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5>Renewal Terms</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-0"><?= nl2br(h($lease['renewal_terms'])) ?></p>
+                    </div>
+                </div>
+                <?php endif; ?>
+
+                <!-- Notes -->
+                <?php if ($lease['notes']): ?>
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5>Notes</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-0"><?= nl2br(h($lease['notes'])) ?></p>
+                    </div>
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <?php if ($showAccountingModeBadge): ?>
+            <div class="alert <?= $accountingMode === 'invoice' ? 'alert-info' : 'alert-warning' ?> mb-4" data-lv-tab="overview">
+                <div class="d-flex flex-column flex-lg-row justify-content-between gap-3">
+                    <div>
+                        <div class="fw-bold">
+                            Accounting Mode:
+                            <span class="badge bg-<?= $accountingMode === 'invoice' ? 'primary' : 'secondary' ?>">
+                                <?= $accountingMode === 'invoice' ? 'Invoice Mode' : 'Legacy Mode' ?>
+                            </span>
+                        </div>
+                        <div class="small mt-1">
+                            <?php if ($accountingMode === 'invoice'): ?>
+                                This lease uses the new obligation, invoice, receipt, and allocation accounting engine. Installments and cheques are operational schedules only.
+                            <?php else: ?>
+                                This lease uses the old legacy accounting flow. It is preserved for historical safety.
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <?php if ($accountingMode === 'invoice'): ?>
+                        <div class="d-flex flex-wrap gap-2 align-items-start">
+                            <a class="btn btn-sm btn-outline-primary" href="accounting/obligation_preview.php?lease_id=<?= $leaseId ?>">Obligations</a>
+                            <a class="btn btn-sm btn-outline-primary" href="accounting/invoice_preview.php?lease_id=<?= $leaseId ?>">Invoice Candidates</a>
+                            <a class="btn btn-sm btn-outline-primary" href="accounting/receipt_allocation.php?lease_id=<?= $leaseId ?>">Receipts & Allocations</a>
+                            <a class="btn btn-sm btn-outline-secondary" href="accounting/revenue_recognition.php?lease_id=<?= $leaseId ?>">Recognition Diagnostics</a>
+                            <a class="btn btn-sm btn-outline-secondary" href="accounting/security_deposit_diagnostics.php?lease_id=<?= (int)$leaseId ?>">Deposit Diagnostics</a>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($accountingMode === 'invoice'): ?>
+            <div class="row g-3 mb-4" data-lv-tab="overview">
+                <div class="col-md-3">
+                    <div class="card h-100 border-primary">
+                        <div class="card-body">
+                            <div class="small text-muted">Obligations</div>
+                            <div class="h5 mb-0"><?= (int)$invoiceModeSummary['obligations_total'] ?></div>
+                            <div class="small">Open: <?= number_format((float)$invoiceModeSummary['obligations_open_amount'], 2) ?> AED</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100 border-info">
+                        <div class="card-body">
+                            <div class="small text-muted">Invoice Candidates</div>
+                            <div class="h5 mb-0"><?= (int)$invoiceModeSummary['candidates_total'] ?></div>
+                            <div class="small">Eligible today: <?= (int)$invoiceModeSummary['candidates_eligible'] ?></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100 border-success">
+                        <div class="card-body">
+                            <div class="small text-muted">Issued Invoices</div>
+                            <div class="h5 mb-0"><?= (int)$invoiceModeSummary['issued_invoices'] ?></div>
+                            <div class="small">Open invoice balance: <?= number_format((float)$invoiceModeSummary['open_invoice_amount'], 2) ?> AED</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100 border-secondary">
+                        <div class="card-body">
+                            <div class="small text-muted">Receipts / Deposit</div>
+                            <div class="h5 mb-0"><?= (int)$invoiceModeSummary['receipts_total'] ?></div>
+                            <div class="small">Security deposit open: <?= number_format((float)$invoiceModeSummary['security_deposit_open'], 2) ?> AED</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <div class="card mb-4 border-warning" data-lv-tab="overview">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0"><i class="bi bi-clipboard-data"></i> Operational Collection Comparison</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-light border small">
+                    For Invoice Mode, official accounting balance comes from invoices, receipts, allocations, and GL. This operational schedule is not the official accounting balance.
+                    <?php if (abs((float)$operationalSummary['difference']) > 0.02): ?>
+                        <br><strong>Difference note:</strong> this means the operational cheque/payment schedule total does not match the lease terms. A financial reset does not recreate the schedule; use Edit Pending Row / Repair schedule if the operational schedule should be corrected.
+                        <?php if (!empty($operationalScheduleHasExtraRentRow)): ?>
+                            <br><strong>Detected issue:</strong> this lease has more rent cheque rows than configured (<?= (int)$rentLikeRowCount ?> vs <?= (int)$expectedRentInstallmentCount ?>). This often happens when the fees installment was counted as rent. Open <a href="lease_add.php?id=<?= (int)$leaseId ?>">Edit Lease</a> and click <strong>Save</strong> to repair the schedule (paid rows are preserved).
+                        <?php endif; ?>
+                    <?php elseif ((float)($operationalSummary['service_charge_schedule_adjustment'] ?? 0) > 0.02): ?>
+                        <br><strong>Extra services note:</strong> <?= number_format((float)$operationalSummary['service_charge_schedule_adjustment'], 2) ?> AED from applied service charges merged into cheques is included in both Expected and Scheduled totals above.
+                    <?php endif; ?>
+                    <?php if ($legacyExtraServiceTotal > 0): ?>
+                        <br><strong>Extra services note:</strong> this lease still has old extra-service values (<?= h(implode(', ', $legacyExtraServiceNotes)) ?>). In the new flow, these should be recreated from <a href="billing_service_charges.php?lease_id=<?= (int)$leaseId ?>">Service Charges Management</a>, not kept inside the lease.
+                    <?php endif; ?>
+                </div>
+                <div class="row g-3 text-center">
+                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Expected Lease Collection</div><strong><?= number_format($operationalSummary['expected_total'], 2) ?></strong> AED</div></div>
+                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Scheduled Payment Total</div><strong><?= number_format($operationalSummary['scheduled_total'], 2) ?></strong> AED</div></div>
+                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Difference</div><strong class="<?= abs($operationalSummary['difference']) > 0.02 ? 'text-danger' : 'text-success' ?>"><?= number_format($operationalSummary['difference'], 2) ?></strong> AED</div></div>
+                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Issued Invoices Total</div><strong><?= number_format($operationalSummary['issued_invoices_total'], 2) ?></strong> AED</div></div>
+                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Receipts Collected</div><strong><?= number_format($operationalSummary['receipts_collected_total'], 2) ?></strong> AED</div></div>
+                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Allocated Total</div><strong><?= number_format($operationalSummary['allocated_total'], 2) ?></strong> AED</div></div>
+                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Unallocated Receipts</div><strong><?= number_format($operationalSummary['unallocated_receipt_total'], 2) ?></strong> AED</div></div>
+                    <div class="col-md-3"><div class="border rounded p-2"><div class="small text-muted">Security Deposit Expected / Allocated</div><strong><?= number_format($operationalSummary['security_deposit_expected'], 2) ?> / <?= number_format($operationalSummary['security_deposit_allocated'], 2) ?></strong> AED</div></div>
+                </div>
             </div>
         </div>
 
         <!-- Payment Summary -->
-        <div class="card mb-4">
+        <div class="card mb-4" data-lv-tab="overview">
             <div class="card-header">
                 <h5><?= $accountingMode === 'invoice' ? 'Operational Schedule Summary' : 'Payment Summary' ?></h5>
             </div>
@@ -1927,7 +2017,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
         </div>
 
         <!-- Installments -->
-        <div class="card mb-4" id="installments">
+        <div class="card mb-4" id="installments" data-lv-tab="overview">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">
                     Operational Payment / Cheque Schedule
@@ -2260,7 +2350,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
         </div>
 
 <?php if (has_role('Owner', $conn) || has_role('Admin', $conn)): ?>
-        <div class="card mb-4 border-warning">
+        <div class="card mb-4 border-warning" data-lv-tab="overview">
             <div class="card-body py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <div class="small">
                     <strong>Admin tool:</strong> Financial Rebook removes payments, accounting, schedule, and service charges while keeping documents and lease terms.
@@ -2405,7 +2495,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 
         <!-- Service Charge Fee Schedule -->
         <?php if (!empty($serviceChargeSchedule)): ?>
-        <div class="card mb-4">
+        <div class="card mb-4" data-lv-tab="services">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <div>
                     <h5 class="mb-0"><i class="bi bi-lightning-charge"></i> Service Charge Fee Schedule</h5>
@@ -2711,7 +2801,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 
         <!-- Penalty Charges (Late Fee / Bounced Fee) -->
         <?php if (!empty($penaltyItems)): ?>
-        <div class="card mb-4">
+        <div class="card mb-4" data-lv-tab="services">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0"><i class="bi bi-exclamation-triangle"></i> Penalty Charges (Late Fee / Bounced Fee)</h5>
                 <?php if ($accountingMode === 'invoice'): ?>
@@ -2824,7 +2914,7 @@ foreach ($creditHistory as $ct) {
     $runningCredit += ($ct['type'] === 'credit') ? (float)$ct['amount_aed'] : -(float)$ct['amount_aed'];
 }
 ?>
-<div class="card mb-4 <?= $creditIsOverstated ? 'border-warning' : 'border-info' ?>">
+<div class="card mb-4 <?= $creditIsOverstated ? 'border-warning' : 'border-info' ?>" data-lv-tab="credit">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2"
          style="background:<?= $creditIsOverstated ? 'rgba(255,193,7,0.12)' : 'rgba(13,202,240,0.08)' ?>;">
         <div>
@@ -3338,7 +3428,7 @@ function openEditPenalty(id, currentAmount) {
         $moveOperations = $stmt->fetchAll(PDO::FETCH_ASSOC);
         ?>
         <?php if (!empty($moveOperations)): ?>
-        <div class="card mb-4">
+        <div class="card mb-4" data-lv-tab="move">
             <div class="card-header">
                 <h5>Move-In/Out Operations</h5>
             </div>
@@ -3390,30 +3480,6 @@ function openEditPenalty(id, currentAmount) {
         </div>
         <?php endif; ?>
 
-        <!-- Renewal Terms -->
-        <?php if (!empty($lease['renewal_terms'])): ?>
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5>Renewal Terms</h5>
-            </div>
-            <div class="card-body">
-                <p><?= nl2br(h($lease['renewal_terms'])) ?></p>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- Notes -->
-        <?php if ($lease['notes']): ?>
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5>Notes</h5>
-            </div>
-            <div class="card-body">
-                <p><?= nl2br(h($lease['notes'])) ?></p>
-            </div>
-        </div>
-        <?php endif; ?>
-
         <!-- Renewal Workflow Section -->
         <?php
         $stmt = $conn->prepare("
@@ -3428,7 +3494,7 @@ function openEditPenalty(id, currentAmount) {
         $renewalWorkflow = $stmt->fetch(PDO::FETCH_ASSOC);
         ?>
         <?php if ($renewalWorkflow): ?>
-        <div class="card mb-4">
+        <div class="card mb-4" data-lv-tab="move">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5>Renewal Workflow</h5>
                 <a href="lease_renewal_workflow_view.php?id=<?= $renewalWorkflow['id'] ?>" class="btn btn-sm btn-primary">
@@ -3486,7 +3552,7 @@ function openEditPenalty(id, currentAmount) {
             </div>
         </div>
         <?php elseif ($lease['status'] === 'active' && strtotime($lease['end_date']) <= strtotime('+60 days')): ?>
-        <div class="card mb-4">
+        <div class="card mb-4" data-lv-tab="move">
             <div class="card-header">
                 <h5>Renewal Workflow</h5>
             </div>
@@ -3512,7 +3578,7 @@ function openEditPenalty(id, currentAmount) {
         $templates = $templates->fetchAll(PDO::FETCH_ASSOC);
         ?>
         <?php if (!empty($templates)): ?>
-        <div class="card mb-4">
+        <div class="card mb-4" data-lv-tab="documents">
             <div class="card-header">
                 <h5>Generate Contract</h5>
             </div>
@@ -3531,10 +3597,53 @@ function openEditPenalty(id, currentAmount) {
         <?php endif; ?>
 
         <!-- Documents Section -->
+        <div data-lv-tab="documents">
         <?php
         require_once __DIR__ . '/includes/document_manager.php';
         render_document_manager('lease', $leaseId, $currentCompanyId);
         ?>
+        </div>
+</div>
+
+<script>
+// Section tabs: every block tagged data-lv-tab shows only under its tab. Without JS all blocks stay visible.
+(function () {
+    var page = document.querySelector('.lease-view-page');
+    var nav = document.getElementById('lvTabs');
+    if (!page || !nav) return;
+    var storeKey = 'lvTab:<?= (int)$leaseId ?>';
+    var sections = [].slice.call(page.querySelectorAll('[data-lv-tab]'));
+    var buttons = [].slice.call(nav.querySelectorAll('[data-lv-target]')).filter(function (b) {
+        var used = sections.some(function (s) { return s.getAttribute('data-lv-tab') === b.getAttribute('data-lv-target'); });
+        if (!used) b.remove();
+        return used;
+    });
+    if (!buttons.length) return;
+
+    function show(name) {
+        sections.forEach(function (s) { s.classList.toggle('lv-hidden', s.getAttribute('data-lv-tab') !== name); });
+        buttons.forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-lv-target') === name); });
+        try { sessionStorage.setItem(storeKey, name); } catch (e) {}
+    }
+    function has(name) { return buttons.some(function (b) { return b.getAttribute('data-lv-target') === name; }); }
+
+    var start = null, anchor = null;
+    if (location.hash.length > 1) {
+        try { anchor = document.getElementById(decodeURIComponent(location.hash.slice(1))); } catch (e) {}
+        var owner = anchor && anchor.closest('[data-lv-tab]');
+        if (owner) start = owner.getAttribute('data-lv-tab');
+    }
+    if (!start) { try { start = sessionStorage.getItem(storeKey); } catch (e) {} }
+    if (!start || !has(start)) start = buttons[0].getAttribute('data-lv-target');
+
+    buttons.forEach(function (b) {
+        b.addEventListener('click', function () { show(b.getAttribute('data-lv-target')); });
+    });
+    nav.hidden = false;
+    show(start);
+    if (anchor && anchor.closest('[data-lv-tab]')) anchor.scrollIntoView();
+})();
+</script>
 
 <script>
 function changeLeaseStatus(leaseId, newStatus) {
