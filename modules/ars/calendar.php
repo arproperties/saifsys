@@ -167,7 +167,9 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
         $balanceDue = (float)($bk['balance_due'] ?? 0);
         $isDue = $balanceDue > 0.009
             && in_array(strtolower((string)($bk['status'] ?? '')), ['confirmed', 'checked_in', 'checked-in'], true);
-        if ($isDue) {
+        // Only an in-house guest who owes goes red. A booked guest normally still
+        // owes before arrival, so the bar stays gold; the tooltip carries the balance.
+        if ($isDue && $style['class'] === 'abnb-bar--inhouse') {
             $style['class'] = 'abnb-bar--due';
         }
 
