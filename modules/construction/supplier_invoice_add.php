@@ -347,6 +347,15 @@ $today = date('Y-m-d');
     </div>
 </form>
 
+<?php
+require_once __DIR__ . '/../../includes/searchable_select.php';
+searchable_select_assets();
+?>
+<style>
+/* Match the theme's 44px inputs; the search box is not a .form-control. */
+#invoiceLines .select2-container--bootstrap-5 .select2-selection{min-height:var(--co-touch,44px);display:flex;align-items:center;}
+#invoiceLines .select2-container--bootstrap-5 .select2-selection__rendered{flex:1;min-width:0;}
+</style>
 <script>
 (function() {
     var accounts = <?= json_encode($expenseAccounts) ?>;
@@ -406,7 +415,7 @@ $today = date('Y-m-d');
         var vatTreatment = data.vat_treatment || 'standard';
         tr.innerHTML =
             '<td><input name="items[' + lineIdx + '][description]" class="form-control form-control-sm" value="' + esc(data.description || '') + '" required></td>' +
-            '<td><select name="items[' + lineIdx + '][expense_account_id]" class="form-select form-select-sm line-account" required>' +
+            '<td><select name="items[' + lineIdx + '][expense_account_id]" class="form-select form-select-sm line-account" data-search required>' +
                 accountOptions(data.expense_account_id || (expenseSelect ? expenseSelect.value : '')) + '</select></td>' +
             '<td><input type="number" step="0.01" name="items[' + lineIdx + '][quantity]" class="form-control form-control-sm qty" value="' + esc(data.quantity ?? 1) + '"></td>' +
             '<td><input type="number" step="0.01" name="items[' + lineIdx + '][unit_price]" class="form-control form-control-sm rate" value="' + esc(data.unit_price ?? 0) + '"></td>' +

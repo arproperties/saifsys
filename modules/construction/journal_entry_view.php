@@ -14,6 +14,7 @@ require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/rbac_department.php';
 require_once __DIR__ . '/../realestate/accounting/accounting_engine.php';
+require_once __DIR__ . '/../realestate/accounting/journal_attachments_helper.php';
 
 require_login();
 if (!has_department_access(MODULE_CONSTRUCTION, DEPT_CONSTRUCTION_FINANCIAL, $conn)) {
@@ -110,6 +111,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    if ($action === 'upload_attachment') {
+        $upload = journal_attachments_save($conn, $_FILES['attachments'] ?? [], $journalId, $currentCompanyId, $userId);
+        if ($upload['saved'] > 0) {
+            $_SESSION['success'] = sprintf('%d attachment%s uploaded.', $upload['saved'], $upload['saved'] === 1 ? '' : 's');
+        }
+        if ($upload['errors']) {
+            $_SESSION['error'] = implode(' ', $upload['errors']);
+        } elseif ($upload['saved'] === 0) {
+            $_SESSION['error'] = 'No file selected.';
+        }
+        header('Location: journal_entry_view.php?id=' . $journalId);
+        exit;
+    }
+
+    if ($action === 'delete_attachment') {
+        $attachmentId = (int)($_POST['attachment_id'] ?? 0);
+        // Only a file that belongs to this journal.
+        $own = false;
+        foreach (journal_attachments_list($conn, $journalId, $currentCompanyId) as $att) {
+            if ((int)$att['id'] === $attachmentId) { $own = true; break; }
+        }
+        if ($own && journal_attachment_delete($conn, $attachmentId, $currentCompanyId)) {
+            $_SESSION['success'] = 'Attachment deleted.';
+        } else {
+            $_SESSION['error'] = 'Could not delete the attachment.';
+        }
+        header('Location: journal_entry_view.php?id=' . $journalId);
+        exit;
+    }
+
     if ($action === 'reverse' && $journal['is_posted'] && !$journal['is_reversed']) {
         $reason = trim($_POST['reason'] ?? '');
         $result = reverse_journal($journalId, $reason, $userId);
@@ -127,6 +158,8 @@ if (isset($_SESSION['success']) || isset($_SESSION['error'])) {
     $journal = co_load_journal_header($conn, $journalId, $currentCompanyId);
     $journalLines = co_load_journal_lines($conn, $journalId);
 }
+
+$attachments = journal_attachments_list($conn, $journalId, $currentCompanyId);
 
 $pageTitle = 'Journal Entry Details';
 require_once __DIR__ . '/includes/construction_layout_header.php';
@@ -297,6 +330,77 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
                 </tbody>
             </table>
         </div>
+    </div>
+</div>
+
+<div class="card card-round mb-4">
+    <div class="card-header bg-light">
+        <h6 class="mb-0"><i class="bi bi-paperclip"></i> Attachments (<?= count($attachments) ?>)</h6>
+    </div>
+    <div class="card-body">
+        <?php if ($attachments): ?>
+            <div class="table-responsive mb-3">
+                <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th><i class="bi bi-file-earmark"></i> File</th>
+                            <th style="width: 12%">Size</th>
+                            <th style="width: 20%">Uploaded</th>
+                            <th style="width: 20%" class="text-end">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($attachments as $att): ?>
+                            <tr>
+                                <td>
+                                    <i class="bi <?= h(journal_attachment_icon($att['file_name'])) ?>"></i>
+                                    <?= h($att['file_name']) ?>
+                                </td>
+                                <td><?= h(journal_attachment_size($att['file_size'] ?? null)) ?></td>
+                                <td>
+                                    <small class="text-muted">
+                                        <?= h($att['uploaded_by_name'] ?: 'System') ?><br>
+                                        <?= date('M d, Y H:i', strtotime($att['uploaded_at'])) ?>
+                                    </small>
+                                </td>
+                                <td class="text-end">
+                                    <a href="journal_attachment_file.php?id=<?= (int)$att['id'] ?>" target="_blank"
+                                       class="btn btn-sm btn-outline-primary" title="View">
+                                        <i class="bi bi-eye"></i>
+                                    </a>
+                                    <a href="journal_attachment_file.php?id=<?= (int)$att['id'] ?>&mode=download"
+                                       class="btn btn-sm btn-outline-secondary" title="Download">
+                                        <i class="bi bi-download"></i>
+                                    </a>
+                                    <form method="POST" class="d-inline" onsubmit="return confirm('Delete this attachment? This cannot be undone.');">
+                                        <?= csrf_field() ?>
+                                        <input type="hidden" name="action" value="delete_attachment">
+                                        <input type="hidden" name="attachment_id" value="<?= (int)$att['id'] ?>">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+        <form method="POST" enctype="multipart/form-data" class="row g-2 align-items-center">
+            <?= csrf_field() ?>
+            <input type="hidden" name="action" value="upload_attachment">
+            <div class="col-md-8">
+                <input type="file" name="attachments[]" class="form-control" multiple required
+                       accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.xls,.xlsx,.doc,.docx,.csv,.txt">
+            </div>
+            <div class="col-md-4">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-upload"></i> Upload
+                </button>
+            </div>
+            <div class="form-text">PDF, image, Word, Excel, CSV or text - up to 10 MB each.</div>
+        </form>
     </div>
 </div>
 
