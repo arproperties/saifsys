@@ -112,6 +112,15 @@ if ($accountingMode === 'invoice' && $chequeId > 0) {
         ];
         $seenPaymentIds[] = $pid;
     }
+    // Always show the receipt's full amount, same as "Amount" on the receipt page.
+    // When only part of it counts for this cheque, that part is shown as a note beside it.
+    foreach ($payments as &$faceRow) {
+        $faceRow['counted_here'] = $faceRow['amount_allocated'];
+        if ($faceRow['receipt_face_amount'] > 0.005) {
+            $faceRow['amount_allocated'] = $faceRow['receipt_face_amount'];
+        }
+    }
+    unset($faceRow);
 } else {
     $totalPaid = get_installment_total_paid($conn, $installmentId);
 }
@@ -306,7 +315,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 <tr>
                                     <th>Receipt #</th>
                                     <th>Payment date</th>
-                                    <th>Amount allocated (AED)</th>
+                                    <th>Receipt amount (AED)</th>
                                     <th>Method</th>
                                     <th>Reference</th>
                                     <th>Actions</th>
@@ -317,7 +326,12 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     <tr>
                                         <td><strong><?= h($p['receipt_number']) ?></strong></td>
                                         <td><?= date('Y-m-d', strtotime($p['payment_date'])) ?></td>
-                                        <td class="text-end"><?= number_format($p['amount_allocated'], 2) ?></td>
+                                        <td class="text-end">
+                                            <?= number_format($p['amount_allocated'], 2) ?>
+                                            <?php if (isset($p['counted_here']) && abs($p['counted_here'] - $p['amount_allocated']) > 0.02 && abs(array_sum(array_column($payments, 'amount_allocated')) - $totalPaid) > 0.02): ?>
+                                                <div class="small text-muted"><?= number_format($p['counted_here'], 2) ?> counted for this cheque</div>
+                                            <?php endif; ?>
+                                        </td>
                                         <td><?= ucfirst(str_replace('_', ' ', $p['payment_method'])) ?></td>
                                         <td><?= h($p['reference_number'] ?: '-') ?></td>
                                         <td>

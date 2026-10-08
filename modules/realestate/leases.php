@@ -23,7 +23,7 @@ $currentCompanyId = current_company_id($conn) ?: 1;
 re_lease_activate_due_renewals($conn, $currentCompanyId, current_user_id());
 
 // Get filter parameters
-$statusFilter = $_GET['status'] ?? 'all';
+$statusFilter = $_GET['status'] ?? 'active';
 $buildingFilter = !empty($_GET['building_id']) ? (int)$_GET['building_id'] : null;
 $searchQuery = !empty($_GET['search']) ? trim($_GET['search']) : '';
 
@@ -88,6 +88,17 @@ $stats = $conn->prepare("
 ");
 $stats->execute([$currentCompanyId]);
 $statistics = $stats->fetch(PDO::FETCH_ASSOC);
+
+// Status tabs: lease count per status (whole company, not narrowed by building/search)
+$statusTabs = ['all' => 'All', 'active' => 'Active', 'draft' => 'Draft', 'expired' => 'Expired',
+               'renewed' => 'Renewed', 'terminated' => 'Terminated', 'has_legal_case' => 'Legal Case'];
+if (!isset($statusTabs[$statusFilter])) {
+    $statusTabs[$statusFilter] = re_lease_status_label((string)$statusFilter);
+}
+$tabCountStmt = $conn->prepare("SELECT l.status, COUNT(*) FROM re_leases l WHERE l.company_id = ? AND " . re_lease_not_deleted_sql($conn, 'l') . " GROUP BY l.status");
+$tabCountStmt->execute([$currentCompanyId]);
+$statusTabCounts = $tabCountStmt->fetchAll(PDO::FETCH_KEY_PAIR);
+$statusTabCounts['all'] = (int)$statistics['total_leases'];
 
 $deletedLeaseCount = 0;
 if (re_lease_column_exists($conn, 'deleted_at')) {
@@ -218,7 +229,7 @@ $leases = $conn->prepare("
     LEFT JOIN re_lease_renewal_workflows rw_new ON rw_new.new_lease_id = l.id AND rw_new.status = 'converted'
     WHERE " . implode(' AND ', $where) . "
     GROUP BY l.id
-    ORDER BY l.start_date DESC
+    ORDER BY l.start_date DESC, l.id DESC
 ");
 $chequeAggParams = [$currentCompanyId];
 if ($multiChequeLinksReady) {
@@ -323,12 +334,134 @@ csrf_token();
 
 // Set page title and include layout
 $pageTitle = 'Leases';
+$reLayoutFluid = true;
 require_once __DIR__ . '/includes/re_layout_header.php';
 ?>
 
-        <div class="d-flex justify-content-between align-items-center mb-4">
+<style>
+    .leases-page .card-round { border: 1px solid #cbd2dc; }
+    .leases-page .card-round:hover { transform: none; box-shadow: var(--shadow); }
+    .leases-page .filter-card .form-select,
+    .leases-page .filter-card .form-control { border: 1px solid #9aa4b2; }
+    .leases-page .filter-card .form-select:focus,
+    .leases-page .filter-card .form-control:focus { border-color: var(--primary); }
+    body.dark-mode .leases-page .card-round { border-color: #475569; }
+    /* One strip; the 1px grid gap over a grey background draws the dividers */
+    .leases-page .stat-strip {
+        display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+        background: rgba(0, 0, 0, .08); overflow: hidden;
+    }
+    .leases-page .stat-item {
+        display: flex; align-items: center; gap: .85rem;
+        padding: 1rem 1.25rem; background: #fff; min-width: 0;
+    }
+    .leases-page .stat-icon {
+        width: 42px; height: 42px; flex-shrink: 0;
+        display: grid; place-items: center;
+        border-radius: 10px; font-size: 1.2rem;
+        color: var(--stat); background: color-mix(in srgb, var(--stat) 12%, transparent);
+    }
+    .leases-page .stat-label {
+        font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+        color: #6b7280; margin-bottom: .15rem;
+    }
+    .leases-page .stat-value { font-size: 1.4rem; font-weight: 700; line-height: 1.2; color: #111827; }
+    .leases-page .stat-value small { font-size: .8rem; font-weight: 600; color: #6b7280; }
+    .leases-page .filter-card .form-label { font-size: .8rem; font-weight: 600; color: #6b7280; margin-bottom: .25rem; }
+
+    .leases-page .lease-tabs {
+        display: flex; gap: .25rem; flex-wrap: nowrap; overflow-x: auto;
+        padding: 0 .75rem; border-bottom: 1px solid rgba(0, 0, 0, .08);
+    }
+    .leases-page .lease-tabs a {
+        display: flex; align-items: center; gap: .4rem; white-space: nowrap;
+        padding: .85rem .75rem; margin-bottom: -1px;
+        font-size: .9rem; font-weight: 600; color: #6b7280; text-decoration: none;
+        border-bottom: 2px solid transparent;
+    }
+    .leases-page .lease-tabs a:hover { color: var(--primary); }
+    .leases-page .lease-tabs a.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .leases-page .lease-tabs .tab-count {
+        font-size: .72rem; font-weight: 600; padding: .1rem .45rem; border-radius: 999px;
+        background: rgba(0, 0, 0, .06); color: #6b7280;
+    }
+    .leases-page .lease-tabs a.active .tab-count { background: var(--primary); color: #fff; }
+
+    .leases-page .leases-table { font-size: .9rem; }
+    .leases-page .leases-table > thead > tr > th {
+        font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+        color: #6b7280; white-space: nowrap; padding: .75rem 1rem;
+    }
+    .leases-page .leases-table > tbody > tr > td { padding: .75rem 1rem; vertical-align: middle; }
+    .leases-page .leases-table > tbody > tr.table-secondary > td {
+        font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; padding: .5rem 1rem;
+    }
+    .leases-page .leases-table > tbody > tr > td:not([colspan]):nth-child(1),
+    .leases-page .leases-table > tbody > tr > td:not([colspan]):nth-child(4),
+    .leases-page .leases-table > tbody > tr > td:not([colspan]):nth-child(5),
+    .leases-page .leases-table > tbody > tr > td:not([colspan]):nth-child(6) { white-space: nowrap; }
+    .leases-page .leases-table > tbody > tr > td:not([colspan]):nth-child(3) { min-width: 180px; }
+    .leases-page .leases-table > * > tr > :not([colspan]):nth-child(6),
+    .leases-page .leases-table > * > tr > :not([colspan]):nth-child(9) { text-align: right; }
+
+    body.dark-mode .leases-page .lease-tabs { border-bottom-color: #334155; }
+    body.dark-mode .leases-page .lease-tabs a.active,
+    body.dark-mode .leases-page .lease-tabs a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+    body.dark-mode .leases-page .lease-tabs a:not(.active):hover { border-bottom-color: transparent; }
+    body.dark-mode .leases-page .lease-tabs .tab-count { background: rgba(255, 255, 255, .1); color: #9ca3af; }
+    body.dark-mode .leases-page .stat-strip { background: #334155; }
+    body.dark-mode .leases-page .stat-item { background: #1e293b; }
+    body.dark-mode .leases-page .stat-value { color: #e4e4e7; }
+    body.dark-mode .leases-page .stat-label,
+    body.dark-mode .leases-page .stat-value small,
+    body.dark-mode .leases-page .filter-card .form-label { color: #9ca3af; }
+
+    @media (max-width: 991.98px) {
+        .leases-page .stat-strip { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 575.98px) {
+        .leases-page .page-header-label { font-size: 1.5rem; }
+        .leases-page .stat-item { padding: .75rem .85rem; }
+        .leases-page .stat-icon { display: none; }
+        .leases-page .stat-value { font-size: 1.15rem; }
+    }
+
+    /* Phones: each lease becomes a stacked card instead of a wide table */
+    @media (max-width: 767.98px) {
+        .leases-page .leases-table > thead { display: none; }
+        .leases-page .leases-table,
+        .leases-page .leases-table > tbody,
+        .leases-page .leases-table > tbody > tr,
+        .leases-page .leases-table > tbody > tr > td { display: block; width: 100%; }
+        .leases-page .leases-table > tbody > tr { position: relative; border-bottom: 1px solid rgba(128, 128, 128, .25); }
+        .leases-page .leases-table > tbody > tr:not(.table-secondary) { padding: .75rem 1rem; }
+        .leases-page .leases-table > tbody > tr > td { border: 0; }
+        .leases-page .leases-table > tbody > tr > td:not([colspan]) {
+            position: relative; padding: .2rem 0 .2rem 5.5rem;
+            text-align: left; white-space: normal; min-width: 0;
+        }
+        .leases-page .leases-table > tbody > tr > td:not([colspan])::before {
+            position: absolute; left: 0; top: .3rem;
+            font-size: .72rem; font-weight: 600; text-transform: uppercase; color: #6b7280;
+        }
+        .leases-page .leases-table > tbody > tr > td:not([colspan]):nth-child(1) { padding-left: 0; padding-right: 5.5rem; font-size: 1rem; }
+        .leases-page .leases-table > tbody > tr > td:nth-child(2)::before { content: 'Unit'; }
+        .leases-page .leases-table > tbody > tr > td:nth-child(3)::before { content: 'Tenant'; }
+        .leases-page .leases-table > tbody > tr > td:nth-child(4)::before { content: 'Start'; }
+        .leases-page .leases-table > tbody > tr > td:nth-child(5)::before { content: 'End'; }
+        .leases-page .leases-table > tbody > tr > td:nth-child(6)::before { content: 'Rent'; }
+        .leases-page .leases-table > tbody > tr > td:nth-child(7)::before { content: 'Status'; }
+        .leases-page .leases-table > tbody > tr > td:nth-child(8)::before { content: 'Payments'; }
+        .leases-page .leases-table > tbody > tr > td:not([colspan]):nth-child(9) {
+            position: absolute; top: .6rem; right: 1rem; width: auto; padding: 0;
+        }
+    }
+</style>
+
+<div class="leases-page">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
             <div class="page-header-label">Leases</div>
-            <div class="d-flex gap-2">
+            <div class="d-flex flex-wrap gap-2">
                 <a href="deleted_leases.php" class="btn btn-outline-secondary">
                     <i class="bi bi-archive"></i> Deleted Leases<?= $deletedLeaseCount ? ' (' . number_format($deletedLeaseCount) . ')' : '' ?>
                 </a>
@@ -338,99 +471,45 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             </div>
         </div>
 
-        <!-- Statistics Cards -->
-        <div class="row mb-4">
-            <div class="col-md-3 mb-3">
-                <div class="card card-round border-0 shadow-sm">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="flex-shrink-0">
-                                <div class="bg-primary bg-opacity-10 rounded-circle p-3">
-                                    <i class="bi bi-file-earmark-text text-primary fs-4"></i>
-                                </div>
-                            </div>
-                            <div class="flex-grow-1 ms-3">
-                                <div class="text-muted small">Total Leases</div>
-                                <div class="h4 mb-0"><?= number_format($statistics['total_leases']) ?></div>
-                            </div>
-                        </div>
-                    </div>
+        <!-- Statistics -->
+        <div class="card card-round stat-strip mb-4">
+            <div class="stat-item" style="--stat: #2563eb;">
+                <div class="stat-icon"><i class="bi bi-file-earmark-text"></i></div>
+                <div>
+                    <div class="stat-label">Total Leases</div>
+                    <div class="stat-value"><?= number_format($statistics['total_leases']) ?></div>
                 </div>
             </div>
-            <div class="col-md-3 mb-3">
-                <div class="card card-round border-0 shadow-sm">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="flex-shrink-0">
-                                <div class="bg-success bg-opacity-10 rounded-circle p-3">
-                                    <i class="bi bi-check-circle text-success fs-4"></i>
-                                </div>
-                            </div>
-                            <div class="flex-grow-1 ms-3">
-                                <div class="text-muted small">Active</div>
-                                <div class="h4 mb-0"><?= number_format($statistics['active_count']) ?></div>
-                            </div>
-                        </div>
-                    </div>
+            <div class="stat-item" style="--stat: #16a34a;">
+                <div class="stat-icon"><i class="bi bi-check-circle"></i></div>
+                <div>
+                    <div class="stat-label">Active</div>
+                    <div class="stat-value"><?= number_format($statistics['active_count']) ?></div>
                 </div>
             </div>
-            <div class="col-md-3 mb-3">
-                <div class="card card-round border-0 shadow-sm">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="flex-shrink-0">
-                                <div class="bg-warning bg-opacity-10 rounded-circle p-3">
-                                    <i class="bi bi-exclamation-triangle text-warning fs-4"></i>
-                                </div>
-                            </div>
-                            <div class="flex-grow-1 ms-3">
-                                <div class="text-muted small">Expired</div>
-                                <div class="h4 mb-0"><?= number_format($statistics['expired_count']) ?></div>
-                            </div>
-                        </div>
-                    </div>
+            <div class="stat-item" style="--stat: #d97706;">
+                <div class="stat-icon"><i class="bi bi-exclamation-triangle"></i></div>
+                <div>
+                    <div class="stat-label">Expired</div>
+                    <div class="stat-value"><?= number_format($statistics['expired_count']) ?></div>
                 </div>
             </div>
-            <div class="col-md-3 mb-3">
-                <div class="card card-round border-0 shadow-sm">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="flex-shrink-0">
-                                <div class="bg-info bg-opacity-10 rounded-circle p-3">
-                                    <i class="bi bi-currency-exchange text-info fs-4"></i>
-                                </div>
-                            </div>
-                            <div class="flex-grow-1 ms-3">
-                                <div class="text-muted small">Total Annual Rent</div>
-                                <div class="h5 mb-0"><?= number_format($statistics['total_annual_rent'], 0) ?> AED</div>
-                            </div>
-                        </div>
-                    </div>
+            <div class="stat-item" style="--stat: #0891b2;">
+                <div class="stat-icon"><i class="bi bi-currency-exchange"></i></div>
+                <div>
+                    <div class="stat-label">Total Annual Rent</div>
+                    <div class="stat-value"><?= number_format($statistics['total_annual_rent'], 0) ?> <small>AED</small></div>
                 </div>
             </div>
         </div>
 
         <!-- Advanced Filters -->
-        <div class="card card-round mb-4">
-            <div class="card-header bg-light">
-                <h6 class="mb-0"><i class="bi bi-funnel"></i> Filters & Search</h6>
-            </div>
+        <div class="card card-round filter-card mb-4">
             <div class="card-body">
                 <form method="GET" id="filterForm" class="row g-3">
-                    <div class="col-md-3">
-                        <label class="form-label"><i class="bi bi-tag"></i> Status</label>
-                        <select name="status" class="form-select">
-                            <option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>All Statuses</option>
-                            <option value="draft" <?= $statusFilter === 'draft' ? 'selected' : '' ?>>Draft</option>
-                            <option value="active" <?= $statusFilter === 'active' ? 'selected' : '' ?>>Active</option>
-                            <option value="has_legal_case" <?= $statusFilter === 'has_legal_case' ? 'selected' : '' ?>>Has Legal Case</option>
-                            <option value="expired" <?= $statusFilter === 'expired' ? 'selected' : '' ?>>Expired</option>
-                            <option value="terminated" <?= $statusFilter === 'terminated' ? 'selected' : '' ?>>Terminated</option>
-                            <option value="renewed" <?= $statusFilter === 'renewed' ? 'selected' : '' ?>>Renewed</option>
-                        </select>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label"><i class="bi bi-building"></i> Building</label>
+                    <input type="hidden" name="status" value="<?= h($statusFilter) ?>">
+                    <div class="col-12 col-sm-6 col-lg-4">
+                        <label class="form-label">Building</label>
                         <select name="building_id" class="form-select">
                             <option value="">All Buildings</option>
                             <?php foreach ($buildings as $b): ?>
@@ -440,18 +519,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <div class="col-md-4">
-                        <label class="form-label"><i class="bi bi-search"></i> Search</label>
+                    <div class="col-12 col-sm-6 col-lg-6">
+                        <label class="form-label">Search</label>
                         <input type="text" name="search" id="searchInput" class="form-control" placeholder="Lease #, Unit, Building, Tenant..." value="<?= h($searchQuery) ?>">
                     </div>
-                    <div class="col-md-2 d-flex align-items-end">
+                    <div class="col-12 col-lg-2 d-flex align-items-end">
                         <button type="submit" class="btn btn-primary w-100">
                             <i class="bi bi-funnel-fill"></i> Apply
                         </button>
                     </div>
-                    <?php if ($statusFilter !== 'all' || $buildingFilter || $searchQuery): ?>
+                    <?php if ($buildingFilter || $searchQuery): ?>
                     <div class="col-12">
-                        <a href="leases.php" class="btn btn-sm btn-outline-secondary">
+                        <a href="leases.php?status=<?= h(urlencode($statusFilter)) ?>" class="btn btn-sm btn-outline-secondary">
                             <i class="bi bi-x-circle"></i> Clear Filters
                         </a>
                     </div>
@@ -462,8 +541,17 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 
         <!-- Leases Table -->
         <div class="card card-round">
-            <div class="card-header bg-light d-flex justify-content-between align-items-center">
-                <h6 class="mb-0"><i class="bi bi-list-ul"></i> Leases (<span id="leasesCount"><?= count($leases) ?></span>)</h6>
+            <nav class="lease-tabs">
+                <?php foreach ($statusTabs as $tabKey => $tabLabel):
+                    $tabQuery = array_filter(['status' => $tabKey, 'building_id' => $buildingFilter, 'search' => $searchQuery]);
+                ?>
+                    <a href="leases.php?<?= h(http_build_query($tabQuery)) ?>" class="<?= $statusFilter === $tabKey ? 'active' : '' ?>">
+                        <?= h($tabLabel) ?> <span class="tab-count"><?= number_format((int)($statusTabCounts[$tabKey] ?? 0)) ?></span>
+                    </a>
+                <?php endforeach; ?>
+            </nav>
+            <div class="card-header bg-transparent d-flex justify-content-between align-items-center py-3">
+                <h6 class="mb-0"><?= h($statusTabs[$statusFilter]) ?> leases (<span id="leasesCount"><?= count($leases) ?></span>)</h6>
                 <?php if (count($leases) > 0): ?>
                 <button type="button" class="btn btn-sm btn-outline-secondary" onclick="exportTable()">
                     <i class="bi bi-download"></i> Export
@@ -472,18 +560,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
-                    <table class="table table-hover mb-0" id="leasesTable">
+                    <table class="table table-hover leases-table mb-0" id="leasesTable">
                         <thead class="table-light">
                             <tr>
-                                <th><i class="bi bi-hash"></i> Lease #</th>
-                                <th><i class="bi bi-building"></i> Unit</th>
-                                <th><i class="bi bi-person"></i> Tenant</th>
-                                <th><i class="bi bi-calendar-event"></i> Start Date</th>
-                                <th><i class="bi bi-calendar-x"></i> End Date</th>
-                                <th><i class="bi bi-currency-exchange"></i> Annual Rent</th>
-                                <th><i class="bi bi-tag"></i> Status</th>
-                                <th><i class="bi bi-cash-coin"></i> Payments</th>
-                                <th><i class="bi bi-gear"></i> Actions</th>
+                                <th>Lease #</th>
+                                <th>Unit</th>
+                                <th>Tenant</th>
+                                <th>Start Date</th>
+                                <th>End Date</th>
+                                <th>Annual Rent</th>
+                                <th>Status</th>
+                                <th>Payments</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="leasesTableBody">
@@ -623,6 +711,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 </div>
             </div>
         </div>
+</div>
 
 <script>
 // Live search with debouncing (AJAX - no page reload). Run after DOM ready so #leasesTableBody exists.

@@ -57,7 +57,7 @@ $sql = "
     JOIN re_buildings b ON b.id = u.building_id
     LEFT JOIN re_tenants t ON t.id = l.tenant_id
     WHERE " . implode(' AND ', $where) . "
-    ORDER BY l.created_at DESC
+    ORDER BY l.start_date DESC, l.id DESC
 ";
 
 $stmt = $conn->prepare($sql);
