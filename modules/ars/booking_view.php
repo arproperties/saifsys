@@ -259,6 +259,39 @@ $bookingBalance = (float)($booking['balance_due'] ?? 0);
 $stayTotal = $hasFinancialDocs ? $docsNetInvoiced : $bookingTotal;
 $balanceDue = $hasFinancialDocs ? $docsOpenBalance : $bookingBalance;
 
+// A credit note raised on an invoice the guest had already paid in full leaves
+// part of that payment unspent. The office collects the open invoices in full
+// and settles that part with the guest separately, so it is not counted as
+// Paid and is not taken off the balance: Total amount - Paid = Balance due.
+// A rate adjustment still owed on the same stay uses that part up first — the
+// price went down and back up, so nothing is left unspent.
+$creditCarried = 0.0;
+if ($hasFinancialDocs) {
+    try {
+        $ccStmt = $conn->prepare("
+            SELECT COALESCE(SUM(cn.balance_due), 0)
+            FROM ars_financial_documents cn
+            INNER JOIN ars_credit_notes link ON link.document_id = cn.id
+            INNER JOIN ars_financial_documents parent ON parent.id = link.applies_to_document_id
+            WHERE cn.booking_id = ? AND cn.company_id = ? AND cn.document_type = 'credit_note'
+              AND cn.status NOT IN ('draft', 'voided', 'reversed')
+              AND parent.status NOT IN ('draft', 'voided', 'reversed')
+              AND parent.balance_due < 0.01
+        ");
+        $ccStmt->execute([$bookingId, $arsCompanyId]);
+        $creditCarried = (float)$ccStmt->fetchColumn();
+        foreach ($financialDocs as $fd) {
+            if (($fd['document_type'] ?? '') === 'adjustment_invoice'
+                && !in_array(strtolower((string)($fd['status'] ?? '')), ['draft', 'voided', 'reversed'], true)) {
+                $creditCarried -= (float)($fd['balance_due'] ?? 0);
+            }
+        }
+        $creditCarried = round(max(0.0, min($creditCarried, (float)($booking['paid_amount'] ?? 0))), 2);
+    } catch (Throwable $ignored) {
+    }
+    $balanceDue = round($balanceDue + $creditCarried, 2);
+}
+
 // Outstanding per payment row: see ars_payment_rows_walk() for the two shapes
 // (typed total carries down; no total means instalments against one figure).
 // A billed extension gets a line of its own among them, so the invoice it
@@ -313,9 +346,49 @@ if ($isCancelled) {
 // date has come are due. $balanceDue stays the real open balance; $dueNow is
 // what the page asks the office to collect today.
 $paymentPlan = ars_payment_plan_get($conn, $arsCompanyId, $bookingId);
+// Once the stay has been extended, the plan needs to know where the original
+// stay ended and what it cost, so its months are not cut at the plan amount
+// agreed for the extension. (A typed Total on the Payments table is the
+// office's own statement and is scheduled as one figure, as before.)
+$originalStayInvoiced = ars_original_stay_invoiced($conn, $arsCompanyId, $booking);
+$planOriginalStay = null;
+if ($paymentPlan && $originalStayInvoiced && !$tableHasManualTotal) {
+    ars_ensure_extension_log_table($conn);
+    try {
+        $firstExt = $conn->prepare("SELECT MIN(extended_from) FROM ars_booking_extension_log WHERE booking_id = ? AND company_id = ?");
+        $firstExt->execute([$bookingId, $arsCompanyId]);
+        $firstExtFrom = (string)($firstExt->fetchColumn() ?: '');
+        if ($firstExtFrom !== '') {
+            $planOriginalStay = ['end' => $firstExtFrom, 'amount' => $originalStayInvoiced['total']];
+        }
+    } catch (Throwable $ignored) {
+    }
+}
+// The office's own corrections to single months (Record Payment window).
+$planOverrides = $paymentPlan ? ars_payment_plan_overrides($conn, $arsCompanyId, $bookingId) : [];
 $planSchedule = $paymentPlan
-    ? ars_payment_plan_schedule($paymentPlan, (string)($booking['check_in'] ?? ''), (string)($booking['check_out'] ?? ''), $stayTotal, $balanceDue)
+    ? ars_payment_plan_schedule($paymentPlan, (string)($booking['check_in'] ?? ''), (string)($booking['check_out'] ?? ''), $stayTotal, $balanceDue, null, $planOriginalStay, $planOverrides)
     : null;
+// The saved plan's months for the Record Payment window, which lists them with
+// an edit button each. "status" is what the month is pinned to, if anything.
+$planRowsJson = '';
+if ($planSchedule) {
+    $planRows = [];
+    foreach ($planSchedule['instalments'] as $inst) {
+        $planRows[] = [
+            'seq' => $inst['seq'],
+            'due' => $inst['due_date'],
+            'amount' => $inst['amount'],
+            'unpaid' => $inst['unpaid'],
+            'state' => $inst['state'],
+            'edited' => $inst['edited'],
+            'pinDue' => $planOverrides[$inst['seq']]['due_date'] ?? null,
+            'pinAmount' => $planOverrides[$inst['seq']]['amount'] ?? null,
+            'pinStatus' => $planOverrides[$inst['seq']]['status'] ?? null,
+        ];
+    }
+    $planRowsJson = json_encode($planRows);
+}
 $dueNow = $planSchedule ? min(max(0.0, $balanceDue), $planSchedule['due_now']) : $balanceDue;
 $planDefaultMonthly = $paymentPlan
     ? (float)$paymentPlan['monthly_amount']
@@ -358,9 +431,10 @@ if ($originalFrom !== '' && $originalTo !== '' && strtotime($originalTo) > strto
         'extended_to' => $originalTo,
         'nights' => (int)round((strtotime($originalTo) - strtotime($originalFrom)) / 86400),
         'rate_per_night' => ($booking['rate_override'] ?? null) ?: ($booking['nightly_rate'] ?? null),
-        // The original stay's money is the original invoice's, not the log's,
-        // so it is shown with a rate but no amount of its own to bill.
-        'amount' => null,
+        // The original stay's money is the original invoice's, not the log's:
+        // it shows what that invoice (with its adjustments and credit notes)
+        // comes to, and has nothing of its own to bill.
+        'amount' => $originalStayInvoiced['amount'] ?? null,
         'document_id' => null,
         'note' => 'Original stay',
     ];
@@ -386,6 +460,16 @@ foreach ($extensionRows as $extRow) {
 }
 $extensionTotalAmount = round($extensionTotalAmount, 2);
 $extensionUnbilledAmount = round($extensionUnbilledAmount, 2);
+
+// The list's footer adds up every line it shows — the original stay as well
+// as the extensions — so it reads as the whole stay.
+$stayListNights = 0;
+$stayListAmount = 0.0;
+foreach ($extensionDisplayRows as $listRow) {
+    $stayListNights += (int)$listRow['nights'];
+    $stayListAmount += ($listRow['amount'] ?? null) === null ? 0.0 : (float)$listRow['amount'];
+}
+$stayListAmount = round($stayListAmount, 2);
 
 // The nightly rate the price field opens on, and the VAT the invoice will add
 // on top of it, so the Extend form can show the guest-facing figure.
@@ -1295,6 +1379,10 @@ echo $arsWsLifecycleHtml;
                 }
                 $extDefaultFrom = $extLastTo !== '' ? $extLastTo : (string)$booking['check_out'];
                 ?>
+                <div class="alert alert-info py-2 px-3 mb-3 d-none align-items-center justify-content-between gap-2" id="extendEditBanner">
+                    <span><i class="bi bi-pencil-square me-1"></i><span id="extendEditLabel">Editing a period</span></span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="extendEditCancel">Cancel</button>
+                </div>
                 <div class="row g-3 align-items-end"
                      data-ars-ext-vat-rate="<?= h((string)$extVatRate) ?>"
                      data-ars-ext-vat-mode="<?= h($extVatMode) ?>" id="extendForm">
@@ -1376,7 +1464,8 @@ echo $arsWsLifecycleHtml;
                             <td data-label="Amount" class="text-end ars-tabular fw-semibold">
                                 <?php if (($ex['amount'] ?? null) !== null && (float)$ex['amount'] > 0): ?>
                                     <?= number_format((float)$ex['amount'], 2) ?>
-                                    <?php if ($exBilled): ?>
+                                    <?php if ($ex['id'] === null): ?>
+                                    <?php elseif ($exBilled): ?>
                                         <span class="badge bg-success-subtle text-success-emphasis ms-1">Billed</span>
                                     <?php else: ?>
                                         <span class="badge bg-warning-subtle text-warning-emphasis ms-1">Not billed</span>
@@ -1394,27 +1483,55 @@ echo $arsWsLifecycleHtml;
                                     <i class="bi bi-receipt me-1"></i>Bill
                                 </button>
                                 <?php endif; ?>
-                                <?php if ($ex['id'] !== null && !$exBilled): ?>
+                                <?php if ($ex['id'] === null && !$isCancelled): ?>
+                                <?php if ($booking['status'] === 'pending' && !$finLocked): ?>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#editStayDatesModal"
+                                        title="Edit stay dates" aria-label="Edit stay dates"><i class="bi bi-pencil"></i></button>
+                                <?php else: ?>
+                                <button type="button" class="btn btn-sm btn-outline-secondary me-1" data-ars-ext-edit="original"
+                                        data-from="<?= h((string)$ex['extended_from']) ?>"
+                                        data-to="<?= h((string)$ex['extended_to']) ?>"
+                                        data-rate="<?= ($ex['rate_per_night'] ?? null) !== null ? h(number_format((float)$ex['rate_per_night'], 2, '.', '')) : '' ?>"
+                                        data-amount="<?= ($ex['amount'] ?? null) !== null ? h(number_format((float)$ex['amount'], 2, '.', '')) : '' ?>"
+                                        data-price-locked="<?= $originalStayInvoiced ? '0' : '1' ?>"
+                                        data-paid="<?= $originalStayInvoiced && (float)$originalStayInvoiced['document']['balance_due'] < 0.01 ? '1' : '0' ?>"
+                                        title="Edit the original stay" aria-label="Edit the original stay"><i class="bi bi-pencil"></i></button>
+                                <?php endif; ?>
+                                <?php endif; ?>
+                                <?php if ($ex['id'] !== null): ?>
+                                <?php if (!$isCancelled): ?>
+                                <button type="button" class="btn btn-sm btn-outline-secondary me-1" data-ars-ext-edit="<?= (int)$ex['id'] ?>"
+                                        data-from="<?= h((string)$ex['extended_from']) ?>"
+                                        data-to="<?= h((string)$ex['extended_to']) ?>"
+                                        data-rate="<?= ($ex['rate_per_night'] ?? null) !== null ? h(number_format((float)$ex['rate_per_night'], 2, '.', '')) : '' ?>"
+                                        data-amount="<?= ($ex['amount'] ?? null) !== null ? h(number_format((float)$ex['amount'], 2, '.', '')) : '' ?>"
+                                        data-note="<?= h((string)($ex['note'] ?? '')) ?>"
+                                        data-billed="<?= $exBilled ? '1' : '0' ?>"
+                                        title="Edit this period" aria-label="Edit this period"><i class="bi bi-pencil"></i></button>
+                                <?php endif; ?>
+                                <?php if (!$exBilled): ?>
                                 <button type="button" class="btn btn-sm btn-outline-danger" data-ars-ext-delete="<?= (int)$ex['id'] ?>"
+                                        data-billed="0"
                                         title="Remove this entry" aria-label="Remove this entry"><i class="bi bi-trash"></i></button>
+                                <?php endif; ?>
                                 <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
-                    <?php if ($extensionTotalNights > 0 || $extensionTotalAmount > 0.009): ?>
+                    <?php if ($stayListNights > 0 || $stayListAmount > 0.009): ?>
                     <tfoot>
                         <tr class="fw-semibold">
-                            <td colspan="2" data-label="Total">Extensions total</td>
-                            <td class="text-end ars-tabular"><?= (int)$extensionTotalNights ?></td>
+                            <td colspan="2" data-label="Total">Total</td>
+                            <td class="text-end ars-tabular"><?= (int)$stayListNights ?></td>
                             <td></td>
-                            <td class="text-end ars-tabular">AED <?= number_format($extensionTotalAmount, 2) ?></td>
+                            <td class="text-end ars-tabular">AED <?= number_format($stayListAmount, 2) ?></td>
                             <td colspan="2" class="small text-muted fw-normal">
                                 <?php if ($extensionUnbilledAmount > 0.009): ?>
                                     AED <?= number_format($extensionUnbilledAmount, 2) ?> not billed yet
                                     (<?= (int)$extensionUnbilledCount ?> <?= $extensionUnbilledCount === 1 ? 'period' : 'periods' ?>)
                                 <?php elseif ($extensionTotalAmount > 0.009): ?>
-                                    All billed
+                                    All extensions billed
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -1428,7 +1545,10 @@ echo $arsWsLifecycleHtml;
                     <i class="bi bi-info-circle me-1"></i>A record of the periods this stay was extended by,
                     each priced at its own rate. <strong>Bill</strong> raises the extension invoice for that period —
                     it then joins the open balance and takes payment like any other invoice.
-                    A billed period cannot be deleted; reverse it with a credit note instead.
+                    Editing a billed period reverses its invoice and bills the corrected figures again;
+                    once a payment is recorded against it, delete that payment first.
+                    Editing the original stay's price raises a rate adjustment (or a credit note for a
+                    lower figure) and leaves its invoice in place.
                 </p>
             </div>
             <?php endif; ?>
@@ -1695,41 +1815,20 @@ echo $arsWsLifecycleHtml;
                 // The invoiced total is built from the AR documents themselves,
                 // never from ars_bookings, so the parts always add up to it.
                 $paidAmount = (float)$booking['paid_amount'];
+                // Less the part of a payment a later credit note left unspent
+                // ($creditCarried, worked out with the balance above).
+                $paidOnStay = $tableHasManualTotal ? $paidAmount : round($paidAmount - $creditCarried, 2);
                 $allocatedAmount = round($stayTotal - $balanceDue, 2);
-                $unappliedAmount = round($paidAmount - $allocatedAmount, 2);
-                $summaryParts = 0;
-                foreach ([$docsByType['original_invoice'], $docsByType['extension_invoice'], $docsByType['other_invoice'], $docsCredited] as $partAmt) {
-                    if (abs($partAmt) > 0.009) $summaryParts++;
-                }
+                $unappliedAmount = round($paidOnStay - $allocatedAmount, 2);
                 ?>
-                <?php if (!$tableHasManualTotal && $hasFinancialDocs && $summaryParts > 1): ?>
-                <?php if (abs($docsByType['original_invoice']) > 0.009): ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Original invoice</span><span class="ars-tabular">AED <?= number_format($docsByType['original_invoice'], 2) ?></span></div>
-                <?php endif; ?>
-                <?php if (abs($docsByType['extension_invoice']) > 0.009): ?>
-                <div class="d-flex justify-content-between mb-2">
-                    <span class="text-muted"><i class="bi bi-calendar-range me-1"></i>Extensions
-                        <span class="badge bg-secondary ms-1"><?= (int)$docsExtensionCount ?></span>
-                    </span>
-                    <span class="ars-tabular">AED <?= number_format($docsByType['extension_invoice'], 2) ?></span>
-                </div>
-                <?php endif; ?>
-                <?php if (abs($docsByType['other_invoice']) > 0.009): ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-muted">Other invoices</span><span class="ars-tabular">AED <?= number_format($docsByType['other_invoice'], 2) ?></span></div>
-                <?php endif; ?>
-                <?php if ($docsCredited > 0.009): ?>
-                <div class="d-flex justify-content-between mb-2"><span class="text-success">Credit notes</span><span class="text-success ars-tabular">- AED <?= number_format($docsCredited, 2) ?></span></div>
-                <?php endif; ?>
-                <hr class="my-2">
-                <?php endif; ?>
                 <div class="d-flex justify-content-between align-items-baseline fw-bold mb-3">
-                    <span><?= $tableHasManualTotal ? 'Total amount' : ($hasFinancialDocs ? 'Invoiced total' : 'Stay total') ?></span>
+                    <span><?= $tableHasManualTotal || $hasFinancialDocs ? 'Total amount' : 'Stay total' ?></span>
                     <span class="ars-ws-price-total">AED <?= number_format($stayTotal,2) ?></span>
                 </div>
                 <?php if ($tableHasManualTotal): ?>
                 <div class="d-flex justify-content-between mb-1"><span class="text-muted">Received</span><span class="text-success ars-tabular">AED <?= number_format($tableReceived,2) ?></span></div>
                 <?php else: ?>
-                <div class="d-flex justify-content-between mb-1"><span class="text-muted">Paid</span><span class="text-success ars-tabular">AED <?= number_format($paidAmount,2) ?></span></div>
+                <div class="d-flex justify-content-between mb-1"><span class="text-muted">Paid</span><span class="text-success ars-tabular">AED <?= number_format($paidOnStay,2) ?></span></div>
                 <?php endif; ?>
                 <?php if ($planSchedule): ?>
                 <div class="d-flex justify-content-between mb-1"><span class="text-muted">Balance (whole stay)</span><span class="ars-tabular">AED <?= number_format($balanceDue,2) ?></span></div>
@@ -1781,7 +1880,7 @@ echo $arsWsLifecycleHtml;
                     <span class="text-warning small ars-tabular">AED <?= number_format($trulyUnapplied, 2) ?></span>
                 </div>
                 <?php endif; ?>
-                <?php if ($hasFinancialDocs && $docsOpenBalance < -0.009): ?>
+                <?php if ($hasFinancialDocs && $docsOpenBalance < -0.009 && $creditCarried < 0.01): ?>
                 <div class="d-flex justify-content-between mt-1">
                     <span class="text-success small">Owed to guest</span>
                     <span class="text-success small ars-tabular">AED <?= number_format(abs($docsOpenBalance), 2) ?></span>
@@ -2003,14 +2102,17 @@ echo $arsWsLifecycleHtml;
                                 One payment per month from check-in. The last month takes whatever is left. Only months whose date has come count as due.
                             <?php endif; ?>
                         </div>
-                        <div id="payPlanPreview" class="ars-plan-box mt-2 small"></div>
+                        <div id="payPlanPreview" class="ars-plan-box mt-2 small"
+                             data-plan-monthly="<?= $paymentPlan ? h(number_format((float)$paymentPlan['monthly_amount'], 2, '.', '')) : '' ?>"
+                             data-plan-rows="<?= h($planRowsJson) ?>"></div>
                         <div class="d-flex flex-wrap gap-2 mt-2">
                             <button type="button" class="btn btn-ars-outline btn-sm" id="paySavePlanBtn"><i class="bi bi-calendar-check me-1"></i>Save plan only</button>
                             <?php if ($paymentPlan): ?>
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="payClearPlanBtn"><i class="bi bi-arrow-counterclockwise me-1"></i>Switch to Full</button>
                             <?php endif; ?>
                         </div>
-                        <div class="form-text">Save plan only sets the months without recording money. Record saves the plan and the payment together.</div>
+                        <div class="form-text">Save plan only sets the months without recording money. Record saves the plan and the payment together.
+                            <?php if ($paymentPlan): ?>The pencil on a month corrects its date, amount or status; the other months share what is left.<?php endif; ?></div>
                     </div>
                     <div class="col-12 col-sm-6" data-pay-pane="full"<?= $paymentPlan ? ' hidden' : '' ?>>
                         <?php

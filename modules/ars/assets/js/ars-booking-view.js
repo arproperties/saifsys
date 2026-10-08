@@ -853,7 +853,11 @@
       box.innerHTML = '';
       return null;
     }
-    var rows = planSchedule(
+    // A saved plan is listed exactly as the page worked it out — including the
+    // office's own corrections — and each month can be edited. While a new
+    // monthly amount is being typed it is only a preview, so no pencils.
+    var saved = planSavedRows(box, monthly);
+    var rows = saved || planSchedule(
       monthly,
       root.getAttribute('data-check-in'),
       root.getAttribute('data-check-out'),
@@ -861,17 +865,126 @@
       parseFloat(root.getAttribute('data-open-balance') || '0'),
       root.getAttribute('data-today') || new Date().toISOString().slice(0, 10)
     );
-    var labels = { paid: 'Paid', due: 'Due today', overdue: 'Overdue', upcoming: 'Not due yet' };
-    var tones = { paid: 'bg-success', due: 'bg-warning text-dark', overdue: 'bg-danger', upcoming: 'bg-light text-muted border' };
     box.innerHTML = rows
       .map(function (r, i) {
-        return '<div class="d-flex justify-content-between align-items-center py-1' + (i ? ' border-top' : '') + '">'
-          + '<span>' + escHtml(fmtPlanDate(r.due)) + '</span>'
+        return '<div class="d-flex justify-content-between align-items-center py-1' + (i ? ' border-top' : '') + '" data-plan-row="' + i + '">'
+          + '<span>' + escHtml(fmtPlanDate(r.due)) + (r.edited ? ' <span class="text-muted" title="Edited by hand">&middot; edited</span>' : '') + '</span>'
           + '<span class="d-flex align-items-center gap-2"><span class="ars-tabular">AED ' + r.amount.toFixed(2) + '</span>'
-          + '<span class="badge ' + tones[r.state] + '">' + labels[r.state] + '</span></span></div>';
+          + '<span class="badge ' + planTones[r.state] + '">' + planLabels[r.state] + '</span>'
+          + (saved ? '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" data-ars-plan-edit="' + i + '" title="Edit this month" aria-label="Edit this month"><i class="bi bi-pencil"></i></button>' : '')
+          + '</span></div>';
       })
       .join('');
+    planRowsShown = saved;
     return rows;
+  }
+
+  var planLabels = { paid: 'Paid', due: 'Due today', overdue: 'Overdue', upcoming: 'Not due yet' };
+  var planTones = { paid: 'bg-success', due: 'bg-warning text-dark', overdue: 'bg-danger', upcoming: 'bg-light text-muted border' };
+  // The saved plan's rows as currently listed, or null while previewing.
+  var planRowsShown = null;
+
+  function planSavedRows(box, monthly) {
+    var savedMonthly = parseFloat(box.getAttribute('data-plan-monthly') || '');
+    if (!(savedMonthly > 0) || Math.abs(savedMonthly - monthly) > 0.004) return null;
+    try {
+      var rows = JSON.parse(box.getAttribute('data-plan-rows') || '[]');
+      return rows.length ? rows : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Turn one listed month into a small form: date, amount, status. "Automatic"
+  // hands the status back to the plan; Reset hands the whole month back.
+  function editPlanRow(index) {
+    var box = document.getElementById('payPlanPreview');
+    var r = planRowsShown && planRowsShown[index];
+    var rowEl = box && box.querySelector('[data-plan-row="' + index + '"]');
+    if (!r || !rowEl) return;
+    var options = '<option value="">Automatic' + (r.pinStatus ? '' : ' (' + planLabels[r.state].toLowerCase() + ')') + '</option>';
+    ['paid', 'due', 'overdue', 'upcoming'].forEach(function (k) {
+      options += '<option value="' + k + '"' + (r.pinStatus === k ? ' selected' : '') + '>' + planLabels[k] + '</option>';
+    });
+    rowEl.className = 'py-2' + (index ? ' border-top' : '');
+    rowEl.innerHTML =
+      '<div class="row g-2 align-items-end">'
+      + '<div class="col-12 col-sm-4"><label class="form-label mb-0 small">Due date</label>'
+      + '<input type="date" class="form-control form-control-sm" data-plan-f="due" value="' + escHtml(r.due) + '"></div>'
+      + '<div class="col-6 col-sm-4"><label class="form-label mb-0 small">Amount (AED)</label>'
+      + '<input type="number" step="0.01" min="0" class="form-control form-control-sm ars-tabular" data-plan-f="amount" value="' + r.amount.toFixed(2) + '"></div>'
+      + '<div class="col-6 col-sm-4"><label class="form-label mb-0 small">Status</label>'
+      + '<select class="form-select form-select-sm" data-plan-f="status">' + options + '</select></div>'
+      + '<div class="col-12 d-flex flex-wrap gap-2">'
+      + '<button type="button" class="btn btn-ars btn-sm" data-ars-plan-save="' + index + '"><i class="bi bi-check-lg me-1"></i>Save month</button>'
+      + (r.edited ? '<button type="button" class="btn btn-outline-secondary btn-sm" data-ars-plan-reset="' + index + '">Reset to plan</button>' : '')
+      + '<button type="button" class="btn btn-link btn-sm" data-ars-plan-cancel="1">Cancel</button>'
+      + '</div></div>';
+  }
+
+  function savePlanRow(index, reset, btn) {
+    var box = document.getElementById('payPlanPreview');
+    var r = planRowsShown && planRowsShown[index];
+    var rowEl = box && box.querySelector('[data-plan-row="' + index + '"]');
+    if (!r || !rowEl) return;
+    var fields = { seq: r.seq, due_date: '', amount: '', status: '' };
+    if (!reset) {
+      var f = function (k) { return (rowEl.querySelector('[data-plan-f="' + k + '"]') || {}).value || ''; };
+      var due = f('due');
+      var amount = parseFloat(f('amount'));
+      if (!due) {
+        showAlert('Choose the due date.', 'danger', 'payModalAlert');
+        return;
+      }
+      if (isNaN(amount) || amount < 0) {
+        showAlert('Enter the amount for this month.', 'danger', 'payModalAlert');
+        return;
+      }
+      // Only what was actually changed is pinned, so an untouched date or
+      // amount keeps following the plan (and anything pinned before stays).
+      if (due !== r.due || r.pinDue) fields.due_date = due;
+      if (Math.abs(amount - r.amount) > 0.004 || r.pinAmount !== null) fields.amount = amount.toFixed(2);
+      fields.status = f('status');
+    }
+    if (btn) btn.disabled = true;
+    ajaxPost('update_payment_plan_instalment', fields)
+      .then(function (d) {
+        if (d.success) {
+          goTo('booking_view.php?id=' + bookingId() + '&flash=plan_saved#ws-money');
+          return;
+        }
+        if (btn) btn.disabled = false;
+        showAlert(escHtml(d.error || 'Could not save the month'), 'danger', 'payModalAlert');
+      })
+      .catch(function () {
+        if (btn) btn.disabled = false;
+        showAlert('Network error', 'danger', 'payModalAlert');
+      });
+  }
+
+  function initPlanRowEditing() {
+    var box = document.getElementById('payPlanPreview');
+    if (!box) return;
+    box.addEventListener('click', function (e) {
+      if (!e.target.closest) return;
+      var edit = e.target.closest('[data-ars-plan-edit]');
+      if (edit) {
+        renderPlanPreview();
+        editPlanRow(parseInt(edit.getAttribute('data-ars-plan-edit'), 10));
+        return;
+      }
+      var save = e.target.closest('[data-ars-plan-save]');
+      if (save) {
+        savePlanRow(parseInt(save.getAttribute('data-ars-plan-save'), 10), false, save);
+        return;
+      }
+      var reset = e.target.closest('[data-ars-plan-reset]');
+      if (reset) {
+        savePlanRow(parseInt(reset.getAttribute('data-ars-plan-reset'), 10), true, reset);
+        return;
+      }
+      if (e.target.closest('[data-ars-plan-cancel]')) renderPlanPreview();
+    });
   }
 
   // What the Monthly tab offers as Received: due now, else the next month.
@@ -926,6 +1039,7 @@
       });
     }
     renderPlanPreview();
+    initPlanRowEditing();
 
     var saveBtn = document.getElementById('paySavePlanBtn');
     if (saveBtn) {
@@ -1952,16 +2066,54 @@
       showAlert('Extended to must be after Extended from.', 'danger', 'extendPanelAlert');
       return;
     }
-    if (btn) btn.disabled = true;
     var rateEl = document.getElementById('extendRate');
     var totalEl = document.getElementById('extendAmountTotal');
-    ajaxPost('save_extension_entry', {
+    var fields = {
       extended_from: fromEl.value,
       extended_to: toEl.value,
       rate_per_night: rateEl ? rateEl.value : '',
       amount: extendTotalTyped && totalEl ? totalEl.value : '',
       note: noteEl ? noteEl.value : ''
-    })
+    };
+    var action = 'save_extension_entry';
+    if (extendEditing && extendEditing.original) {
+      // The original stay is the booking itself. Its invoice is never
+      // rewritten, so a new price is posted as the difference.
+      var origAmount = totalEl && totalEl.value !== '' ? parseFloat(totalEl.value) || 0 : 0;
+      var origDiff = Math.round((origAmount - extendEditing.amount) * 100) / 100;
+      if (!extendEditing.priceLocked && Math.abs(origDiff) > 0.004 && !window.confirm(
+        'The original stay is invoiced at ' + extendMoney(extendEditing.amount) + '.\n\n' +
+        (origDiff > 0
+          ? 'Saving raises a rate-adjustment invoice for ' + extendMoney(origDiff) + '.'
+          : 'Saving raises a credit note for ' + extendMoney(-origDiff) +
+            (extendEditing.paid ? ', carried forward as credit because the stay is already paid.' : ', taken off what the guest owes.'))
+      )) {
+        return;
+      }
+      action = 'update_original_stay';
+      // Always the figure on screen: price x nights rarely multiplies back
+      // to an agreed total, and a cent of drift here would post a document.
+      fields.amount = totalEl ? totalEl.value : '';
+    } else if (extendEditing) {
+      // Only the dates and the amount are on the invoice, so a billed period
+      // is asked about only when one of those moved.
+      var newAmount = totalEl && totalEl.value !== '' ? parseFloat(totalEl.value) || 0 : 0;
+      var invoiceChanged =
+        fields.extended_from !== extendEditing.from ||
+        fields.extended_to !== extendEditing.to ||
+        Math.abs(newAmount - extendEditing.amount) > 0.004;
+      if (extendEditing.billed && invoiceChanged && !window.confirm(
+        'This period is already billed.\n\n' +
+        'Saving reverses its invoice and raises a new one for ' + extendMoney(newAmount) + '. ' +
+        'Nothing changes if a payment is recorded against it.'
+      )) {
+        return;
+      }
+      action = 'update_extension_entry';
+      fields.entry_id = extendEditing.id;
+    }
+    if (btn) btn.disabled = true;
+    ajaxPost(action, fields)
       .then(function (d) {
         if (d.success) {
           if (d.warning) {
@@ -1990,7 +2142,7 @@
     if (!window.confirm(
       'Raise an extension invoice for ' + shown + '?\n\n' +
       'It is added to the open balance and the guest can pay it. ' +
-      'Reversing it afterwards needs a credit note.'
+      'It can still be edited or deleted here until a payment is recorded against it.'
     )) {
       return;
     }
@@ -2010,14 +2162,111 @@
       });
   }
 
+  // The row being edited, or null while the form is adding a new period.
+  var extendEditing = null;
+  var extendAddDefaults = null;
+
+  function extendFormFill(v) {
+    var set = function (id, val) { var el = document.getElementById(id); if (el) el.value = val == null ? '' : val; };
+    set('extendFrom', v.from);
+    set('extendTo', v.to);
+    set('extendRate', v.rate);
+    set('extendAmountTotal', v.total);
+    set('extendNote', v.note);
+  }
+
+  function extendFormLock(noteLocked, priceLocked) {
+    var lock = function (id, on) { var el = document.getElementById(id); if (el) el.disabled = !!on; };
+    lock('extendNote', noteLocked);
+    lock('extendRate', priceLocked);
+    lock('extendAmountTotal', priceLocked);
+  }
+
+  // Edit loads the row into the form above rather than opening a second one,
+  // so a period is priced the same way whether it is being added or corrected.
+  function startExtensionEdit(btn) {
+    var fromEl = document.getElementById('extendFrom');
+    if (!fromEl) return;
+    var val = function (id) { return (document.getElementById(id) || {}).value || ''; };
+    if (!extendAddDefaults) {
+      extendAddDefaults = {
+        from: val('extendFrom'), to: val('extendTo'), rate: val('extendRate'), total: '', note: val('extendNote')
+      };
+    }
+    var amount = parseFloat(btn.getAttribute('data-amount') || '') || 0;
+    var original = btn.getAttribute('data-ars-ext-edit') === 'original';
+    extendEditing = {
+      id: btn.getAttribute('data-ars-ext-edit'),
+      original: original,
+      priceLocked: btn.getAttribute('data-price-locked') === '1',
+      paid: btn.getAttribute('data-paid') === '1',
+      from: btn.getAttribute('data-from') || '',
+      to: btn.getAttribute('data-to') || '',
+      amount: amount,
+      billed: btn.getAttribute('data-billed') === '1'
+    };
+    extendFormFill({
+      from: extendEditing.from,
+      to: extendEditing.to,
+      rate: btn.getAttribute('data-rate') || '',
+      total: amount > 0 ? amount.toFixed(2) : '',
+      note: btn.getAttribute('data-note') || ''
+    });
+    // An agreed total that the nightly rate does not multiply back to has to
+    // stay the typed figure, or saving an untouched row would change it.
+    var rate = parseFloat(btn.getAttribute('data-rate') || '') || 0;
+    extendTotalTyped = amount > 0 && Math.abs(rate * extendNightsBetween() - amount) > 0.004;
+    refreshExtendPreview();
+
+    var banner = document.getElementById('extendEditBanner');
+    var label = document.getElementById('extendEditLabel');
+    // "Original stay" is that row's label rather than a note; and a stay with
+    // no invoice yet has no price to correct here.
+    extendFormLock(original, original && extendEditing.priceLocked);
+    if (label) {
+      label.textContent = original
+        ? 'Editing the original stay. A new price is posted as an adjustment or credit note; its invoice stays in place.'
+        : 'Editing the period ' + extendEditing.from + ' to ' + extendEditing.to +
+          (extendEditing.billed ? ' (billed)' : '') + '. Change it below and press Save.';
+    }
+    if (banner) { banner.classList.remove('d-none'); banner.classList.add('d-flex'); }
+    var submit = document.getElementById('extendSubmitBtn');
+    if (submit) submit.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save';
+    var card = document.getElementById('extend-stay');
+    if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    fromEl.focus();
+  }
+
+  function cancelExtensionEdit() {
+    if (!extendEditing) return;
+    extendEditing = null;
+    extendTotalTyped = false;
+    extendFormLock(false, false);
+    if (extendAddDefaults) extendFormFill(extendAddDefaults);
+    var banner = document.getElementById('extendEditBanner');
+    if (banner) { banner.classList.add('d-none'); banner.classList.remove('d-flex'); }
+    var submit = document.getElementById('extendSubmitBtn');
+    if (submit) submit.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add';
+    refreshExtendPreview();
+  }
+
   function deleteExtensionEntry(entryId, btn) {
-    if (!window.confirm('Remove this extension entry?\n\nIt only removes the record; no money is affected.')) {
+    var billed = btn && btn.getAttribute('data-billed') === '1';
+    if (!window.confirm(billed
+      ? 'Remove this billed period?\n\nIts extension invoice is reversed and the amount comes off the balance. ' +
+        'Nothing is removed if a payment is recorded against it.'
+      : 'Remove this extension entry?\n\nIt only removes the record; no money is affected.')) {
       return;
     }
     if (btn) btn.disabled = true;
     ajaxPost('delete_extension_entry', { entry_id: entryId })
       .then(function (d) {
         if (d.success) {
+          if (d.warning) {
+            if (btn) btn.disabled = false;
+            showAlert(d.warning, 'danger', 'extendPanelAlert');
+            return;
+          }
           location.reload();
           return;
         }
@@ -2053,6 +2302,8 @@
     }
     var btn = document.getElementById('extendSubmitBtn');
     if (btn) btn.addEventListener('click', submitExtension);
+    var cancelEdit = document.getElementById('extendEditCancel');
+    if (cancelEdit) cancelEdit.addEventListener('click', cancelExtensionEdit);
 
     document.addEventListener('click', function (e) {
       if (!e.target.closest) return;
@@ -2064,6 +2315,12 @@
           bill.getAttribute('data-ars-ext-amount'),
           bill
         );
+        return;
+      }
+      var edit = e.target.closest('[data-ars-ext-edit]');
+      if (edit) {
+        e.preventDefault();
+        startExtensionEdit(edit);
         return;
       }
       var del = e.target.closest('[data-ars-ext-delete]');

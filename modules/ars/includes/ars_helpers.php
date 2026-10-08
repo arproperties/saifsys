@@ -597,6 +597,105 @@ function ars_ensure_extension_log_table(PDO $conn): void {
 }
 
 /**
+ * Read one Extend-tab period out of a form post: the dates, and the price
+ * agreed for them. Shared by adding an entry and editing one, so both price a
+ * period the same way.
+ *
+ * Price is optional: an entry with no rate is a dates-only record. A typed
+ * Total wins over price x nights — the office agrees a figure for the period
+ * (4,000 for 30 nights) that no 2-decimal nightly rate multiplies back to, so
+ * the rate is then derived from it.
+ *
+ * @return array{error:?string,from:string,to:string,nights:int,rate:?float,amount:?float,note:?string}
+ */
+function ars_extension_entry_from_post(array $post): array {
+    $from = trim((string)($post['extended_from'] ?? ''));
+    $to   = trim((string)($post['extended_to'] ?? ''));
+    $note = trim((string)($post['note'] ?? ''));
+    $out = ['error' => null, 'from' => $from, 'to' => $to, 'nights' => 0, 'rate' => null, 'amount' => null,
+            'note' => $note !== '' ? $note : null];
+    $dFrom = DateTime::createFromFormat('Y-m-d', $from);
+    $dTo   = DateTime::createFromFormat('Y-m-d', $to);
+    if (!$dFrom || $dFrom->format('Y-m-d') !== $from || !$dTo || $dTo->format('Y-m-d') !== $to) {
+        $out['error'] = 'Choose both dates.';
+        return $out;
+    }
+    if ($to <= $from) {
+        $out['error'] = 'Extended to must be after Extended from.';
+        return $out;
+    }
+    $nights = (int)$dFrom->diff($dTo)->days;
+    $rateRaw = trim((string)($post['rate_per_night'] ?? ''));
+    $rate = $rateRaw === '' ? null : round((float)$rateRaw, 2);
+    if ($rate !== null && $rate < 0) {
+        $out['error'] = 'Price per night cannot be negative.';
+        return $out;
+    }
+    $amount = $rate === null ? null : round($rate * $nights, 2);
+    $totalRaw = trim((string)($post['amount'] ?? ''));
+    if ($totalRaw !== '') {
+        $typedTotal = round((float)$totalRaw, 2);
+        if ($typedTotal < 0) {
+            $out['error'] = 'Total cannot be negative.';
+            return $out;
+        }
+        if ($typedTotal > 0) {
+            $amount = $typedTotal;
+            $rate = round($typedTotal / $nights, 2);
+        }
+    }
+    $out['nights'] = $nights;
+    $out['rate'] = $rate;
+    $out['amount'] = $amount;
+    return $out;
+}
+
+/**
+ * What the original stay is invoiced at, in the figure the office types: the
+ * net for a VAT-exclusive booking, the gross for a VAT-inclusive one — the
+ * same figure ars_adapter_vat_split() takes. It is the original invoice plus
+ * any rate adjustments, less any credit notes, so it follows every correction
+ * made since the booking was confirmed.
+ *
+ * 'total' is the same thing as the guest is charged it, VAT included.
+ *
+ * @return array{amount:float,total:float,document:array<string,mixed>}|null null when the stay has no live original invoice
+ */
+function ars_original_stay_invoiced(PDO $conn, int $companyId, array $booking): ?array {
+    try {
+        $st = $conn->prepare("
+            SELECT id, document_type, document_number, status, subtotal, total_amount, balance_due
+            FROM ars_financial_documents
+            WHERE booking_id = ? AND company_id = ?
+              AND document_type IN ('original_invoice', 'adjustment_invoice', 'credit_note')
+              AND status NOT IN ('draft', 'voided', 'reversed')
+            ORDER BY id
+        ");
+        $st->execute([(int)$booking['id'], $companyId]);
+        $docs = $st->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        return null;
+    }
+    $col = strtolower((string)($booking['vat_mode'] ?? 'exclusive')) === 'inclusive' ? 'total_amount' : 'subtotal';
+    $original = null;
+    $amount = 0.0;
+    $total = 0.0;
+    foreach ($docs as $doc) {
+        if ($doc['document_type'] === 'credit_note') {
+            $amount -= (float)$doc[$col];
+            $total -= (float)$doc['total_amount'];
+            continue;
+        }
+        $amount += (float)$doc[$col];
+        $total += (float)$doc['total_amount'];
+        if ($doc['document_type'] === 'original_invoice' && $original === null) {
+            $original = $doc;
+        }
+    }
+    return $original === null ? null : ['amount' => round($amount, 2), 'total' => round($total, 2), 'document' => $original];
+}
+
+/**
  * Move a booking's check-out to the latest date in its extension log.
  *
  * The Extend tab is the record of how long the guest actually stayed, so the
@@ -605,11 +704,13 @@ function ars_ensure_extension_log_table(PDO $conn): void {
  * booking's dates are left alone and the caller is handed a warning to show.
  *
  * With an empty log the check-out is left untouched — the original date is not
- * stored anywhere, so there is nothing safe to roll back to.
+ * stored anywhere, so there is nothing safe to roll back to. The one caller
+ * that does know it is the delete of the last entry: the original stay ended
+ * where that entry began, and it passes that date as $emptyLogCheckOut.
  *
  * @return array{check_out:?string,warning:?string,moved:bool}
  */
-function ars_sync_checkout_to_extension_log(PDO $conn, array $booking, int $companyId, ?int $userId = null): array {
+function ars_sync_checkout_to_extension_log(PDO $conn, array $booking, int $companyId, ?int $userId = null, ?string $emptyLogCheckOut = null): array {
     $bookingId = (int)$booking['id'];
     $out = ['check_out' => (string)($booking['check_out'] ?? ''), 'warning' => null, 'moved' => false];
 
@@ -621,7 +722,10 @@ function ars_sync_checkout_to_extension_log(PDO $conn, array $booking, int $comp
         return $out;
     }
     if ($latest === '') {
-        return $out;
+        $latest = (string)$emptyLogCheckOut;
+        if ($latest === '' || $latest <= (string)($booking['check_in'] ?? '')) {
+            return $out;
+        }
     }
 
     $current = (string)($booking['check_out'] ?? '');

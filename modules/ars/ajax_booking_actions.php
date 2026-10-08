@@ -69,6 +69,140 @@ $planLog = static function (array $planResult, float $monthlyAmount) use ($conn,
     ]);
 };
 
+// Reverse one extension invoice and put its period back to "not billed".
+// Shared by the Payments table's delete and the Extend tab's edit and delete,
+// so a billed period is undone the same way from either side. Refuses once
+// anything has been received against the invoice; 'gone' means there was no
+// live invoice left to reverse.
+$arsReverseExtensionBill = static function (int $documentId, string $reason) use ($conn, $arsCompanyId, $userId, $arsAudit, &$booking, &$bookingId): array {
+    require_once __DIR__ . '/includes/ars_accounting.php';
+    require_once __DIR__ . '/includes/ars_financial_adapter.php';
+    $st = $conn->prepare("
+        SELECT * FROM ars_financial_documents
+        WHERE id = ? AND booking_id = ? AND company_id = ? AND document_type = 'extension_invoice'
+    ");
+    $st->execute([$documentId, $bookingId, $arsCompanyId]);
+    $doc = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$doc || in_array(strtolower((string)$doc['status']), ['draft', 'voided', 'reversed'], true)) {
+        return ['success' => false, 'gone' => true, 'error' => 'Extension charge not found on this booking.'];
+    }
+    if ((float)$doc['balance_due'] < (float)$doc['total_amount'] - 0.009) {
+        return ['success' => false, 'error' => 'A payment is recorded against this extension. Delete that payment first.'];
+    }
+    $r = ars_adapter_reverse_document($conn, $arsCompanyId, $documentId, 'Extension charge deleted: ' . $reason, $userId);
+    if (empty($r['success'])) {
+        return ['success' => false, 'error' => 'Nothing was changed. ' . ($r['error'] ?? 'Reverse failed')];
+    }
+    // Nothing is owed on a reversed invoice, and its key is freed so the
+    // same period can be billed again.
+    $conn->prepare("
+        UPDATE ars_financial_documents
+        SET balance_due = 0, idempotency_key = CONCAT(COALESCE(idempotency_key, ''), ':rev', id)
+        WHERE id = ? AND company_id = ?
+    ")->execute([$documentId, $arsCompanyId]);
+    $conn->prepare("UPDATE ars_booking_extension_log SET document_id = NULL WHERE document_id = ? AND booking_id = ? AND company_id = ?")
+        ->execute([$documentId, $bookingId, $arsCompanyId]);
+    $amountLabel = number_format((float)$doc['total_amount'], 2);
+    $arsAudit('booking_updated', 'Deleted extension charge ' . ($doc['document_number'] ?? ('#' . $documentId)) . ' of AED ' . $amountLabel
+        . ' on booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)) . ': ' . $reason, [
+        'old_data' => ['document_id' => $documentId, 'total_amount' => $doc['total_amount'], 'status' => $doc['status']],
+    ]);
+    ars_booking_activity_log($conn, [
+        'company_id' => $arsCompanyId,
+        'booking_id' => $bookingId,
+        'booking_number' => $booking['booking_number'] ?? null,
+        'event_category' => 'payment',
+        'event_type' => 'extension_charge_deleted',
+        'title' => 'Extension charge ' . ($doc['document_number'] ?? ('#' . $documentId)) . ' deleted (AED ' . $amountLabel . ')',
+        'description' => $reason,
+        'previous_value' => number_format((float)$doc['total_amount'], 2, '.', ''),
+        'related_entity_type' => 'ars_financial_document',
+        'related_entity_id' => $documentId,
+        'related_journal_id' => $r['reversal_journal_id'] ?? null,
+        'created_by' => $userId,
+    ]);
+    return ['success' => true];
+};
+
+// Raise the extension invoice for one logged period and tie it to the row.
+// Used by Bill, and again when a billed period is corrected.
+$arsBillExtensionEntry = static function (array $entry) use ($conn, $arsCompanyId, $userId, &$booking, &$bookingId): array {
+    require_once __DIR__ . '/includes/ars_accounting.php';
+    require_once __DIR__ . '/includes/ars_financial_adapter.php';
+    $entryId = (int)$entry['id'];
+    $r = ars_adapter_create_extension_invoice($conn, $booking, [
+        'user_id' => $userId,
+        'rate' => round((float)($entry['rate_per_night'] ?? 0), 2),
+        // Bill what the row says, not rate x nights: a typed total
+        // need not multiply back from the rounded rate.
+        'amount' => round((float)($entry['amount'] ?? 0), 2),
+        'prior_check_out' => (string)$entry['extended_from'],
+        'new_check_out' => (string)$entry['extended_to'],
+        // The log owns the booking's dates; ars_sync_checkout_to_extension_log()
+        // sets them from the whole log, not from this one period.
+        'update_booking_dates' => false,
+        'idempotency_key' => 'invoice:extension:' . $bookingId . ':log' . $entryId,
+    ]);
+    if (!empty($r['success'])) {
+        $conn->prepare("UPDATE ars_booking_extension_log SET document_id = ? WHERE id = ? AND booking_id = ? AND company_id = ?")
+            ->execute([(int)($r['document_id'] ?? 0) ?: null, $entryId, $bookingId, $arsCompanyId]);
+    }
+    return $r;
+};
+
+// Correct one logged period. A billed one has its invoice reversed and raised
+// again at the new figures; a new note alone leaves the invoice be. The caller
+// owns the transaction and rolls it back when this does not succeed, so a
+// period is never left half-corrected.
+$arsApplyExtensionEdit = static function (array $entry, array $in) use ($conn, $arsCompanyId, &$bookingId, $arsReverseExtensionBill, $arsBillExtensionEntry): array {
+    $entryId = (int)$entry['id'];
+    $billed = !empty($entry['document_id']);
+    $invoiceChanged = $in['from'] !== (string)$entry['extended_from']
+        || $in['to'] !== (string)$entry['extended_to']
+        || abs((float)($in['amount'] ?? 0) - (float)($entry['amount'] ?? 0)) > 0.004;
+    $rebill = $billed && $invoiceChanged;
+    if ($rebill) {
+        ars_require_booking_action($conn, 'delete_extension_bill');
+        if ((float)($in['amount'] ?? 0) <= 0) {
+            return ['success' => false, 'error' => 'A billed period needs a price. Delete the period instead if nothing is to be charged.'];
+        }
+    }
+    $newDoc = null;
+    $rebilled = false;
+    if ($rebill) {
+        $rev = $arsReverseExtensionBill((int)$entry['document_id'], 'Extension period '
+            . $entry['extended_from'] . ' to ' . $entry['extended_to'] . ' corrected');
+        if (empty($rev['success']) && empty($rev['gone'])) {
+            return ['success' => false, 'error' => $rev['error'] ?? 'Could not reverse the invoice.'];
+        }
+        $rebilled = !empty($rev['success']);
+        if (!$rebilled) {
+            // Its invoice was already reversed elsewhere: the row goes back
+            // to "not billed" rather than pointing at it.
+            $conn->prepare("UPDATE ars_booking_extension_log SET document_id = NULL WHERE id = ? AND booking_id = ? AND company_id = ?")
+                ->execute([$entryId, $bookingId, $arsCompanyId]);
+        }
+    }
+    $conn->prepare("
+        UPDATE ars_booking_extension_log
+        SET extended_from = ?, extended_to = ?, nights = ?, rate_per_night = ?, amount = ?, note = ?
+        WHERE id = ? AND booking_id = ? AND company_id = ?
+    ")->execute([$in['from'], $in['to'], $in['nights'], $in['rate'], $in['amount'], $in['note'], $entryId, $bookingId, $arsCompanyId]);
+    if ($rebilled) {
+        $newDoc = $arsBillExtensionEntry([
+            'id' => $entryId,
+            'extended_from' => $in['from'],
+            'extended_to' => $in['to'],
+            'rate_per_night' => $in['rate'],
+            'amount' => $in['amount'],
+        ]);
+        if (empty($newDoc['success'])) {
+            return ['success' => false, 'error' => 'Nothing was changed. ' . ($newDoc['error'] ?? 'Extension invoice failed')];
+        }
+    }
+    return ['success' => true, 'rebill' => $rebill, 'new_doc' => $newDoc];
+};
+
 try {
     switch ($action) {
 
@@ -673,6 +807,53 @@ try {
             }
             echo json_encode(['success' => true]);
             break;
+
+        // Correct one month of the plan from the Record Payment window: its
+        // due date, its amount, or its status. A blank field goes back to
+        // being worked out; nothing here records money.
+        case 'update_payment_plan_instalment': {
+            if (!ars_payment_plan_get($conn, $arsCompanyId, $bookingId)) {
+                echo json_encode(['success' => false, 'error' => 'This booking has no monthly plan. Save the plan first.']);
+                exit;
+            }
+            $seq = (int)($_POST['seq'] ?? -1);
+            $monthCount = count(ars_payment_plan_due_dates((string)$booking['check_in'], (string)$booking['check_out']));
+            if ($seq < 0 || $seq >= max(1, $monthCount)) {
+                echo json_encode(['success' => false, 'error' => 'Month not found on this plan.']);
+                exit;
+            }
+            $dueRaw = trim((string)($_POST['due_date'] ?? ''));
+            $amountRaw = trim((string)($_POST['amount'] ?? ''));
+            $statusRaw = trim((string)($_POST['status'] ?? ''));
+            $saved = ars_payment_plan_instalment_save(
+                $conn,
+                $arsCompanyId,
+                $bookingId,
+                $seq,
+                $dueRaw !== '' ? $dueRaw : null,
+                $amountRaw !== '' ? (float)$amountRaw : null,
+                $statusRaw !== '' ? $statusRaw : null,
+                (int)$userId
+            );
+            if (empty($saved['success'])) {
+                echo json_encode(['success' => false, 'error' => $saved['error'] ?? 'Could not save the month.']);
+                exit;
+            }
+            $what = !empty($saved['reset'])
+                ? 'reset to the plan'
+                : trim(($dueRaw !== '' ? 'due ' . $dueRaw . ' ' : '') . ($amountRaw !== '' ? 'AED ' . number_format((float)$amountRaw, 2) . ' ' : '') . ($statusRaw !== '' ? '(' . $statusRaw . ')' : ''));
+            ars_booking_activity_log($conn, [
+                'company_id' => $arsCompanyId,
+                'booking_id' => $bookingId,
+                'booking_number' => $booking['booking_number'] ?? null,
+                'event_category' => 'payment',
+                'event_type' => 'payment_plan_month_edited',
+                'title' => 'Monthly plan: month ' . ($seq + 1) . ' ' . $what,
+                'created_by' => $userId,
+            ]);
+            echo json_encode(['success' => true, 'reset' => !empty($saved['reset'])]);
+            break;
+        }
 
         case 'clear_payment_plan':
             if (ars_payment_plan_clear($conn, $arsCompanyId, $bookingId)) {
@@ -1712,49 +1893,17 @@ try {
         // See ars_ensure_extension_log_table().
         case 'save_extension_entry': {
             ars_ensure_extension_log_table($conn);
-            $from = trim((string)($_POST['extended_from'] ?? ''));
-            $to   = trim((string)($_POST['extended_to'] ?? ''));
-            $note = trim((string)($_POST['note'] ?? ''));
-            $dFrom = DateTime::createFromFormat('Y-m-d', $from);
-            $dTo   = DateTime::createFromFormat('Y-m-d', $to);
-            if (!$dFrom || $dFrom->format('Y-m-d') !== $from || !$dTo || $dTo->format('Y-m-d') !== $to) {
-                echo json_encode(['success' => false, 'error' => 'Choose both dates.']);
+            $in = ars_extension_entry_from_post($_POST);
+            if ($in['error'] !== null) {
+                echo json_encode(['success' => false, 'error' => $in['error']]);
                 exit;
             }
-            if ($to <= $from) {
-                echo json_encode(['success' => false, 'error' => 'Extended to must be after Extended from.']);
-                exit;
-            }
-            $nights = (int)$dFrom->diff($dTo)->days;
-            // Price is optional: an entry with no rate is a dates-only record,
-            // exactly as every entry was before pricing existed.
-            $rateRaw = trim((string)($_POST['rate_per_night'] ?? ''));
-            $rate = $rateRaw === '' ? null : round((float)$rateRaw, 2);
-            if ($rate !== null && $rate < 0) {
-                echo json_encode(['success' => false, 'error' => 'Price per night cannot be negative.']);
-                exit;
-            }
-            $amount = $rate === null ? null : round($rate * $nights, 2);
-            // A typed Total wins over price x nights: the office agrees a
-            // figure for the period (4,000 for 30 nights) that no 2-decimal
-            // nightly rate multiplies back to. The rate is then derived.
-            $totalRaw = trim((string)($_POST['amount'] ?? ''));
-            if ($totalRaw !== '') {
-                $typedTotal = round((float)$totalRaw, 2);
-                if ($typedTotal < 0) {
-                    echo json_encode(['success' => false, 'error' => 'Total cannot be negative.']);
-                    exit;
-                }
-                if ($typedTotal > 0) {
-                    $amount = $typedTotal;
-                    $rate = round($typedTotal / $nights, 2);
-                }
-            }
+            [$from, $to, $nights, $rate, $amount] = [$in['from'], $in['to'], $in['nights'], $in['rate'], $in['amount']];
             $conn->prepare("
                 INSERT INTO ars_booking_extension_log
                     (booking_id, company_id, extended_from, extended_to, nights, rate_per_night, amount, note, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ")->execute([$bookingId, $arsCompanyId, $from, $to, $nights, $rate, $amount, $note !== '' ? $note : null, $userId]);
+            ")->execute([$bookingId, $arsCompanyId, $from, $to, $nights, $rate, $amount, $in['note'], $userId]);
             $arsAudit('booking_updated', 'Recorded extension ' . $from . ' to ' . $to . ' (' . $nights . ' nights'
                 . ($amount !== null ? ', AED ' . number_format($amount, 2) : '') . ') on booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)), [
                 'new_data' => ['extended_from' => $from, 'extended_to' => $to, 'nights' => $nights, 'rate_per_night' => $rate, 'amount' => $amount],
@@ -1799,25 +1948,11 @@ try {
                 echo json_encode(['success' => false, 'error' => 'Set a price per night on this period first.']);
                 exit;
             }
-            $r = ars_adapter_create_extension_invoice($conn, $booking, [
-                'user_id' => $userId,
-                'rate' => $rate,
-                // Bill what the row says, not rate x nights: a typed total
-                // need not multiply back from the rounded rate.
-                'amount' => round((float)($entry['amount'] ?? 0), 2),
-                'prior_check_out' => (string)$entry['extended_from'],
-                'new_check_out' => (string)$entry['extended_to'],
-                // The log owns the booking's dates; ars_sync_checkout_to_extension_log()
-                // below sets them from the whole log, not from this one period.
-                'update_booking_dates' => false,
-                'idempotency_key' => 'invoice:extension:' . $bookingId . ':log' . $entryId,
-            ]);
+            $r = $arsBillExtensionEntry($entry);
             if (empty($r['success'])) {
                 echo json_encode(['success' => false, 'error' => $r['error'] ?? 'Extension invoice failed', 'code' => $r['code'] ?? null]);
                 exit;
             }
-            $conn->prepare("UPDATE ars_booking_extension_log SET document_id = ? WHERE id = ? AND booking_id = ? AND company_id = ?")
-                ->execute([(int)($r['document_id'] ?? 0) ?: null, $entryId, $bookingId, $arsCompanyId]);
             $arsAudit('booking_updated', 'Billed extension ' . $entry['extended_from'] . ' to ' . $entry['extended_to']
                 . ' at AED ' . number_format($rate, 2) . '/night on booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)), [
                 'new_data' => ['entry_id' => $entryId, 'document_id' => $r['document_id'] ?? null, 'rate_per_night' => $rate],
@@ -1844,27 +1979,347 @@ try {
                 echo json_encode(['success' => false, 'error' => 'Entry not found.']);
                 exit;
             }
-            // A billed period has a live invoice behind it, so the record cannot
-            // just vanish — the money has to be reversed first.
-            $chk = $conn->prepare("SELECT document_id FROM ars_booking_extension_log WHERE id = ? AND booking_id = ? AND company_id = ?");
-            $chk->execute([$entryId, $bookingId, $arsCompanyId]);
-            $chkRow = $chk->fetch(PDO::FETCH_ASSOC);
-            if ($chkRow && !empty($chkRow['document_id'])) {
-                echo json_encode(['success' => false, 'error' => 'This period is billed. Raise a credit note for its invoice first.']);
-                exit;
-            }
-            $st = $conn->prepare("DELETE FROM ars_booking_extension_log WHERE id = ? AND booking_id = ? AND company_id = ?");
+            $st = $conn->prepare("SELECT * FROM ars_booking_extension_log WHERE id = ? AND booking_id = ? AND company_id = ?");
             $st->execute([$entryId, $bookingId, $arsCompanyId]);
-            if (!$st->rowCount()) {
+            $entry = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$entry) {
                 echo json_encode(['success' => false, 'error' => 'Entry not found on this booking.']);
                 exit;
             }
-            $arsAudit('booking_updated', 'Removed extension entry #' . $entryId . ' from booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)));
-            $sync = ars_sync_checkout_to_extension_log($conn, $booking, $arsCompanyId, $userId);
+            // A billed period has a live invoice behind it, so the record cannot
+            // just vanish — its invoice is reversed in the same step, and the
+            // row stays put if that reversal is refused.
+            $billed = !empty($entry['document_id']);
+            if ($billed) {
+                ars_require_booking_action($conn, 'delete_extension_bill');
+            }
+            $period = $entry['extended_from'] . ' to ' . $entry['extended_to'];
+            $conn->beginTransaction();
+            try {
+                if ($billed) {
+                    $rev = $arsReverseExtensionBill((int)$entry['document_id'], 'Extension period ' . $period . ' removed');
+                    if (empty($rev['success']) && empty($rev['gone'])) {
+                        $conn->rollBack();
+                        echo json_encode(['success' => false, 'error' => $rev['error'] ?? 'Could not reverse the invoice.']);
+                        exit;
+                    }
+                }
+                $conn->prepare("DELETE FROM ars_booking_extension_log WHERE id = ? AND booking_id = ? AND company_id = ?")
+                    ->execute([$entryId, $bookingId, $arsCompanyId]);
+                $conn->commit();
+            } catch (Throwable $e) {
+                if ($conn->inTransaction()) {
+                    $conn->rollBack();
+                }
+                throw $e;
+            }
+            $arsAudit('booking_updated', 'Removed extension entry #' . $entryId . ' (' . $period . ') from booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)), [
+                'old_data' => $entry,
+            ]);
+            if ($billed) {
+                try {
+                    ars_recalc_booking_totals($conn, $bookingId);
+                } catch (Throwable $ignored) {
+                }
+            }
+            // Removing the last period ends the stay where that period began,
+            // provided the log had moved the check-out past it.
+            $originalOut = (string)$booking['check_out'] > (string)$entry['extended_from'] ? (string)$entry['extended_from'] : null;
+            $sync = ars_sync_checkout_to_extension_log($conn, $booking, $arsCompanyId, $userId, $originalOut);
             echo json_encode([
                 'success' => true,
                 'check_out' => $sync['check_out'] ?? null,
                 'warning' => $sync['warning'] ?? null,
+            ]);
+            break;
+        }
+
+        // Correct a logged period. A billed one has its invoice reversed and
+        // raised again at the new figures in one transaction, so the period
+        // is never left half-corrected; a new note alone leaves the invoice be.
+        case 'update_extension_entry': {
+            ars_ensure_extension_log_table($conn);
+            $entryId = (int)($_POST['entry_id'] ?? 0);
+            $st = $conn->prepare("SELECT * FROM ars_booking_extension_log WHERE id = ? AND booking_id = ? AND company_id = ?");
+            $st->execute([$entryId, $bookingId, $arsCompanyId]);
+            $entry = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$entry) {
+                echo json_encode(['success' => false, 'error' => 'Entry not found on this booking.']);
+                exit;
+            }
+            $in = ars_extension_entry_from_post($_POST);
+            if ($in['error'] !== null) {
+                echo json_encode(['success' => false, 'error' => $in['error']]);
+                exit;
+            }
+            $conn->beginTransaction();
+            try {
+                $edit = $arsApplyExtensionEdit($entry, $in);
+                if (empty($edit['success'])) {
+                    $conn->rollBack();
+                    echo json_encode(['success' => false, 'error' => $edit['error'] ?? 'Could not save']);
+                    exit;
+                }
+                $conn->commit();
+            } catch (Throwable $e) {
+                if ($conn->inTransaction()) {
+                    $conn->rollBack();
+                }
+                throw $e;
+            }
+            $rebill = !empty($edit['rebill']);
+            $newDoc = $edit['new_doc'] ?? null;
+            $arsAudit('booking_updated', 'Edited extension ' . $in['from'] . ' to ' . $in['to'] . ' (' . $in['nights'] . ' nights'
+                . ($in['amount'] !== null ? ', AED ' . number_format($in['amount'], 2) : '') . ') on booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)), [
+                'old_data' => $entry,
+                'new_data' => ['extended_from' => $in['from'], 'extended_to' => $in['to'], 'nights' => $in['nights'],
+                               'rate_per_night' => $in['rate'], 'amount' => $in['amount'], 'note' => $in['note'],
+                               'document_id' => $newDoc['document_id'] ?? $entry['document_id']],
+            ]);
+            if ($rebill) {
+                try {
+                    ars_recalc_booking_totals($conn, $bookingId);
+                } catch (Throwable $ignored) {
+                }
+            }
+            $sync = ars_sync_checkout_to_extension_log($conn, $booking, $arsCompanyId, $userId);
+            echo json_encode([
+                'success' => true,
+                'nights' => $in['nights'],
+                'amount' => $in['amount'],
+                'rebilled' => !empty($newDoc['success']),
+                'document_number' => $newDoc['document_number'] ?? null,
+                'check_out' => $sync['check_out'] ?? null,
+                'warning' => $sync['warning'] ?? null,
+            ]);
+            break;
+        }
+
+        // Correct the original stay — the first line of the Extend tab's list,
+        // which is the booking itself rather than a log entry.
+        //
+        // Dates: the check-in moves freely. With extensions logged the stay
+        // ends where the first of them begins, so moving the end moves that
+        // period's start with it (its amount stays, and a billed one is
+        // re-invoiced for the new dates).
+        //
+        // Price: the original invoice is never rewritten. A higher figure
+        // raises a rate-adjustment invoice for the difference; a lower one a
+        // credit note, which comes off what the guest owes. On a stay that is
+        // already paid it is tied to the original invoice, so the Pricing
+        // Summary can show it as credit carried forward from that payment.
+        case 'update_original_stay': {
+            require_once __DIR__ . '/includes/ars_accounting.php';
+            require_once __DIR__ . '/includes/ars_financial_adapter.php';
+            require_once __DIR__ . '/includes/ars_financial_adapter_phase2d.php';
+            ars_ensure_extension_log_table($conn);
+            if (in_array($booking['status'], ['cancelled', 'expired'], true)) {
+                echo json_encode(['success' => false, 'error' => 'This booking is ' . $booking['status'] . '. It cannot be changed.']);
+                exit;
+            }
+            $in = ars_extension_entry_from_post($_POST);
+            if ($in['error'] !== null) {
+                echo json_encode(['success' => false, 'error' => $in['error']]);
+                exit;
+            }
+            $oldIn = (string)$booking['check_in'];
+            $oldOut = (string)$booking['check_out'];
+            $st = $conn->prepare("
+                SELECT * FROM ars_booking_extension_log
+                WHERE booking_id = ? AND company_id = ?
+                ORDER BY extended_from, id LIMIT 1
+            ");
+            $st->execute([$bookingId, $arsCompanyId]);
+            $firstExt = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+            $oldOriginalEnd = $firstExt ? (string)$firstExt['extended_from'] : $oldOut;
+            $moveFirstExt = $firstExt && $in['to'] !== $oldOriginalEnd;
+            if ($moveFirstExt && $in['to'] >= (string)$firstExt['extended_to']) {
+                echo json_encode(['success' => false, 'error' => 'The original stay must end before the first extension does ('
+                    . date('d M Y', strtotime((string)$firstExt['extended_to'])) . ').']);
+                exit;
+            }
+            $newIn = $in['from'];
+            $newOut = $firstExt ? $oldOut : $in['to'];
+
+            // Only the nights being added need the unit to be free.
+            $added = [];
+            if ($newIn < $oldIn) {
+                $added[] = [$newIn, $oldIn];
+            }
+            if ($newOut > $oldOut) {
+                $added[] = [$oldOut, $newOut];
+            }
+            foreach ($added as [$spanFrom, $spanTo]) {
+                $avail = ars_check_availability($conn, (int)$booking['unit_id'], $spanFrom, $spanTo, $bookingId);
+                if (empty($avail['available'])) {
+                    $labels = array_map(static fn($c) => $c['label'] ?? 'conflict', $avail['conflicts'] ?? []);
+                    echo json_encode(['success' => false, 'error' => 'Unit not available: ' . implode(', ', $labels)]);
+                    exit;
+                }
+            }
+
+            // The price only moves when the stay has an invoice to correct and
+            // a different figure was typed.
+            $invoiced = ars_original_stay_invoiced($conn, $arsCompanyId, $booking);
+            $oldAmount = $invoiced['amount'] ?? null;
+            $newAmount = $oldAmount;
+            if ($invoiced && $in['amount'] !== null && abs($in['amount'] - $oldAmount) > 0.004) {
+                if ($in['amount'] <= 0) {
+                    echo json_encode(['success' => false, 'error' => 'The original stay needs a price. Void the booking instead if nothing is to be charged.']);
+                    exit;
+                }
+                if (!ars_financial_adapter_enabled($conn, $arsCompanyId)) {
+                    echo json_encode(['success' => false, 'error' => 'Financial adapter is disabled — the price cannot be corrected.']);
+                    exit;
+                }
+                $newAmount = $in['amount'];
+            }
+            $diff = $invoiced ? round($newAmount - $oldAmount, 2) : 0.0;
+
+            $newNights = (int)round((strtotime($newOut) - strtotime($newIn)) / 86400);
+            $oldOriginalNights = (int)round((strtotime($oldOriginalEnd) - strtotime($oldIn)) / 86400);
+            $newOriginalNights = $in['nights'];
+            // The nightly rate shown for the stay is its figure spread over its nights.
+            $newRate = (float)$booking['nightly_rate'];
+            if ($invoiced) {
+                $newRate = round($newAmount / $newOriginalNights, 2);
+            } elseif ((string)($booking['pricing_mode'] ?? '') === 'manual_total' && $oldOriginalNights > 0) {
+                $agreedTotal = (float)($booking['entered_amount'] ?? 0);
+                $newRate = round(($agreedTotal > 0 ? $agreedTotal : $newRate * $oldOriginalNights) / $newOriginalNights, 2);
+            }
+            $datesChanged = $newIn !== $oldIn || $newOut !== $oldOut || $moveFirstExt;
+            if (!$datesChanged && abs($diff) < 0.005) {
+                echo json_encode(['success' => true, 'check_in' => $oldIn, 'check_out' => $oldOut, 'changed' => false]);
+                break;
+            }
+
+            $moneyDoc = null;
+            $conn->beginTransaction();
+            try {
+                $fail = null;
+                if ($moveFirstExt) {
+                    $extNights = (int)round((strtotime((string)$firstExt['extended_to']) - strtotime($in['to'])) / 86400);
+                    $extAmount = $firstExt['amount'] === null ? null : (float)$firstExt['amount'];
+                    $edit = $arsApplyExtensionEdit($firstExt, [
+                        'from' => $in['to'],
+                        'to' => (string)$firstExt['extended_to'],
+                        'nights' => $extNights,
+                        'rate' => $extAmount !== null && $extAmount > 0
+                            ? round($extAmount / $extNights, 2)
+                            : ($firstExt['rate_per_night'] === null ? null : (float)$firstExt['rate_per_night']),
+                        'amount' => $extAmount,
+                        'note' => $firstExt['note'],
+                    ]);
+                    if (empty($edit['success'])) {
+                        $fail = 'The first extension starts where this stay ends, and it could not be moved: ' . ($edit['error'] ?? 'unknown error');
+                    }
+                }
+                if ($fail === null && $diff > 0.004) {
+                    $desc = 'Original stay price corrected to AED ' . number_format($newAmount, 2);
+                    $moneyDoc = ars_adapter_create_adjustment_invoice($conn, $booking, [
+                        'user_id' => $userId,
+                        'amount_net' => $diff,
+                        'description' => $desc,
+                        'account_role' => 'ROOM_REVENUE',
+                        'parent_document_id' => (int)$invoiced['document']['id'],
+                        'idempotency_key' => 'adj:' . $bookingId . ':orig:' . md5($newAmount . ':' . microtime(true)),
+                    ]);
+                    if (empty($moneyDoc['success'])) {
+                        $fail = 'Nothing was changed. ' . ($moneyDoc['error'] ?? 'Adjustment invoice failed');
+                    } else {
+                        // Same charge row the Rate adjustment tab writes, so the
+                        // booking's own total follows the document.
+                        $split = ars_adapter_vat_split($diff, $booking);
+                        $conn->prepare("
+                            INSERT INTO ars_booking_charges
+                                (booking_id, charge_type, description, quantity, unit_price, total, charge_date, financial_document_id)
+                            VALUES (?, 'other', ?, 1, ?, ?, CURDATE(), ?)
+                        ")->execute([$bookingId, $desc, $split['net'], $split['net'], $moneyDoc['document_id'] ?? null]);
+                    }
+                } elseif ($fail === null && $diff < -0.004) {
+                    $credit = round(-$diff, 2);
+                    $split = ars_adapter_vat_split($credit, $booking);
+                    // A plain AR credit note either way: the balance rollup
+                    // nets its own balance against the open invoices, so it
+                    // must not also become guest credit. The parent is only
+                    // named once it is fully paid — on an invoice still owed
+                    // the adapter would write the parent down as well, and
+                    // the credit would count twice.
+                    $parentPaid = (float)$invoiced['document']['balance_due'] < 0.01;
+                    $moneyDoc = ars_adapter_create_credit_note($conn, $booking, [
+                        'user_id' => $userId,
+                        'amount_net' => $credit,
+                        'description' => 'Original stay price corrected to AED ' . number_format($newAmount, 2),
+                        'to_guest_credit' => false,
+                        'parent_document_id' => $parentPaid ? (int)$invoiced['document']['id'] : null,
+                        'idempotency_key' => 'cn:' . $bookingId . ':orig:' . md5($newAmount . ':' . microtime(true)),
+                    ]);
+                    if (empty($moneyDoc['success'])) {
+                        $fail = 'Nothing was changed. ' . ($moneyDoc['error'] ?? 'Credit note failed');
+                    } else {
+                        // The mirror of the adjustment's charge row, so the
+                        // booking's own total comes down with the credit note.
+                        $conn->prepare("
+                            INSERT INTO ars_booking_charges
+                                (booking_id, charge_type, description, quantity, unit_price, total, charge_date, financial_document_id)
+                            VALUES (?, 'other', ?, 1, ?, ?, CURDATE(), ?)
+                        ")->execute([$bookingId, 'Original stay price corrected to AED ' . number_format($newAmount, 2),
+                                     -$split['net'], -$split['net'], $moneyDoc['document_id'] ?? null]);
+                    }
+                }
+                if ($fail !== null) {
+                    $conn->rollBack();
+                    echo json_encode(['success' => false, 'error' => $fail]);
+                    exit;
+                }
+                $conn->prepare("
+                    UPDATE ars_bookings
+                    SET check_in = ?, check_out = ?, nights = ?, nightly_rate = ?,
+                        rate_override = IF(rate_override IS NULL, NULL, ?), updated_at = NOW()
+                    WHERE id = ? AND company_id = ?
+                ")->execute([$newIn, $newOut, $newNights, $newRate, $newRate, $bookingId, $arsCompanyId]);
+                $conn->commit();
+            } catch (Throwable $e) {
+                if ($conn->inTransaction()) {
+                    $conn->rollBack();
+                }
+                throw $e;
+            }
+            try {
+                ars_recalc_booking_totals($conn, $bookingId);
+            } catch (Throwable $ignored) {
+            }
+            $summary = 'Original stay corrected to ' . $newIn . ' – ' . $in['to'] . ' (' . $newOriginalNights . ' nights'
+                . ($invoiced ? ', AED ' . number_format($newAmount, 2) : '') . ') on booking ' . ($booking['booking_number'] ?? ('#' . $bookingId));
+            $arsAudit('booking_updated', $summary, [
+                'old_data' => ['check_in' => $oldIn, 'original_end' => $oldOriginalEnd, 'check_out' => $oldOut,
+                               'nightly_rate' => $booking['nightly_rate'], 'amount' => $oldAmount],
+                'new_data' => ['check_in' => $newIn, 'original_end' => $in['to'], 'check_out' => $newOut,
+                               'nightly_rate' => $newRate, 'amount' => $newAmount, 'document_id' => $moneyDoc['document_id'] ?? null],
+            ]);
+            ars_booking_activity_log($conn, [
+                'company_id' => $arsCompanyId,
+                'booking_id' => $bookingId,
+                'booking_number' => $booking['booking_number'] ?? null,
+                'event_category' => 'booking',
+                'event_type' => 'dates_changed',
+                'title' => 'Original stay corrected',
+                'old_value' => $oldIn . ' to ' . $oldOriginalEnd . ($oldAmount !== null ? ' · AED ' . number_format($oldAmount, 2, '.', '') : ''),
+                'new_value' => $newIn . ' to ' . $in['to'] . ($invoiced ? ' · AED ' . number_format($newAmount, 2, '.', '') : ''),
+                'related_entity_type' => $moneyDoc ? 'ars_financial_document' : null,
+                'related_entity_id' => $moneyDoc['document_id'] ?? null,
+                'related_journal_id' => $moneyDoc['journal_id'] ?? null,
+                'created_by' => $userId,
+            ]);
+            echo json_encode([
+                'success' => true,
+                'changed' => true,
+                'check_in' => $newIn,
+                'check_out' => $newOut,
+                'nights' => $newNights,
+                'amount' => $newAmount,
+                'difference' => $diff,
+                'document_number' => $moneyDoc['document_number'] ?? null,
             ]);
             break;
         }
@@ -1874,8 +2329,6 @@ try {
         // back to "not billed" on the Extend tab. Only while nothing has been
         // received against it — a paid one has its payment deleted first.
         case 'delete_extension_bill': {
-            require_once __DIR__ . '/includes/ars_accounting.php';
-            require_once __DIR__ . '/includes/ars_financial_adapter.php';
             ars_ensure_extension_log_table($conn);
             $documentId = (int)($_POST['document_id'] ?? 0);
             $reason = trim((string)($_POST['reason'] ?? ''));
@@ -1883,57 +2336,15 @@ try {
                 echo json_encode(['success' => false, 'error' => 'Extension charge and reason are required.']);
                 exit;
             }
-            $st = $conn->prepare("
-                SELECT * FROM ars_financial_documents
-                WHERE id = ? AND booking_id = ? AND company_id = ? AND document_type = 'extension_invoice'
-            ");
-            $st->execute([$documentId, $bookingId, $arsCompanyId]);
-            $doc = $st->fetch(PDO::FETCH_ASSOC);
-            if (!$doc || in_array(strtolower((string)$doc['status']), ['draft', 'voided', 'reversed'], true)) {
-                echo json_encode(['success' => false, 'error' => 'Extension charge not found on this booking.']);
+            $rev = $arsReverseExtensionBill($documentId, $reason);
+            if (empty($rev['success'])) {
+                echo json_encode(['success' => false, 'error' => $rev['error'] ?? 'Reverse failed']);
                 exit;
             }
-            if ((float)$doc['balance_due'] < (float)$doc['total_amount'] - 0.009) {
-                echo json_encode(['success' => false, 'error' => 'A payment is recorded against this extension. Delete that payment first.']);
-                exit;
-            }
-            $r = ars_adapter_reverse_document($conn, $arsCompanyId, $documentId, 'Extension charge deleted: ' . $reason, $userId);
-            if (empty($r['success'])) {
-                echo json_encode(['success' => false, 'error' => 'Nothing was changed. ' . ($r['error'] ?? 'Reverse failed')]);
-                exit;
-            }
-            // Nothing is owed on a reversed invoice, and its key is freed so the
-            // same period can be billed again.
-            $conn->prepare("
-                UPDATE ars_financial_documents
-                SET balance_due = 0, idempotency_key = CONCAT(COALESCE(idempotency_key, ''), ':rev', id)
-                WHERE id = ? AND company_id = ?
-            ")->execute([$documentId, $arsCompanyId]);
-            $conn->prepare("UPDATE ars_booking_extension_log SET document_id = NULL WHERE document_id = ? AND booking_id = ? AND company_id = ?")
-                ->execute([$documentId, $bookingId, $arsCompanyId]);
             try {
                 ars_recalc_booking_totals($conn, $bookingId);
             } catch (Throwable $ignored) {
             }
-            $amountLabel = number_format((float)$doc['total_amount'], 2);
-            $arsAudit('booking_updated', 'Deleted extension charge ' . ($doc['document_number'] ?? ('#' . $documentId)) . ' of AED ' . $amountLabel
-                . ' on booking ' . ($booking['booking_number'] ?? ('#' . $bookingId)) . ': ' . $reason, [
-                'old_data' => ['document_id' => $documentId, 'total_amount' => $doc['total_amount'], 'status' => $doc['status']],
-            ]);
-            ars_booking_activity_log($conn, [
-                'company_id' => $arsCompanyId,
-                'booking_id' => $bookingId,
-                'booking_number' => $booking['booking_number'] ?? null,
-                'event_category' => 'payment',
-                'event_type' => 'extension_charge_deleted',
-                'title' => 'Extension charge ' . ($doc['document_number'] ?? ('#' . $documentId)) . ' deleted (AED ' . $amountLabel . ')',
-                'description' => $reason,
-                'previous_value' => number_format((float)$doc['total_amount'], 2, '.', ''),
-                'related_entity_type' => 'ars_financial_document',
-                'related_entity_id' => $documentId,
-                'related_journal_id' => $r['reversal_journal_id'] ?? null,
-                'created_by' => $userId,
-            ]);
             echo json_encode(['success' => true]);
             break;
         }
