@@ -27,13 +27,16 @@ $statusFilter = $_GET['status'] ?? 'active';
 $buildingFilter = !empty($_GET['building_id']) ? (int)$_GET['building_id'] : null;
 $searchQuery = !empty($_GET['search']) ? trim($_GET['search']) : '';
 
+// Test buildings (name contains "test building") stay off this page: list, tab counts, filter and export.
+$hideTestBuildingSql = "l.unit_id NOT IN (SELECT tu.id FROM re_units tu JOIN re_buildings tb ON tb.id = tu.building_id WHERE tb.name LIKE '%test building%')";
+
 // Get buildings for filter
-$buildings = $conn->prepare("SELECT id, name FROM re_buildings WHERE company_id = ? ORDER BY name");
+$buildings = $conn->prepare("SELECT id, name FROM re_buildings WHERE company_id = ? AND name NOT LIKE '%test building%' ORDER BY name");
 $buildings->execute([$currentCompanyId]);
 $buildings = $buildings->fetchAll(PDO::FETCH_ASSOC);
 
 // Build WHERE clause
-$where = ["l.company_id = ?", re_lease_not_deleted_sql($conn, 'l')];
+$where = ["l.company_id = ?", re_lease_not_deleted_sql($conn, 'l'), $hideTestBuildingSql];
 $params = [$currentCompanyId];
 
 if ($statusFilter !== 'all') {
@@ -85,6 +88,7 @@ $stats = $conn->prepare("
     FROM re_leases l
     WHERE l.company_id = ?
       AND " . re_lease_not_deleted_sql($conn, 'l') . "
+      AND " . $hideTestBuildingSql . "
 ");
 $stats->execute([$currentCompanyId]);
 $statistics = $stats->fetch(PDO::FETCH_ASSOC);
@@ -95,7 +99,7 @@ $statusTabs = ['all' => 'All', 'active' => 'Active', 'draft' => 'Draft', 'expire
 if (!isset($statusTabs[$statusFilter])) {
     $statusTabs[$statusFilter] = re_lease_status_label((string)$statusFilter);
 }
-$tabCountStmt = $conn->prepare("SELECT l.status, COUNT(*) FROM re_leases l WHERE l.company_id = ? AND " . re_lease_not_deleted_sql($conn, 'l') . " GROUP BY l.status");
+$tabCountStmt = $conn->prepare("SELECT l.status, COUNT(*) FROM re_leases l WHERE l.company_id = ? AND " . re_lease_not_deleted_sql($conn, 'l') . " AND " . $hideTestBuildingSql . " GROUP BY l.status");
 $tabCountStmt->execute([$currentCompanyId]);
 $statusTabCounts = $tabCountStmt->fetchAll(PDO::FETCH_KEY_PAIR);
 $statusTabCounts['all'] = (int)$statistics['total_leases'];
