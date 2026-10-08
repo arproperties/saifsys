@@ -98,6 +98,9 @@ function ars_payment_rows_walk(array $payments, float $stayTotal): array {
     $received = 0.0;
     $hasManualTotal = false;
     $shareCharged = false;
+    // Money a row took beyond its own total, not yet set against a later
+    // extension line.
+    $paidAhead = 0.0;
     foreach ($payments as $pm) {
         $id = (int)$pm['id'];
         $pmReceived = (float)$pm['amount'];
@@ -122,9 +125,17 @@ function ars_payment_rows_walk(array $payments, float $stayTotal): array {
                 $charge = $shareCharged ? 0.0 : $pmTotal;
                 $shareCharged = true;
             }
+            // A payment dated before an extension begins is drawn above its
+            // line, so the line would otherwise ask for that money again.
+            if (!empty($pm['is_extension_line']) && $paidAhead > 0.009) {
+                $used = min($paidAhead, $charge);
+                $charge = round($charge - $used, 2);
+                $paidAhead = round($paidAhead - $used, 2);
+            }
             $carried = round($prevOutstanding + ($charge - $pmReceived), 2);
             $balanceAfter[$id] = max(0.0, $carried);
             $creditFrom[$id] = max(0.0, round(-$carried, 2));
+            $paidAhead = round($paidAhead + $creditFrom[$id], 2);
             $prevOutstanding = max(0.0, $carried);
             continue;
         }
