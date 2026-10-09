@@ -254,6 +254,9 @@ if ($df) { $where[] = "a.work_date >= ?"; $prms[] = $df; }
 if ($dt) { $where[] = "a.work_date <= ?"; $prms[] = $dt; }
 if ($emp){ $where[] = "a.employee_id = ?"; $prms[] = $emp; }
 hr_add_company_where($where, $prms, $selectedCompanyId, 'e.company_id');
+// The status cards count every status, so they use the filters without the status one.
+$cardWhere = $where;
+$cardPrms  = $prms;
 if ($st !== '' && in_array($st, $attStatusKeys, true)) {
     $where[] = "a.status = ?"; $prms[] = $st;
 }
@@ -261,6 +264,7 @@ if ($st !== '' && in_array($st, $attStatusKeys, true)) {
 $src = $_GET['source'] ?? '';
 if ($src !== '' && in_array($src, ['admin','self','import'], true)) {
     $where[] = "a.source = ?"; $prms[] = $src;
+    $cardWhere[] = "a.source = ?"; $cardPrms[] = $src;
 }
 
 $sqlWhere = $where ? ('WHERE '.implode(' AND ', $where)) : '';
@@ -297,14 +301,15 @@ $stmt->execute($prms);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Status cards: counted over the whole filter, not just the 500 rows shown.
+$cardSqlWhere = $cardWhere ? ('WHERE '.implode(' AND ', $cardWhere)) : '';
 $cntStmt = $conn->prepare("
 SELECT a.status, COUNT(*) AS n
   FROM attendance a
   JOIN employees e ON e.id=a.employee_id
-  $sqlWhere
+  $cardSqlWhere
  GROUP BY a.status
 ");
-$cntStmt->execute($prms);
+$cntStmt->execute($cardPrms);
 $statusCounts = $cntStmt->fetchAll(PDO::FETCH_KEY_PAIR);
 $stFiltered = ($st !== '' && in_array($st, $attStatusKeys, true));
 $statusCardColors = ['pending' => '#6c757d', 'approved' => '#198754', 'absent' => '#dc3545', 'half' => '#e0a800', 'on_leave' => '#0aa2c0', 'excused_absent' => '#fd7e14'];
