@@ -343,7 +343,7 @@ function ars_payment_plan_schedule(array $plan, string $checkIn, string $checkOu
 /**
  * Due-now figure for a list row. No plan: the balance itself, as before.
  */
-function ars_payment_plan_row_due_now(?array $plan, array $bookingRow, ?string $today = null): float {
+function ars_payment_plan_row_due_now(?array $plan, array $bookingRow, ?string $today = null, ?array $originalStay = null, array $overrides = []): float {
     $balance = max(0.0, (float)($bookingRow['balance_due'] ?? 0));
     if (!$plan || $balance <= 0.009) {
         return $balance;
@@ -354,9 +354,97 @@ function ars_payment_plan_row_due_now(?array $plan, array $bookingRow, ?string $
         (string)($bookingRow['check_out'] ?? ''),
         (float)($bookingRow['total_amount'] ?? 0),
         $balance,
-        $today
+        $today,
+        $originalStay,
+        $overrides
     );
-    return $sched['due_now'];
+    return min($balance, $sched['due_now']);
+}
+
+/**
+ * What the booking page hands the schedule besides the plan itself, for many
+ * bookings at once: where the original stay ended and what it was invoiced at
+ * (once extended), and the office's corrections to single months. Without
+ * them a list page cuts every month at the plan amount and shows a first month
+ * booked at its own price as short.
+ *
+ * @return array<int,array{original_stay:?array{end:string,amount:float},overrides:array<int,array{due_date:?string,amount:?float,status:?string}>}>
+ */
+function ars_payment_plan_list_context(PDO $conn, int $companyId, array $bookingIds): array {
+    $bookingIds = array_values(array_unique(array_filter(array_map('intval', $bookingIds))));
+    $out = [];
+    foreach ($bookingIds as $id) {
+        $out[$id] = ['original_stay' => null, 'overrides' => []];
+    }
+    if (!$bookingIds) {
+        return $out;
+    }
+    $in = implode(',', array_fill(0, count($bookingIds), '?'));
+    $args = array_merge([$companyId], $bookingIds);
+
+    ars_ensure_payment_plan_instalment_table($conn);
+    try {
+        $st = $conn->prepare("
+            SELECT booking_id, seq, due_date, amount, status
+            FROM ars_booking_payment_plan_instalments
+            WHERE company_id = ? AND booking_id IN ($in)
+        ");
+        $st->execute($args);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $out[(int)$row['booking_id']]['overrides'][(int)$row['seq']] = [
+                'due_date' => $row['due_date'] !== null ? (string)$row['due_date'] : null,
+                'amount' => $row['amount'] !== null ? (float)$row['amount'] : null,
+                'status' => $row['status'] !== null && $row['status'] !== '' ? (string)$row['status'] : null,
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('ARS payment plan list overrides: ' . $e->getMessage());
+    }
+
+    // Same sum as ars_original_stay_invoiced()'s 'total'.
+    try {
+        $firstExt = [];
+        $st = $conn->prepare("
+            SELECT booking_id, MIN(extended_from) AS first_from
+            FROM ars_booking_extension_log
+            WHERE company_id = ? AND booking_id IN ($in)
+            GROUP BY booking_id
+        ");
+        $st->execute($args);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if ((string)($row['first_from'] ?? '') !== '') {
+                $firstExt[(int)$row['booking_id']] = (string)$row['first_from'];
+            }
+        }
+        if ($firstExt) {
+            $st = $conn->prepare("
+                SELECT booking_id, document_type, total_amount
+                FROM ars_financial_documents
+                WHERE company_id = ? AND booking_id IN ($in)
+                  AND document_type IN ('original_invoice', 'adjustment_invoice', 'credit_note')
+                  AND status NOT IN ('draft', 'voided', 'reversed')
+            ");
+            $st->execute($args);
+            $totals = [];
+            $hasOriginal = [];
+            foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $doc) {
+                $bid = (int)$doc['booking_id'];
+                $sign = $doc['document_type'] === 'credit_note' ? -1 : 1;
+                $totals[$bid] = ($totals[$bid] ?? 0.0) + $sign * (float)$doc['total_amount'];
+                if ($doc['document_type'] === 'original_invoice') {
+                    $hasOriginal[$bid] = true;
+                }
+            }
+            foreach ($firstExt as $bid => $from) {
+                if (!empty($hasOriginal[$bid])) {
+                    $out[$bid]['original_stay'] = ['end' => $from, 'amount' => round($totals[$bid], 2)];
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        // No extension log or no adapter tables: nothing was extended.
+    }
+    return $out;
 }
 
 /**

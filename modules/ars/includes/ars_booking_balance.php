@@ -371,6 +371,7 @@ function ars_booking_rows_apply_balances(PDO $conn, int $companyId, array $rows,
     }
     $figures = ars_booking_balances($conn, $companyId, $rows);
     $plans = $dueNowOnPlan ? ars_payment_plans_for_bookings($conn, $companyId, array_keys($figures)) : [];
+    $planContext = $plans ? ars_payment_plan_list_context($conn, $companyId, array_keys($plans)) : [];
     foreach ($rows as $i => $r) {
         $id = (int)($r['id'] ?? 0);
         if (!isset($figures[$id])) {
@@ -386,7 +387,11 @@ function ars_booking_rows_apply_balances(PDO $conn, int $companyId, array $rows,
             );
         }
         if (isset($plans[$id])) {
-            $rows[$i]['balance_due'] = ars_payment_plan_row_due_now($plans[$id], $rows[$i]);
+            // A typed Total is scheduled as one figure, as on the booking page.
+            $originalStay = $f['source'] === 'payments' ? null : ($planContext[$id]['original_stay'] ?? null);
+            $rows[$i]['balance_due'] = ars_payment_plan_row_due_now(
+                $plans[$id], $rows[$i], null, $originalStay, $planContext[$id]['overrides'] ?? []
+            );
         }
     }
     return $rows;
