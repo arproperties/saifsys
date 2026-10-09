@@ -464,7 +464,8 @@ function post_invoice_mode_receipt_to_accounting($paymentId, $companyId, $create
         $payment = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$payment) return ['success' => false, 'journal_id' => null, 'error' => 'Invoice Mode receipt not found'];
 
-        $existing = $conn->prepare("SELECT id FROM re_journal_headers WHERE company_id = ? AND reference_type = 'payment' AND reference_id = ? AND is_posted = 1 AND is_reversed = 0 LIMIT 1");
+        // A reversal journal carries the same reference; it is not the receipt's live posting.
+        $existing = $conn->prepare("SELECT id FROM re_journal_headers WHERE company_id = ? AND reference_type = 'payment' AND reference_id = ? AND is_posted = 1 AND is_reversed = 0 AND journal_type <> 'reversal' LIMIT 1");
         $existing->execute([$companyId, $paymentId]);
         if ($jid = $existing->fetchColumn()) {
             return ['success' => true, 'journal_id' => (int)$jid, 'already_posted' => true, 'error' => null];

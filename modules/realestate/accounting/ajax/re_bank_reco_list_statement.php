@@ -11,9 +11,11 @@ if ($bank_id <= 0 || $from === '' || $to === '') {
     re_bank_reco_json_error('Missing parameters');
 }
 
-if (!re_bank_verify_account($conn, $bank_id, $cid)) {
+$bankAccount = re_bank_verify_account($conn, $bank_id, $cid);
+if (!$bankAccount) {
     re_bank_reco_json_error('Invalid bank account');
 }
+require_once __DIR__ . '/../../includes/re_bank_reco_engine.php';
 
 // Cap result size, but apply status/open filter in SQL first.
 // Previously LIMIT ran before filtering matched lines, so early unmatched
@@ -54,7 +56,37 @@ foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
     if ($statusFilter === 'open' && $r['is_fully_matched']) {
         continue;
     }
+    // Money-in line paid as several receipts: list them under the line.
+    $r['split'] = null;
+    if (!$r['is_fully_matched'] && $r['amount'] > 0 && !in_array((string) $r['status'], ['ignored', 'investigating'], true)) {
+        try {
+            $r['split'] = re_bank_reco_combined_suggestion($conn, $cid, $r + ['gl_account_id' => (int) $bankAccount['gl_account_id']]);
+        } catch (Throwable $e) {
+            error_log('re_bank_reco_list_statement split: ' . $e->getMessage());
+        }
+    }
     $rows[] = $r;
+}
+
+// Open lines the bank posted under one transaction code on one day (a charge and its VAT):
+// tell each line about its partners so the pair can be ticked and reconciled as one.
+$byCode = [];
+foreach ($rows as $i => $r) {
+    $rows[$i]['related'] = null;
+    $code = $r['is_fully_matched'] ? '' : re_bank_reco_line_bank_code((string) $r['description']);
+    if ($code !== '' && !in_array((string) $r['status'], ['ignored', 'investigating'], true)) {
+        $byCode[$r['txn_date'] . '|' . ($r['amount'] < 0 ? 'out' : 'in') . '|' . $code][] = $i;
+    }
+}
+foreach ($byCode as $idxs) {
+    if (count($idxs) < 2 || count($idxs) > 10) {
+        continue;
+    }
+    $ids = array_map(static fn(int $i): int => (int) $rows[$i]['id'], $idxs);
+    $total = round(array_sum(array_map(static fn(int $i): float => (float) $rows[$i]['remaining'], $idxs)), 2);
+    foreach ($idxs as $i) {
+        $rows[$i]['related'] = ['line_ids' => $ids, 'total' => $total];
+    }
 }
 
 echo json_encode([
