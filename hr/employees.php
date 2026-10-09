@@ -23,6 +23,13 @@ $selectedCompanyId = $isHRManager ? hr_selected_company_id($conn, $companies) : 
 $q = trim($_GET['q'] ?? '');
 $group = $_GET['group'] ?? 'current';
 $status = $_GET['status'] ?? 'all';
+$view = ($_GET['view'] ?? '') === 'company' ? 'company' : 'list';
+// By company view only has the company filter, so the list-only filters must not apply unseen.
+if ($view === 'company') {
+  $q = '';
+  $group = 'current';
+  $status = 'all';
+}
 $page = max(1, (int)($_GET['page'] ?? 1));
 $limit = 20;
 $offset = ($page - 1) * $limit;
@@ -124,6 +131,33 @@ if (($_GET['export'] ?? '') === 'employees') {
   ], $exportRows);
 }
 
+$total = 0;
+$total_pages = 1;
+$rows = [];
+$companyCards = [];
+
+if ($view === 'company') {
+  // By company view: one card per company, counted over the same filters as the list.
+  $stmt = $conn->prepare("
+  SELECT e.company_id, c.name AS company_name, c.business_type AS company_type, e.status, COUNT(*) AS n
+  FROM employees e
+  LEFT JOIN companies c ON c.id = e.company_id
+  $where_sql
+  GROUP BY e.company_id, c.name, c.business_type, e.status
+  ORDER BY c.name IS NULL, c.name ASC");
+  $stmt->execute($params);
+  foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $cr) {
+    $cid = (int)$cr['company_id'];
+    if (!isset($companyCards[$cid])) {
+      $companyCards[$cid] = ['id' => $cid, 'name' => $cr['company_name'], 'type' => $cr['company_type'], 'total' => 0, 'statuses' => []];
+    }
+    $crStatus = $cr['status'] ?: 'inactive';
+    $companyCards[$cid]['total'] += (int)$cr['n'];
+    $companyCards[$cid]['statuses'][$crStatus] = ($companyCards[$cid]['statuses'][$crStatus] ?? 0) + (int)$cr['n'];
+    $total += (int)$cr['n'];
+  }
+} else {
+
 // count
 $sql_count = "SELECT COUNT(*) FROM employees e $where_sql";
 $stmt = $conn->prepare($sql_count);
@@ -154,6 +188,8 @@ $stmt = $conn->prepare($sql);
 $stmt->execute($params);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+}
+
 // helpers
 function days_to($dateStr) {
   if (!$dateStr) return null;
@@ -167,7 +203,27 @@ $exportQuery = $_GET;
 unset($exportQuery['page']);
 $exportQuery['export'] = 'employees';
 
+// View toggle and company cards keep the active filters.
+$viewQuery = $_GET;
+unset($viewQuery['page'], $viewQuery['view'], $viewQuery['export']);
+
 $pageTitle = 'Employees';
+$pageStyles = '
+.emp-grid { background:#f2f4f7; border-top:1px solid #e4e7ec; padding:1.25rem; }
+.emp-ccard { display:flex; flex-direction:column; height:100%; background:#fff; border:1px solid #cfd4dc; border-top:4px solid var(--hr-primary);
+             border-radius:14px; box-shadow:0 1px 2px rgba(16,24,40,.06), 0 4px 12px rgba(16,24,40,.06); overflow:hidden;
+             text-decoration:none; color:inherit; transition:box-shadow .18s, transform .18s; }
+a.emp-ccard:hover { color:inherit; transform:translateY(-3px); box-shadow:0 2px 4px rgba(16,24,40,.08), 0 14px 28px rgba(16,24,40,.12); }
+.emp-ccard-head { padding:.85rem 1rem .75rem; background:#f9fafb; border-bottom:1px solid #e4e7ec; }
+.emp-ccard-name { font-size:.95rem; font-weight:600; line-height:1.25; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.emp-ccard-body { display:flex; align-items:baseline; gap:.5rem; padding:1rem; flex:1; }
+.emp-ccard-num { font-size:2rem; font-weight:700; line-height:1; color:var(--hr-primary); }
+.emp-ccard-unit { font-size:.85rem; color:var(--hr-text-muted); }
+.emp-ccard-foot { display:flex; justify-content:flex-end; padding:.55rem 1rem; border-top:1px solid #e4e7ec; background:#fcfcfd; font-size:.8rem; }
+.emp-go { color:#2563eb; font-weight:500; white-space:nowrap; }
+.emp-go .bi { display:inline-block; transition:transform .18s; }
+a.emp-ccard:hover .emp-go .bi { transform:translateX(3px); }
+';
 if ($isHRManager) {
     $hrScopeLabel = hr_company_scope_label($companies, $selectedCompanyId);
 }
@@ -188,6 +244,19 @@ echo hr_ui_page_header(
 
   <div class="hr-filter-bar mb-3">
       <form class="row g-2">
+        <?php if ($view === 'company'): ?>
+        <input type="hidden" name="view" value="company">
+        <div class="col-md-6">
+          <select class="form-select" name="company_id">
+            <option value="0">All companies</option>
+            <?php foreach ($companies as $company): ?>
+              <option value="<?= (int)$company['id'] ?>" <?= $selectedCompanyId === (int)$company['id'] ? 'selected' : '' ?>>
+                <?= htmlspecialchars($company['name']) ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <?php else: ?>
         <div class="col-md-4">
           <input type="text" class="form-control" name="q" placeholder="Search name, code, email, phone…" value="<?= htmlspecialchars($q) ?>">
         </div>
@@ -220,6 +289,7 @@ echo hr_ui_page_header(
             <?php endforeach; ?>
           </select>
         </div>
+        <?php endif; ?>
         <div class="col-md-2">
           <button class="btn btn-primary w-100" type="submit">Filter</button>
         </div>
@@ -227,7 +297,54 @@ echo hr_ui_page_header(
   </div>
 
   <div class="hr-settings-card">
-    <div class="settings-header">Directory</div>
+    <div class="settings-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <span><?= $view === 'company' ? 'Employees by company' : 'Directory' ?></span>
+      <div class="d-flex align-items-center gap-3">
+        <?php if ($view === 'company'): ?>
+          <span class="small text-muted"><?= number_format(count($companyCards)) ?> compan<?= count($companyCards) === 1 ? 'y' : 'ies' ?> · <?= number_format($total) ?> employee<?= $total === 1 ? '' : 's' ?></span>
+        <?php else: ?>
+          <span class="small text-muted"><?= number_format($total) ?> employee<?= $total === 1 ? '' : 's' ?></span>
+        <?php endif; ?>
+        <div class="btn-group btn-group-sm" role="group" aria-label="View">
+          <a class="btn <?= $view === 'list' ? 'btn-secondary' : 'btn-outline-secondary' ?>"
+             href="?<?= htmlspecialchars(http_build_query($viewQuery)) ?>"><i class="bi bi-list-ul me-1"></i>List</a>
+          <a class="btn <?= $view === 'company' ? 'btn-secondary' : 'btn-outline-secondary' ?>"
+             href="?view=company"><i class="bi bi-grid me-1"></i>By company</a>
+        </div>
+      </div>
+    </div>
+
+    <?php if ($view === 'company'): ?>
+    <div class="card-body emp-grid">
+      <?php if (!$companyCards): ?>
+        <div class="text-center text-muted py-4">No employees found.</div>
+      <?php else: ?>
+      <div class="row g-3">
+        <?php foreach ($companyCards as $card):
+          $cardName = $card['name'] ?? 'No company';
+          $cardTag = $card['id'] > 0 ? 'a' : 'div'; // employees with no company have no company filter to open
+        ?>
+          <div class="col-md-6 col-xl-4">
+            <<?= $cardTag ?> class="emp-ccard"<?= $card['id'] > 0 ? ' href="?company_id=' . (int)$card['id'] . '"' : '' ?>>
+              <div class="emp-ccard-head">
+                <div class="emp-ccard-name" title="<?= htmlspecialchars($cardName) ?>"><?= htmlspecialchars($cardName) ?></div>
+              </div>
+              <div class="emp-ccard-body">
+                <span class="emp-ccard-num"><?= number_format($card['total']) ?></span>
+                <span class="emp-ccard-unit">employee<?= $card['total'] === 1 ? '' : 's' ?></span>
+              </div>
+              <?php if ($card['id'] > 0): ?>
+              <div class="emp-ccard-foot">
+                <span class="emp-go">View employees <i class="bi bi-arrow-right"></i></span>
+              </div>
+              <?php endif; ?>
+            </<?= $cardTag ?>>
+          </div>
+        <?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+    </div>
+    <?php else: ?>
     <div class="card-body p-0">
       <div class="hr-table-shell border-0 shadow-none rounded-0">
         <table class="table table-hover align-middle mb-0">
@@ -358,6 +475,7 @@ echo hr_ui_page_header(
         </nav>
       <?php endif; ?>
     </div>
+    <?php endif; ?>
   </div>
 
 <?php require_once __DIR__ . '/includes/hr_layout_footer.php'; ?>
