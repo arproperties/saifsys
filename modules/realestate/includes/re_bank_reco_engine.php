@@ -567,6 +567,62 @@ function re_bank_reco_line_bank_code(string $description): string
     return preg_match('/-\s*([A-Z]{2}\d{6,})\s*$/', trim($description), $m) ? $m[1] : '';
 }
 
+/** The bank's own VAT line for a charge ("VALUE ADDED TAX...", "Value Added Tax (VAT) @ 5%"). */
+function re_bank_reco_is_vat_line(string $description): bool
+{
+    return (bool) preg_match('/VALUE ADDED TAX|\bVAT\b/i', $description);
+}
+
+/**
+ * Splits lines sharing one bank code into the sets that belong together. The bank puts a
+ * transfer, its fee and the fee's VAT under one code, but only the fee and its VAT are one
+ * entry: each VAT line is paired with the line it is the VAT of (amount x rate), and the
+ * transfer itself is left on its own. With no VAT line in the set, the lines stay together.
+ *
+ * @param array<int,array{amount:float,description:string}> $lines keyed by caller's index
+ * @return list<list<int>> sets of the caller's indexes, each with two or more lines
+ */
+function re_bank_reco_split_code_group(array $lines, float $vatRate = 5.0): array
+{
+    $vat = [];
+    $base = [];
+    foreach ($lines as $i => $l) {
+        if (re_bank_reco_is_vat_line((string) $l['description'])) {
+            $vat[] = $i;
+        } else {
+            $base[] = $i;
+        }
+    }
+    if (!$vat) {
+        return count($lines) >= 2 ? [array_keys($lines)] : [];
+    }
+    $groups = [];
+    $loose = [];
+    foreach ($vat as $v) {
+        $hit = null;
+        foreach ($base as $k => $b) {
+            if (abs(round(abs((float) $lines[$b]['amount']) * $vatRate / 100, 2) - abs((float) $lines[$v]['amount'])) <= 0.011) {
+                $hit = $k;
+                break;
+            }
+        }
+        if ($hit === null) {
+            $loose[] = $v;
+            continue;
+        }
+        $groups[] = [$base[$hit], $v];
+        unset($base[$hit]);
+    }
+    // A VAT line whose amount fits nothing still belongs to a fee line, never to the transfer.
+    if ($loose) {
+        $fees = array_values(array_filter($base, static fn(int $b): bool => (bool) preg_match('/CHARGE|CHGS|\bFEE|COMMISSION/i', (string) $lines[$b]['description'])));
+        if ($fees) {
+            $groups[] = array_merge($fees, $loose);
+        }
+    }
+    return $groups;
+}
+
 /**
  * Bank lines that the ERP holds as one entry (a bank charge and its VAT line booked as one
  * expense). Loads and checks them: same bank account, same day, same bank code, same direction,

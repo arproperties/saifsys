@@ -78,14 +78,28 @@ foreach ($rows as $i => $r) {
         $byCode[$r['txn_date'] . '|' . ($r['amount'] < 0 ? 'out' : 'in') . '|' . $code][] = $i;
     }
 }
-foreach ($byCode as $idxs) {
-    if (count($idxs) < 2 || count($idxs) > 10) {
+$vatRate = (float) (re_bank_reco_vat_config($conn, $cid)['default_rate'] ?? 5);
+foreach ($byCode as $codeIdxs) {
+    if (count($codeIdxs) < 2 || count($codeIdxs) > 10) {
         continue;
     }
-    $ids = array_map(static fn(int $i): int => (int) $rows[$i]['id'], $idxs);
-    $total = round(array_sum(array_map(static fn(int $i): float => (float) $rows[$i]['remaining'], $idxs)), 2);
-    foreach ($idxs as $i) {
-        $rows[$i]['related'] = ['line_ids' => $ids, 'total' => $total];
+    // A transfer shares its code with its fee and the fee's VAT; only the fee and VAT go together.
+    $codeLines = [];
+    foreach ($codeIdxs as $i) {
+        $codeLines[$i] = ['amount' => (float) $rows[$i]['remaining'], 'description' => (string) $rows[$i]['description']];
+    }
+    foreach (re_bank_reco_split_code_group($codeLines, $vatRate) as $idxs) {
+        $ids = array_map(static fn(int $i): int => (int) $rows[$i]['id'], $idxs);
+        $total = round(array_sum(array_map(static fn(int $i): float => (float) $rows[$i]['remaining'], $idxs)), 2);
+        // The bank's VAT line is the VAT of the charge beside it, so the charge is the net amount.
+        $vat = round(array_sum(array_map(
+            static fn(int $i): float => re_bank_reco_is_vat_line((string) $rows[$i]['description']) ? (float) $rows[$i]['remaining'] : 0.0,
+            $idxs
+        )), 2);
+        $net = round($total - $vat, 2);
+        foreach ($idxs as $i) {
+            $rows[$i]['related'] = ['line_ids' => $ids, 'total' => $total, 'net' => $net, 'vat' => ($vat > 0 && $net > 0) ? $vat : 0.0];
+        }
     }
 }
 

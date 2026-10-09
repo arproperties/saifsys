@@ -18,7 +18,7 @@ $contactType = null;
 $contactId = null;
 if ($contactRaw !== '' && str_contains($contactRaw, ':')) {
     [$contactType, $contactIdRaw] = explode(':', $contactRaw, 2);
-    $contactType = in_array($contactType, ['tenant', 'vendor'], true) ? $contactType : null;
+    $contactType = in_array($contactType, ['tenant', 'vendor', 'bank'], true) ? $contactType : null;
     $contactId = $contactType ? (int) $contactIdRaw : null;
 }
 $vatTreatment = trim((string) ($_POST['vat_treatment'] ?? 'none'));
@@ -35,21 +35,38 @@ if ($description === '') {
     $description = (string) ($line['description'] ?? 'Bank reconciliation entry');
 }
 
-$result = re_bank_reco_create_transaction(
-    $conn,
-    $cid,
-    $line,
-    $transaction_type,
-    $account_id,
-    $description,
-    $reference !== '' ? $reference : null,
-    current_user_id(),
-    $contactType,
-    $contactId,
-    'create',
-    $vatTreatment,
-    $vatRate
-);
+// A charge the bank lists with its own VAT line: the VAT is that line, not a share of the charge.
+$withLineIds = array_filter(array_map('intval', explode(',', (string) ($_POST['with_line_ids'] ?? ''))));
+if ($vatTreatment === 'standard' && $withLineIds) {
+    $result = re_bank_reco_create_with_vat_line(
+        $conn,
+        $cid,
+        array_merge([$line_id], $withLineIds),
+        $transaction_type,
+        $account_id,
+        $description,
+        $reference !== '' ? $reference : null,
+        current_user_id(),
+        $contactType,
+        $contactId
+    );
+} else {
+    $result = re_bank_reco_create_transaction(
+        $conn,
+        $cid,
+        $line,
+        $transaction_type,
+        $account_id,
+        $description,
+        $reference !== '' ? $reference : null,
+        current_user_id(),
+        $contactType,
+        $contactId,
+        'create',
+        $vatTreatment,
+        $vatRate
+    );
+}
 
 if (!$result['success']) {
     re_bank_reco_json_error($result['error'] ?? 'Create failed');

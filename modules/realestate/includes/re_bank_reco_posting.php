@@ -7,6 +7,184 @@ declare(strict_types=1);
 require_once __DIR__ . '/re_bank_reco_core.php';
 require_once __DIR__ . '/../accounting/accounting_engine.php';
 
+/** Puts the chosen contact's name in front of the journal description. */
+function re_bank_reco_describe_with_contact(PDO $conn, int $companyId, string $description, ?string $contactType, ?int $contactId): string
+{
+    if (!$contactType || !$contactId) {
+        return $description;
+    }
+    $contactName = '';
+    if ($contactType === 'tenant') {
+        $st = $conn->prepare("SELECT COALESCE(NULLIF(company_name,''), CONCAT(first_name,' ',last_name)) FROM re_tenants WHERE id = ? AND company_id = ?");
+        $st->execute([$contactId, $companyId]);
+        $contactName = (string) ($st->fetchColumn() ?: '');
+    } elseif ($contactType === 'vendor') {
+        $st = $conn->prepare('SELECT vendor_name FROM re_vendors WHERE id = ? AND company_id = ?');
+        $st->execute([$contactId, $companyId]);
+        $contactName = (string) ($st->fetchColumn() ?: '');
+    } elseif ($contactType === 'bank') {
+        $st = $conn->prepare('SELECT account_name FROM re_bank_accounts WHERE id = ? AND company_id = ?');
+        $st->execute([$contactId, $companyId]);
+        $contactName = (string) ($st->fetchColumn() ?: '');
+    }
+    if ($contactName !== '' && !str_contains($description, $contactName)) {
+        $description = trim($contactName . ' — ' . $description);
+    }
+    return $description;
+}
+
+/**
+ * Create for a charge the bank shows with its own VAT line (25.00 charge + 1.25 VAT): the charge
+ * is the net amount and the VAT line is the VAT, so nothing is carved out of the charge. One
+ * journal for the two together, and every bank line in the set is reconciled against it.
+ *
+ * @param list<int> $lineIds the charge line and its VAT line(s)
+ * @return array{success:bool,journal_id:?int,match_id:?int,error:?string}
+ */
+function re_bank_reco_create_with_vat_line(
+    PDO $conn,
+    int $companyId,
+    array $lineIds,
+    string $transactionType,
+    int $offsetAccountId,
+    string $description,
+    ?string $reference,
+    ?int $userId,
+    ?string $contactType = null,
+    ?int $contactId = null
+): array {
+    require_once __DIR__ . '/re_bank_reco_engine.php';
+    $fail = static fn(string $msg): array => ['success' => false, 'journal_id' => null, 'match_id' => null, 'error' => $msg];
+
+    $group = re_bank_reco_load_line_group($conn, $companyId, $lineIds);
+    if (empty($group['success'])) {
+        return $fail((string) $group['error']);
+    }
+    $lines = $group['lines'];
+    $gross = re_bank_rec_money((float) $group['total']);
+    $vat = 0.0;
+    foreach ($lines as $l) {
+        if (re_bank_reco_is_vat_line((string) $l['description'])) {
+            $vat += (float) $l['remaining'];
+        }
+    }
+    $vat = re_bank_rec_money($vat);
+    $net = re_bank_rec_money($gross - $vat);
+    if ($vat <= 0.009 || $net <= 0.009) {
+        return $fail('These lines are not a charge with its VAT line.');
+    }
+
+    $first = $lines[0];
+    $bankGlId = (int) ($first['gl_account_id'] ?? 0);
+    $bankAccountId = (int) ($first['bank_account_id'] ?? 0);
+    $isSpent = (float) ($first['net_amount'] ?? 0) < 0;
+    $txnDate = (string) ($first['statement_date'] ?? date('Y-m-d'));
+    if ($bankGlId <= 0) {
+        return $fail('Invalid statement line');
+    }
+    if ($offsetAccountId <= 0) {
+        return $fail('Select an account');
+    }
+    if (re_bank_rec_period_locked($conn, $companyId, $bankAccountId, $txnDate)) {
+        return $fail('Period is locked');
+    }
+    $vatCfg = re_bank_reco_vat_config($conn, $companyId);
+    $vatAccountId = $isSpent ? $vatCfg['input_vat_account_id'] : $vatCfg['output_vat_account_id'];
+    if (!$vatAccountId) {
+        return $fail('VAT accounts not configured. Set up VAT in Accounting → VAT Configuration.');
+    }
+
+    $description = re_bank_reco_describe_with_contact($conn, $companyId, $description, $contactType, $contactId);
+    $ref = $reference ?: ('RE-BR-' . (int) $first['id']);
+    $bankSide = $isSpent ? ['debit' => 0, 'credit' => $gross] : ['debit' => $gross, 'credit' => 0];
+    $netSide = $isSpent ? ['debit' => $net, 'credit' => 0] : ['debit' => 0, 'credit' => $net];
+    $vatSide = $isSpent ? ['debit' => $vat, 'credit' => 0] : ['debit' => 0, 'credit' => $vat];
+    $journalLines = [
+        ['account_id' => $offsetAccountId, 'description' => $description, 'reference' => $ref] + $netSide,
+        ['account_id' => (int) $vatAccountId, 'description' => 'VAT — ' . $description, 'reference' => $ref] + $vatSide,
+        ['account_id' => $bankGlId, 'description' => $description, 'reference' => $ref] + $bankSide,
+    ];
+
+    try {
+        $ownsTxn = !$conn->inTransaction();
+        if ($ownsTxn) {
+            $conn->beginTransaction();
+        }
+        $result = create_and_post_journal(
+            $companyId,
+            'manual',
+            'bank_reconciliation',
+            (int) $first['id'],
+            $journalLines,
+            $description ?: ('Bank reconciliation create: line #' . (int) $first['id']),
+            $txnDate,
+            $userId
+        );
+        if (empty($result['success'])) {
+            throw new RuntimeException($result['error'] ?? 'Journal posting failed');
+        }
+        $journalId = (int) ($result['journal_id'] ?? 0);
+
+        $amountCol = $isSpent ? 'credit_amount' : 'debit_amount';
+        $st = $conn->prepare("
+            SELECT id FROM re_general_ledger
+            WHERE journal_id = ? AND company_id = ? AND account_id = ? AND {$amountCol} > 0
+            ORDER BY id DESC LIMIT 1
+        ");
+        $st->execute([$journalId, $companyId, $bankGlId]);
+        $bankLineGlId = (int) ($st->fetchColumn() ?: 0);
+        if ($bankLineGlId <= 0) {
+            throw new RuntimeException('Could not locate bank GL line for reconciliation link');
+        }
+
+        $matchId = null;
+        foreach ($lines as $l) {
+            $confirm = re_bank_rec_confirm_match(
+                $conn,
+                $companyId,
+                $bankAccountId,
+                (int) $l['id'],
+                'journal_line',
+                're_journal_headers',
+                $journalId,
+                $bankLineGlId,
+                (float) $l['remaining'],
+                $userId,
+                'Created from bank reconciliation (charge + VAT line, total ' . number_format($gross, 2) . ')',
+                100,
+                'High',
+                'create',
+                $journalId
+            );
+            if (empty($confirm['success'])) {
+                throw new RuntimeException($confirm['error'] ?? 'Could not link match');
+            }
+            $matchId = $matchId ?? (int) ($confirm['match_id'] ?? 0);
+        }
+
+        re_bank_rec_audit($conn, $companyId, $bankAccountId, (int) $first['id'], $matchId, 'create_transaction', null, json_encode([
+            'transaction_type' => $transactionType,
+            'journal_id' => $journalId,
+            'line_ids' => array_map(static fn(array $l): int => (int) $l['id'], $lines),
+            'net' => $net,
+            'vat' => $vat,
+            'amount' => $gross,
+            'vat_treatment' => 'standard',
+            'vat_from' => 'bank_vat_line',
+        ]), $userId, 'create');
+
+        if ($ownsTxn) {
+            $conn->commit();
+        }
+        return ['success' => true, 'journal_id' => $journalId, 'match_id' => $matchId, 'error' => null];
+    } catch (Throwable $e) {
+        if (isset($ownsTxn) && $ownsTxn && $conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        return $fail($e->getMessage());
+    }
+}
+
 /**
  * @return array{success:bool,journal_id:?int,match_id:?int,error:?string}
  */
@@ -42,21 +220,7 @@ function re_bank_reco_create_transaction(
         return ['success' => false, 'journal_id' => null, 'match_id' => null, 'error' => 'Statement line already reconciled'];
     }
 
-    if ($contactType && $contactId) {
-        $contactName = '';
-        if ($contactType === 'tenant') {
-            $st = $conn->prepare("SELECT COALESCE(NULLIF(company_name,''), CONCAT(first_name,' ',last_name)) FROM re_tenants WHERE id = ? AND company_id = ?");
-            $st->execute([$contactId, $companyId]);
-            $contactName = (string) ($st->fetchColumn() ?: '');
-        } elseif ($contactType === 'vendor') {
-            $st = $conn->prepare('SELECT vendor_name FROM re_vendors WHERE id = ? AND company_id = ?');
-            $st->execute([$contactId, $companyId]);
-            $contactName = (string) ($st->fetchColumn() ?: '');
-        }
-        if ($contactName !== '' && !str_contains($description, $contactName)) {
-            $description = trim($contactName . ' — ' . $description);
-        }
-    }
+    $description = re_bank_reco_describe_with_contact($conn, $companyId, $description, $contactType, $contactId);
 
     if ($offsetAccountId <= 0) {
         if ($transactionType === 'cash_withdrawal') {
@@ -497,7 +661,7 @@ function re_bank_reco_cash_coding_bulk(PDO $conn, int $companyId, array $rows, ?
             $contactRaw = trim((string) ($row['contact'] ?? ''));
             if ($contactRaw !== '' && str_contains($contactRaw, ':')) {
                 [$contactType, $cidRaw] = explode(':', $contactRaw, 2);
-                $contactType = in_array($contactType, ['tenant', 'vendor'], true) ? $contactType : null;
+                $contactType = in_array($contactType, ['tenant', 'vendor', 'bank'], true) ? $contactType : null;
                 $contactId = $contactType ? (int) $cidRaw : null;
             }
 

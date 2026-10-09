@@ -136,11 +136,19 @@
       }
       const pick = div.querySelector('.co-breco-pick');
       if (pick) {
-        // The charge and its VAT line always go together: ticking one ticks its partners.
+        // Each line is ticked by hand; two or more ticked lines of one set reconcile as one,
+        // a single ticked line is handled on its own.
         pick.closest('label').addEventListener('click', function(ev){ ev.stopPropagation(); });
         pick.addEventListener('change', function(){
-          pickedIds.clear();
-          if (pick.checked) l.related.line_ids.forEach(function(id){ pickedIds.add(Number(id)); });
+          const set = l.related.line_ids.map(Number);
+          Array.from(pickedIds).forEach(function(id){
+            if (set.indexOf(id) < 0) pickedIds.delete(id);
+          });
+          if (pick.checked) pickedIds.add(Number(l.id)); else pickedIds.delete(Number(l.id));
+          if (pickedIds.size === 1) {
+            selectedLineId = Array.from(pickedIds)[0];
+            selectedSplitId = null;
+          }
           pickedChanged();
         });
       }
@@ -406,12 +414,32 @@
     bindPanelActions(data);
   }
 
-  function buildContactOptions(line, selectedValue){
-    const c = window.RE_BRECO_CONTACTS || {tenants:[], vendors:[]};
+  // Who can be picked for a Create type: tenants for a receipt, the bank for its own charges,
+  // vendors for other money going out.
+  function contactTypesFor(txnType){
+    if (txnType === 'tenant_receipt') return ['tenant'];
+    if (txnType === 'bank_charge') return ['bank'];
+    return ['vendor'];
+  }
+
+  // A bank charge comes from the bank whose statement is open.
+  function currentBankContact(){
+    const id = String(bankId() || '');
+    const found = (window.RE_BRECO_BANKS || []).some(function(b){ return String(b.id) === id; });
+    return found ? 'bank:' + id : '';
+  }
+
+  function buildContactOptions(line, selectedValue, txnType){
+    const c = Object.assign({tenants:[], vendors:[]}, window.RE_BRECO_CONTACTS || {});
+    c.banks = (window.RE_BRECO_BANKS || []).map(function(b){ return {id: b.id, name: b.label}; });
+    const allowed = contactTypesFor(txnType);
+    const selType = String(selectedValue || '').split(':')[0];
+    // A contact already chosen (e.g. by a bank rule) stays listed even if it is the other kind.
     const groups = [
       {key:'tenants', type:'tenant', label:'Tenants'},
-      {key:'vendors', type:'vendor', label:'Vendors'}
-    ];
+      {key:'vendors', type:'vendor', label:'Vendors'},
+      {key:'banks', type:'bank', label:'Banks'}
+    ].filter(function(g){ return allowed.indexOf(g.type) >= 0 || g.type === selType; });
     let html = '<option value="">— Optional —</option>';
     groups.forEach(function(g){
       const items = c[g.key] || [];
@@ -426,14 +454,13 @@
     return html;
   }
 
-  function guessContactFromLine(line){
+  function guessContactFromLine(line, txnType){
+    if (txnType === 'bank_charge') return currentBankContact();
     const text = ((line.description || '') + ' ' + (line.reference || '')).trim().toLowerCase();
     if (text.length < 3) return '';
     const c = window.RE_BRECO_CONTACTS || {tenants:[], vendors:[]};
-    const preferTenants = !line.is_spent;
-    const order = preferTenants
-      ? [['tenants','tenant'],['vendors','vendor']]
-      : [['vendors','vendor'],['tenants','tenant']];
+    const allowed = contactTypesFor(txnType);
+    const order = [['tenants','tenant'],['vendors','vendor']].filter(function(pair){ return allowed.indexOf(pair[1]) >= 0; });
     let best = null;
     order.forEach(function(pair){
       (c[pair[0]] || []).forEach(function(item){
@@ -492,7 +519,20 @@
     return { net: net, vat: vat, gross: gross };
   }
 
-  function vatBreakdownHtml(gross, treatment){
+  // A charge the bank lists with its own VAT line (25.00 + 1.25): the set from the statement list.
+  function vatLinePair(lineId){
+    const l = lines.find(function(x){ return Number(x.id) === Number(lineId); });
+    return (l && l.related && Number(l.related.vat) > 0) ? l.related : null;
+  }
+
+  function vatBreakdownHtml(gross, treatment, lineId){
+    const pair = vatLinePair(lineId);
+    if (treatment === 'standard' && pair) {
+      return '<div class="small text-muted border rounded px-2 py-1 mt-1">' +
+        'Net: <strong>' + Number(pair.net).toFixed(2) + '</strong> · VAT: <strong>' + Number(pair.vat).toFixed(2) + '</strong> · ' +
+        'Bank total: <strong>' + Number(pair.total).toFixed(2) + '</strong> (VAT is the bank\'s own VAT line — ' +
+        pair.line_ids.length + ' bank lines reconcile together)</div>';
+    }
     if (treatment !== 'standard') {
       return '<div class="form-text text-muted">No VAT split — full bank amount posts to the selected account.</div>';
     }
@@ -507,8 +547,10 @@
     const defaultType = prefill && prefill.transaction_type
       ? prefill.transaction_type
       : (line.is_received ? 'tenant_receipt' : 'quick_expense');
-    const guessedContact = (prefill && prefill.contact) ? prefill.contact : guessContactFromLine(line);
-    const contactOpts = buildContactOptions(line, guessedContact);
+    let guessedContact = (prefill && prefill.contact) ? prefill.contact : guessContactFromLine(line, defaultType);
+    // A bank charge is always against a bank, even when the pre-fill guessed a vendor.
+    if (defaultType === 'bank_charge' && guessedContact.split(':')[0] !== 'bank') guessedContact = currentBankContact();
+    const contactOpts = buildContactOptions(line, guessedContact, defaultType);
     const descVal = (prefill && prefill.description) ? prefill.description : (line.description || '');
     const refVal = (prefill && prefill.reference) ? prefill.reference : (line.reference || '');
     const defaultVat = (prefill && prefill.vat_treatment) ? prefill.vat_treatment : 'none';
@@ -519,13 +561,13 @@
         '<option value="cash_withdrawal"' + (defaultType === 'cash_withdrawal' ? ' selected' : '') + '>Cash Withdrawal / Petty Cash</option>' +
         '<option value="tenant_receipt"' + (defaultType === 'tenant_receipt' ? ' selected' : '') + '>Tenant Receipt / Income</option>' +
       '</select></div>' +
-      '<div class="col-12"><label class="form-label small">Who (Contact)</label><select name="contact" class="form-select form-select-sm">' + contactOpts + '</select>' +
-        (guessedContact ? '<div class="form-text">Suggested from statement description</div>' : '') +
+      '<div class="col-12"><label class="form-label small">Who (Contact)</label><select name="contact" class="form-select form-select-sm" data-search data-allow-clear="true">' + contactOpts + '</select>' +
+        (guessedContact && guessedContact.split(':')[0] !== 'bank' ? '<div class="form-text">Suggested from statement description</div>' : '') +
       '</div>' +
-      '<div class="col-12"><label class="form-label small">What (Account)</label><select name="account_id" class="form-select form-select-sm">' + accountOptions(prefill ? prefill.account_id : '') + '</select></div>' +
+      '<div class="col-12"><label class="form-label small">What (Account)</label><select name="account_id" class="form-select form-select-sm" data-search>' + accountOptions(prefill ? prefill.account_id : '') + '</select></div>' +
       '<div class="col-12"><label class="form-label small">VAT / Tax</label><select name="vat_treatment" class="form-select form-select-sm create-vat-sel">' + vatOptionsHtml(defaultVat) + '</select>' +
         '<input type="hidden" name="vat_rate" value="' + esc(String(vatConfig().default_rate || 5)) + '">' +
-        '<div id="createVatBreakdown">' + vatBreakdownHtml(line.abs_amount, defaultVat) + '</div></div>' +
+        '<div id="createVatBreakdown">' + vatBreakdownHtml(line.abs_amount, defaultVat, line.id) + '</div></div>' +
       '<div class="col-12"><label class="form-label small">Why (Description / Memo)</label><input type="text" name="description" class="form-control form-control-sm" value="' + esc(descVal) + '"></div>' +
       '<div class="col-md-6"><label class="form-label small">Reference</label><input type="text" name="reference" class="form-control form-control-sm" value="' + esc(refVal) + '"></div>' +
       '<div class="col-md-6"><label class="form-label small">Amount</label><input type="text" class="form-control form-control-sm" value="' + Number(line.abs_amount).toFixed(2) + '" readonly></div>' +
@@ -750,16 +792,32 @@
           const el = createForm.querySelector('[name="' + name + '"]');
           if (el) p.append(name, el.value);
         });
+        const pair = vatLinePair(data.line.id);
+        const vatEl = createForm.querySelector('[name=vat_treatment]');
+        if (pair && vatEl && vatEl.value === 'standard') {
+          p.append('with_line_ids', pair.line_ids.filter(function(id){ return Number(id) !== Number(data.line.id); }).join(','));
+        }
         const res = await fetch(ajaxBase + 're_bank_reco_create.php', {method:'POST', body:p});
         const j = await res.json();
         if (!j.success) { alert(j.error || 'Create failed'); return; }
         await afterReconcile(data.line.id);
       });
+      const typeSel = createForm.querySelector('[name=transaction_type]');
+      const contactSel = createForm.querySelector('[name=contact]');
+      if (typeSel && contactSel) {
+        typeSel.addEventListener('change', function(){
+          let keep = contactTypesFor(typeSel.value).indexOf(contactSel.value.split(':')[0]) >= 0 ? contactSel.value : '';
+          if (!keep && typeSel.value === 'bank_charge') keep = currentBankContact();
+          contactSel.innerHTML = buildContactOptions(data.line, keep, typeSel.value);
+          // Refresh the search box's shown value.
+          if (window.jQuery) jQuery(contactSel).trigger('change');
+        });
+      }
       const vatSel = createForm.querySelector('[name=vat_treatment]');
       if (vatSel) {
         vatSel.addEventListener('change', function(){
           const div = document.getElementById('createVatBreakdown');
-          if (div) div.innerHTML = vatBreakdownHtml(data.line.abs_amount, vatSel.value);
+          if (div) div.innerHTML = vatBreakdownHtml(data.line.abs_amount, vatSel.value, data.line.id);
         });
       }
     }

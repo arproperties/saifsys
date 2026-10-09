@@ -157,7 +157,11 @@ window.RE_BRECO_VAT = <?= json_encode([
     ],
 ]) ?>;
 </script>
-<script src="assets/bank_reconciliation.js?v=20261008p"></script>
+<?php
+require_once __DIR__ . '/../../../includes/searchable_select.php';
+searchable_select_assets();
+?>
+<script src="assets/bank_reconciliation.js?v=20261009e"></script>
 
 <?php endif; ?>
 
