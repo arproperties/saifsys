@@ -190,7 +190,13 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
                     <tbody>
                         <?php foreach ($bankAccounts as $account): ?>
                             <tr>
-                                <td><strong><?= h($account['account_name']) ?></strong></td>
+                                <td>
+                                    <a href="#" class="fw-bold bank-statement-link"
+                                       data-id="<?= (int) $account['id'] ?>"
+                                       data-name="<?= h($account['account_name']) ?>"
+                                       data-currency="<?= h($account['currency']) ?>"
+                                       title="View statement"><?= h($account['account_name']) ?></a>
+                                </td>
                                 <td><?= h($account['bank_name'] ?: '-') ?></td>
                                 <td><?= h($account['account_number'] ?: '-') ?></td>
                                 <td>
@@ -398,7 +404,104 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
     </div>
 </div>
 
+<!-- Bank Statement Modal -->
+<div class="modal fade" id="statementModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-list-ul"></i> <span id="stmt_title">Statement</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 align-items-end mb-3">
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">From</label>
+                        <input type="date" id="stmt_from" class="form-control form-control-sm" value="<?= h(date('Y-01-01')) ?>">
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">To</label>
+                        <input type="date" id="stmt_to" class="form-control form-control-sm" value="<?= h($asOfDate) ?>">
+                    </div>
+                    <div class="col-auto">
+                        <button type="button" class="btn btn-sm btn-primary" id="stmt_view">View</button>
+                    </div>
+                    <div class="col text-end small text-muted" id="stmt_totals"></div>
+                </div>
+                <div id="stmt_msg" class="text-muted text-center py-4"></div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover d-none" id="stmt_table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Journal</th>
+                                <th>Description</th>
+                                <th>Reference</th>
+                                <th class="text-end">Money In</th>
+                                <th class="text-end">Money Out</th>
+                                <th class="text-end">Balance</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stmt_body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
+(function () {
+    let stmtBankId = 0;
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+    const money = n => Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const el = id => document.getElementById(id);
+
+    function loadStatement() {
+        const msg = el('stmt_msg'), table = el('stmt_table'), body = el('stmt_body');
+        table.classList.add('d-none');
+        el('stmt_totals').textContent = '';
+        msg.classList.remove('d-none');
+        msg.textContent = 'Loading...';
+        const qs = new URLSearchParams({bank_account_id: stmtBankId, date_from: el('stmt_from').value, date_to: el('stmt_to').value});
+        fetch('ajax/re_bank_account_statement.php?' + qs, {credentials: 'same-origin'})
+            .then(r => r.json())
+            .then(d => {
+                if (!d.success) { msg.textContent = d.error || 'Could not load the statement.'; return; }
+                let html = '<tr class="table-secondary"><td colspan="6" class="text-end">Opening Balance</td><td class="text-end">' + money(d.opening) + '</td></tr>';
+                d.lines.forEach(l => {
+                    html += '<tr><td class="text-nowrap">' + esc(l.date) + '</td>'
+                        + '<td class="text-nowrap"><a href="journal_entry_view.php?id=' + l.journal_id + '" target="_blank">' + esc(l.journal_number) + '</a></td>'
+                        + '<td>' + esc(l.description) + '</td>'
+                        + '<td>' + esc(l.reference || '-') + '</td>'
+                        + '<td class="text-end text-success">' + (l.money_in > 0 ? money(l.money_in) : '-') + '</td>'
+                        + '<td class="text-end text-danger">' + (l.money_out > 0 ? money(l.money_out) : '-') + '</td>'
+                        + '<td class="text-end">' + money(l.balance) + '</td></tr>';
+                });
+                html += '<tr class="table-secondary fw-bold"><td colspan="4" class="text-end">Closing Balance</td><td class="text-end">' + money(d.total_in) + '</td><td class="text-end">' + money(d.total_out) + '</td><td class="text-end">' + money(d.closing) + '</td></tr>';
+                body.innerHTML = html;
+                table.classList.remove('d-none');
+                el('stmt_totals').textContent = d.lines.length + ' entries';
+                if (d.truncated) {
+                    msg.textContent = 'Showing the first ' + d.limit + ' entries only. Pick a shorter date range.';
+                } else if (!d.lines.length) {
+                    msg.textContent = 'No entries in this period.';
+                } else {
+                    msg.classList.add('d-none');
+                }
+            })
+            .catch(() => { msg.textContent = 'Could not load the statement.'; });
+    }
+
+    document.querySelectorAll('.bank-statement-link').forEach(a => a.addEventListener('click', e => {
+        e.preventDefault();
+        stmtBankId = a.dataset.id;
+        el('stmt_title').textContent = a.dataset.name + ' — Statement (' + a.dataset.currency + ')';
+        bootstrap.Modal.getOrCreateInstance(el('statementModal')).show();
+        loadStatement();
+    }));
+    el('stmt_view').addEventListener('click', loadStatement);
+})();
+
 function editAccount(account) {
     document.getElementById('edit_id').value = account.id;
     document.getElementById('edit_account_name').value = account.account_name;
