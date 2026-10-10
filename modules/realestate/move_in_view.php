@@ -176,6 +176,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['action'])) {
                 }
                 break;
 
+            case 'save_remark':
+                $field = $_POST['field'] ?? '';
+
+                if (in_array($field, ['tenant_comments', 'additional_services'])) {
+                    $value = trim($_POST['value'] ?? '');
+                    $stmt = $conn->prepare("
+                        UPDATE re_move_ins
+                        SET {$field} = ?
+                        WHERE id = ? AND company_id = ?
+                    ");
+                    $stmt->execute([$value !== '' ? $value : null, $moveInId, $currentCompanyId]);
+                    $response = ['success' => true, 'message' => 'Remarks saved'];
+                }
+                break;
+
             case 'upload_files':
                 $fileType = ($_POST['file_type'] ?? '') === 'inspection_report' ? 'inspection_report' : 'photo';
                 $roomArea = trim($_POST['room_area'] ?? '');
@@ -545,6 +560,28 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     </div>
                 </div>
 
+                <!-- Remarks -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-chat-left-text"></i> Remarks</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="tenant_comments" class="form-label"><strong>Tenant Comments &amp; Requests</strong></label>
+                            <textarea class="form-control" id="tenant_comments" rows="3"
+                                      placeholder="Any comments or requests from the tenant..."
+                                      onblur="saveRemark('tenant_comments', this)"><?= h($moveIn['tenant_comments'] ?? '') ?></textarea>
+                        </div>
+                        <div>
+                            <label for="additional_services" class="form-label"><strong>Additional Services &amp; Details</strong></label>
+                            <textarea class="form-control" id="additional_services" rows="3"
+                                      placeholder="Any additional services provided or requested, with details..."
+                                      onblur="saveRemark('additional_services', this)"><?= h($moveIn['additional_services'] ?? '') ?></textarea>
+                        </div>
+                        <div class="form-text">Saved automatically when you click outside the box.</div>
+                    </div>
+                </div>
+
                 <!-- Meter Readings -->
                 <div class="card mb-4">
                     <div class="card-header">
@@ -834,6 +871,42 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             });
         }
         
+        function saveRemark(field, textarea) {
+            if (textarea.value === textarea.defaultValue) {
+                return;
+            }
+
+            fetch('', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    action: 'save_remark',
+                    field: field,
+                    value: textarea.value,
+                    _csrf: csrfToken
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    textarea.defaultValue = textarea.value;
+                    const originalBg = textarea.style.backgroundColor;
+                    textarea.style.backgroundColor = '#d4edda';
+                    setTimeout(() => {
+                        textarea.style.backgroundColor = originalBg;
+                    }, 1000);
+                } else {
+                    alert(data.message || 'Error saving remarks');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving remarks:', error);
+                alert('Error saving remarks: ' + error.message);
+            });
+        }
+
         function toggleVerification(field) {
             const button = event.target.closest('button');
             button.disabled = true;

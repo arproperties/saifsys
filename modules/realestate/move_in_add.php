@@ -95,8 +95,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ['Utilities connected', 'Confirm utilities are connected and active', 0],
                 ['Unit cleanliness & pest-free confirmation', 'Confirm the unit is clean and pest-free before handover', 1],
                 ['Maintenance completion confirmation', 'Confirm all pending maintenance work in the unit is completed', 1],
-                ['Tenant comments & requests', 'Record any comments or requests from the tenant in the notes', 0],
-                ['Additional services & details', 'Record any additional services provided or requested, with details, in the notes', 0],
                 ['Move-in photos & inspection report uploaded', 'Upload the move-in photos and the inspection report', 0]
             ];
             

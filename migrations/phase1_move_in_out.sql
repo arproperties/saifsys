@@ -269,8 +269,6 @@ CREATE TABLE IF NOT EXISTS `re_move_out_photos` (
 -- - Utilities connected
 -- - Unit cleanliness & pest-free confirmation
 -- - Maintenance completion confirmation
--- - Tenant comments & requests
--- - Additional services & details
 -- - Move-in photos & inspection report uploaded
 -- (see re_move_in_checklist_points.sql)
 
