@@ -119,6 +119,17 @@ if (!function_exists('ars_shell_nav_items')) {
             ];
         }
 
+        if ($hasCore || $hasOps) {
+            $items[] = [
+                'id' => 'bulk-email',
+                'label' => 'Bulk Email',
+                'icon' => 'mail',
+                'href' => 'bulk_email.php',
+                'active' => $is(['bulk_email.php', 'bulk_email_preview.php', 'bulk_email_view.php']),
+                'visible' => true,
+            ];
+        }
+
         if ($hasOps) {
             $items[] = [
                 'id' => 'operations',
