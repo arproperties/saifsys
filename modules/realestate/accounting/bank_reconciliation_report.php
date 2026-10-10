@@ -42,6 +42,17 @@ if ($bankId && re_bank_reco_tables_ready($conn)) {
     $report = re_bank_reco_report($conn, $cid, $bankId, $dateFrom, $dateTo);
 }
 
+$show = $_GET['show'] ?? 'all';
+$check = null;
+if ($report && empty($report['error']) && $tab === 'check') {
+    $check = re_bank_reco_report_check($conn, $cid, $report['statement_lines']);
+    if ($show === 'reconciled') {
+        $check['lines'] = array_values(array_filter($check['lines'], static fn($l) => $l['check'] === 'reconciled'));
+    } elseif ($show === 'open') {
+        $check['lines'] = array_values(array_filter($check['lines'], static fn($l) => $l['check'] !== 'reconciled'));
+    }
+}
+
 $pageTitle = 'Bank Reconciliation Report';
 $pageHead = '<link href="assets/bank_reconciliation.css?v=20260703p3" rel="stylesheet">';
 require_once __DIR__ . '/../includes/re_layout_header.php';
@@ -75,6 +86,7 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
   <li class="nav-item"><a class="nav-link <?= $tab === 'summary' ? 'active' : '' ?>" href="?<?= h(http_build_query(['bank_account_id'=>$bankId,'date_from'=>$dateFrom,'date_to'=>$dateTo,'tab'=>'summary'])) ?>">Summary</a></li>
   <li class="nav-item"><a class="nav-link <?= $tab === 'statement' ? 'active' : '' ?>" href="?<?= h(http_build_query(['bank_account_id'=>$bankId,'date_from'=>$dateFrom,'date_to'=>$dateTo,'tab'=>'statement'])) ?>">Bank statement</a></li>
   <li class="nav-item"><a class="nav-link <?= $tab === 'outstanding' ? 'active' : '' ?>" href="?<?= h(http_build_query(['bank_account_id'=>$bankId,'date_from'=>$dateFrom,'date_to'=>$dateTo,'tab'=>'outstanding'])) ?>">Outstanding ERP</a></li>
+  <li class="nav-item"><a class="nav-link <?= $tab === 'check' ? 'active' : '' ?>" href="?<?= h(http_build_query(['bank_account_id'=>$bankId,'date_from'=>$dateFrom,'date_to'=>$dateTo,'tab'=>'check'])) ?>">Reconcile check</a></li>
 </ul>
 
 <?php if ($tab === 'summary'): ?>
@@ -124,6 +136,62 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
       <?php endforeach; ?>
     <?php endif; ?>
   </tbody>
+</table></div></div>
+
+<?php elseif ($tab === 'check' && $check): ?>
+<?php
+  $t = $check['totals'];
+  $checkBadges = [
+      'reconciled' => ['success', 'Reconciled'],
+      'open' => ['warning text-dark', 'Not reconciled'],
+      'partial' => ['danger', 'Partly matched'],
+      'over' => ['danger', 'Over matched'],
+  ];
+?>
+<div class="row g-3 mb-3">
+  <div class="col-md-4"><div class="card shadow-sm"><div class="card-body"><div class="small text-muted">Statement total</div><div class="h5 mb-0"><?= number_format($t['statement'], 2) ?></div></div></div></div>
+  <div class="col-md-4"><div class="card shadow-sm"><div class="card-body"><div class="small text-muted">Matched total</div><div class="h5 mb-0"><?= number_format($t['matched'], 2) ?></div></div></div></div>
+  <div class="col-md-4"><div class="card shadow-sm"><div class="card-body"><div class="small text-muted">Not matched</div><div class="h5 mb-0 <?= abs($t['gap']) > 0.009 ? 'text-danger' : 'text-success' ?>"><?= number_format($t['gap'], 2) ?><?= abs($t['gap']) > 0.009 ? '' : ' — totals agree' ?></div></div></div></div>
+</div>
+<div class="btn-group btn-group-sm mb-3">
+  <?php foreach (['all' => 'All lines', 'reconciled' => 'Reconciled', 'open' => 'Not reconciled'] as $k => $lbl): ?>
+    <a class="btn <?= $show === $k ? 'btn-primary' : 'btn-outline-secondary' ?>" href="?<?= h(http_build_query(['bank_account_id'=>$bankId,'date_from'=>$dateFrom,'date_to'=>$dateTo,'tab'=>'check','show'=>$k])) ?>"><?= h($lbl) ?></a>
+  <?php endforeach; ?>
+</div>
+<div class="card shadow-sm"><div class="table-responsive"><table class="table table-sm align-middle mb-0">
+  <thead class="table-light">
+    <tr><th colspan="3">Statement line</th><th colspan="2" class="border-start">Matched with</th><th class="text-end">Not matched</th><th>Check</th></tr>
+    <tr><th>Date</th><th>Description</th><th class="text-end">Amount</th><th class="border-start">Entry</th><th class="text-end">Amount</th><th></th><th></th></tr>
+  </thead>
+  <tbody>
+    <?php if (!$check['lines']): ?>
+      <tr><td colspan="7" class="text-muted text-center py-3">No statement lines to show.</td></tr>
+    <?php endif; ?>
+    <?php foreach ($check['lines'] as $l): [$badgeClass, $badgeText] = $checkBadges[$l['check']]; ?>
+      <tr>
+        <td class="text-nowrap"><?= h($l['statement_date']) ?></td>
+        <td><?= h($l['description']) ?></td>
+        <td class="text-end fw-semibold <?= $l['net_amount'] < 0 ? 'text-danger' : 'text-success' ?>"><?= number_format($l['net_amount'], 2) ?></td>
+        <td class="border-start">
+          <?php if (!$l['matches']): ?><span class="text-muted">—</span><?php endif; ?>
+          <?php foreach ($l['matches'] as $m): ?>
+            <div><?= h($m['label']) ?> <span class="text-muted small"><?= h($m['date'] ?? '') ?></span></div>
+          <?php endforeach; ?>
+        </td>
+        <td class="text-end">
+          <?php foreach ($l['matches'] as $m): ?><div><?= number_format($m['amount'], 2) ?></div><?php endforeach; ?>
+          <?php if (count($l['matches']) > 1): ?><div class="fw-semibold border-top"><?= number_format($l['matched'], 2) ?></div><?php endif; ?>
+        </td>
+        <td class="text-end <?= abs($l['gap']) > 0.009 ? 'text-danger fw-semibold' : 'text-muted' ?>"><?= number_format($l['gap'], 2) ?></td>
+        <td><span class="badge bg-<?= $badgeClass ?>"><?= h($badgeText) ?></span></td>
+      </tr>
+    <?php endforeach; ?>
+  </tbody>
+  <?php if ($show === 'all'): ?>
+  <tfoot class="table-light fw-semibold">
+    <tr><td colspan="2">Total</td><td class="text-end"><?= number_format($t['statement'], 2) ?></td><td class="border-start"></td><td class="text-end"><?= number_format($t['matched'], 2) ?></td><td class="text-end <?= abs($t['gap']) > 0.009 ? 'text-danger' : '' ?>"><?= number_format($t['gap'], 2) ?></td><td></td></tr>
+  </tfoot>
+  <?php endif; ?>
 </table></div></div>
 <?php endif; ?>
 <?php endif; ?>

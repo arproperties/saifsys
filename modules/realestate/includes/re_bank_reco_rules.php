@@ -404,6 +404,99 @@ function re_bank_reco_report(PDO $conn, int $companyId, int $bankAccountId, stri
 }
 
 /**
+ * Confirmed matches behind each statement line, for the report's reconcile check.
+ *
+ * @param array<int,array<string,mixed>> $statementLines rows from re_bank_reco_report()['statement_lines']
+ * @return array{lines: array<int,array<string,mixed>>, totals: array{statement: float, matched: float, gap: float}}
+ */
+function re_bank_reco_report_check(PDO $conn, int $companyId, array $statementLines): array
+{
+    $byLine = [];
+    $ids = array_values(array_filter(array_map(static fn($l) => (int) ($l['id'] ?? 0), $statementLines)));
+    if ($ids) {
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $st = $conn->prepare("
+            SELECT m.id, m.statement_line_id, m.match_type, m.match_method, m.source_table, m.source_id, m.matched_amount,
+                   gl.entry_date AS gl_date, jh.journal_number,
+                   p.receipt_number, p.payment_date AS receipt_date,
+                   vp.reference_number AS vendor_ref, vp.payment_date AS vendor_date,
+                   ol.statement_date AS other_date, ol.reference AS other_ref
+            FROM re_bank_reconciliation_matches m
+            LEFT JOIN re_general_ledger gl ON gl.id = m.gl_line_id
+            LEFT JOIN re_journal_headers jh ON jh.id = gl.journal_id
+            LEFT JOIN re_payments p ON m.source_table = 're_payments' AND p.id = m.source_id
+            LEFT JOIN re_vendor_payments vp ON m.source_table = 're_vendor_payments' AND vp.id = m.source_id
+            LEFT JOIN re_bank_statement_lines ol ON m.source_table = 're_bank_statement_lines' AND ol.id = m.source_id
+            WHERE m.company_id = ? AND m.status = 'confirmed' AND m.statement_line_id IN ($in)
+            ORDER BY m.id ASC
+        ");
+        $st->execute(array_merge([$companyId], $ids));
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $m) {
+            if ($m['source_table'] === 're_payments') {
+                $label = 'Receipt ' . ($m['receipt_number'] ?: '#' . $m['source_id']);
+                $date = $m['receipt_date'];
+            } elseif ($m['source_table'] === 're_vendor_payments') {
+                $label = 'Vendor payment ' . ($m['vendor_ref'] ?: '#' . $m['source_id']);
+                $date = $m['vendor_date'];
+            } elseif ($m['source_table'] === 're_bank_statement_lines') {
+                $label = 'Bank line ' . ($m['other_ref'] ?: '#' . $m['source_id']) . ' (deposit and return)';
+                $date = $m['other_date'];
+            } else {
+                $label = 'Journal ' . ($m['journal_number'] ?: '#' . $m['source_id']);
+                $date = $m['gl_date'];
+            }
+            $byLine[(int) $m['statement_line_id']][] = [
+                'label' => $label,
+                'date' => $date,
+                'amount' => abs((float) $m['matched_amount']),
+            ];
+        }
+    }
+
+    $lines = [];
+    $totals = ['statement' => 0.0, 'matched' => 0.0, 'gap' => 0.0];
+    foreach ($statementLines as $l) {
+        $net = round((float) ($l['net_amount'] ?? 0), 2);
+        $sign = $net < 0 ? -1 : 1;
+        $matches = $byLine[(int) ($l['id'] ?? 0)] ?? [];
+        $matched = 0.0;
+        foreach ($matches as &$m) {
+            $m['amount'] = $sign * $m['amount'];
+            $matched += $m['amount'];
+        }
+        unset($m);
+        $matched = round($matched, 2);
+        $gap = round($net - $matched, 2);
+        if (abs($gap) <= 0.009) {
+            $check = 'reconciled';
+        } elseif (!$matches) {
+            $check = 'open';
+        } elseif (abs($matched) > abs($net)) {
+            $check = 'over';
+        } else {
+            $check = 'partial';
+        }
+        $lines[] = [
+            'statement_date' => $l['statement_date'] ?? '',
+            'description' => $l['description'] ?? '',
+            'reference' => $l['reference'] ?? '',
+            'net_amount' => $net,
+            'matches' => $matches,
+            'matched' => $matched,
+            'gap' => $gap,
+            'check' => $check,
+        ];
+        $totals['statement'] += $net;
+        $totals['matched'] += $matched;
+    }
+    $totals['statement'] = round($totals['statement'], 2);
+    $totals['matched'] = round($totals['matched'], 2);
+    $totals['gap'] = round($totals['statement'] - $totals['matched'], 2);
+
+    return ['lines' => $lines, 'totals' => $totals];
+}
+
+/**
  * Guess a contact from statement line text (for Create tab / cash coding pre-fill).
  *
  * @return array{type:string,id:int,name:string,score:float}|null
