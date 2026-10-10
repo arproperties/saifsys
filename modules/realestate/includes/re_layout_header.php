@@ -73,6 +73,7 @@ $navBasePath = $isInAccounting ? '../' : '';
             min-height: 100vh;
             max-height: 100vh;
             width: 240px;
+            flex-shrink: 0;
             background: linear-gradient(180deg, var(--primary), var(--primary-light));
             color: #fff;
             position: sticky;
@@ -564,7 +565,7 @@ if (is_file($asWidget)) { require $asWidget; }
     </aside>
 
     <!-- Main Content -->
-    <div class="flex-grow-1">
+    <div class="flex-grow-1" style="min-width:0">
         <!-- Top Navbar -->
         <nav class="navbar navbar-expand navbar-light bg-white shadow-sm no-print">
             <div class="container-fluid">
@@ -585,8 +586,8 @@ if (is_file($asWidget)) { require $asWidget; }
             </div>
         </nav>
 
-        <!-- Page Content (set $reLayoutFluid = true before including this header for full-width pages) -->
-        <div class="<?= !empty($reLayoutFluid) ? 'container-fluid px-3 px-lg-4 px-xl-5' : 'container' ?> my-4">
+        <!-- Page Content (full width by default; set $reLayoutFluid = false before including this header for a narrow centred page) -->
+        <div class="<?= (!isset($reLayoutFluid) || $reLayoutFluid) ? 'container-fluid px-3 px-lg-4' : 'container' ?> my-4">
 
 <?php
 // Global accounting warning flash — shown once after any failed accounting post

@@ -718,7 +718,8 @@ body.ars-shell-body {
 }
 
 #ars-app .ars-shell-workspace {
-  max-width: 1440px;
+  max-width: none;
+  box-sizing: border-box;
   margin-left: auto;
   margin-right: auto;
   width: 100%;
