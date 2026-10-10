@@ -220,6 +220,9 @@ if (!function_exists('ars_shell_nav_items')) {
                 'active' => $is([
                     'reports.php',
                     'financial_reports.php',
+                    'move_report.php',
+                    'move_inspection.php',
+                    'move_checklist.php',
                     'financial_document_view.php',
                 ]),
                 'visible' => true,

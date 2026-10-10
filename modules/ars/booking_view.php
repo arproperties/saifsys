@@ -592,6 +592,24 @@ if ($booking['status'] === 'pending') {
             <span><?= h($booking['guest_phone']) ?></span>
           <?php endif; ?>
         </div>
+        <?php
+        require_once __DIR__ . '/includes/ars_move_inspection.php';
+        $moveInspections = ars_move_inspection_summary($conn, $arsCompanyId, [(int)$booking['id']]);
+        ?>
+        <div class="small mt-1 d-flex flex-wrap gap-3">
+          <?php foreach (['in', 'out'] as $moveType): ?>
+            <?php
+            $moveInsp = $moveInspections[(int)$booking['id'] . ':' . $moveType] ?? null;
+            if (!$moveInsp && !in_array($booking['status'], ars_move_inspection_allowed_statuses($moveType), true)) {
+                continue;
+            }
+            ?>
+            <a class="text-decoration-none" href="move_inspection.php?booking_id=<?= (int)$booking['id'] ?>&amp;type=<?= $moveType ?>">
+              <i class="bi bi-list-check me-1"></i><?= h(ars_move_inspection_type_label($moveType)) ?> inspection:
+              <span class="fw-semibold"><?= h(ars_move_inspection_summary_label($moveInsp)) ?></span>
+            </a>
+          <?php endforeach; ?>
+        </div>
       </div>
     </div>
     <?php if (!in_array($booking['status'], ['completed','cancelled','expired'], true)): ?>

@@ -49,6 +49,13 @@ $cards = [
         null,
     ],
     [
+        'Move-in / Move-out',
+        'Guest check-ins and check-outs by date, with CSV export',
+        'move_report.php',
+        'log-in',
+        null,
+    ],
+    [
         'Revenue',
         'Stay revenue report for the ARS company',
         'revenue.php',
