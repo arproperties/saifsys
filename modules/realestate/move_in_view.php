@@ -99,20 +99,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['action'])) {
             case 'update_checklist_item':
                 $itemId = (int)$_POST['item_id'];
                 $isCompleted = !empty($_POST['is_completed']) ? 1 : 0;
-                $notes = $_POST['notes'] ?? '';
-                
-                $stmt = $conn->prepare("
-                    UPDATE re_move_in_checklist_items
-                    SET is_completed = ?,
-                        completed_by = ?,
-                        completed_at = ?,
-                        notes = ?,
-                        updated_at = NOW()
-                    WHERE id = ? AND move_in_id = ? AND company_id = ?
-                ");
-                $completedAt = $isCompleted ? date('Y-m-d H:i:s') : null;
-                $stmt->execute([$isCompleted, $currentUserId, $completedAt, $notes, $itemId, $moveInId, $currentCompanyId]);
-                
+
+                // The tick and the notes are saved by separate requests; only touch what was sent
+                if (isset($_POST['is_completed'])) {
+                    $stmt = $conn->prepare("
+                        UPDATE re_move_in_checklist_items
+                        SET is_completed = ?,
+                            completed_by = ?,
+                            completed_at = ?,
+                            updated_at = NOW()
+                        WHERE id = ? AND move_in_id = ? AND company_id = ?
+                    ");
+                    $completedAt = $isCompleted ? date('Y-m-d H:i:s') : null;
+                    $stmt->execute([$isCompleted, $isCompleted ? $currentUserId : null, $completedAt, $itemId, $moveInId, $currentCompanyId]);
+                }
+                if (isset($_POST['notes'])) {
+                    $stmt = $conn->prepare("
+                        UPDATE re_move_in_checklist_items
+                        SET notes = ?,
+                            updated_at = NOW()
+                        WHERE id = ? AND move_in_id = ? AND company_id = ?
+                    ");
+                    $stmt->execute([trim($_POST['notes']), $itemId, $moveInId, $currentCompanyId]);
+                }
+
                 // Update move-in status to in_progress if any item is completed
                 if ($isCompleted) {
                     $conn->prepare("
@@ -165,7 +175,113 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['action'])) {
                     $response = ['success' => true, 'message' => 'Meter reading saved'];
                 }
                 break;
-                
+
+            case 'upload_files':
+                $fileType = ($_POST['file_type'] ?? '') === 'inspection_report' ? 'inspection_report' : 'photo';
+                $roomArea = trim($_POST['room_area'] ?? '');
+                $allowedMimes = [
+                    'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp',
+                ];
+                if ($fileType === 'inspection_report') {
+                    $allowedMimes['pdf'] = 'application/pdf';
+                }
+                $maxSize = 10 * 1024 * 1024; // 10MB
+
+                $files = $_FILES['files'] ?? null;
+                if (!$files || !is_array($files['name'])) {
+                    $response = ['success' => false, 'message' => 'Please choose a file to upload.'];
+                    break;
+                }
+
+                $uploadDir = __DIR__ . '/../../uploads/realestate/move_ins/' . $moveInId;
+                if (!is_dir($uploadDir)) {
+                    mkdir($uploadDir, 0755, true);
+                }
+
+                $insert = $conn->prepare("
+                    INSERT INTO re_move_in_photos
+                    (company_id, move_in_id, file_type, photo_path, photo_description, room_area, uploaded_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ");
+
+                $saved = 0;
+                $errors = [];
+                foreach ($files['name'] as $i => $originalName) {
+                    if ($files['error'][$i] === UPLOAD_ERR_NO_FILE) {
+                        continue;
+                    }
+                    if ($files['error'][$i] !== UPLOAD_ERR_OK) {
+                        $errors[] = $originalName . ': upload failed';
+                        continue;
+                    }
+                    if ($files['size'][$i] > $maxSize) {
+                        $errors[] = $originalName . ': file too large (max 10MB)';
+                        continue;
+                    }
+                    $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+                    $mime = function_exists('mime_content_type') ? mime_content_type($files['tmp_name'][$i]) : ($allowedMimes[$ext] ?? '');
+                    if (!isset($allowedMimes[$ext]) || !in_array($mime, $allowedMimes, true)) {
+                        $errors[] = $originalName . ': file type not allowed';
+                        continue;
+                    }
+
+                    $fileName = uniqid() . '_' . time() . '.' . $ext;
+                    if (!move_uploaded_file($files['tmp_name'][$i], $uploadDir . '/' . $fileName)) {
+                        $errors[] = $originalName . ': could not be saved';
+                        continue;
+                    }
+                    $insert->execute([
+                        $currentCompanyId,
+                        $moveInId,
+                        $fileType,
+                        'uploads/realestate/move_ins/' . $moveInId . '/' . $fileName,
+                        mb_substr(basename($originalName), 0, 255),
+                        $roomArea !== '' ? mb_substr($roomArea, 0, 100) : null,
+                        $currentUserId
+                    ]);
+                    $saved++;
+                }
+
+                if ($saved > 0) {
+                    $message = $saved . ' file(s) uploaded';
+                    if ($errors) {
+                        $message .= '. Skipped: ' . implode('; ', $errors);
+                    }
+                    $response = ['success' => true, 'message' => $message, 'has_errors' => !empty($errors)];
+                } else {
+                    $response = ['success' => false, 'message' => $errors ? implode('; ', $errors) : 'Please choose a file to upload.'];
+                }
+                break;
+
+            case 'delete_file':
+                if ($moveIn['status'] === 'completed') {
+                    $response = ['success' => false, 'message' => 'Files cannot be removed after the move-in is completed.'];
+                    break;
+                }
+                $fileId = (int)($_POST['file_id'] ?? 0);
+                $stmt = $conn->prepare("
+                    SELECT photo_path FROM re_move_in_photos
+                    WHERE id = ? AND move_in_id = ? AND company_id = ?
+                ");
+                $stmt->execute([$fileId, $moveInId, $currentCompanyId]);
+                $path = $stmt->fetchColumn();
+
+                if ($path === false) {
+                    $response = ['success' => false, 'message' => 'File not found.'];
+                    break;
+                }
+                $conn->prepare("
+                    DELETE FROM re_move_in_photos
+                    WHERE id = ? AND move_in_id = ? AND company_id = ?
+                ")->execute([$fileId, $moveInId, $currentCompanyId]);
+
+                $fullPath = __DIR__ . '/../../' . $path;
+                if (strpos($path, 'uploads/realestate/move_ins/' . $moveInId . '/') === 0 && is_file($fullPath)) {
+                    @unlink($fullPath);
+                }
+                $response = ['success' => true, 'message' => 'File removed'];
+                break;
+
             case 'complete_move_in':
                 // Check if all required items are completed
                 $requiredCheck = $conn->prepare("
@@ -244,6 +360,8 @@ $photos = $conn->prepare("
 ");
 $photos->execute([$moveInId]);
 $photos = $photos->fetchAll(PDO::FETCH_ASSOC);
+$inspectionReports = array_values(array_filter($photos, fn($p) => ($p['file_type'] ?? 'photo') === 'inspection_report'));
+$moveInPhotos = array_values(array_filter($photos, fn($p) => ($p['file_type'] ?? 'photo') === 'photo'));
 
 // Calculate progress
 $totalItems = count($checklistItems);
@@ -259,6 +377,7 @@ $pageStyles = '
     .checklist-item.completed { border-left-color: #28a745; background: #d4edda; }
     .checklist-item.required { border-left-color: #ffc107; }
     .verification-badge { font-size: 0.9rem; }
+    .move-in-photo img { width: 100%; height: 120px; object-fit: cover; border-radius: 4px; border: 1px solid #dee2e6; }
 ';
 require_once __DIR__ . '/includes/re_layout_header.php';
 ?>
@@ -490,6 +609,106 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         </div>
                     </div>
                 </div>
+
+                <!-- Move-In Photos & Inspection Report -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-camera"></i> Move-In Photos &amp; Inspection Report</h5>
+                    </div>
+                    <div class="card-body">
+                        <h6>Move-In Photos</h6>
+                        <form class="move-in-upload-form mb-3" data-file-type="photo">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <input type="file" name="files[]" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.webp" multiple required>
+                                </div>
+                                <div class="col-md-4">
+                                    <input type="text" name="room_area" class="form-control form-control-sm" placeholder="Room / area (optional)" maxlength="100">
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="submit" class="btn btn-primary btn-sm w-100">
+                                        <i class="bi bi-upload"></i> Upload
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="form-text">JPG, PNG or WEBP, up to 10MB each. Several photos can be selected at once.</div>
+                        </form>
+
+                        <?php if (empty($moveInPhotos)): ?>
+                            <p class="text-muted">No photos uploaded yet.</p>
+                        <?php else: ?>
+                            <div class="row g-2 mb-3">
+                                <?php foreach ($moveInPhotos as $photo): ?>
+                                    <div class="col-6 col-md-3">
+                                        <div class="move-in-photo">
+                                            <a href="../../<?= h($photo['photo_path']) ?>" target="_blank">
+                                                <img src="../../<?= h($photo['photo_path']) ?>" alt="<?= h($photo['photo_description'] ?? 'Move-in photo') ?>">
+                                            </a>
+                                            <div class="d-flex justify-content-between align-items-center mt-1">
+                                                <small class="text-muted text-truncate"><?= h($photo['room_area'] ?: date('M d, Y', strtotime($photo['uploaded_at']))) ?></small>
+                                                <?php if ($moveIn['status'] !== 'completed'): ?>
+                                                    <button type="button" class="btn btn-sm btn-link text-danger p-0" title="Remove" onclick="deleteMoveInFile(<?= (int)$photo['id'] ?>)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+
+                        <hr>
+
+                        <h6>Inspection Report</h6>
+                        <form class="move-in-upload-form mb-3" data-file-type="inspection_report">
+                            <div class="row g-3">
+                                <div class="col-md-10">
+                                    <input type="file" name="files[]" class="form-control form-control-sm" accept=".pdf,.jpg,.jpeg,.png,.webp" multiple required>
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="submit" class="btn btn-primary btn-sm w-100">
+                                        <i class="bi bi-upload"></i> Upload
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="form-text">PDF or image, up to 10MB each.</div>
+                        </form>
+
+                        <?php if (empty($inspectionReports)): ?>
+                            <p class="text-muted mb-0">No inspection report uploaded yet.</p>
+                        <?php else: ?>
+                            <table class="table table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>File</th>
+                                        <th>Uploaded</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($inspectionReports as $report): ?>
+                                        <tr>
+                                            <td>
+                                                <a href="../../<?= h($report['photo_path']) ?>" target="_blank">
+                                                    <i class="bi bi-file-earmark-text"></i> <?= h($report['photo_description'] ?: basename($report['photo_path'])) ?>
+                                                </a>
+                                            </td>
+                                            <td><?= date('M d, Y H:i', strtotime($report['uploaded_at'])) ?></td>
+                                            <td class="text-end">
+                                                <?php if ($moveIn['status'] !== 'completed'): ?>
+                                                    <button type="button" class="btn btn-sm btn-link text-danger p-0" title="Remove" onclick="deleteMoveInFile(<?= (int)$report['id'] ?>)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php endif; ?>
+                    </div>
+                </div>
             </div>
 
             <!-- Right Column: Actions & Summary -->
@@ -716,6 +935,80 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             });
         }
         
+        document.querySelectorAll('.move-in-upload-form').forEach(function(form) {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const submitBtn = this.querySelector('button[type="submit"]');
+                const originalText = submitBtn.innerHTML;
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Uploading...';
+
+                const formData = new FormData(this);
+                formData.append('action', 'upload_files');
+                formData.append('file_type', this.dataset.fileType);
+                formData.append('_csrf', csrfToken);
+
+                fetch('', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(r => {
+                    if (!r.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return r.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        if (data.has_errors) {
+                            alert(data.message);
+                        }
+                        location.reload();
+                    } else {
+                        submitBtn.disabled = false;
+                        submitBtn.innerHTML = originalText;
+                        alert(data.message || 'Error uploading file');
+                    }
+                })
+                .catch(error => {
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = originalText;
+                    console.error('Error:', error);
+                    alert('Error uploading file: ' + error.message);
+                });
+            });
+        });
+
+        function deleteMoveInFile(fileId) {
+            if (!confirm('Remove this file?')) {
+                return;
+            }
+
+            fetch('', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    action: 'delete_file',
+                    file_id: fileId,
+                    _csrf: csrfToken
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.message || 'Error removing file');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error removing file: ' + error.message);
+            });
+        }
+
         function completeMoveIn() {
             if (!confirm('Are you sure you want to complete this move-in? This will mark the unit as occupied.')) {
                 return;
