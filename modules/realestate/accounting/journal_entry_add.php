@@ -403,6 +403,15 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
 </form>
 <?php endif; ?>
 
+<?php
+require_once __DIR__ . '/../../../includes/searchable_select.php';
+searchable_select_assets();
+?>
+<style>
+/* Match the theme's 44px inputs; the search box is not a .form-control. */
+#journalLinesContainer .select2-container--bootstrap-5 .select2-selection{min-height:var(--co-touch,44px);display:flex;align-items:center;}
+#journalLinesContainer .select2-container--bootstrap-5 .select2-selection__rendered{flex:1;min-width:0;}
+</style>
 <script>
 const accounts = <?= json_encode($allAccounts) ?>;
 let lineCounter = 0;
@@ -428,7 +437,7 @@ function addJournalLine(accountId = '', debit = '', credit = '', description = '
     lineDiv.innerHTML = `
         <div class="col-md-4">
             <label class="form-label">Account *</label>
-            <select class="form-select account-select" required>
+            <select class="form-select account-select" data-search required>
                 <option value="">-- Select Account --</option>
                 ${accounts.map(acc => `
                     <option value="${acc.id}" data-type="${acc.account_type}" data-balance="${acc.normal_balance}" 

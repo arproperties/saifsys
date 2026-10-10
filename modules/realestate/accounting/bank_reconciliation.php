@@ -53,7 +53,7 @@ if ($tablesReady) {
 }
 
 $pageTitle = 'Bank Reconciliation';
-$pageHead = '<link href="assets/bank_reconciliation.css?v=20260730" rel="stylesheet">';
+$pageHead = '<link href="assets/bank_reconciliation.css?v=20261008p" rel="stylesheet">';
 require_once __DIR__ . '/../includes/re_layout_header.php';
 ?>
 
@@ -157,7 +157,11 @@ window.RE_BRECO_VAT = <?= json_encode([
     ],
 ]) ?>;
 </script>
-<script src="assets/bank_reconciliation.js?v=20260730b"></script>
+<?php
+require_once __DIR__ . '/../../../includes/searchable_select.php';
+searchable_select_assets();
+?>
+<script src="assets/bank_reconciliation.js?v=20261009e"></script>
 
 <?php endif; ?>
 

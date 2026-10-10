@@ -97,20 +97,45 @@ function ars_payment_rows_walk(array $payments, float $stayTotal): array {
     $prevOutstanding = 0.0;
     $received = 0.0;
     $hasManualTotal = false;
+    $shareCharged = false;
+    // Money a row took beyond its own total, not yet set against a later
+    // extension line.
+    $paidAhead = 0.0;
     foreach ($payments as $pm) {
         $id = (int)$pm['id'];
         $pmReceived = (float)$pm['amount'];
         $manual = !(($pm['total_amount'] ?? null) === null || $pm['total_amount'] === '');
-        $pmTotal = $manual ? (float)$pm['total_amount'] : $stayTotal;
+        // Beside billed extensions a row with no typed total stands only for
+        // its share of the invoiced total (see ars_payment_rows_add_billed_extensions()).
+        $shared = !$manual && isset($pm['fallback_total']);
+        $pmTotal = $manual ? (float)$pm['total_amount'] : ($shared ? (float)$pm['fallback_total'] : $stayTotal);
         $rowTotal[$id] = $pmTotal;
         $received += $pmReceived;
         $runningReceived += $pmReceived;
 
-        if ($manual) {
-            $hasManualTotal = true;
-            $carried = round($prevOutstanding + ($pmTotal - $pmReceived), 2);
+        if ($manual || $shared) {
+            // An extension line is drawn, not typed: on its own it does not
+            // make the table the office's statement.
+            if ($manual && empty($pm['is_extension_line'])) {
+                $hasManualTotal = true;
+            }
+            // The share is owed once, however many payments go against it.
+            $charge = $pmTotal;
+            if ($shared) {
+                $charge = $shareCharged ? 0.0 : $pmTotal;
+                $shareCharged = true;
+            }
+            // A payment dated before an extension begins is drawn above its
+            // line, so the line would otherwise ask for that money again.
+            if (!empty($pm['is_extension_line']) && $paidAhead > 0.009) {
+                $used = min($paidAhead, $charge);
+                $charge = round($charge - $used, 2);
+                $paidAhead = round($paidAhead - $used, 2);
+            }
+            $carried = round($prevOutstanding + ($charge - $pmReceived), 2);
             $balanceAfter[$id] = max(0.0, $carried);
             $creditFrom[$id] = max(0.0, round(-$carried, 2));
+            $paidAhead = round($paidAhead + $creditFrom[$id], 2);
             $prevOutstanding = max(0.0, $carried);
             continue;
         }
@@ -138,30 +163,41 @@ function ars_payment_rows_walk(array $payments, float $stayTotal): array {
  * outstanding until a payment clears it. The lines are drawn, never saved --
  * no payment row, journal or receipt stands behind them.
  *
- * Only for a table with typed totals (otherwise the rows already run against
- * the invoiced total), and only for what the typed totals do not already
- * cover: an extension the office typed onto a payment row is counted there,
- * so its line is left out rather than charged twice.
+ * Only for what the typed totals do not already cover: an extension the
+ * office typed onto a payment row is counted there, so its line is left out
+ * rather than charged twice. Payments with no typed total are handed
+ * fallback_total -- the invoiced total less what the lines and typed rows
+ * carry -- so the walk does not count an extension on them a second time.
  *
  * $extensions: id, date, total, open, from, to, nights -- one per live
  * extension invoice. Lines carry a negative id so they never collide with a payment.
  */
 function ars_payment_rows_add_billed_extensions(array $payments, array $extensions, float $netInvoiced): array {
     $typedTotal = 0.0;
-    $hasManualTotal = false;
+    $hasUntyped = false;
     foreach ($payments as $pm) {
         if (!(($pm['total_amount'] ?? null) === null || $pm['total_amount'] === '')) {
-            $hasManualTotal = true;
             $typedTotal += (float)$pm['total_amount'];
+        } else {
+            $hasUntyped = true;
         }
     }
-    if (!$hasManualTotal || !$extensions) {
-        return $payments;
-    }
-    $uncovered = round($netInvoiced - $typedTotal, 2);
     $extensions = array_values(array_filter($extensions, static function (array $ext): bool {
         return round((float)($ext['total'] ?? 0), 2) > 0.009;
     }));
+    if (!$extensions) {
+        return $payments;
+    }
+    $extensionTotal = 0.0;
+    foreach ($extensions as $ext) {
+        $extensionTotal += (float)$ext['total'];
+    }
+    $uncovered = round($netInvoiced - $typedTotal, 2);
+    if ($hasUntyped) {
+        // The rows with no typed total already stand for the rest of the
+        // invoices, so only the extensions themselves are left to draw.
+        $uncovered = min($uncovered, round($extensionTotal - $typedTotal, 2));
+    }
     // Which extensions the typed totals leave uncovered: the set that fills
     // the gap best, and between equals the one with more still owing -- a
     // paid extension is the likelier one to have been typed onto its payment.
@@ -206,6 +242,16 @@ function ars_payment_rows_add_billed_extensions(array $payments, array $extensio
             'nights' => (int)($ext['nights'] ?? 0),
             'open' => round((float)($ext['open'] ?? $total), 2),
         ];
+    }
+    // A row with no typed total used to take the whole invoiced total, so an
+    // extension was counted on it and again on its own line or on the payment
+    // typed for it. It now stands for what those do not carry.
+    $coveredElsewhere = $bestSum + min($typedTotal, max(0.0, $extensionTotal - $bestSum));
+    $fallbackTotal = max(0.0, round($netInvoiced - $coveredElsewhere, 2));
+    foreach ($payments as $k => $pm) {
+        if (($pm['total_amount'] ?? null) === null || $pm['total_amount'] === '') {
+            $payments[$k]['fallback_total'] = $fallbackTotal;
+        }
     }
     if (!$lines) {
         return $payments;

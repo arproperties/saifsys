@@ -14,6 +14,7 @@ require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/rbac_department.php';
 require_once __DIR__ . '/../realestate/accounting/accounting_engine.php';
+require_once __DIR__ . '/../realestate/accounting/journal_attachments_helper.php';
 
 require_login();
 if (!has_department_access(MODULE_CONSTRUCTION, DEPT_CONSTRUCTION_FINANCIAL, $conn)) {
@@ -138,6 +139,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                 }
                 $_SESSION['success'] = 'Journal entry updated successfully';
+                $upload = journal_attachments_save($conn, $_FILES['attachments'] ?? [], $journalId, $currentCompanyId, $userId);
+                if ($upload['saved'] > 0) {
+                    $_SESSION['success'] .= sprintf('. %d attachment%s added.', $upload['saved'], $upload['saved'] === 1 ? '' : 's');
+                }
+                if ($upload['errors']) {
+                    $_SESSION['error'] = 'Attachment problem: ' . implode(' ', $upload['errors']);
+                }
                 header('Location: journal_entry_view.php?id=' . (int)$journalId);
                 exit;
             }
@@ -155,6 +163,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($result['success']) {
                 $_SESSION['success'] = "Journal entry created successfully. Journal #: {$result['journal_number']}";
+                $upload = journal_attachments_save($conn, $_FILES['attachments'] ?? [], (int)$result['journal_id'], $currentCompanyId, $userId);
+                if ($upload['saved'] > 0) {
+                    $_SESSION['success'] .= sprintf('. %d attachment%s uploaded.', $upload['saved'], $upload['saved'] === 1 ? '' : 's');
+                }
+                if ($upload['errors']) {
+                    $_SESSION['error'] = 'The journal was saved, but: ' . implode(' ', $upload['errors']);
+                }
                 header('Location: journal_entry_view.php?id=' . (int)$result['journal_id']);
                 exit;
             }
@@ -192,7 +207,7 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
     </div>
 </div>
 
-<form method="POST" id="journalForm">
+<form method="POST" id="journalForm" enctype="multipart/form-data">
     <?= csrf_field() ?>
 
     <div class="card card-round mb-4">
@@ -248,6 +263,20 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
                         <strong>Difference:</strong> <span id="difference" class="fw-bold">0.00</span> AED
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card card-round mb-4">
+        <div class="card-header bg-light">
+            <h6 class="mb-0"><i class="bi bi-paperclip"></i> Attachments</h6>
+        </div>
+        <div class="card-body">
+            <input type="file" name="attachments[]" class="form-control" multiple
+                   accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.xls,.xlsx,.doc,.docx,.csv,.txt">
+            <div class="form-text">
+                Supporting documents (receipt, bank advice, approval). PDF, image, Word, Excel, CSV or text - up to 10 MB each.
+                Files are saved when you <?= $journalId ? 'update' : 'create' ?> the journal entry<?= $journalId ? '; files already attached are on the journal\'s view page' : '' ?>.
             </div>
         </div>
     </div>

@@ -10,6 +10,7 @@ if (!re_bank_reco_csrf_ok()) {
 $line_id = (int) ($_POST['line_id'] ?? 0);
 $selectionsJson = (string) ($_POST['selections'] ?? '[]');
 $adjustmentJson = trim((string) ($_POST['adjustment'] ?? ''));
+$partial = !empty($_POST['partial']);
 
 if ($line_id <= 0) {
     re_bank_reco_json_error('line_id required');
@@ -35,7 +36,7 @@ require_once __DIR__ . '/../../includes/re_bank_reco_engine.php';
 
 try {
     $uid = current_user_id();
-    $result = re_bank_reco_match_selections($conn, $cid, $line_id, $selections, $adjustment, $uid ?: null);
+    $result = re_bank_reco_match_selections($conn, $cid, $line_id, $selections, $adjustment, $uid ?: null, $partial);
     echo json_encode([
         'success' => $result['success'],
         'confirmed' => $result['confirmed'],

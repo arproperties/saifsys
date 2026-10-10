@@ -72,7 +72,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $receiptNumber = trim($_POST['receipt_number'] ?? '');
     $notes = trim($_POST['notes'] ?? '');
     
-    if ($paymentDate && $amount > 0) {
+    // Invoice Mode receipts carry an allocation and a journal that must follow the edit.
+    $isInvoiceReceipt = (string)($payment['accounting_mode'] ?? '') === 'invoice';
+    $amountChanged = abs($amount - (float)$payment['amount']) >= 0.005;
+    $postingChanges = $amountChanged
+        || $paymentDate !== date('Y-m-d', strtotime((string)$payment['payment_date']))
+        || (int)$bankAccountId !== (int)($payment['bank_account_id'] ?? 0)
+        || $receiptNumber !== (string)($payment['receipt_number'] ?? '');
+    $blockReason = null;
+    if ($isInvoiceReceipt && $paymentDate && $amount > 0) {
+        require_once __DIR__ . '/includes/receipt_edit_helper.php';
+        require_once __DIR__ . '/accounting/accounting_integration.php';
+        $blockReason = re_receipt_edit_block_reason($conn, (int)$currentCompanyId, $payment, $amount, $postingChanges);
+    }
+
+    if ($blockReason !== null) {
+        $error = $blockReason;
+    } elseif ($paymentDate && $amount > 0) {
         try {
             $conn->beginTransaction();
             
@@ -120,6 +136,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$newStatus, $newStatus, $payment['installment_id']]);
             }
             
+            if ($isInvoiceReceipt) {
+                // Same transaction as the edit: if the allocation or the journal fails, nothing is saved.
+                if ($amountChanged) {
+                    re_receipt_edit_reallocate($conn, (int)$currentCompanyId, $paymentId, $userId);
+                }
+                if ($postingChanges) {
+                    re_receipt_edit_repost_journal($conn, (int)$currentCompanyId, $paymentId, $userId);
+                }
+                $conn->commit();
+                header('Location: payment_view.php?id=' . $paymentId);
+                exit;
+            }
+
             $conn->commit();
 
             // ── Reverse the old accounting journal and repost with updated values ──
@@ -138,8 +167,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             header('Location: payment_view.php?id=' . $paymentId);
             exit;
-        } catch (Exception $e) {
-            $conn->rollBack();
+        } catch (Throwable $e) {
+            if ($conn->inTransaction()) {
+                $conn->rollBack();
+            }
             $error = "Error: " . $e->getMessage();
         }
     } else {

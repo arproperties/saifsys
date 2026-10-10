@@ -11,9 +11,11 @@ if ($bank_id <= 0 || $from === '' || $to === '') {
     re_bank_reco_json_error('Missing parameters');
 }
 
-if (!re_bank_verify_account($conn, $bank_id, $cid)) {
+$bankAccount = re_bank_verify_account($conn, $bank_id, $cid);
+if (!$bankAccount) {
     re_bank_reco_json_error('Invalid bank account');
 }
+require_once __DIR__ . '/../../includes/re_bank_reco_engine.php';
 
 // Cap result size, but apply status/open filter in SQL first.
 // Previously LIMIT ran before filtering matched lines, so early unmatched
@@ -54,7 +56,51 @@ foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
     if ($statusFilter === 'open' && $r['is_fully_matched']) {
         continue;
     }
+    // Money-in line paid as several receipts: list them under the line.
+    $r['split'] = null;
+    if (!$r['is_fully_matched'] && $r['amount'] > 0 && !in_array((string) $r['status'], ['ignored', 'investigating'], true)) {
+        try {
+            $r['split'] = re_bank_reco_combined_suggestion($conn, $cid, $r + ['gl_account_id' => (int) $bankAccount['gl_account_id']]);
+        } catch (Throwable $e) {
+            error_log('re_bank_reco_list_statement split: ' . $e->getMessage());
+        }
+    }
     $rows[] = $r;
+}
+
+// Open lines the bank posted under one transaction code on one day (a charge and its VAT):
+// tell each line about its partners so the pair can be ticked and reconciled as one.
+$byCode = [];
+foreach ($rows as $i => $r) {
+    $rows[$i]['related'] = null;
+    $code = $r['is_fully_matched'] ? '' : re_bank_reco_line_bank_code((string) $r['description']);
+    if ($code !== '' && !in_array((string) $r['status'], ['ignored', 'investigating'], true)) {
+        $byCode[$r['txn_date'] . '|' . ($r['amount'] < 0 ? 'out' : 'in') . '|' . $code][] = $i;
+    }
+}
+$vatRate = (float) (re_bank_reco_vat_config($conn, $cid)['default_rate'] ?? 5);
+foreach ($byCode as $codeIdxs) {
+    if (count($codeIdxs) < 2 || count($codeIdxs) > 10) {
+        continue;
+    }
+    // A transfer shares its code with its fee and the fee's VAT; only the fee and VAT go together.
+    $codeLines = [];
+    foreach ($codeIdxs as $i) {
+        $codeLines[$i] = ['amount' => (float) $rows[$i]['remaining'], 'description' => (string) $rows[$i]['description']];
+    }
+    foreach (re_bank_reco_split_code_group($codeLines, $vatRate) as $idxs) {
+        $ids = array_map(static fn(int $i): int => (int) $rows[$i]['id'], $idxs);
+        $total = round(array_sum(array_map(static fn(int $i): float => (float) $rows[$i]['remaining'], $idxs)), 2);
+        // The bank's VAT line is the VAT of the charge beside it, so the charge is the net amount.
+        $vat = round(array_sum(array_map(
+            static fn(int $i): float => re_bank_reco_is_vat_line((string) $rows[$i]['description']) ? (float) $rows[$i]['remaining'] : 0.0,
+            $idxs
+        )), 2);
+        $net = round($total - $vat, 2);
+        foreach ($idxs as $i) {
+            $rows[$i]['related'] = ['line_ids' => $ids, 'total' => $total, 'net' => $net, 'vat' => ($vat > 0 && $net > 0) ? $vat : 0.0];
+        }
+    }
 }
 
 echo json_encode([

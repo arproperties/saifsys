@@ -41,6 +41,14 @@ if (!$document) {
     exit('Document not found.');
 }
 
+// Browsers cannot display Word / Excel files inline, so send "view" requests to the preview page.
+// The preview page fetches the file itself with raw=1.
+$previewExt = strtolower(pathinfo((string)$document['file_name'], PATHINFO_EXTENSION));
+if ($mode === 'view' && empty($_GET['raw']) && in_array($previewExt, ['docx', 'xlsx', 'xls'], true)) {
+    header('Location: documents_preview.php?id=' . $documentId);
+    exit;
+}
+
 // Resolve the file on disk. Try the project root first, then this module dir.
 $projectRoot = realpath(__DIR__ . '/../../');
 $rel = ltrim((string)$document['file_path'], '/');

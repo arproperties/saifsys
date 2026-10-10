@@ -254,6 +254,9 @@ if ($df) { $where[] = "a.work_date >= ?"; $prms[] = $df; }
 if ($dt) { $where[] = "a.work_date <= ?"; $prms[] = $dt; }
 if ($emp){ $where[] = "a.employee_id = ?"; $prms[] = $emp; }
 hr_add_company_where($where, $prms, $selectedCompanyId, 'e.company_id');
+// The status cards count every status, so they use the filters without the status one.
+$cardWhere = $where;
+$cardPrms  = $prms;
 if ($st !== '' && in_array($st, $attStatusKeys, true)) {
     $where[] = "a.status = ?"; $prms[] = $st;
 }
@@ -261,6 +264,7 @@ if ($st !== '' && in_array($st, $attStatusKeys, true)) {
 $src = $_GET['source'] ?? '';
 if ($src !== '' && in_array($src, ['admin','self','import'], true)) {
     $where[] = "a.source = ?"; $prms[] = $src;
+    $cardWhere[] = "a.source = ?"; $cardPrms[] = $src;
 }
 
 $sqlWhere = $where ? ('WHERE '.implode(' AND ', $where)) : '';
@@ -296,6 +300,22 @@ SELECT a.*, e.full_name, e.employee_code, c.name AS company_name
 $stmt->execute($prms);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// Status cards: counted over the whole filter, not just the 500 rows shown.
+$cardSqlWhere = $cardWhere ? ('WHERE '.implode(' AND ', $cardWhere)) : '';
+$cntStmt = $conn->prepare("
+SELECT a.status, COUNT(*) AS n
+  FROM attendance a
+  JOIN employees e ON e.id=a.employee_id
+  $cardSqlWhere
+ GROUP BY a.status
+");
+$cntStmt->execute($cardPrms);
+$statusCounts = $cntStmt->fetchAll(PDO::FETCH_KEY_PAIR);
+$stFiltered = ($st !== '' && in_array($st, $attStatusKeys, true));
+$statusCardColors = ['pending' => '#6c757d', 'approved' => '#198754', 'absent' => '#dc3545', 'half' => '#e0a800', 'on_leave' => '#0aa2c0', 'excused_absent' => '#fd7e14'];
+$statusCardQuery = $_GET;
+unset($statusCardQuery['status']);
+
 // One query for every row's files rather than one per row.
 $attachmentsByRow = hr_attendance_attachments_map($conn, array_column($rows, 'id'));
 
@@ -304,7 +324,13 @@ $excusedReady = hr_attendance_status_supported($conn, 'excused_absent');
 
 // Page settings for shared layout
 $pageTitle = 'Attendance';
-$pageStyles = hr_attendance_status_css();
+$pageStyles = hr_attendance_status_css() . '
+.att-stat-card{display:block;height:100%;padding:.85rem 1rem;background:#fff;border:1px solid var(--hr-border);border-left:4px solid var(--att-stat);border-radius:12px;text-decoration:none;color:inherit;transition:box-shadow .15s,border-color .15s}
+.att-stat-card:hover{box-shadow:0 4px 14px rgba(0,0,0,.07);color:inherit}
+.att-stat-card.is-active{border-color:var(--att-stat);box-shadow:0 0 0 3px color-mix(in srgb, var(--att-stat) 18%, transparent)}
+.att-stat-label{font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--hr-text-muted)}
+.att-stat-num{font-size:1.6rem;font-weight:700;line-height:1.2;color:var(--att-stat)}
+';
 ?>
 <?php require_once __DIR__ . '/includes/hr_layout_header.php'; ?>
 
@@ -445,6 +471,19 @@ echo hr_ui_page_header(
         <button class="btn btn-success">Add / Update</button>
       </div>
     </form>
+  </div>
+
+  <div class="row g-2 mb-3">
+    <?php foreach ($attStatuses as $k => $v): ?>
+      <?php if (!hr_attendance_status_supported($conn, $k)) continue; ?>
+      <div class="col-6 col-md-4 col-xl-2">
+        <a class="att-stat-card <?= ($stFiltered && $k === $st) ? 'is-active' : '' ?>" style="--att-stat:<?= h($statusCardColors[$k] ?? '#6c757d') ?>"
+           href="?<?= h(http_build_query($statusCardQuery + ['status' => $k])) ?>">
+          <div class="att-stat-label"><?= h($v) ?></div>
+          <div class="att-stat-num"><?= number_format((int)($statusCounts[$k] ?? 0)) ?></div>
+        </a>
+      </div>
+    <?php endforeach; ?>
   </div>
 
   <div class="hr-settings-card">

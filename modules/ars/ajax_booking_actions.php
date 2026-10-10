@@ -710,6 +710,12 @@ try {
             // plan change stops the payment too rather than half-saving.
             $planMode = (string)($_POST['plan_mode'] ?? 'full');
             $planResult = null;
+            // Before the transaction: CREATE TABLE commits it behind PDO's
+            // back, and the commit below then fails with "There is no active
+            // transaction" although the payment was already written.
+            if ($planMode === 'monthly') {
+                ars_ensure_payment_plan_table($conn);
+            }
 
             $conn->beginTransaction();
             try {

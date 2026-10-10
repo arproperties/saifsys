@@ -4,8 +4,16 @@ re_bank_reco_require_tables($conn);
 re_bank_reco_guard($conn, 'realestate.bank_reconciliation.view');
 
 require_once __DIR__ . '/../../includes/re_bank_reco_rules.php';
+require_once __DIR__ . '/../../includes/re_bank_reco_engine.php';
 
 $line_id = (int) ($_GET['line_id'] ?? 0);
+// Page date filter: the Match tab only offers ERP transactions dated inside it.
+$dateFrom = trim((string) ($_GET['date_from'] ?? ''));
+$dateTo = trim((string) ($_GET['date_to'] ?? ''));
+$isDate = static fn(string $d): bool => (bool) preg_match('/^\d{4}-\d{2}-\d{2}$/', $d);
+if (!$isDate($dateFrom) || !$isDate($dateTo)) {
+    $dateFrom = $dateTo = null;
+}
 if ($line_id <= 0) {
     re_bank_reco_json_error('line_id required');
 }
@@ -16,10 +24,45 @@ try {
         re_bank_reco_json_error('Statement line not found');
     }
 
-    $suggestions = re_bank_reco_suggestions_for_workbench($conn, $cid, $line_id);
+    // Same-amount entries repeat through the month (bank charges), so only the ones dated the
+    // bank line's own day are offered; when there is none, up to 3 days either side. An entry
+    // tied to the line by its reference or name stays whatever its date.
+    $lineTs = strtotime((string) ($line['statement_date'] ?? ''));
+    $nearLineDate = static function (array $rows) use ($lineTs): array {
+        if (!$lineTs) {
+            return $rows;
+        }
+        $gaps = [];
+        foreach ($rows as $i => $row) {
+            $ts = strtotime((string) ($row['txn_date'] ?? ''));
+            $gaps[$i] = $ts ? (int) round(abs($ts - $lineTs) / 86400) : 999;
+        }
+        $maxGap = in_array(0, $gaps, true) ? 0 : 3;
+        $out = [];
+        foreach ($rows as $i => $row) {
+            $tied = !empty($row['name_matched'])
+                || preg_grep('/^(Ref|Reference|Name) match|^Contact in/', (array) ($row['reasons'] ?? []));
+            if ($gaps[$i] <= $maxGap || $tied) {
+                $out[] = $row;
+            }
+        }
+        return $out;
+    };
+
+    $suggestions = $nearLineDate(re_bank_reco_suggestions_for_workbench($conn, $cid, $line_id, $dateFrom, $dateTo));
+    foreach ($suggestions as &$sg) {
+        $sg['payment_id'] = re_bank_reco_receipt_id($conn, $cid, $sg);
+    }
+    unset($sg);
     $primary = $suggestions[0] ?? null;
     $alternatives = array_slice($suggestions, 1, 5);
-    $glCandidates = re_bank_reco_gl_candidates_for_line($conn, $cid, $line, 50);
+    $glCandidates = $nearLineDate(re_bank_reco_gl_candidates_for_line($conn, $cid, $line, 50, $dateFrom, $dateTo));
+    foreach ($glCandidates as &$gc) {
+        $gc['payment_id'] = re_bank_reco_receipt_id($conn, $cid, $gc);
+    }
+    unset($gc);
+    // Nothing matches the full amount: maybe the tenant paid several receipts in one transfer.
+    $combined = $primary ? null : re_bank_reco_combined_suggestion($conn, $cid, $line);
 
     $notes = [];
     if (re_db_table_exists($conn, 're_bank_line_notes')) {
@@ -70,6 +113,7 @@ try {
         'primary_suggestion' => $primary,
         'alternative_count' => count($alternatives),
         'alternatives' => $alternatives,
+        'combined_suggestion' => $combined,
         'gl_candidates' => $glCandidates,
         'rule_suggestion' => $ruleSuggestion,
         'matches' => $matches,

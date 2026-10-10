@@ -458,6 +458,7 @@ if (!function_exists('re_bank_workbench_format_suggestion')) {
             'txn_date' => (string) ($s['txn_date'] ?? ''),
             'reference' => (string) ($s['reference'] ?? ''),
             'party_name' => (string) ($s['party_name'] ?? ''),
+            'lease_number' => (string) ($s['lease_number'] ?? ''),
             'reasons' => array_values(array_filter(array_map('strval', (array) ($s['reasons'] ?? [])))),
             'name_matched' => !empty($s['name_matched']),
         ];
@@ -465,7 +466,7 @@ if (!function_exists('re_bank_workbench_format_suggestion')) {
 }
 
 if (!function_exists('re_bank_reco_gl_candidates_for_line')) {
-    function re_bank_reco_gl_candidates_for_line(PDO $conn, int $companyId, array $line, int $limit = 50): array
+    function re_bank_reco_gl_candidates_for_line(PDO $conn, int $companyId, array $line, int $limit = 50, ?string $dateFrom = null, ?string $dateTo = null): array
     {
         if (!function_exists('re_bank_reco_find_transactions')) {
             require_once __DIR__ . '/re_bank_reco_engine.php';
@@ -473,8 +474,8 @@ if (!function_exists('re_bank_reco_gl_candidates_for_line')) {
         $date = (string) ($line['statement_date'] ?? $line['txn_date'] ?? '');
         $abs = abs((float) ($line['net_amount'] ?? $line['amount'] ?? 0));
         return array_slice(re_bank_reco_find_transactions($conn, $companyId, $line, [
-            'date_from' => date('Y-m-d', strtotime($date . ' -30 days')),
-            'date_to' => date('Y-m-d', strtotime($date . ' +30 days')),
+            'date_from' => ($dateFrom && $dateTo) ? $dateFrom : date('Y-m-d', strtotime($date . ' -30 days')),
+            'date_to' => ($dateFrom && $dateTo) ? $dateTo : date('Y-m-d', strtotime($date . ' +30 days')),
             'amount' => $abs > 0 ? (string) $abs : '',
             'unreconciled_only' => true,
         ]), 0, $limit);
@@ -482,9 +483,9 @@ if (!function_exists('re_bank_reco_gl_candidates_for_line')) {
 }
 
 if (!function_exists('re_bank_reco_suggestions_for_workbench')) {
-    function re_bank_reco_suggestions_for_workbench(PDO $conn, int $companyId, int $statementLineId): array
+    function re_bank_reco_suggestions_for_workbench(PDO $conn, int $companyId, int $statementLineId, ?string $dateFrom = null, ?string $dateTo = null): array
     {
-        $raw = re_bank_rec_suggestions($conn, $companyId, $statementLineId);
+        $raw = re_bank_rec_suggestions($conn, $companyId, $statementLineId, $dateFrom, $dateTo);
         return array_map('re_bank_workbench_format_suggestion', $raw);
     }
 }

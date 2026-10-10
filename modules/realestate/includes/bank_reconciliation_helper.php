@@ -215,6 +215,53 @@ if (!function_exists('re_bank_rec_import_lines')) {
     }
 }
 
+if (!function_exists('re_bank_rec_sql_skip_edit_reversals')) {
+    /**
+     * SQL condition that hides ledger lines which never reached the bank: a journal that was
+     * reversed on its own date (a receipt edited after posting) and the reversal journal itself.
+     * A reversal on a later date (e.g. a returned cheque) is a real bank movement and stays.
+     */
+    function re_bank_rec_sql_skip_edit_reversals(string $gl = 'gl'): string
+    {
+        return "
+            AND NOT EXISTS (
+                SELECT 1 FROM re_journal_headers xo
+                JOIN re_journal_headers xr ON xr.id = xo.reversal_journal_id
+                WHERE xo.id = {$gl}.journal_id AND xo.is_reversed = 1 AND xr.journal_date = xo.journal_date
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM re_journal_headers xr
+                JOIN re_journal_headers xo ON xo.reversal_journal_id = xr.id
+                WHERE xr.id = {$gl}.journal_id AND xr.journal_type = 'reversal'
+                  AND xo.is_reversed = 1 AND xo.journal_date = xr.journal_date
+            )
+        ";
+    }
+}
+
+if (!function_exists('re_bank_rec_sql_skip_matched_sources')) {
+    /**
+     * SQL condition that hides ledger lines whose receipt or vendor payment is already reconciled.
+     * Those matches are stored against the receipt (source_table/source_id) with no gl_line_id,
+     * so the ledger line itself still looks unreconciled.
+     */
+    function re_bank_rec_sql_skip_matched_sources(string $gl = 'gl'): string
+    {
+        return "
+            AND NOT EXISTS (
+                SELECT 1 FROM re_journal_headers xj
+                JOIN re_bank_reconciliation_matches xm
+                  ON xm.company_id = xj.company_id AND xm.status = 'confirmed' AND xm.source_id = xj.reference_id
+                 AND (
+                        (xm.source_table = 're_payments' AND xj.reference_type IN ('payment', 're_payments'))
+                     OR (xm.source_table = 're_vendor_payments' AND xj.reference_type IN ('vendor_payment', 're_vendor_payments'))
+                 )
+                WHERE xj.id = {$gl}.journal_id
+            )
+        ";
+    }
+}
+
 if (!function_exists('re_bank_rec_confidence')) {
     function re_bank_rec_confidence(float $score): string
     {
@@ -318,12 +365,44 @@ if (!function_exists('re_bank_rec_name_match_score')) {
     }
 }
 
+if (!function_exists('re_bank_rec_full_reference')) {
+    /**
+     * Bank reference saved on a receipt, for the "Ref:" shown on a suggestion. The column cuts it
+     * at 100 chars, so a cut reference is completed from the statement line it was copied from.
+     */
+    function re_bank_rec_full_reference(PDO $conn, int $companyId, array $line, string $ref): string
+    {
+        $ref = trim($ref);
+        if ($ref === '') {
+            return '';
+        }
+        $lineText = trim((string)$line['description']);
+        if (stripos($lineText, $ref) === 0) {
+            return $lineText;
+        }
+        if (mb_strlen($ref, 'UTF-8') < 100) {
+            return $ref;
+        }
+        $st = $conn->prepare("
+            SELECT description FROM re_bank_statement_lines
+            WHERE company_id = ? AND bank_account_id = ? AND description LIKE ?
+            ORDER BY id DESC LIMIT 1
+        ");
+        $st->execute([$companyId, (int)$line['bank_account_id'], addcslashes($ref, '\\%_') . '%']);
+        $full = $st->fetchColumn();
+        return $full !== false ? trim((string)$full) : $ref;
+    }
+}
+
 if (!function_exists('re_bank_rec_suggestions')) {
     /**
      * @return list<array<string,mixed>>
      */
-    function re_bank_rec_suggestions(PDO $conn, int $companyId, int $statementLineId): array
+    function re_bank_rec_suggestions(PDO $conn, int $companyId, int $statementLineId, ?string $dateFrom = null, ?string $dateTo = null): array
     {
+        // Optional Y-m-d range: only offer transactions dated inside it.
+        $inRange = $dateFrom && $dateTo;
+        $rangeArgs = $inRange ? [$dateFrom, $dateTo] : [];
         $stmt = $conn->prepare("SELECT * FROM re_bank_statement_lines WHERE id = ? AND company_id = ? LIMIT 1");
         $stmt->execute([$statementLineId, $companyId]);
         $line = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -339,6 +418,10 @@ if (!function_exists('re_bank_rec_suggestions')) {
         $date = (string)$line['statement_date'];
         $desc = mb_strtolower((string)$line['description'] . ' ' . (string)$line['reference'], 'UTF-8');
         $suggestions = [];
+        // Tenant receipts are money in and vendor payments are money out: offer each only for a
+        // statement line going the same way.
+        $moneyIn = $net >= 0;
+        $suggestedReceipts = [];
 
         $payments = $conn->prepare("
             SELECT p.id, p.amount, p.payment_date, p.cleared_date, p.receipt_number, p.reference_number,
@@ -350,6 +433,8 @@ if (!function_exists('re_bank_rec_suggestions')) {
             JOIN re_tenants t ON t.id = l.tenant_id
             WHERE p.company_id = ?
               AND p.amount BETWEEN ? AND ?
+              " . ($moneyIn ? '' : 'AND 1 = 0') . "
+              " . ($inRange ? 'AND COALESCE(p.cleared_date, p.payment_date) BETWEEN ? AND ?' : '') . "
               AND NOT EXISTS (
                     SELECT 1 FROM re_bank_reconciliation_matches m
                     WHERE m.company_id = p.company_id AND m.source_table = 're_payments'
@@ -358,7 +443,7 @@ if (!function_exists('re_bank_rec_suggestions')) {
             ORDER BY COALESCE(p.cleared_date, p.payment_date) DESC
             LIMIT 50
         ");
-        $payments->execute([$companyId, $abs - 1.00, $abs + 1.00]);
+        $payments->execute(array_merge([$companyId, $abs - 1.00, $abs + 1.00], $rangeArgs));
         foreach ($payments->fetchAll(PDO::FETCH_ASSOC) ?: [] as $payment) {
             $score = 0.0;
             $reasons = [];
@@ -411,6 +496,10 @@ if (!function_exists('re_bank_rec_suggestions')) {
             $score = min(100.0, $score);
             if ($score >= 35) {
                 $refLabel = (string)($payment['receipt_number'] ?: ('#' . $payment['id']));
+                $payRef = re_bank_rec_full_reference($conn, $companyId, $line, (string)($payment['reference_number'] ?? ''));
+                if ((string)($payment['receipt_number'] ?? '') !== '') {
+                    $suggestedReceipts[(string)$payment['receipt_number']] = true;
+                }
                 $suggestions[] = [
                     'match_type' => ($payment['accounting_mode'] ?? '') === 'invoice' ? 'receipt' : 'payment',
                     'source_table' => 're_payments',
@@ -421,8 +510,9 @@ if (!function_exists('re_bank_rec_suggestions')) {
                     'confidence' => re_bank_rec_confidence($score),
                     'label' => 'Receipt/Payment ' . $refLabel . ' - ' . $party,
                     'txn_date' => $pDate,
-                    'reference' => $refLabel,
+                    'reference' => $payRef !== '' ? $payRef : $refLabel,
                     'party_name' => $party,
+                    'lease_number' => (string)($payment['lease_number'] ?? ''),
                     'reasons' => $reasons,
                     'name_matched' => $nameMatched,
                 ];
@@ -437,6 +527,8 @@ if (!function_exists('re_bank_rec_suggestions')) {
                 WHERE vp.company_id = ?
                   AND vp.amount BETWEEN ? AND ?
                   AND vp.status = 'posted'
+                  " . ($moneyIn ? 'AND 1 = 0' : '') . "
+                  " . ($inRange ? 'AND vp.payment_date BETWEEN ? AND ?' : '') . "
                   AND NOT EXISTS (
                         SELECT 1 FROM re_bank_reconciliation_matches m
                         WHERE m.company_id = vp.company_id AND m.source_table = 're_vendor_payments'
@@ -445,7 +537,7 @@ if (!function_exists('re_bank_rec_suggestions')) {
                 ORDER BY vp.payment_date DESC
                 LIMIT 50
             ");
-            $vendorPayments->execute([$companyId, $abs - 1.00, $abs + 1.00]);
+            $vendorPayments->execute(array_merge([$companyId, $abs - 1.00, $abs + 1.00], $rangeArgs));
             foreach ($vendorPayments->fetchAll(PDO::FETCH_ASSOC) ?: [] as $vp) {
                 $score = 0.0;
                 $reasons = [];
@@ -509,16 +601,39 @@ if (!function_exists('re_bank_rec_suggestions')) {
 
         $glAmountColumn = $net >= 0 ? 'gl.debit_amount' : 'gl.credit_amount';
         $gl = $conn->prepare("
-            SELECT gl.*, jh.journal_number, jh.description AS journal_description
+            SELECT gl.*, jh.journal_number, jh.description AS journal_description,
+                   (SELECT p.reference_number FROM re_payments p
+                     WHERE p.company_id = gl.company_id AND p.receipt_number = gl.reference
+                       AND gl.reference <> ''
+                     LIMIT 1) AS receipt_bank_ref,
+                   (SELECT CONCAT(l.lease_number, '|', COALESCE(NULLIF(t.company_name,''), CONCAT(t.first_name,' ',t.last_name)))
+                      FROM re_payments p
+                      JOIN re_leases l ON l.id = p.lease_id AND l.company_id = p.company_id
+                      JOIN re_tenants t ON t.id = l.tenant_id
+                     WHERE p.company_id = gl.company_id AND p.receipt_number = gl.reference
+                       AND gl.reference <> ''
+                     LIMIT 1) AS receipt_lease,
+                   (SELECT GROUP_CONCAT(DISTINCT a.account_name ORDER BY a.account_name SEPARATOR ', ')
+                      FROM re_general_ledger o
+                      JOIN re_chart_of_accounts a ON a.id = o.account_id
+                     WHERE o.journal_id = gl.journal_id AND o.account_id <> gl.account_id) AS other_accounts
             FROM re_general_ledger gl
             JOIN re_journal_headers jh ON jh.id = gl.journal_id
             WHERE gl.company_id = ? AND gl.account_id = ? AND gl.is_reconciled = 0
+              AND {$glAmountColumn} > 0
               AND ABS({$glAmountColumn} - ?) < 1.00
+              " . re_bank_rec_sql_skip_edit_reversals('gl') . "
+              " . re_bank_rec_sql_skip_matched_sources('gl') . "
+              " . ($inRange ? 'AND gl.entry_date BETWEEN ? AND ?' : '') . "
             ORDER BY gl.entry_date DESC
             LIMIT 50
         ");
-        $gl->execute([$companyId, (int)$bank['gl_account_id'], $abs]);
+        $gl->execute(array_merge([$companyId, (int)$bank['gl_account_id'], $abs], $rangeArgs));
         foreach ($gl->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            // The receipt behind this ledger line is already offered above.
+            if (isset($suggestedReceipts[(string)($row['reference'] ?? '')])) {
+                continue;
+            }
             $glAmount = max((float)$row['debit_amount'], (float)$row['credit_amount']);
             $score = 0.0;
             $reasons = [];
@@ -540,10 +655,22 @@ if (!function_exists('re_bank_rec_suggestions')) {
             if ($ref !== '' && str_contains($desc, $ref)) {
                 $score += 20;
                 $reasons[] = 'Ref match: ' . (string)$row['reference'];
+            } else {
+                // The bank text is often saved as the receipt's bank reference or the journal description.
+                foreach ([$row['receipt_bank_ref'] ?? '', $row['journal_description'] ?? '', $row['description'] ?? ''] as $bankText) {
+                    $bankText = trim((string)$bankText);
+                    if (mb_strlen($bankText, 'UTF-8') >= 12 && str_contains($desc, mb_strtolower($bankText, 'UTF-8'))) {
+                        $score += 20;
+                        $reasons[] = 'Ref match: ' . $bankText;
+                        break;
+                    }
+                }
             }
             $score = min(100.0, $score);
             if ($score >= 35) {
                 $jDesc = (string)($row['journal_description'] ?: $row['description'] ?: '');
+                [$glLease, $glParty] = array_pad(explode('|', (string)($row['receipt_lease'] ?? ''), 2), 2, '');
+                $glBankRef = re_bank_rec_full_reference($conn, $companyId, $line, (string)($row['receipt_bank_ref'] ?? ''));
                 $suggestions[] = [
                     'match_type' => 'journal_line',
                     'source_table' => 're_general_ledger',
@@ -554,8 +681,10 @@ if (!function_exists('re_bank_rec_suggestions')) {
                     'confidence' => re_bank_rec_confidence($score),
                     'label' => 'GL ' . $row['journal_number'] . ' - ' . $jDesc,
                     'txn_date' => (string)$row['entry_date'],
-                    'reference' => (string)($row['journal_number'] ?: $row['reference'] ?: ('GL#' . $row['id'])),
-                    'party_name' => '',
+                    'reference' => $glBankRef !== '' ? $glBankRef : (string)($row['journal_number'] ?: $row['reference'] ?: ('GL#' . $row['id'])),
+                    // No receipt behind the journal: the account on its other side says who it was for.
+                    'party_name' => trim($glParty) !== '' ? trim($glParty) : (string)($row['other_accounts'] ?? ''),
+                    'lease_number' => $glLease,
                     'reasons' => $reasons,
                     'name_matched' => false,
                 ];

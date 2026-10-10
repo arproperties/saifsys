@@ -410,7 +410,7 @@ echo hr_ui_page_header(
             <th>Allow</th>
             <th>Bonus / OT</th>
             <th>Deductions</th>
-            <th title="Deductions above the WPS 15% cap (15% of base + allowance)">Over WPS Cap</th>
+            <th title="Net pay compared with the WPS floor (85% of base + allowance). Green = room left, red = below the floor.">WPS Cap</th>
             <th>Net</th>
             <th>Payslip</th>
           </tr>
@@ -463,13 +463,14 @@ echo hr_ui_page_header(
               </td>
               <?php
                 $earn = (float)$r['base_pay'] + (float)$r['allowance'];
-                $capMax = round($earn * hr_wps_max_deduction_ratio(), 2);
-                $overCap = round((float)$r['deductions'] - $capMax, 2);
+                $minNet = round($earn * hr_wps_min_net_earnings_ratio(), 2);
+                $capRoom = round((float)$r['net_pay'] - $minNet, 2);
               ?>
               <td>
-                <?php if ($overCap > 0.005): ?>
-                  <span class="fw-semibold text-danger"><?= number_format($overCap,2) ?></span>
-                  <!-- <div class="small text-muted">Max <?= number_format($capMax,2) ?></div> -->
+                <?php if ($capRoom > 0.005): ?>
+                  <span class="fw-semibold text-success">+<?= number_format($capRoom,2) ?></span>
+                <?php elseif ($capRoom < -0.005): ?>
+                  <span class="fw-semibold text-danger"><?= number_format($capRoom,2) ?></span>
                 <?php else: ?>
                   <span class="text-muted">—</span>
                 <?php endif; ?>
