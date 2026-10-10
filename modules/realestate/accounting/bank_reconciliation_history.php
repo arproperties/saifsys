@@ -129,7 +129,11 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
               </td>
               <td class="text-end"><?= number_format((float) ($row['amount_matched'] ?? 0), 2) ?></td>
               <td class="small">
-                <?= h(trim(($row['journal_number'] ?? 'GL') . ' — ' . ($row['gl_description'] ?: $row['gl_reference'] ?: ($row['source_table'] ?? '')))) ?>
+                <?php if (($row['source_table'] ?? '') === 're_bank_statement_lines'): ?>
+                  <?= h((string) ($row['notes'] ?: 'Bounced cheque pair')) ?>
+                <?php else: ?>
+                  <?= h(trim(($row['journal_number'] ?? 'GL') . ' — ' . ($row['gl_description'] ?: $row['gl_reference'] ?: ($row['source_table'] ?? '')))) ?>
+                <?php endif; ?>
                 <?php if ($createdJournal): ?>
                   <div class="text-muted">JE #<?= $createdJournal ?></div>
                 <?php endif; ?>

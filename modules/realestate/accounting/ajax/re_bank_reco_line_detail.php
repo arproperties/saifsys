@@ -54,15 +54,17 @@ try {
         $sg['payment_id'] = re_bank_reco_receipt_id($conn, $cid, $sg);
     }
     unset($sg);
-    $primary = $suggestions[0] ?? null;
-    $alternatives = array_slice($suggestions, 1, 5);
+    // A returned cheque comes first: same-amount receipts of other months are not its match.
+    $bouncedPair = re_bank_reco_bounced_pair($conn, $cid, $line);
+    $primary = $bouncedPair ? null : ($suggestions[0] ?? null);
+    $alternatives = array_slice($suggestions, $bouncedPair ? 0 : 1, 5);
     $glCandidates = $nearLineDate(re_bank_reco_gl_candidates_for_line($conn, $cid, $line, 50, $dateFrom, $dateTo));
     foreach ($glCandidates as &$gc) {
         $gc['payment_id'] = re_bank_reco_receipt_id($conn, $cid, $gc);
     }
     unset($gc);
     // Nothing matches the full amount: maybe the tenant paid several receipts in one transfer.
-    $combined = $primary ? null : re_bank_reco_combined_suggestion($conn, $cid, $line);
+    $combined = ($primary || $bouncedPair) ? null : re_bank_reco_combined_suggestion($conn, $cid, $line);
 
     $notes = [];
     if (re_db_table_exists($conn, 're_bank_line_notes')) {
@@ -114,6 +116,7 @@ try {
         'alternative_count' => count($alternatives),
         'alternatives' => $alternatives,
         'combined_suggestion' => $combined,
+        'bounced_pair' => $bouncedPair,
         'gl_candidates' => $glCandidates,
         'rule_suggestion' => $ruleSuggestion,
         'matches' => $matches,

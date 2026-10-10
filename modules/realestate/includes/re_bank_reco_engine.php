@@ -783,3 +783,174 @@ function re_bank_reco_match_lines_to_gl(PDO $conn, int $companyId, array $lineId
         return ['success' => false, 'confirmed' => 0, 'error' => $e->getMessage()];
     }
 }
+
+/**
+ * A cheque the bank took in and sent back: a deposit line and a return line with the same bank
+ * reference and opposite amounts. No money stayed, so the two lines close each other and nothing
+ * is posted. Null when the line is not one half of such a pair.
+ *
+ * @return array<string,mixed>|null
+ */
+function re_bank_reco_bounced_pair(PDO $conn, int $companyId, array $line): ?array
+{
+    $lineId = (int) ($line['id'] ?? 0);
+    $net = (float) ($line['net_amount'] ?? 0);
+    $amount = re_bank_rec_money(abs($net));
+    $ref = trim((string) ($line['reference'] ?? ''));
+    if ($lineId <= 0 || $amount <= 0 || mb_strlen($ref, 'UTF-8') < 8
+        || in_array((string) ($line['status'] ?? ''), ['ignored', 'investigating'], true)
+        || abs(re_bank_line_remaining($conn, $line) - $amount) > 0.009) {
+        return null;
+    }
+
+    $st = $conn->prepare("
+        SELECT l.* FROM re_bank_statement_lines l
+        WHERE l.company_id = ? AND l.bank_account_id = ? AND l.id <> ? AND l.reference = ?
+          AND ABS(l.net_amount + ?) < 0.01
+          AND l.status NOT IN ('ignored','investigating')
+          AND l.statement_date BETWEEN DATE_SUB(?, INTERVAL 10 DAY) AND DATE_ADD(?, INTERVAL 10 DAY)
+          AND NOT EXISTS (SELECT 1 FROM re_bank_reconciliation_matches m
+                           WHERE m.company_id = l.company_id AND m.statement_line_id = l.id AND m.status = 'confirmed')
+        LIMIT 20
+    ");
+    $date = (string) ($line['statement_date'] ?? '');
+    $st->execute([$companyId, (int) ($line['bank_account_id'] ?? 0), $lineId, $ref, $net, $date, $date]);
+    $partners = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    if (count($partners) > 1) {
+        // Some banks put the account number in the reference, so two bounced cheques of the same
+        // amount share it. The cheque number in the text tells them apart.
+        $chqOf = static fn(array $l): string => preg_match('/chq\.?\s*no\.?\s*:?\s*(\d+)/i', (string) ($l['description'] ?? ''), $m) ? ltrim($m[1], '0') : '';
+        $mine = $chqOf($line);
+        $partners = $mine === '' ? [] : array_values(array_filter($partners, static fn(array $p): bool => $chqOf($p) === $mine));
+    }
+    if (count($partners) !== 1) {
+        return null;
+    }
+    $partner = $partners[0];
+    $deposit = $net > 0 ? $line : $partner;
+    $return = $net > 0 ? $partner : $line;
+    $returnText = (string) ($return['description'] ?? '');
+    $bothText = (string) ($deposit['description'] ?? '') . ' ' . $returnText;
+    // The money-out line must say it is a returned cheque; a refund or transfer back is not a bounce.
+    if (!preg_match('/REJECT|RETURN|BOUNC|\bRET\b/i', $returnText) || !preg_match('/CHQ|CHEQUE/i', $bothText)) {
+        return null;
+    }
+
+    $chequeNo = preg_match('/chq\.?\s*no\.?\s*:?\s*(\d+)/i', $bothText, $cm) ? $cm[1] : '';
+    $bare = ltrim($chequeNo, '0');
+    $cheque = null;
+    if ($bare !== '') {
+        $cq = $conn->prepare("
+            SELECT c.id, c.lease_id, c.cheque_number, c.status, c.cheque_date, c.bounced_date, c.bounced_reason, l.lease_number,
+                   COALESCE(NULLIF(t.company_name,''), CONCAT(t.first_name,' ',t.last_name)) AS tenant_name
+            FROM re_post_dated_cheques c
+            LEFT JOIN re_leases l ON l.id = c.lease_id
+            LEFT JOIN re_tenants t ON t.id = l.tenant_id
+            WHERE c.company_id = ? AND ABS(c.cheque_amount - ?) < 0.01 AND TRIM(LEADING '0' FROM c.cheque_number) = ?
+              AND c.status NOT IN ('cancelled','returned')
+            LIMIT 50
+        ");
+        $cq->execute([$companyId, $amount, $bare]);
+        $found = $cq->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        // Cheque numbers repeat across tenants: trust the one whose bounce note carries this bank
+        // reference, else the only one dated around the bank line.
+        $byRef = array_values(array_filter($found, static fn(array $c): bool => str_contains((string) ($c['bounced_reason'] ?? ''), $ref)));
+        if (count($byRef) === 1) {
+            $cheque = $byRef[0];
+        } else {
+            $lineTs = (int) strtotime($date);
+            $near = array_values(array_filter($found, static function (array $c) use ($lineTs): bool {
+                $ts = strtotime((string) ($c['bounced_date'] ?: $c['cheque_date']));
+                return $ts && abs($ts - $lineTs) <= 10 * 86400;
+            }));
+            if (count($near) === 1) {
+                $cheque = $near[0];
+            }
+        }
+    }
+
+    $status = $cheque ? (string) $cheque['status'] : '';
+    $blocked = $status === 'cleared';
+    $warning = '';
+    if (!$cheque) {
+        $warning = 'No cheque with this number and amount was found in the system. Check the cheque is recorded and marked Bounced.';
+    } elseif ($blocked) {
+        $warning = 'This cheque is Cleared in the system, so its receipt is in the bank ledger. Mark the cheque Bounced first, then reconcile.';
+    } elseif ($status !== 'bounced') {
+        $warning = 'This cheque is still ' . ucfirst(str_replace('_', ' ', $status)) . ' in the system. Mark it Bounced on the lease.';
+    }
+
+    $side = static fn(array $l): array => [
+        'id' => (int) $l['id'],
+        'txn_date' => (string) $l['statement_date'],
+        'amount' => round(abs((float) $l['net_amount']), 2),
+        'description' => (string) $l['description'],
+    ];
+
+    return [
+        'deposit_line' => $side($deposit),
+        'return_line' => $side($return),
+        'partner_line_id' => (int) $partner['id'],
+        'amount' => $amount,
+        'reference' => $ref,
+        'cheque_number' => $chequeNo,
+        'cheque_id' => $cheque ? (int) $cheque['id'] : 0,
+        'lease_id' => $cheque ? (int) $cheque['lease_id'] : 0,
+        'lease_number' => $cheque ? (string) ($cheque['lease_number'] ?? '') : '',
+        'party_name' => $cheque ? trim((string) ($cheque['tenant_name'] ?? '')) : '',
+        'cheque_status' => $status,
+        'warning' => $warning,
+        'blocked' => $blocked,
+    ];
+}
+
+/**
+ * Close both lines of a bounced cheque against each other. No journal: the deposit and the
+ * return net to zero in the bank and the cheque never produced a receipt.
+ *
+ * @return array{success:bool,match_ids:list<int>,error:?string}
+ */
+function re_bank_reco_confirm_bounced_pair(PDO $conn, int $companyId, int $lineId, ?int $userId): array
+{
+    $line = re_bank_get_statement_line($conn, $lineId, $companyId);
+    $pair = $line ? re_bank_reco_bounced_pair($conn, $companyId, $line) : null;
+    if (!$pair) {
+        return ['success' => false, 'match_ids' => [], 'error' => 'This line is no longer an open bounced cheque pair. Press Refresh.'];
+    }
+    if (!empty($pair['blocked'])) {
+        return ['success' => false, 'match_ids' => [], 'error' => (string) $pair['warning']];
+    }
+
+    $note = 'Bounced cheque' . ($pair['cheque_number'] !== '' ? ' ' . $pair['cheque_number'] : '')
+        . ($pair['lease_number'] !== '' ? ' · Lease ' . $pair['lease_number'] : '')
+        . ($pair['cheque_id'] > 0 ? ' · cheque #' . $pair['cheque_id'] : '');
+    $bankAccountId = (int) $line['bank_account_id'];
+    $ids = [];
+    $ownsTxn = !$conn->inTransaction();
+    try {
+        if ($ownsTxn) {
+            $conn->beginTransaction();
+        }
+        foreach ([[$pair['deposit_line']['id'], $pair['return_line']['id'], 'deposit'], [$pair['return_line']['id'], $pair['deposit_line']['id'], 'return']] as [$own, $other, $word]) {
+            // Each row points at the other bank line, which is what ties the pair together for undo.
+            $r = re_bank_rec_confirm_match(
+                $conn, $companyId, $bankAccountId, (int) $own, 'adjustment', 're_bank_statement_lines', (int) $other, null,
+                (float) $pair['amount'], $userId, mb_substr($note . ' · ' . $word . ' paired with line #' . $other, 0, 255, 'UTF-8'),
+                100, 'High', 'match'
+            );
+            if (empty($r['success'])) {
+                throw new RuntimeException($r['error'] ?? 'Could not reconcile the pair');
+            }
+            $ids[] = (int) $r['match_id'];
+        }
+        if ($ownsTxn) {
+            $conn->commit();
+        }
+        return ['success' => true, 'match_ids' => $ids, 'error' => null];
+    } catch (Throwable $e) {
+        if ($ownsTxn && $conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        return ['success' => false, 'match_ids' => [], 'error' => $e->getMessage()];
+    }
+}

@@ -662,6 +662,19 @@ if (!function_exists('re_bank_reco_undo_match')) {
                 }
             }
 
+            // Bounced cheque pair: the two bank lines only close each other, so both reopen together.
+            if ((string) ($match['source_table'] ?? '') === 're_bank_statement_lines' && (int) ($match['source_id'] ?? 0) > 0) {
+                $stPair = $conn->prepare("
+                    SELECT id FROM re_bank_reconciliation_matches
+                    WHERE company_id = ? AND statement_line_id = ? AND source_table = 're_bank_statement_lines'
+                      AND source_id = ? AND status IN ('suggested','confirmed')
+                ");
+                $stPair->execute([$companyId, (int) $match['source_id'], (int) $match['statement_line_id']]);
+                foreach ($stPair->fetchAll(PDO::FETCH_COLUMN) as $pairId) {
+                    $voided[] = re_bank_reco_void_match_row($conn, (int) $pairId, $companyId, $userId);
+                }
+            }
+
             $voided[] = re_bank_reco_void_match_row($conn, $matchId, $companyId, $userId);
             $voided = array_values(array_filter(array_unique($voided)));
 

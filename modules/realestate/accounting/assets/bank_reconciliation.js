@@ -268,7 +268,31 @@
 
     if (tab === 'match') {
       const s = data.primary_suggestion;
-      if (s) {
+      const bp = data.bounced_pair;
+      if (bp) {
+        html += '<div class="co-breco-suggest-card' + (bp.warning ? ' medium' : '') + '">' +
+          '<div class="d-flex justify-content-between align-items-start gap-2">' +
+            '<div class="flex-grow-1">' +
+              '<div class="fw-semibold">Bounced cheque' + (bp.cheque_number ? ' ' + esc(bp.cheque_number) : '') + ' — deposit and return</div>' +
+              '<div class="small text-muted mt-1">' +
+                '<div><strong>Party:</strong> ' + esc(bp.party_name || '—') +
+                ' · <strong>Ref:</strong> ' + esc(bp.reference || '—') + '</div>' +
+                '<div><strong>Lease Number:</strong> ' + esc(bp.lease_number || '—') + '</div>' +
+              '</div>' +
+            '</div>' +
+            '<span class="badge ' + (bp.warning ? 'bg-warning text-dark' : 'bg-success') + '">' + (bp.warning ? 'Check' : 'High') + '</span>' +
+          '</div>' +
+          '<table class="table table-sm mb-0 mt-2"><thead><tr><th>Bank line</th><th>Date</th><th class="text-end">Amount</th></tr></thead><tbody>' +
+          '<tr><td>Cheque deposit</td><td>' + esc(bp.deposit_line.txn_date) + '</td><td class="text-end">' + Number(bp.amount).toFixed(2) + '</td></tr>' +
+          '<tr><td>Cheque returned</td><td>' + esc(bp.return_line.txn_date) + '</td><td class="text-end">-' + Number(bp.amount).toFixed(2) + '</td></tr>' +
+          '<tr class="fw-semibold"><td colspan="2">Net in bank</td><td class="text-end">0.00</td></tr>' +
+          '</tbody></table>' +
+          '<div class="small text-muted mt-2">The bank took the cheque in and sent it back, so the two lines close each other. Nothing is posted and the tenant still owes the amount.</div>' +
+          (bp.warning ? '<div class="alert alert-warning small py-2 mt-2 mb-0">' + esc(bp.warning) + '</div>' : '') +
+          (bp.blocked ? '' : '<button type="button" class="btn btn-success btn-sm mt-3" id="btnOkBounced">OK — Reconcile both lines</button>') +
+          (bp.lease_id ? ' <a class="btn btn-outline-secondary btn-sm mt-3" target="_blank" href="../lease_view.php?id=' + encodeURIComponent(bp.lease_id) + '">View lease</a>' : '') +
+        '</div>';
+      } else if (s) {
         const cls = s.confidence === 'High' ? '' : ' medium';
         const badgeCls = s.confidence === 'High' ? 'bg-success' : (s.confidence === 'Medium' ? 'bg-warning text-dark' : 'bg-secondary');
         html += '<div class="co-breco-suggest-card' + cls + '">' +
@@ -738,6 +762,18 @@
     if (ok && data.primary_suggestion) {
       ok.addEventListener('click', function(){
         reconcileMatch(data.line.id, data.primary_suggestion.system_type, data.primary_suggestion.system_id);
+      });
+    }
+    const okBounced = document.getElementById('btnOkBounced');
+    if (okBounced && data.bounced_pair) {
+      okBounced.addEventListener('click', async function(){
+        okBounced.disabled = true;
+        const p = fd();
+        p.append('line_id', String(data.line.id));
+        const res = await fetch(ajaxBase + 're_bank_reco_bounced_pair.php', {method:'POST', body:p});
+        const j = await res.json();
+        if (!j.success) { okBounced.disabled = false; alert(j.error || 'Reconcile failed'); return; }
+        await afterReconcile(data.line.id);
       });
     }
     const okSplit = document.getElementById('btnOkSplit');
