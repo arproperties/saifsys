@@ -448,6 +448,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             </div>
         </div>
 
+        <?php $queueModalsHtml = ''; ?>
         <div class="card card-round">
             <div class="card-body p-0">
                 <?php if (empty($requests)): ?>
@@ -540,6 +541,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                         </td>
                                     </tr>
 
+                                    <?php ob_start(); // modals are printed after the card: inside it, the card's hover transform makes them flicker ?>
                                     <!-- Assign Modal -->
                                     <div class="modal fade" id="assignModal<?= $req['id'] ?>" tabindex="-1">
                                         <div class="modal-dialog modal-lg">
@@ -656,6 +658,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                         </div>
                                     </div>
                                     <?php endif; ?>
+                                    <?php $queueModalsHtml .= ob_get_clean(); ?>
                                 <?php endforeach; ?>
                             </tbody>
                         </table>
@@ -663,6 +666,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 <?php endif; ?>
             </div>
         </div>
+
+        <?= $queueModalsHtml ?>
 
 <script>
 (function() {

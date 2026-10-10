@@ -175,6 +175,43 @@ $stmt = $conn->prepare("
 $stmt->execute([$buildingId]);
 $floorPlans = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// Title Deeds for this building (standalone records, own file, added/edited via title_deed_form.php)
+$titleDeeds = [];
+try {
+    $tdStmt = $conn->prepare("SELECT * FROM re_title_deeds WHERE building_id = ? AND company_id = ? ORDER BY id DESC");
+    $tdStmt->execute([$buildingId, $currentCompanyId]);
+    $titleDeeds = $tdStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (Throwable $e) {
+    $titleDeeds = [];
+}
+
+// Affection Plan / Site Plan records for this building
+$affectionSitePlans = [];
+try {
+    $apStmt = $conn->prepare("SELECT * FROM re_affection_site_plans WHERE building_id = ? AND company_id = ? ORDER BY id DESC");
+    $apStmt->execute([$buildingId, $currentCompanyId]);
+    $affectionSitePlans = $apStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (Throwable $e) {
+    $affectionSitePlans = [];
+}
+$planTypeLabels = ['affection_plan' => 'Affection Plan', 'site_plan' => 'Site Plan'];
+
+// Other documents for this building (stored in the shared Documents module)
+$buildingDocuments = [];
+try {
+    $bdStmt = $conn->prepare("
+        SELECT d.id, d.document_name, d.file_name, d.expiry_date, dt.document_type_name
+        FROM re_documents d
+        LEFT JOIN re_document_types dt ON dt.id = d.document_type_id
+        WHERE d.related_type = 'building' AND d.related_id = ? AND d.company_id = ?
+        ORDER BY d.id DESC
+    ");
+    $bdStmt->execute([$buildingId, $currentCompanyId]);
+    $buildingDocuments = $bdStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (Throwable $e) {
+    $buildingDocuments = [];
+}
+
 // Get units count
 $stmt = $conn->prepare("
     SELECT 
@@ -242,6 +279,13 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 <?= h($renewalNoticeFlash) ?>
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             </div>
+        <?php endif; ?>
+        <?php if (!empty($_SESSION['flash_success'])): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                <?= h((string)$_SESSION['flash_success']) ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+            <?php unset($_SESSION['flash_success']); ?>
         <?php endif; ?>
         <?php if (!empty($_SESSION['flash_error'])): ?>
             <div class="alert alert-danger alert-dismissible fade show" role="alert">
@@ -321,7 +365,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 
             <!-- Unit Statistics -->
             <div class="col-md-6 mb-4">
-                <div class="card card-round">
+                <div class="card card-round mb-4">
                     <div class="card-header">
                         <h5><i class="bi bi-bar-chart"></i> Unit Statistics</h5>
                     </div>
@@ -345,6 +389,52 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 <i class="bi bi-door-open"></i> View All Units
                             </a>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Title Deed Details -->
+                <?php $primaryTitleDeed = $titleDeeds[0] ?? null; ?>
+                <div class="card card-round">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-file-earmark-check"></i> Title Deed Details</h5>
+                        <?php if ($primaryTitleDeed): ?>
+                            <a href="title_deed_view.php?id=<?= (int)$primaryTitleDeed['id'] ?>" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-eye"></i> View
+                            </a>
+                        <?php else: ?>
+                            <a href="title_deed_form.php?building_id=<?= $buildingId ?>" class="btn btn-sm btn-primary">
+                                <i class="bi bi-plus-circle"></i> Add
+                            </a>
+                        <?php endif; ?>
+                    </div>
+                    <div class="card-body">
+                        <?php if (!$primaryTitleDeed): ?>
+                            <p class="text-muted text-center py-3 mb-0">No title deed added for this building yet.</p>
+                        <?php else: ?>
+                            <table class="table table-borderless table-sm mb-0">
+                                <tr>
+                                    <th width="45%">Title Deed No / Year:</th>
+                                    <td><?= h($primaryTitleDeed['title_deed_no'] ?: '-') ?></td>
+                                </tr>
+                                <tr>
+                                    <th>Issue Date:</th>
+                                    <td><?= h($primaryTitleDeed['issue_date'] ?: '-') ?></td>
+                                </tr>
+                                <tr>
+                                    <th>Building No:</th>
+                                    <td><?= h($primaryTitleDeed['building_no'] ?: '-') ?></td>
+                                </tr>
+                                <tr>
+                                    <th>Property No:</th>
+                                    <td><?= h($primaryTitleDeed['property_no'] ?: '-') ?></td>
+                                </tr>
+                            </table>
+                            <?php if (count($titleDeeds) > 1): ?>
+                                <p class="text-muted small mt-2 mb-0">
+                                    +<?= count($titleDeeds) - 1 ?> more title deed record<?= count($titleDeeds) - 1 > 1 ? 's' : '' ?> — see the Title Deed section below.
+                                </p>
+                            <?php endif; ?>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -448,6 +538,199 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 </form>
             </div>
         </div>
+
+        <div class="row">
+            <!-- Title Deed -->
+            <div class="col-md-6 mb-4">
+                <div class="card card-round h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-file-earmark-check"></i> Title Deed</h5>
+                        <a href="title_deed_form.php?building_id=<?= $buildingId ?>" class="btn btn-sm btn-primary">
+                            <i class="bi bi-plus-circle"></i> Add Title Deed
+                        </a>
+                    </div>
+                    <div class="card-body">
+                        <?php if (empty($titleDeeds)): ?>
+                            <p class="text-muted mb-0">No title deed uploaded for this building yet.</p>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table table-hover table-sm mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Title Deed No</th>
+                                            <th>Property Type</th>
+                                            <th>Issue Date</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($titleDeeds as $td): ?>
+                                            <tr>
+                                                <td><?= h($td['title_deed_no'] ?: '-') ?></td>
+                                                <td><?= h($td['property_type'] ?: '-') ?></td>
+                                                <td><?= h($td['issue_date'] ?: '-') ?></td>
+                                                <td>
+                                                    <a href="title_deed_view.php?id=<?= (int)$td['id'] ?>" class="btn btn-sm btn-outline-primary" title="View">
+                                                        <i class="bi bi-eye"></i>
+                                                    </a>
+                                                    <a href="title_deed_form.php?id=<?= (int)$td['id'] ?>&building_id=<?= $buildingId ?>" class="btn btn-sm btn-outline-secondary" title="Edit">
+                                                        <i class="bi bi-pencil"></i>
+                                                    </a>
+                                                    <button type="button" class="btn btn-sm btn-outline-danger" title="Delete"
+                                                            onclick="deleteTitleDeed(<?= (int)$td['id'] ?>)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Affection Plan / Site Plan -->
+            <div class="col-md-6 mb-4">
+                <div class="card card-round h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-map"></i> Affection Plan / Site Plan</h5>
+                        <a href="affection_site_plan_form.php?building_id=<?= $buildingId ?>" class="btn btn-sm btn-primary">
+                            <i class="bi bi-plus-circle"></i> Add
+                        </a>
+                    </div>
+                    <div class="card-body">
+                        <?php if (empty($affectionSitePlans)): ?>
+                            <p class="text-muted mb-0">No affection plan or site plan uploaded for this building yet.</p>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table table-hover table-sm mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Type</th>
+                                            <th>File</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($affectionSitePlans as $ap): ?>
+                                            <tr>
+                                                <td><span class="badge bg-info"><?= h($planTypeLabels[$ap['plan_type']] ?? $ap['plan_type']) ?></span></td>
+                                                <td><?= h($ap['file_name'] ?: '-') ?></td>
+                                                <td>
+                                                    <a href="affection_site_plan_view.php?id=<?= (int)$ap['id'] ?>" class="btn btn-sm btn-outline-primary" title="View">
+                                                        <i class="bi bi-eye"></i>
+                                                    </a>
+                                                    <a href="affection_site_plan_form.php?id=<?= (int)$ap['id'] ?>&building_id=<?= $buildingId ?>" class="btn btn-sm btn-outline-secondary" title="Edit">
+                                                        <i class="bi bi-pencil"></i>
+                                                    </a>
+                                                    <button type="button" class="btn btn-sm btn-outline-danger" title="Delete"
+                                                            onclick="deleteAffectionSitePlan(<?= (int)$ap['id'] ?>)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Other Documents -->
+            <div class="col-12 mb-4">
+                <div class="card card-round h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-folder2-open"></i> Other Documents</h5>
+                        <a href="documents_upload.php?related_type=building&related_id=<?= $buildingId ?>&return=building" class="btn btn-sm btn-primary">
+                            <i class="bi bi-plus-circle"></i> Add Document
+                        </a>
+                    </div>
+                    <div class="card-body">
+                        <?php if (empty($buildingDocuments)): ?>
+                            <p class="text-muted mb-0">No other documents uploaded for this building yet.</p>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table table-hover table-sm mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Document</th>
+                                            <th>Type</th>
+                                            <th>File</th>
+                                            <th>Expiry Date</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($buildingDocuments as $bd): ?>
+                                            <tr>
+                                                <td><?= h($bd['document_name'] ?: '-') ?></td>
+                                                <td><span class="badge bg-info"><?= h($bd['document_type_name'] ?: 'Other') ?></span></td>
+                                                <td><?= h($bd['file_name'] ?: '-') ?></td>
+                                                <td><?= h($bd['expiry_date'] ?: '-') ?></td>
+                                                <td>
+                                                    <a href="documents_view.php?id=<?= (int)$bd['id'] ?>" class="btn btn-sm btn-outline-primary" title="View">
+                                                        <i class="bi bi-eye"></i>
+                                                    </a>
+                                                    <a href="documents_file.php?id=<?= (int)$bd['id'] ?>&mode=download" class="btn btn-sm btn-outline-secondary" title="Download">
+                                                        <i class="bi bi-download"></i>
+                                                    </a>
+                                                    <button type="button" class="btn btn-sm btn-outline-danger" title="Delete"
+                                                            onclick="deleteBuildingDocument(<?= (int)$bd['id'] ?>)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <form id="deleteTitleDeedForm" method="POST" action="title_deed_delete.php" class="d-none">
+            <?php csrf_field(); ?>
+            <input type="hidden" name="id" id="deleteTitleDeedId">
+            <input type="hidden" name="building_id" value="<?= $buildingId ?>">
+        </form>
+        <form id="deleteAffectionSitePlanForm" method="POST" action="affection_site_plan_delete.php" class="d-none">
+            <?php csrf_field(); ?>
+            <input type="hidden" name="id" id="deleteAffectionSitePlanId">
+            <input type="hidden" name="building_id" value="<?= $buildingId ?>">
+        </form>
+        <script>
+            function deleteTitleDeed(id) {
+                if (!confirm('Delete this title deed record and its uploaded file? This cannot be undone.')) return;
+                document.getElementById('deleteTitleDeedId').value = id;
+                document.getElementById('deleteTitleDeedForm').submit();
+            }
+            function deleteAffectionSitePlan(id) {
+                if (!confirm('Delete this record and its uploaded file? This cannot be undone.')) return;
+                document.getElementById('deleteAffectionSitePlanId').value = id;
+                document.getElementById('deleteAffectionSitePlanForm').submit();
+            }
+            function deleteBuildingDocument(id) {
+                if (!confirm('Delete this document and its uploaded file? This cannot be undone.')) return;
+                const body = new FormData();
+                body.append('document_id', id);
+                fetch('ajax_document_delete.php', { method: 'POST', body: body, credentials: 'same-origin' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            window.location.reload();
+                        } else {
+                            alert(data.error || 'Failed to delete document.');
+                        }
+                    })
+                    .catch(() => alert('Failed to delete document.'));
+            }
+        </script>
 
         <!-- AMC Contracts -->
         <?php
@@ -1325,7 +1608,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 this.querySelector('.modal-title').textContent = 'Add Common Area';
                 this.querySelector('button[type="submit"]').textContent = 'Add Area';
             });
-            
+
         </script>
 
 <?php require_once __DIR__ . '/includes/re_layout_footer.php'; ?>

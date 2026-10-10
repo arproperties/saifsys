@@ -267,7 +267,10 @@ CREATE TABLE IF NOT EXISTS `re_move_out_photos` (
 -- - Initial inspection completed
 -- - Meter readings taken
 -- - Utilities connected
--- - Welcome package provided
+-- - Unit cleanliness & pest-free confirmation
+-- - Maintenance completion confirmation
+-- - Move-in photos & inspection report uploaded
+-- (see re_move_in_checklist_points.sql)
 
 -- ============================================================================
 -- 11. Add move_in_date and move_out_date tracking to leases (if not exists)
