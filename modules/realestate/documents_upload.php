@@ -38,8 +38,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $documentTypeId = !empty($_POST['document_type_id']) ? (int)$_POST['document_type_id'] : null;
     $documentName = trim($_POST['document_name'] ?? '');
     $documentNumber = trim($_POST['document_number'] ?? '');
-    $issueDate = $_POST['issue_date'] ?? null;
-    $expiryDate = $_POST['expiry_date'] ?? null;
+    $issueDate = !empty($_POST['issue_date']) ? $_POST['issue_date'] : null;
+    $expiryDate = !empty($_POST['expiry_date']) ? $_POST['expiry_date'] : null;
     $notes = trim($_POST['notes'] ?? '');
     $tags = trim($_POST['tags'] ?? '');
     
@@ -56,7 +56,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Create upload directory
             $uploadDir = __DIR__ . '/../../uploads/realestate/documents/';
             if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0755, true);
+                @mkdir($uploadDir, 0777, true);
+            }
+            if (!is_writable($uploadDir)) {
+                @chmod($uploadDir, 0777);
             }
             
             // Generate unique filename
@@ -65,7 +68,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $filePath = $uploadDir . $fileName;
             $relativePath = '/uploads/realestate/documents/' . $fileName;
             
-            if (move_uploaded_file($file['tmp_name'], $filePath)) {
+            if (!is_writable($uploadDir)) {
+                $error = 'Upload directory is not writable: uploads/realestate/documents. Ask an administrator to run: chmod -R a+rwX uploads/realestate/documents';
+            } elseif (move_uploaded_file($file['tmp_name'], $filePath)) {
                 try {
                     $conn->beginTransaction();
                     $documentNotificationArgs = null;
@@ -193,6 +198,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $legalRedirect .= '&case_id=' . (int)$relatedId;
                         }
                         header('Location: ' . $legalRedirect);
+                    } elseif ($returnTo === 'building' && $relatedType === 'building' && $relatedId) {
+                        $_SESSION['flash_success'] = 'Document uploaded.';
+                        header('Location: building_view.php?id=' . (int)$relatedId);
                     } else {
                         header('Location: documents_view.php?id=' . $documentId);
                     }
@@ -237,7 +245,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 ?>
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h1><i class="bi bi-upload"></i> Upload Document</h1>
-            <a href="documents.php" class="btn btn-secondary">
+            <a href="<?= ($returnTo === 'building' && $prefillType === 'building' && $prefillId) ? 'building_view.php?id=' . (int)$prefillId : 'documents.php' ?>" class="btn btn-secondary">
                 <i class="bi bi-arrow-left"></i> Back
             </a>
         </div>
@@ -255,6 +263,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     <?= csrf_field() ?>
                     <?php if ($returnTo === 'legal'): ?>
                         <input type="hidden" name="return_to" value="legal">
+                    <?php elseif ($returnTo === 'building'): ?>
+                        <input type="hidden" name="return_to" value="building">
                     <?php endif; ?>
                     
                     <div class="row mb-3">
