@@ -15,6 +15,7 @@ require_once __DIR__ . '/../../../includes/module_access.php';
 require_once __DIR__ . '/../../../includes/rbac_department.php';
 require_once __DIR__ . '/../../../includes/csrf.php';
 require_once __DIR__ . '/../includes/vendor_ap_helper.php';
+require_once __DIR__ . '/journal_attachments_helper.php';
 
 require_login();
 if (!has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_FINANCIAL, $conn)) {
@@ -30,6 +31,8 @@ if ($companyId <= 0) {
 $userId = current_user_id();
 $success = '';
 $error = '';
+$attachWarning = '';
+$postedJournalId = 0;
 $createdAdvancePaymentId = 0;
 $createdAdvanceVendorId = 0;
 $createdAdvanceAmount = 0.0;
@@ -48,7 +51,17 @@ $preBill = (int)($_GET['bill_id'] ?? 0);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
+        // Files over PHP's post_max_size arrive with an empty $_POST, which would
+        // otherwise die inside csrf_verify() with a misleading token error.
+        if (empty($_POST) && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+            throw new RuntimeException('The attached files are too large to upload together. Nothing was posted - attach fewer or smaller files and try again.');
+        }
         csrf_verify();
+        $attachFiles = $_FILES['attachments'] ?? [];
+        $attachErrors = journal_attachments_precheck($attachFiles);
+        if ($attachErrors) {
+            throw new RuntimeException('Nothing was posted. ' . implode(' ', $attachErrors));
+        }
         $vendorId = (int)$_POST['vendor_id'];
         $date = $_POST['payment_date'] ?? date('Y-m-d');
         $method = $_POST['payment_method'] ?? 'bank_transfer';
@@ -160,7 +173,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException($post['error'] ?? 'Payment posting failed');
         }
         $conn->commit();
+        $postedJournalId = (int)$post['journal_id'];
         $msg = 'Vendor payment posted. Journal #' . $post['journal_id'];
+        // Only after commit: a moved file cannot be rolled back with the payment.
+        $upload = journal_attachments_save($conn, $attachFiles, $postedJournalId, $companyId, $userId);
+        if ($upload['saved'] > 0) {
+            $msg .= sprintf('. %d attachment%s saved', $upload['saved'], $upload['saved'] === 1 ? '' : 's');
+        }
+        if ($upload['errors']) {
+            $attachWarning = 'The payment is posted, but some files were not attached: ' . implode(' ', $upload['errors']);
+        }
         if ($advanceAmount > 0.005) {
             $msg .= '. Advance created: ' . number_format($advanceAmount, 2) . ' AED';
             $createdAdvancePaymentId = $paymentId;
@@ -261,6 +283,9 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
 <?php if ($success): ?>
     <div class="alert alert-success alert-dismissible fade show">
         <i data-lucide="check-circle" class="me-1"></i><?= h($success) ?>
+        <?php if ($postedJournalId > 0): ?>
+            <a href="journal_entry_view.php?id=<?= (int)$postedJournalId ?>" class="alert-link ms-1">View journal &amp; attachments</a>
+        <?php endif; ?>
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
     <?php if ($createdAdvancePaymentId > 0 && function_exists('re_ap_advance_vat_table_ready') && re_ap_advance_vat_table_ready($conn)): ?>
@@ -273,6 +298,15 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
             <div class="form-text mt-1">VAT is never inferred from the payment. Payment journal stays Dr 1410 / Cr Bank.</div>
         </div>
     <?php endif; ?>
+<?php endif; ?>
+<?php if ($attachWarning): ?>
+    <div class="alert alert-warning alert-dismissible fade show">
+        <i data-lucide="alert-triangle" class="me-1"></i><?= h($attachWarning) ?>
+        <?php if ($postedJournalId > 0): ?>
+            <a href="journal_entry_view.php?id=<?= (int)$postedJournalId ?>" class="alert-link ms-1">Add them on the journal</a>
+        <?php endif; ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
 <?php endif; ?>
 <?php if ($error): ?>
     <div class="alert alert-danger alert-dismissible fade show">
@@ -301,7 +335,7 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
     </div>
 </div>
 
-<form method="post" id="vendorPaymentForm">
+<form method="post" id="vendorPaymentForm" enctype="multipart/form-data">
     <?php csrf_field(); ?>
 
     <div class="row g-3">
@@ -367,6 +401,20 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
                         <div class="col-md-4">
                             <label class="form-label">Notes</label>
                             <input name="notes" class="form-control" placeholder="Optional">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Attachments</label>
+                            <div class="input-group">
+                                <input type="file" name="attachments[]" id="payAttachments" class="form-control" multiple
+                                       accept="<?= h('.' . implode(',.', journal_attachment_allowed_extensions())) ?>"
+                                       data-max-bytes="<?= (int)RE_JOURNAL_ATTACH_MAX_BYTES ?>">
+                                <button type="button" class="btn btn-outline-secondary d-none" id="btnClearAttachments">Remove</button>
+                            </div>
+                            <div class="form-text">
+                                Optional. Payment proof, cheque copy or transfer slip — PDF, image, Excel or Word,
+                                up to <?= (int)(RE_JOURNAL_ATTACH_MAX_BYTES / 1024 / 1024) ?> MB each.
+                            </div>
+                            <ul class="list-unstyled small mb-0 mt-1" id="payAttachmentList"></ul>
                         </div>
                     </div>
                 </div>
@@ -551,6 +599,54 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
   var mode = 'manual';
 
   if (!form || !payInput) return;
+
+  var fileInput = document.getElementById('payAttachments');
+  var fileList = document.getElementById('payAttachmentList');
+  var btnClearFiles = document.getElementById('btnClearAttachments');
+
+  function fileSize(bytes) {
+    if (bytes < 1024 * 1024) return (Math.round(bytes / 102.4) / 10) + ' KB';
+    return (Math.round(bytes / 1024 / 10.24) / 100) + ' MB';
+  }
+
+  function renderFiles() {
+    var files = fileInput ? Array.prototype.slice.call(fileInput.files) : [];
+    fileList.textContent = '';
+    files.forEach(function (f) {
+      var li = document.createElement('li');
+      li.textContent = f.name + ' (' + fileSize(f.size) + ')';
+      fileList.appendChild(li);
+    });
+    btnClearFiles.classList.toggle('d-none', files.length === 0);
+  }
+
+  if (fileInput) {
+    fileInput.addEventListener('change', function () {
+      var allowed = (fileInput.getAttribute('accept') || '').toLowerCase().split(',');
+      var maxBytes = Number(fileInput.getAttribute('data-max-bytes')) || 0;
+      var bad = [];
+      Array.prototype.forEach.call(fileInput.files, function (f) {
+        var dot = f.name.lastIndexOf('.');
+        var ext = dot >= 0 ? f.name.slice(dot).toLowerCase() : '';
+        if (allowed.indexOf(ext) === -1) {
+          bad.push(f.name + ' - file type not allowed');
+        } else if (f.size === 0) {
+          bad.push(f.name + ' - file is empty');
+        } else if (maxBytes && f.size > maxBytes) {
+          bad.push(f.name + ' - larger than ' + Math.round(maxBytes / 1024 / 1024) + ' MB');
+        }
+      });
+      if (bad.length) {
+        fileInput.value = '';
+        notify('File not accepted', bad.join('; '));
+      }
+      renderFiles();
+    });
+    btnClearFiles.addEventListener('click', function () {
+      fileInput.value = '';
+      renderFiles();
+    });
+  }
 
   function rows() {
     return Array.prototype.slice.call(form.querySelectorAll('[data-bill-row]'));
@@ -738,7 +834,9 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
       title: 'Post vendor payment?',
       html: '<div class="text-start small">Payment <strong>' + fmt(pay) +
         ' AED</strong><br>Allocated to bills: <strong>' + fmt(allocated) +
-        ' AED</strong><br>To vendor advance: <strong>' + fmt(toAdvance) + ' AED</strong></div>',
+        ' AED</strong><br>To vendor advance: <strong>' + fmt(toAdvance) + ' AED</strong>' +
+        (fileInput && fileInput.files.length ? '<br>Attachments: <strong>' + fileInput.files.length + ' file(s)</strong>' : '') +
+        '</div>',
       icon: 'question',
       showCancelButton: true,
       confirmButtonText: 'Post Payment',

@@ -93,6 +93,46 @@ function journal_attachments_list(PDO $conn, int $journalId, int $companyId): ar
 }
 
 /**
+ * Check chosen files before anything is posted, so a page can refuse the whole
+ * submit instead of posting first and losing a file afterwards.
+ *
+ * @param array $files A single entry of $_FILES (the multi-file "name[]" shape).
+ * @return string[] User-facing errors; empty when every chosen file is acceptable.
+ */
+function journal_attachments_precheck(array $files): array {
+    $errors = [];
+    if (empty($files['name']) || !is_array($files['name'])) {
+        return $errors;
+    }
+    $allowed = journal_attachment_allowed_extensions();
+    $maxMb = (int)(RE_JOURNAL_ATTACH_MAX_BYTES / 1024 / 1024);
+    foreach ($files['name'] as $i => $name) {
+        if ($name === '' || $name === null) continue;
+        $errCode = $files['error'][$i] ?? UPLOAD_ERR_NO_FILE;
+        if ($errCode === UPLOAD_ERR_NO_FILE) continue;
+        if ($errCode === UPLOAD_ERR_INI_SIZE || $errCode === UPLOAD_ERR_FORM_SIZE) {
+            $errors[] = sprintf('"%s" is too large to upload.', $name);
+            continue;
+        }
+        if ($errCode !== UPLOAD_ERR_OK) {
+            $errors[] = sprintf('"%s" was not uploaded (PHP upload error %d).', $name, $errCode);
+            continue;
+        }
+        $size = (int)($files['size'][$i] ?? 0);
+        if ($size <= 0) {
+            $errors[] = sprintf('"%s" is empty.', $name);
+        } elseif ($size > RE_JOURNAL_ATTACH_MAX_BYTES) {
+            $errors[] = sprintf('"%s" exceeds the %d MB limit.', $name, $maxMb);
+        }
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        if (!in_array($ext, $allowed, true)) {
+            $errors[] = sprintf('"%s" has an unsupported file type (.%s).', $name, $ext);
+        }
+    }
+    return $errors;
+}
+
+/**
  * Store uploaded files against a journal.
  *
  * @param array $files A single entry of $_FILES (the multi-file "name[]" shape).
