@@ -205,7 +205,7 @@ if (!function_exists('ars_ui_airbnb_tag')) {
     {
         $code = trim((string)$code);
         return '<span class="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-ars-xs font-semibold leading-none"'
-            . ' style="background:#6b7280;color:#fff;" title="AIR-BNB booking' . ($code !== '' ? ' · ' . ars_ui_h($code) : '') . '">'
+            . ' style="background:#facc15;color:#422006;" title="AIR-BNB booking' . ($code !== '' ? ' · ' . ars_ui_h($code) : '') . '">'
             . 'AIR-BNB' . ($code !== '' ? ' <span style="font-weight:500;opacity:.85;">' . ars_ui_h($code) . '</span>' : '')
             . '</span>';
     }
