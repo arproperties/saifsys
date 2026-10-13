@@ -1,5 +1,16 @@
 <?php
 // accounts/invoices.php
+
+// This file is the Invoices tab of account.php and has no page layout of its own.
+// Opened directly (the Finance module card links to /accounts/invoices), send the
+// browser to the tab instead of rendering a bare fragment.
+if (realpath((string)($_SERVER['SCRIPT_FILENAME'] ?? '')) === __FILE__) {
+    $qs = $_GET;
+    $qs['tab'] = 'invoices';
+    header('Location: ../account.php?' . http_build_query($qs));
+    exit;
+}
+
 require_once __DIR__.'/../includes/advanced_search_service.php';
 require_once __DIR__.'/../includes/company_helper.php';
 require_once __DIR__.'/../includes/module_access.php';
