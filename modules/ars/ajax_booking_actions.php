@@ -1312,6 +1312,36 @@ try {
             echo json_encode(['success' => true]);
             break;
 
+        case 'set_booking_source': {
+            // A label only: nothing here touches the total, VAT or any posted document.
+            $newSource = ($_POST['booking_source'] ?? '') === 'airbnb' ? 'airbnb' : 'direct';
+            $oldSource = ($booking['booking_source'] ?? 'direct') === 'airbnb' ? 'airbnb' : 'direct';
+            if ($newSource === $oldSource) {
+                echo json_encode(['success' => true]);
+                break;
+            }
+            if ($newSource === 'direct' && !empty($booking['channel_ref'])) {
+                echo json_encode(['success' => false, 'error' => 'This booking is linked to Airbnb ' . $booking['channel_ref'] . ' by the email sync, so its source cannot be changed.']);
+                break;
+            }
+            $conn->prepare("UPDATE ars_bookings SET booking_source = ?, updated_at = NOW() WHERE id = ? AND company_id = ?")
+                 ->execute([$newSource, $bookingId, $arsCompanyId]);
+            ars_booking_activity_log($conn, [
+                'company_id' => $arsCompanyId,
+                'booking_id' => $bookingId,
+                'booking_number' => $booking['booking_number'] ?? null,
+                'event_category' => 'operational',
+                'event_type' => 'source_changed',
+                'title' => 'Source changed to ' . ($newSource === 'airbnb' ? 'AIR-BNB' : 'ARS'),
+                'previous_value' => $oldSource === 'airbnb' ? 'AIR-BNB' : 'ARS',
+                'new_value' => $newSource === 'airbnb' ? 'AIR-BNB' : 'ARS',
+                'source' => 'user',
+                'created_by' => $userId,
+            ]);
+            echo json_encode(['success' => true]);
+            break;
+        }
+
         case 'reapply_lifecycle_request':
             $requestId = (int)($_POST['request_id'] ?? 0);
             if ($requestId <= 0) {

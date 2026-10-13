@@ -784,6 +784,33 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
 }
 </style>
 <script>window.ARS_BOOKING_ID = <?= (int)$booking['id'] ?>;</script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var sel = document.getElementById('arsBookingSource');
+  if (!sel) return;
+  sel.addEventListener('change', function () {
+    var meta = document.querySelector('meta[name="ars-csrf"]');
+    var token = window.ARS_CSRF || (meta ? meta.content : '');
+    var fd = new FormData();
+    fd.append('action', 'set_booking_source');
+    fd.append('booking_id', String(window.ARS_BOOKING_ID));
+    fd.append('booking_source', sel.value);
+    fd.append('_csrf', token);
+    sel.disabled = true;
+    fetch('ajax_booking_actions.php', { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.success) { window.location.reload(); return; }
+        throw new Error((d && d.error) || 'Could not change the source.');
+      })
+      .catch(function (e) {
+        alert(e.message || 'Could not change the source.');
+        sel.value = sel.getAttribute('data-current');
+        sel.disabled = false;
+      });
+  });
+});
+</script>
 <script src="<?= h($arsBvJsHref) ?>"></script>
 
 <div>
@@ -849,6 +876,21 @@ $arsBvJsHref = rtrim(ars_ui_asset_base(), '/') . '/js/ars-booking-view.js?v=' . 
                     </div>
                     <div class="col-6 col-md-3"><strong class="text-muted d-block small">Nights</strong><?= (int)$booking['nights'] ?></div>
                     <div class="col-6 col-md-3"><strong class="text-muted d-block small">Guests</strong><?= (int)$booking['num_guests'] ?></div>
+                    <?php
+                    $bkSource = ($booking['booking_source'] ?? 'direct') === 'airbnb' ? 'airbnb' : 'direct';
+                    // A booking the email sync linked to an Airbnb code keeps its source.
+                    $bkSourceFixed = !empty($booking['channel_ref']);
+                    ?>
+                    <div class="col-6 col-md-3"><strong class="text-muted d-block small">Source</strong>
+                      <?php if ($bkSourceFixed): ?>
+                        <?= h(ars_ui_booking_source_label($bkSource)) ?>
+                      <?php else: ?>
+                        <select id="arsBookingSource" class="form-select form-select-sm" style="max-width:9rem;" data-current="<?= h($bkSource) ?>">
+                          <option value="direct" <?= $bkSource === 'direct' ? 'selected' : '' ?>>ARS</option>
+                          <option value="airbnb" <?= $bkSource === 'airbnb' ? 'selected' : '' ?>>AIR-BNB</option>
+                        </select>
+                      <?php endif; ?>
+                    </div>
                     <?php
                     // Display-only rate entered on the booking wizard; not part of the booking total.
                     $dispRateType = (string)($booking['display_rate_type'] ?? '');

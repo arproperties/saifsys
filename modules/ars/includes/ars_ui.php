@@ -205,9 +205,17 @@ if (!function_exists('ars_ui_airbnb_tag')) {
     {
         $code = trim((string)$code);
         return '<span class="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-ars-xs font-semibold leading-none"'
-            . ' style="background:#ff385c;color:#fff;" title="Airbnb booking' . ($code !== '' ? ' · ' . ars_ui_h($code) : '') . '">'
-            . 'Airbnb' . ($code !== '' ? ' <span style="font-weight:500;opacity:.85;">' . ars_ui_h($code) . '</span>' : '')
+            . ' style="background:#6b7280;color:#fff;" title="AIR-BNB booking' . ($code !== '' ? ' · ' . ars_ui_h($code) : '') . '">'
+            . 'AIR-BNB' . ($code !== '' ? ' <span style="font-weight:500;opacity:.85;">' . ars_ui_h($code) . '</span>' : '')
             . '</span>';
+    }
+}
+
+if (!function_exists('ars_ui_booking_source_label')) {
+    /** Staff-facing name of ars_bookings.booking_source. */
+    function ars_ui_booking_source_label(?string $source): string
+    {
+        return $source === 'airbnb' ? 'AIR-BNB' : 'ARS';
     }
 }
 

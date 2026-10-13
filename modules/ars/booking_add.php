@@ -44,6 +44,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     $displayRate = ($_POST['display_rate'] ?? '') !== '' ? max(0, (float)$_POST['display_rate']) : null;
 
+    // Where the booking came from; a label only, never passed to pricing.
+    $bookingSource = ($_POST['booking_source'] ?? '') === 'airbnb' ? 'airbnb' : 'direct';
+
     $pricingMode = $_POST['pricing_mode'] ?? 'nightly';
     if (!in_array($pricingMode, ['nightly', 'monthly_package', 'manual_total'], true)) {
         $pricingMode = 'nightly';
@@ -216,6 +219,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             error_log('ARS display rate not saved: ' . $e->getMessage());
                         }
                     }
+                    if ($bookingSource !== 'direct') {
+                        // Separate statement so the booking is still created if the source column is missing.
+                        try {
+                            $conn->prepare("UPDATE ars_bookings SET booking_source = ? WHERE id = ? AND company_id = ?")
+                                ->execute([$bookingSource, $newBookingId, $arsCompanyId]);
+                        } catch (PDOException $e) {
+                            error_log('ARS booking source not saved: ' . $e->getMessage());
+                        }
+                    }
                     try {
                         require_once __DIR__ . '/../../includes/AuditService.php';
                         AuditService::logEvent([
@@ -383,6 +395,19 @@ ars_shell_begin([
           <input type="number" name="num_guests" id="numGuests" class="form-control" min="1" value="<?= (int)($_POST['num_guests'] ?? 1) ?>">
         </div>
         <div class="col-sm-6">
+          <label class="form-label fw-semibold">Source Type</label>
+          <?php $srcPost = $_POST['booking_source'] ?? 'direct'; ?>
+          <select name="booking_source" id="bookingSource" class="form-select">
+            <option value="direct" <?= $srcPost !== 'airbnb' ? 'selected' : '' ?>>ARS</option>
+            <option value="airbnb" <?= $srcPost === 'airbnb' ? 'selected' : '' ?>>AIR-BNB</option>
+          </select>
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label fw-semibold">Rate (AED)</label>
+          <input type="number" step="0.01" min="0" name="display_rate" id="displayRate" class="form-control" value="<?= h($_POST['display_rate'] ?? '') ?>">
+          <small class="text-muted">Display only — does not change the booking total.</small>
+        </div>
+        <div class="col-sm-6">
           <label class="form-label fw-semibold">Rate type</label>
           <?php $drtPost = $_POST['display_rate_type'] ?? ''; ?>
           <select name="display_rate_type" id="displayRateType" class="form-select">
@@ -391,11 +416,6 @@ ars_shell_begin([
             <option value="weekly" <?= $drtPost === 'weekly' ? 'selected' : '' ?>>Weekly</option>
             <option value="monthly" <?= $drtPost === 'monthly' ? 'selected' : '' ?>>Monthly</option>
           </select>
-        </div>
-        <div class="col-sm-6">
-          <label class="form-label fw-semibold">Rate (AED)</label>
-          <input type="number" step="0.01" min="0" name="display_rate" id="displayRate" class="form-control" value="<?= h($_POST['display_rate'] ?? '') ?>">
-          <small class="text-muted">Display only — does not change the booking total.</small>
         </div>
         <div class="col-12 text-muted small">Availability is re-validated on the server when you create the booking.</div>
       </div>
@@ -541,6 +561,7 @@ ars_shell_begin([
       <div class="card-header">Review &amp; confirm</div>
       <div class="card-body">
         <p class="mb-2">Confirm dates, unit, guest, and the server pricing summary on the right, then create the reservation.</p>
+        <p class="mb-2">Source: <strong id="reviewBookingSource">ARS</strong></p>
         <p class="small text-muted mb-0">Totals come from the server preview — not from browser-side calculation.</p>
       </div>
     </div>
@@ -603,6 +624,15 @@ const vatRate = {$vatRate};
 let priceTimer = null;
 let priceRequestSeq = 0;
 let lastStayTotal = 0;
+
+(function () {
+  var sel = document.getElementById('bookingSource');
+  var out = document.getElementById('reviewBookingSource');
+  if (!sel || !out) return;
+  function sync() { out.textContent = sel.options[sel.selectedIndex].text; }
+  sel.addEventListener('change', sync);
+  sync();
+})();
 
 function arsMoney(n) {
   n = parseFloat(n);

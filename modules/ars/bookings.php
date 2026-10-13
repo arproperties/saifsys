@@ -23,6 +23,10 @@ $view = $_GET['view'] ?? '';
 $search = trim($_GET['q'] ?? '');
 $dateFrom = $_GET['from'] ?? '';
 $dateTo = $_GET['to'] ?? '';
+$sourceFilter = $_GET['source'] ?? '';
+if (!in_array($sourceFilter, ['direct', 'airbnb'], true)) {
+    $sourceFilter = '';
+}
 $today = date('Y-m-d');
 $allowedViews = ['', 'arrivals', 'departures', 'inhouse', 'outstanding'];
 if (!in_array($view, $allowedViews, true)) {
@@ -52,6 +56,11 @@ $params = [$arsCompanyId];
 if ($statusFilter) {
     $sql .= " AND b.status = ?";
     $params[] = $statusFilter;
+}
+if ($sourceFilter === 'airbnb') {
+    $sql .= " AND b.booking_source = 'airbnb'";
+} elseif ($sourceFilter === 'direct') {
+    $sql .= " AND COALESCE(b.booking_source, 'direct') <> 'airbnb'";
 }
 if ($search) {
     $sql .= " AND (b.booking_number LIKE ? OR g.first_name LIKE ? OR g.last_name LIKE ? OR u.unit_number LIKE ?)";
@@ -112,7 +121,7 @@ if ($exportCsv) {
     header('Content-Disposition: attachment; filename="ars-reservations-' . date('Ymd-His') . '.csv"');
     $out = fopen('php://output', 'w');
     fwrite($out, "\xEF\xBB\xBF");
-    fputcsv($out, ['Booking #', 'Guest', 'Phone', 'Email', 'Unit', 'Building', 'Check-in', 'Check-out', 'Nights', 'Days Left', 'Rate Type', 'Rate', 'Total', 'Paid', 'Balance', 'Status']);
+    fputcsv($out, ['Booking #', 'Source', 'Guest', 'Phone', 'Email', 'Unit', 'Building', 'Check-in', 'Check-out', 'Nights', 'Days Left', 'Rate Type', 'Rate', 'Total', 'Paid', 'Balance', 'Status']);
     foreach ($bookings as $b) {
         $checkIn = !empty($b['check_in']) ? substr((string)$b['check_in'], 0, 10) : '';
         $checkOut = !empty($b['check_out']) ? substr((string)$b['check_out'], 0, 10) : '';
@@ -125,6 +134,7 @@ if ($exportCsv) {
         }
         fputcsv($out, [
             $b['booking_number'],
+            ars_ui_booking_source_label($b['booking_source'] ?? null),
             trim(($b['first_name'] ?? '') . ' ' . ($b['last_name'] ?? '')),
             $b['guest_phone'] ?? '',
             $b['guest_email'] ?? '',
@@ -188,6 +198,14 @@ ars_shell_begin([
       <?php foreach (['pending','confirmed','checked_in','checked_out','completed','cancelled','expired'] as $s): ?>
         <option value="<?= h($s) ?>" <?= $statusFilter === $s ? 'selected' : '' ?>><?= h(ucfirst(str_replace('_', ' ', $s))) ?></option>
       <?php endforeach; ?>
+    </select>
+  </div>
+  <div>
+    <label class="mb-1.5 block text-ars-xs font-medium text-ars-muted" for="source">Source</label>
+    <select id="source" name="source" class="min-h-ars-touch rounded-ars-md border border-ars-border bg-ars-bg px-3 text-ars-sm">
+      <option value="">All</option>
+      <option value="direct" <?= $sourceFilter === 'direct' ? 'selected' : '' ?>>ARS</option>
+      <option value="airbnb" <?= $sourceFilter === 'airbnb' ? 'selected' : '' ?>>AIR-BNB</option>
     </select>
   </div>
   <div>

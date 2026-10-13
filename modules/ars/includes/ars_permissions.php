@@ -17,6 +17,7 @@ function ars_core_actions(): array {
         'list_attachments', 'upload_attachment', 'set_attachment_category', 'delete_attachment',
         'create_service_invoice', 'create_extension_invoice', 'delete_extension_bill', 'create_credit_note',
         'create_adjustment_invoice',
+        'set_booking_source',
     ];
 }
 

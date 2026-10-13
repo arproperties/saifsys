@@ -173,9 +173,11 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
             $style['class'] = 'abnb-bar--due';
         }
 
-        $isAirbnb = ($bk['booking_source'] ?? 'direct') === 'airbnb';
-        $tooltip = ($isAirbnb ? 'Airbnb' . (!empty($bk['channel_ref']) ? ' ' . $bk['channel_ref'] : '') . ' · ' : '')
-            . $guest . ' · ' . ($bk['booking_number'] ?? '')
+        if (($bk['booking_source'] ?? 'direct') === 'airbnb') {
+            $guest .= ' (AIR-BNB)';
+        }
+
+        $tooltip = $guest . ' · ' . ($bk['booking_number'] ?? '')
             . ' · ' . date('j M', strtotime($checkIn)) . ' → ' . date('j M', strtotime($occEnd))
             . ' · ' . $nights . ' night' . ($nights === 1 ? '' : 's')
             . ' · ' . $style['label']
@@ -193,7 +195,6 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
             'guest' => $guest,
             'nights' => $nights,
             'tooltip' => $tooltip,
-            'airbnb' => $isAirbnb,
         ];
     }
     return $bars;
@@ -298,7 +299,6 @@ $halfColsStyle = 'grid-template-columns: repeat(' . (2 * $daysInMonth) . ', minm
                            style="grid-column: <?= (int)$bar['start'] ?> / <?= (int)$bar['end'] ?>;"
                            href="booking_view.php?id=<?= (int)$bar['id'] ?>"
                            title="<?= h($bar['tooltip']) ?>">
-                            <?php if ($bar['airbnb']): ?><span class="abnb-bar-airbnb" aria-label="Airbnb">A</span><?php endif; ?>
                             <span class="abnb-bar-name"><?= h($bar['guest']) ?></span>
                             <span class="abnb-bar-meta"><?= (int)$bar['nights'] ?>n</span>
                         </a>
