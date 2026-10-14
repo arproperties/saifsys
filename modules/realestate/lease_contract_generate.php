@@ -33,6 +33,7 @@ if ($leaseId) {
     $stmt = $conn->prepare("
         SELECT l.*, 
                t.first_name, t.last_name, t.email, t.phone, t.id_number,
+               t.company_name AS tenant_company_name,
                u.unit_number, u.unit_type, u.area_sqm,
                b.name as building_name, b.address as building_address,
                c.name as company_name
@@ -78,16 +79,28 @@ if ($action === 'generate' && $leaseId && $_SERVER['REQUEST_METHOD'] === 'POST')
 
 // Handle PDF download
 if ($action === 'download' && $leaseId) {
-    $file = $_GET['file'] ?? '';
-    if (empty($file)) {
-        // Get from lease record
+    $file = '';
+    try {
+        if (empty($_GET['file'])) {
+            // Download button: rebuild from current lease data so the PDF is never stale
+            require_once __DIR__ . '/includes/contract_pdf_generator.php';
+            $generator = new ContractPDFGenerator($conn, $currentCompanyId);
+            $generator->generateFromLease($leaseId);
+        }
+        // Only ever serve the lease's own stored contract, never a path taken from the URL
         $stmt = $conn->prepare("SELECT generated_contract_path FROM re_leases WHERE id = ? AND company_id = ?");
         $stmt->execute([$leaseId, $currentCompanyId]);
-        $lease = $stmt->fetch(PDO::FETCH_ASSOC);
-        $file = $lease['generated_contract_path'] ?? '';
+        $file = (string)($stmt->fetchColumn() ?: '');
+    } catch (Exception $e) {
+        $error = "Error generating PDF: " . $e->getMessage();
     }
-    
-    if ($file && file_exists(__DIR__ . '/../../' . $file)) {
+    if ($file !== '' && strpos($file, 'uploads/contracts/') !== 0) {
+        $file = '';
+    }
+
+    if ($error) {
+        // fall through and show the error on the page
+    } elseif ($file && file_exists(__DIR__ . '/../../' . $file)) {
         $fullPath = __DIR__ . '/../../' . $file;
         $filename = basename($file);
         
@@ -188,7 +201,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     <div class="row">
                         <div class="col-md-6">
                             <p><strong>Lease Number:</strong> <?= h($lease['lease_number']) ?></p>
-                            <p><strong>Tenant:</strong> <?= h($lease['first_name'] . ' ' . $lease['last_name']) ?></p>
+                            <p><strong>Tenant:</strong> <?= h(trim((string)($lease['tenant_company_name'] ?? '')) !== '' ? $lease['tenant_company_name'] : trim($lease['first_name'] . ' ' . $lease['last_name'])) ?></p>
                             <p><strong>Unit:</strong> <?= h($lease['unit_number'] . ' - ' . $lease['building_name']) ?></p>
                             <p><strong>Period:</strong> <?= date('d/m/Y', strtotime($lease['start_date'])) ?> - <?= date('d/m/Y', strtotime($lease['end_date'])) ?></p>
                         </div>

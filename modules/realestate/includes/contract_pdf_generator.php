@@ -32,6 +32,7 @@ if (!class_exists('ContractPDFGenerator')) {
             $stmt = $this->conn->prepare("
                 SELECT l.*,
                        t.first_name, t.last_name, t.email, t.phone, t.id_number,
+                       t.company_name AS tenant_company_name,
                        u.unit_number, u.unit_type, u.area_sqm, u.premises_number,
                        b.name as building_name, b.address as building_address,
                        c.name as company_name
@@ -100,7 +101,10 @@ if (!class_exists('ContractPDFGenerator')) {
             $endDate = !empty($lease['end_date']) ? date('d/m/Y', strtotime($lease['end_date'])) : '';
             $todayDate = date('d/m/Y');
 
-            $tenantName = trim(($lease['first_name'] ?? '') . ' ' . ($lease['last_name'] ?? ''));
+            $tenantName = trim((string)($lease['tenant_company_name'] ?? ''));
+            if ($tenantName === '') {
+                $tenantName = trim(($lease['first_name'] ?? '') . ' ' . ($lease['last_name'] ?? ''));
+            }
             $tenantPhone = $lease['phone'] ?? '';
             $tenantEmail = $lease['email'] ?? '';
             $tenantEmiratesId = $lease['id_number'] ?? '';
