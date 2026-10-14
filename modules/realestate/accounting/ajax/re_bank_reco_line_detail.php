@@ -57,6 +57,10 @@ try {
     // A returned cheque comes first: same-amount receipts of other months are not its match.
     $bouncedPair = re_bank_reco_bounced_pair($conn, $cid, $line);
     $primary = $bouncedPair ? null : ($suggestions[0] ?? null);
+    // A charge reconciled without its VAT line leaves the VAT line with no same-amount entry.
+    if (!$primary && !$bouncedPair) {
+        $primary = re_bank_reco_code_remainder_suggestion($conn, $cid, $line);
+    }
     $alternatives = array_slice($suggestions, $bouncedPair ? 0 : 1, 5);
     $glCandidates = $nearLineDate(re_bank_reco_gl_candidates_for_line($conn, $cid, $line, 50, $dateFrom, $dateTo));
     foreach ($glCandidates as &$gc) {

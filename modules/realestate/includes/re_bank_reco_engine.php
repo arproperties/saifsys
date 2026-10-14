@@ -355,6 +355,9 @@ function re_bank_reco_match_selections(
  */
 function re_bank_reco_combined_suggestion(PDO $conn, int $companyId, array $line): ?array
 {
+    if ((float) ($line['net_amount'] ?? 0) < 0) {
+        return re_bank_reco_spent_split_suggestion($conn, $companyId, $line);
+    }
     $glAccountId = (int) ($line['gl_account_id'] ?? 0);
     $target = re_bank_rec_money((float) ($line['remaining'] ?? 0));
     $date = (string) ($line['statement_date'] ?? '');
@@ -402,10 +405,38 @@ function re_bank_reco_combined_suggestion(PDO $conn, int $companyId, array $line
     ");
     $st->execute([$companyId, $glAccountId, $target + 0.005, $date, $date]);
 
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+    // Holiday home bookings: the guest's one transfer is recorded as a booking payment and a
+    // security deposit (4800 rent + 1500 deposit). Grouped per booking, like a tenant's receipts.
+    if (re_db_table_exists($conn, 'ars_booking_payments') && re_db_table_exists($conn, 'ars_security_deposits')) {
+        $ars = $conn->prepare("
+            SELECT gl.id AS gl_id, gl.entry_date, gl.debit_amount, gl.credit_amount,
+                   0 AS payment_id,
+                   CASE WHEN ad.id IS NOT NULL THEN CONCAT('Deposit ', ad.deposit_number) ELSE CONCAT('Booking payment #', ap.id) END AS receipt_number,
+                   ap.reference_number, b.booking_number AS lease_number, NULL AS cheque_number,
+                   b.id AS booking_id, CONCAT(g.first_name, ' ', g.last_name) AS tenant_name
+            FROM re_general_ledger gl
+            JOIN re_journal_headers jh ON jh.id = gl.journal_id AND jh.reference_type IN ('ars_payment','ars_security_deposit')
+            LEFT JOIN ars_booking_payments ap ON jh.reference_type = 'ars_payment' AND ap.id = jh.reference_id
+            LEFT JOIN ars_security_deposits ad ON jh.reference_type = 'ars_security_deposit' AND ad.id = jh.reference_id
+            JOIN ars_bookings b ON b.id = COALESCE(ap.booking_id, ad.booking_id)
+            LEFT JOIN ars_guests g ON g.id = b.guest_id
+            WHERE gl.company_id = ? AND gl.account_id = ? AND gl.debit_amount > 0
+              AND gl.debit_amount <= ?
+              AND gl.entry_date BETWEEN DATE_SUB(?, INTERVAL 7 DAY) AND DATE_ADD(?, INTERVAL 7 DAY)
+              " . re_bank_rec_sql_skip_edit_reversals('gl') . "
+            ORDER BY gl.entry_date, gl.id
+            LIMIT 500
+        ");
+        $ars->execute([$companyId, $glAccountId, $target + 0.005, $date, $date]);
+        $rows = array_merge($rows, $ars->fetchAll(PDO::FETCH_ASSOC));
+    }
+
     $groups = [];
-    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $tenantId = (int) ($row['tenant_id'] ?? 0);
-        if ($tenantId <= 0) {
+    foreach ($rows as $row) {
+        $groupKey = (int) ($row['booking_id'] ?? 0) > 0 ? 'b' . (int) $row['booking_id'] : 't' . (int) ($row['tenant_id'] ?? 0);
+        if ($groupKey === 't0') {
             continue;
         }
         $rem = re_gl_entry_remaining($conn, (int) $row['gl_id'], $companyId);
@@ -413,7 +444,7 @@ function re_bank_reco_combined_suggestion(PDO $conn, int $companyId, array $line
             continue;
         }
         $row['remaining'] = $rem;
-        $groups[$tenantId][] = $row;
+        $groups[$groupKey][] = $row;
     }
 
     $haystack = mb_strtolower((string) ($line['description'] ?? '') . ' ' . (string) ($line['reference'] ?? ''), 'UTF-8');
@@ -436,6 +467,16 @@ function re_bank_reco_combined_suggestion(PDO $conn, int $companyId, array $line
                 || ($chq !== '' && $lineCheque !== '' && $chq === $lineCheque)) {
                 $identified = true;
                 break;
+            }
+            // A booking payment keeps the bank text with words typed around it ("AED 6300-IPP ..."),
+            // so one long bank number from it found on the line is enough.
+            if (!empty($row['booking_id'])) {
+                foreach (preg_split('/\s+/', $ref) ?: [] as $token) {
+                    if (strlen($token) >= 12 && preg_match('/\d{6}/', $token) && str_contains($haystack, $token)) {
+                        $identified = true;
+                        break 2;
+                    }
+                }
             }
         }
         // Smallest set of receipts that adds up to the line.
@@ -462,7 +503,7 @@ function re_bank_reco_combined_suggestion(PDO $conn, int $companyId, array $line
             }
         }
         if ($best !== null) {
-            $found[] = ['rows' => $best, 'name' => $groupName, 'sum' => $target];
+            $found[] = ['rows' => $best, 'name' => $groupName, 'sum' => $target, 'tied' => $identified];
         } elseif ($bestUnder !== null && $bestUnderSum >= $target * 0.5 && $bestUnderSum <= $target * 1.5) {
             // Further off than half the line it is more likely a different payment than an edited receipt.
             $under[] = ['rows' => $bestUnder, 'name' => $groupName, 'sum' => round($bestUnderSum, 2)];
@@ -477,7 +518,7 @@ function re_bank_reco_combined_suggestion(PDO $conn, int $companyId, array $line
     }
     // Several tenants fit the amount: only trust the one whose name is on the bank line.
     if (count($found) > 1) {
-        $found = array_values(array_filter($found, static fn(array $f): bool => !empty($f['name']['strong'])));
+        $found = array_values(array_filter($found, static fn(array $f): bool => !empty($f['name']['strong']) || !empty($f['tied'])));
         if (count($found) !== 1) {
             return null;
         }
@@ -533,6 +574,98 @@ function re_bank_reco_combined_suggestion(PDO $conn, int $companyId, array $line
 }
 
 /**
+ * Money-out line that the ERP holds as two or three entries booked the same day (a cash
+ * withdrawal entered as a vendor payment of 14,870 and a 30 charge). Offered only when exactly
+ * one set of that day's open entries adds up to the line, and no single entry does.
+ * Same shape as re_bank_reco_combined_suggestion().
+ *
+ * @return array<string,mixed>|null
+ */
+function re_bank_reco_spent_split_suggestion(PDO $conn, int $companyId, array $line): ?array
+{
+    $glAccountId = (int) ($line['gl_account_id'] ?? 0);
+    $target = re_bank_rec_money((float) ($line['remaining'] ?? 0));
+    $date = (string) ($line['statement_date'] ?? '');
+    if ($glAccountId <= 0 || $target <= 0 || $date === '') {
+        return null;
+    }
+    $st = $conn->prepare("
+        SELECT gl.id AS gl_id, gl.entry_date, gl.credit_amount, gl.reference, jh.journal_number,
+               COALESCE(NULLIF(jh.description, ''), gl.description) AS label
+        FROM re_general_ledger gl
+        LEFT JOIN re_journal_headers jh ON jh.id = gl.journal_id
+        WHERE gl.company_id = ? AND gl.account_id = ? AND gl.credit_amount > 0 AND gl.credit_amount <= ?
+          AND gl.entry_date BETWEEN DATE_SUB(?, INTERVAL 7 DAY) AND DATE_ADD(?, INTERVAL 7 DAY)
+          AND COALESCE(gl.is_reconciled, 0) = 0
+          " . re_bank_rec_sql_skip_edit_reversals('gl') . "
+          " . re_bank_rec_sql_skip_matched_sources('gl') . "
+        ORDER BY gl.entry_date, gl.id
+        LIMIT 300
+    ");
+    $st->execute([$companyId, $glAccountId, $target + 0.005, $date, $date]);
+    $rows = [];
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $row['remaining'] = re_gl_entry_remaining($conn, (int) $row['gl_id'], $companyId);
+        if ($row['remaining'] <= 0.009) {
+            continue;
+        }
+        // One entry for the whole amount is the normal one-to-one match, not a split.
+        if (abs($row['remaining'] - $target) < 0.01) {
+            return null;
+        }
+        if ((string) $row['entry_date'] === $date) {
+            $rows[] = $row;
+        }
+    }
+    $n = count($rows);
+    if ($n < 2 || $n > 40) {
+        return null;
+    }
+    $sets = [];
+    for ($i = 0; $i < $n; $i++) {
+        for ($j = $i + 1; $j < $n; $j++) {
+            $two = $rows[$i]['remaining'] + $rows[$j]['remaining'];
+            if (abs($two - $target) < 0.01) {
+                $sets[] = [$rows[$i], $rows[$j]];
+            }
+            for ($k = $j + 1; $k < $n && $two < $target; $k++) {
+                if (abs($two + $rows[$k]['remaining'] - $target) < 0.01) {
+                    $sets[] = [$rows[$i], $rows[$j], $rows[$k]];
+                }
+            }
+        }
+    }
+    // More than one way to reach the amount is a guess, not a match.
+    if (count($sets) !== 1) {
+        return null;
+    }
+    $items = [];
+    foreach ($sets[0] as $row) {
+        $items[] = [
+            'system_type' => 're_general_ledger',
+            'system_id' => (int) $row['gl_id'],
+            'payment_id' => 0,
+            'amount' => (float) $row['remaining'],
+            'txn_date' => (string) $row['entry_date'],
+            'receipt_number' => mb_substr(trim((string) $row['journal_number'] . ' — ' . (string) $row['label']), 0, 90, 'UTF-8'),
+            'reference' => (string) ($row['reference'] ?? ''),
+        ];
+    }
+    return [
+        'items' => $items,
+        'total' => $target,
+        'short' => 0.0,
+        'over' => 0.0,
+        'line_amount' => round(abs((float) ($line['net_amount'] ?? 0)), 2),
+        'party_name' => '',
+        'lease_number' => '',
+        'confidence' => 'Medium',
+        'noun' => 'entry',
+        'reasons' => [count($items) . ' entries dated the same day as the bank line add up to ' . number_format($target, 2)],
+    ];
+}
+
+/**
  * Tenant receipt (re_payments.id) behind a suggestion or ERP candidate, for the "View receipt" link.
  * 0 when the entry is not a tenant receipt.
  */
@@ -559,12 +692,26 @@ function re_bank_reco_receipt_id(PDO $conn, int $companyId, array $s): int
 }
 
 /**
- * Bank's own transaction code at the end of a line ("... - AE0195395"). A charge and its VAT
- * line carry the same code, which is how the two are paired.
+ * Bank's own transaction code at the end of a line ("... - AE0195395", or "... - S64858514"
+ * on card transactions). A charge and its VAT line carry the same code, which is how the two
+ * are paired.
  */
 function re_bank_reco_line_bank_code(string $description): string
 {
-    return preg_match('/-\s*([A-Z]{2}\d{6,})\s*$/', trim($description), $m) ? $m[1] : '';
+    return preg_match('/-\s*([A-Z]{1,2}\d{6,})\s*$/', trim($description), $m) ? $m[1] : '';
+}
+
+/**
+ * Card and merchant of a card purchase line ("POS-PURCHASECARD NO.4439... DUBAI DIGITAL AUTHORITY
+ * DUBAI:AE 536567 01-10-2026 ..."). Each purchase has its own bank code, so several payments to
+ * one merchant on one day are paired by this instead. Empty for any other kind of line.
+ */
+function re_bank_reco_line_merchant_key(string $description): string
+{
+    if (!preg_match('/^POS-PURCHASE\s*CARD\s+NO\.?\s*(\d+)\s+(.+?:[A-Z]{2})\s+\d+\s+\d{2}-\d{2}-\d{4}/i', trim($description), $m)) {
+        return '';
+    }
+    return $m[1] . '|' . strtoupper(preg_replace('/\s+/', ' ', trim($m[2])));
 }
 
 /** The bank's own VAT line for a charge ("VALUE ADDED TAX...", "Value Added Tax (VAT) @ 5%"). */
@@ -625,8 +772,8 @@ function re_bank_reco_split_code_group(array $lines, float $vatRate = 5.0): arra
 
 /**
  * Bank lines that the ERP holds as one entry (a bank charge and its VAT line booked as one
- * expense). Loads and checks them: same bank account, same day, same bank code, same direction,
- * all still open.
+ * expense, or several payments booked as one). The lines are ticked by hand, so any open lines
+ * of one bank account going the same way are accepted.
  *
  * @param list<int> $lineIds
  * @return array{success:bool,lines:list<array<string,mixed>>,total:float,error:?string}
@@ -636,7 +783,7 @@ function re_bank_reco_load_line_group(PDO $conn, int $companyId, array $lineIds)
     $fail = static fn(string $msg): array => ['success' => false, 'lines' => [], 'total' => 0.0, 'error' => $msg];
     $lineIds = array_values(array_unique(array_filter(array_map('intval', $lineIds), static fn(int $i): bool => $i > 0)));
     if (count($lineIds) < 2 || count($lineIds) > 10) {
-        return $fail('Select the charge line together with its VAT line.');
+        return $fail('Select two to ten lines.');
     }
     $lines = [];
     $total = 0.0;
@@ -646,16 +793,11 @@ function re_bank_reco_load_line_group(PDO $conn, int $companyId, array $lineIds)
             return $fail('Statement line not found.');
         }
         $line['bank_code'] = re_bank_reco_line_bank_code((string) $line['description']);
-        if ($line['bank_code'] === '') {
-            return $fail('These lines do not carry a shared bank code.');
-        }
         if ($lines && (
             (int) $line['bank_account_id'] !== (int) $lines[0]['bank_account_id']
             || $line['is_spent'] !== $lines[0]['is_spent']
-            || (string) $line['statement_date'] !== (string) $lines[0]['statement_date']
-            || $line['bank_code'] !== $lines[0]['bank_code']
         )) {
-            return $fail('Only lines the bank posted together (same day, same bank code) can be reconciled as one.');
+            return $fail('Only lines of one bank account going the same way (all money out, or all money in) can be reconciled as one.');
         }
         if (in_array((string) $line['status'], ['ignored', 'investigating'], true)) {
             return $fail('A selected line is on hold or ignored.');
@@ -744,6 +886,9 @@ function re_bank_reco_match_lines_to_gl(PDO $conn, int $companyId, array $lineId
         return ['success' => false, 'confirmed' => 0, 'error' => 'The ERP entry must be unreconciled, equal the lines total (' . number_format($total, 2) . ') and be dated with the bank lines.'];
     }
 
+    $hasVatLine = (bool) array_filter($lines, static fn(array $l): bool => re_bank_reco_is_vat_line((string) $l['description']));
+    $matchNote = ($hasVatLine ? 'Charge + VAT lines' : 'Related bank lines') . ' (' . count($lines) . ' lines, total ' . number_format($total, 2) . ')';
+
     try {
         $conn->beginTransaction();
         $confirmed = 0;
@@ -759,7 +904,7 @@ function re_bank_reco_match_lines_to_gl(PDO $conn, int $companyId, array $lineId
                 $glLineId,
                 (float) $line['remaining'],
                 $userId,
-                'Charge + VAT lines (' . count($lines) . ' lines, total ' . number_format($total, 2) . ')',
+                $matchNote,
                 null,
                 null,
                 'match'
@@ -785,9 +930,70 @@ function re_bank_reco_match_lines_to_gl(PDO $conn, int $companyId, array $lineId
 }
 
 /**
+ * A VAT line left open after its charge line was reconciled on its own (or the other way round):
+ * the first line went against an ERP entry booked for both (1.00 against 1.05), so that entry
+ * still has exactly this line's amount open. Returns the entry as a Match suggestion, else null.
+ *
+ * @return array<string,mixed>|null
+ */
+function re_bank_reco_code_remainder_suggestion(PDO $conn, int $companyId, array $line): ?array
+{
+    $code = re_bank_reco_line_bank_code((string) ($line['description'] ?? ''));
+    $remaining = re_bank_rec_money((float) ($line['remaining'] ?? 0));
+    $net = (float) ($line['net_amount'] ?? 0);
+    if ($code === '' || $remaining <= 0.009 || abs($net) < 0.01) {
+        return null;
+    }
+    $st = $conn->prepare("
+        SELECT DISTINCT l.description, m.gl_line_id
+        FROM re_bank_statement_lines l
+        JOIN re_bank_reconciliation_matches m
+          ON m.company_id = l.company_id AND m.statement_line_id = l.id AND m.status = 'confirmed' AND m.gl_line_id IS NOT NULL
+        WHERE l.company_id = ? AND l.bank_account_id = ? AND l.id <> ? AND l.statement_date = ?
+          AND l.net_amount * ? > 0 AND l.description LIKE CONCAT('%', ?, '%')
+        LIMIT 20
+    ");
+    $st->execute([$companyId, (int) ($line['bank_account_id'] ?? 0), (int) ($line['id'] ?? 0), (string) ($line['statement_date'] ?? ''), $net <=> 0, $code]);
+    $glIds = [];
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $glId = (int) $row['gl_line_id'];
+        if (re_bank_reco_line_bank_code((string) $row['description']) === $code
+            && abs(re_gl_entry_remaining($conn, $glId, $companyId) - $remaining) < 0.01) {
+            $glIds[$glId] = true;
+        }
+    }
+    if (count($glIds) !== 1) {
+        return null;
+    }
+    $gl = $conn->prepare("
+        SELECT gl.*, jh.journal_number, jh.reference_type, jh.reference_id, jh.description AS journal_description
+        FROM re_general_ledger gl
+        LEFT JOIN re_journal_headers jh ON jh.id = gl.journal_id
+        WHERE gl.id = ? AND gl.company_id = ? AND gl.account_id = ? AND gl." . ($net > 0 ? 'debit_amount' : 'credit_amount') . " > 0
+        LIMIT 1
+    ");
+    $gl->execute([(int) array_key_first($glIds), $companyId, (int) ($line['gl_account_id'] ?? 0)]);
+    $row = $gl->fetch(PDO::FETCH_ASSOC);
+    $c = $row ? re_bank_reco_gl_row_to_candidate($conn, $companyId, $line, $row) : null;
+    if (!$c) {
+        return null;
+    }
+    // Reconciled against the ledger line itself, as the charge line was.
+    $c['source_table'] = 're_general_ledger';
+    $c['source_id'] = (int) $c['gl_line_id'];
+    $c['confidence'] = 'High';
+    $c['reasons'] = [
+        'The other line of this bank charge is already reconciled against this entry',
+        number_format($remaining, 2) . ' is still open on it — the same as this line',
+    ];
+    return re_bank_workbench_format_suggestion($c);
+}
+
+/**
  * A cheque the bank took in and sent back: a deposit line and a return line with the same bank
  * reference and opposite amounts. No money stayed, so the two lines close each other and nothing
  * is posted. Null when the line is not one half of such a pair.
+ * A line imported without a reference is paired by the bank code at the end of its text instead.
  *
  * @return array<string,mixed>|null
  */
@@ -797,7 +1003,12 @@ function re_bank_reco_bounced_pair(PDO $conn, int $companyId, array $line): ?arr
     $net = (float) ($line['net_amount'] ?? 0);
     $amount = re_bank_rec_money(abs($net));
     $ref = trim((string) ($line['reference'] ?? ''));
-    if ($lineId <= 0 || $amount <= 0 || mb_strlen($ref, 'UTF-8') < 8
+    $code = '';
+    if (mb_strlen($ref, 'UTF-8') < 8) {
+        $ref = '';
+        $code = re_bank_reco_line_bank_code((string) ($line['description'] ?? ''));
+    }
+    if ($lineId <= 0 || $amount <= 0 || ($ref === '' && $code === '')
         || in_array((string) ($line['status'] ?? ''), ['ignored', 'investigating'], true)
         || abs(re_bank_line_remaining($conn, $line) - $amount) > 0.009) {
         return null;
@@ -805,7 +1016,7 @@ function re_bank_reco_bounced_pair(PDO $conn, int $companyId, array $line): ?arr
 
     $st = $conn->prepare("
         SELECT l.* FROM re_bank_statement_lines l
-        WHERE l.company_id = ? AND l.bank_account_id = ? AND l.id <> ? AND l.reference = ?
+        WHERE l.company_id = ? AND l.bank_account_id = ? AND l.id <> ? AND " . ($ref !== '' ? 'l.reference = ?' : "l.description LIKE CONCAT('%', ?, '%')") . "
           AND ABS(l.net_amount + ?) < 0.01
           AND l.status NOT IN ('ignored','investigating')
           AND l.statement_date BETWEEN DATE_SUB(?, INTERVAL 10 DAY) AND DATE_ADD(?, INTERVAL 10 DAY)
@@ -814,8 +1025,11 @@ function re_bank_reco_bounced_pair(PDO $conn, int $companyId, array $line): ?arr
         LIMIT 20
     ");
     $date = (string) ($line['statement_date'] ?? '');
-    $st->execute([$companyId, (int) ($line['bank_account_id'] ?? 0), $lineId, $ref, $net, $date, $date]);
+    $st->execute([$companyId, (int) ($line['bank_account_id'] ?? 0), $lineId, $ref !== '' ? $ref : $code, $net, $date, $date]);
     $partners = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    if ($ref === '') {
+        $partners = array_values(array_filter($partners, static fn(array $p): bool => re_bank_reco_line_bank_code((string) ($p['description'] ?? '')) === $code));
+    }
     if (count($partners) > 1) {
         // Some banks put the account number in the reference, so two bounced cheques of the same
         // amount share it. The cheque number in the text tells them apart.
@@ -854,7 +1068,7 @@ function re_bank_reco_bounced_pair(PDO $conn, int $companyId, array $line): ?arr
         $found = $cq->fetchAll(PDO::FETCH_ASSOC) ?: [];
         // Cheque numbers repeat across tenants: trust the one whose bounce note carries this bank
         // reference, else the only one dated around the bank line.
-        $byRef = array_values(array_filter($found, static fn(array $c): bool => str_contains((string) ($c['bounced_reason'] ?? ''), $ref)));
+        $byRef = $ref === '' ? [] : array_values(array_filter($found, static fn(array $c): bool => str_contains((string) ($c['bounced_reason'] ?? ''), $ref)));
         if (count($byRef) === 1) {
             $cheque = $byRef[0];
         } else {
@@ -892,7 +1106,7 @@ function re_bank_reco_bounced_pair(PDO $conn, int $companyId, array $line): ?arr
         'return_line' => $side($return),
         'partner_line_id' => (int) $partner['id'],
         'amount' => $amount,
-        'reference' => $ref,
+        'reference' => $ref !== '' ? $ref : $code,
         'cheque_number' => $chequeNo,
         'cheque_id' => $cheque ? (int) $cheque['id'] : 0,
         'lease_id' => $cheque ? (int) $cheque['lease_id'] : 0,

@@ -37,6 +37,12 @@
   }
 
   // Receipts found for a bank line that do not add up to it: how far off, and which way.
+  // "receipt" for money in, "entry" for a money-out line recorded as several ERP entries.
+  function splitNoun(sp, n){
+    const w = (sp && sp.noun) || 'receipt';
+    return n === 1 ? w : (w === 'entry' ? 'entries' : w + 's');
+  }
+
   function splitOff(sp){
     if (!sp) return null;
     if (Number(sp.short) > 0) return {amt: Number(sp.short).toFixed(2), word: 'missing', less: true};
@@ -71,7 +77,7 @@
     if (!j.success) { alert(j.error || 'Failed to load lines'); return; }
     lines = j.lines || [];
     Array.from(pickedIds).forEach(function(id){
-      if (!lines.some(function(l){ return Number(l.id) === id && l.related; })) pickedIds.clear();
+      if (!lines.some(function(l){ return Number(l.id) === id && canPick(l); })) pickedIds.clear();
     });
     renderLines();
     if (!selectedLineId) {
@@ -87,6 +93,11 @@
       countLabel += ' · from ' + oldest + ' (earlier may be reconciled)';
     }
     document.getElementById('linesCount').textContent = countLabel;
+  }
+
+  // Any open line can be ticked to reconcile it together with other lines against one ERP entry.
+  function canPick(l){
+    return !l.is_fully_matched && ['ignored', 'investigating', 'reconciled'].indexOf(String(l.status || '')) < 0;
   }
 
   function renderLines(){
@@ -106,9 +117,11 @@
         '<div class="co-breco-line-top">' +
           '<div><div class="co-breco-line-desc">' + esc(l.description || '(No description)') + '</div>' +
           '<div class="co-breco-line-meta">' + esc(l.txn_date) + (l.reference ? ' · ' + esc(l.reference) : '') + '</div>' +
-          (l.related
+          (canPick(l)
             ? '<label class="co-breco-related small"><input type="checkbox" class="form-check-input co-breco-pick"' + (pickedIds.has(Number(l.id)) ? ' checked' : '') + '> ' +
-              'Reconcile with its ' + (l.related.line_ids.length - 1 > 1 ? (l.related.line_ids.length - 1) + ' related lines' : 'related line') + ' · total ' + Number(l.related.total).toFixed(2) + '</label>'
+              (l.related
+                ? 'Reconcile with its ' + (l.related.line_ids.length - 1 > 1 ? (l.related.line_ids.length - 1) + ' related lines' : 'related line') + ' · total ' + Number(l.related.total).toFixed(2)
+                : 'Reconcile with other lines') + '</label>'
             : '') +
           '</div>' +
           '<div class="text-end"><div class="co-breco-amt ' + (spent ? 'spent' : 'received') + '">' + fmtAmt(Math.abs(l.amount), spent) + '</div>' +
@@ -120,12 +133,12 @@
         wrap.innerHTML = '<div class="co-breco-split-note">' +
           (splitOff(l.split)
             ? 'Receipts total ' + Number(l.split.total).toFixed(2) + ' · <span class="text-danger">' + splitOff(l.split).amt + ' ' + splitOff(l.split).word + '</span>'
-            : (l.split.items.length > 1 ? 'Recorded as ' + l.split.items.length + ' receipts' : 'Receipt for the remaining ' + Number(l.split.total).toFixed(2))) + '</div>';
+            : (l.split.items.length > 1 ? 'Recorded as ' + l.split.items.length + ' ' + splitNoun(l.split, 2) : 'Receipt for the remaining ' + Number(l.split.total).toFixed(2))) + '</div>';
         l.split.items.forEach(function(it){
           const row = document.createElement('div');
           row.className = 'co-breco-split-row' + (Number(l.id) === selectedLineId && Number(it.system_id) === selectedSplitId ? ' active' : '');
           row.innerHTML = '<span>' + esc(it.receipt_number || 'Receipt') + '</span>' +
-            '<span class="co-breco-amt received">' + Number(it.amount).toFixed(2) + '</span>';
+            '<span class="co-breco-amt ' + (spent ? 'spent' : 'received') + '">' + Number(it.amount).toFixed(2) + '</span>';
           row.addEventListener('click', function(ev){
             ev.stopPropagation();
             selectLine(Number(l.id), Number(it.system_id));
@@ -136,14 +149,10 @@
       }
       const pick = div.querySelector('.co-breco-pick');
       if (pick) {
-        // Each line is ticked by hand; two or more ticked lines of one set reconcile as one,
+        // Each line is ticked by hand; two or more ticked lines reconcile as one,
         // a single ticked line is handled on its own.
         pick.closest('label').addEventListener('click', function(ev){ ev.stopPropagation(); });
         pick.addEventListener('change', function(){
-          const set = l.related.line_ids.map(Number);
-          Array.from(pickedIds).forEach(function(id){
-            if (set.indexOf(id) < 0) pickedIds.delete(id);
-          });
           if (pick.checked) pickedIds.add(Number(l.id)); else pickedIds.delete(Number(l.id));
           if (pickedIds.size === 1) {
             selectedLineId = Array.from(pickedIds)[0];
@@ -337,7 +346,7 @@
           '</div>' +
           (splitOff(cs)
             ? '<div class="alert alert-warning small py-2 mt-2 mb-0">The receipts for this bank line total ' + Number(cs.total).toFixed(2) + ', ' + splitOff(cs).amt + (splitOff(cs).less ? ' less' : ' more') + ' than the line. Correct the receipt' + (splitOff(cs).less ? ' or add the missing one' : '') + ', then press Refresh to reconcile.</div>'
-            : '<button type="button" class="btn btn-success btn-sm mt-3" id="btnOkSplit">OK — Reconcile this receipt</button>') +
+            : '<button type="button" class="btn btn-success btn-sm mt-3" id="btnOkSplit">OK — Reconcile this ' + splitNoun(cs, 1) + '</button>') +
           receiptLink(it.payment_id, 'mt-3') +
         '</div>';
       } else if (data.combined_suggestion) {
@@ -346,7 +355,7 @@
         html += '<div class="co-breco-suggest-card' + (cs.confidence === 'High' ? '' : ' medium') + '">' +
           '<div class="d-flex justify-content-between align-items-start gap-2">' +
             '<div class="flex-grow-1">' +
-              '<div class="fw-semibold">' + (cs.items.length > 1 ? cs.items.length + ' receipts' : '1 receipt') + ' for this one bank line</div>' +
+              '<div class="fw-semibold">' + cs.items.length + ' ' + splitNoun(cs, cs.items.length) + ' for this one bank line</div>' +
               '<div class="small text-muted mt-1">' +
                 '<div><strong>Party:</strong> ' + esc(cs.party_name || '—') + '</div>' +
                 '<div><strong>Lease Number:</strong> ' + esc(cs.lease_number || '—') + '</div>' +
@@ -354,7 +363,7 @@
             '</div>' +
             '<span class="badge ' + csBadge + '">' + esc(cs.confidence) + '</span>' +
           '</div>' +
-          '<table class="table table-sm mb-0 mt-2"><thead><tr><th>Receipt</th><th>Date</th><th class="text-end">Amount</th></tr></thead><tbody>' +
+          '<table class="table table-sm mb-0 mt-2"><thead><tr><th>' + (cs.noun === 'entry' ? 'Entry' : 'Receipt') + '</th><th>Date</th><th class="text-end">Amount</th></tr></thead><tbody>' +
           cs.items.map(function(it){
             return '<tr><td>' + esc(it.receipt_number || '—') + '</td><td>' + esc(it.txn_date) + '</td><td class="text-end">' + Number(it.amount).toFixed(2) + receiptLink(it.payment_id, 'ms-2') + '</td></tr>';
           }).join('') +

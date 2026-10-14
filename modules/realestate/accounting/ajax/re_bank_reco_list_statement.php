@@ -56,9 +56,9 @@ foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
     if ($statusFilter === 'open' && $r['is_fully_matched']) {
         continue;
     }
-    // Money-in line paid as several receipts: list them under the line.
+    // Line recorded as several receipts (money in) or several entries (money out): list them under the line.
     $r['split'] = null;
-    if (!$r['is_fully_matched'] && $r['amount'] > 0 && !in_array((string) $r['status'], ['ignored', 'investigating'], true)) {
+    if (!$r['is_fully_matched'] && abs($r['amount']) > 0 && !in_array((string) $r['status'], ['ignored', 'investigating'], true)) {
         try {
             $r['split'] = re_bank_reco_combined_suggestion($conn, $cid, $r + ['gl_account_id' => (int) $bankAccount['gl_account_id']]);
         } catch (Throwable $e) {
@@ -100,6 +100,29 @@ foreach ($byCode as $codeIdxs) {
         foreach ($idxs as $i) {
             $rows[$i]['related'] = ['line_ids' => $ids, 'total' => $total, 'net' => $net, 'vat' => ($vat > 0 && $net > 0) ? $vat : 0.0];
         }
+    }
+}
+
+// Open card payments to one merchant on one day (two fees paid one after the other): each has
+// its own bank code, so they are offered together by card and merchant instead.
+$byMerchant = [];
+foreach ($rows as $i => $r) {
+    if ($r['related'] !== null || $r['is_fully_matched'] || in_array((string) $r['status'], ['ignored', 'investigating'], true)) {
+        continue;
+    }
+    $merchant = re_bank_reco_line_merchant_key((string) $r['description']);
+    if ($merchant !== '') {
+        $byMerchant[$r['txn_date'] . '|' . ($r['amount'] < 0 ? 'out' : 'in') . '|' . $merchant][] = $i;
+    }
+}
+foreach ($byMerchant as $idxs) {
+    if (count($idxs) < 2 || count($idxs) > 10) {
+        continue;
+    }
+    $ids = array_map(static fn(int $i): int => (int) $rows[$i]['id'], $idxs);
+    $total = round(array_sum(array_map(static fn(int $i): float => (float) $rows[$i]['remaining'], $idxs)), 2);
+    foreach ($idxs as $i) {
+        $rows[$i]['related'] = ['line_ids' => $ids, 'total' => $total, 'net' => $total, 'vat' => 0.0];
     }
 }
 
