@@ -42,8 +42,29 @@ function refusal(callable $fn): string
 // 1. No database needed.
 $sample = ['contract_amount' => '60000.00', 'admin_fees' => '500.00', 'chiller_fees' => '0.00', 'ejari_fees' => '220.00',
            'security_deposit' => '3000.00', 'commission_fees' => '100.00', 'amc_amount' => '50.50'];
-check('amounts from a lease', ['tenant' => 63870.5, 'contract' => 60000.0, 'admin' => 500.0, 'chiller' => 0.0, 'ejari' => 220.0, 'deposit' => 3000.0, 'other' => 150.5],
+check('amounts from a lease, in the order of the lease page',
+    ['tenant' => 63870.5, 'contract' => 60000.0, 'deposit' => 3000.0, 'chiller' => 0.0, 'ejari' => 220.0, 'admin' => 500.0, 'commission' => 100.0, 'amc' => 50.5],
     fin_lease_posting_amounts($sample));
+check('a renewal has no security deposit', ['tenant' => 60870.5, 'deposit' => 0.0],
+    array_intersect_key(fin_lease_posting_amounts(['is_renewal_lease' => '1'] + $sample), ['tenant' => 1, 'deposit' => 1]));
+
+$income = [['id' => 1, 'code' => '4100008', 'name' => 'Ejari Income Recieved'], ['id' => 2, 'code' => '4200001', 'name' => 'OTHER INCOME']];
+check('commission goes to Other Income while the chart has no commission account', '4200001', fin_lease_posting_default('commission', $income, [])['code']);
+check('a commission account is picked once it exists', '4100011',
+    fin_lease_posting_default('commission', array_merge($income, [['id' => 3, 'code' => '4100011', 'name' => 'Commission Income']]), [])['code']);
+
+$defer = [['id' => 1, 'code' => '2112009', 'name' => 'Deferred Revenue'],
+          ['id' => 2, 'code' => '2112012', 'name' => 'Deferred Revenue - Ayla'],
+          ['id' => 3, 'code' => '2112013', 'name' => 'Deferred Revenue - Park Place'],
+          ['id' => 4, 'code' => '2112014', 'name' => 'Deferred Revenue - Park']];
+$pickFor = static fn(?string $b) => fin_lease_posting_contract_default($defer, $b)['code'] ?? null;
+check('contract account for AYLA RESIDENCE', '2112012', $pickFor('AYLA RESIDENCE'));
+check('contract account for PARK PLACE (longest name wins)', '2112013', $pickFor('PARK PLACE'));
+check('contract account for a building with its own word only', '2112014', $pickFor('Park Avenue'));
+check('a part of a word does not match', '2112009', $pickFor('Aylan Tower'));
+check('any other building gets 2112009', '2112009', $pickFor('Gents Camp (G+5 Building)'));
+check('no building gets 2112009', '2112009', $pickFor(null));
+check('no 2112009 and no match', null, fin_lease_posting_contract_default([$defer[1]], 'Gents Camp'));
 
 if (!fin_coa_table_ready($conn) || !fin_voucher_tables_ready($conn) || !fin_lease_posting_ready($conn)) {
     echo "Run the finance migrations up to fin_lease_posting.sql first.\n";
@@ -71,7 +92,7 @@ try {
     // 2. The chart has Other Income only: the other rows have no account yet.
     $acc = fin_lease_posting_accounts($conn, $a);
     check('a row whose account is missing', null, $acc['contract']);
-    check('a row whose account exists', '4200001', $acc['other']['code']);
+    check('a row whose account exists', '4200001', $acc['amc']['code']);
 
     $stmt = $conn->prepare("SELECT id FROM re_leases WHERE company_id = ? AND status = 'active' ORDER BY id LIMIT 2");
     $stmt->execute([$a]);
@@ -112,8 +133,8 @@ try {
     check('party is the tenant', mb_substr($lease['tenant_name'], 0, 150), $v['party']);
     check('reference is the lease number', $lease['lease_number'], $v['reference']);
     check('lines: debtor first, zero rows left out',
-        [['1121005', '63870.50', '0.00'], ['2112009', '0.00', '60000.00'], ['4100010', '0.00', '500.00'],
-         ['4100008', '0.00', '220.00'], ['2112010', '0.00', '3000.00'], ['4200001', '0.00', '150.50']],
+        [['1121005', '63870.50', '0.00'], ['2112009', '0.00', '60000.00'], ['2112010', '0.00', '3000.00'],
+         ['4100008', '0.00', '220.00'], ['4100010', '0.00', '500.00'], ['4200001', '0.00', '100.00'], ['4200001', '0.00', '50.50']],
         array_map(static fn($l) => [$l['code'], $l['debit'], $l['credit']], $v['lines']));
     $tb = array_column(fin_trial_balance($conn, $a, '2026-03-01', '2026-03-31')['rows'], null, 'code');
     check('trial balance shows the debtor', 63870.5, (float)$tb['1121005']['period_debit']);
@@ -126,6 +147,22 @@ try {
     $again = $post($a, $leaseId, ['tenant' => '60,000.00', 'contract' => '60000'], '2026-03-05');
     check('and it can be posted again, with changed amounts', '60000.00', fin_voucher_get($conn, $a, $again)['amount']);
     check('the list marks it posted', [$again], array_values(array_map('intval', array_filter(array_column(fin_lease_posting_leases($conn, $a), 'voucher_id')))));
+
+    // 5b. The contract can go to another Deferred Revenue account, and only to one.
+    fin_voucher_delete($conn, $a, $again, 7);
+    fin_coa_add_account($conn, $a, '2112012', 'Deferred Revenue - Test');
+    $choices = array_column(fin_lease_posting_contract_accounts($conn, $a), 'id', 'code');
+    check('the Deferred Revenue accounts are the choices', ['2112009', '2112012'], array_map('strval', array_keys($choices)));
+    $other = (int)$acc['amc']['id'];
+    check('a non-deferred account is refused', 'Contract Amount: choose a Deferred Revenue account.',
+        refusal(static fn() => fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['contract' => $other]], 7)));
+    check('commission cannot go to a liability', 'Commission Fees: choose a revenue account.',
+        refusal(static fn() => fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['commission' => (int)$choices['2112012']]], 7)));
+    $admin = (int)fin_lease_posting_accounts($conn, $a)['admin']['id'];
+    $chosen = fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['contract' => (int)$choices['2112012'], 'commission' => $admin]], 7);
+    $codes = array_column(fin_voucher_get($conn, $a, $chosen)['lines'], 'code');
+    check('the contract goes to the chosen account', ['1121005', '2112012'], array_slice($codes, 0, 2));
+    check('the commission goes to the chosen account', '4100010', $codes[5]);
 
     // 6. Only active leases.
     $conn->prepare("UPDATE re_leases SET status = 'expired' WHERE id = ?")->execute([$leaseIds[1] ?? 0]);

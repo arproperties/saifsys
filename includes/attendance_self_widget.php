@@ -60,6 +60,11 @@ $asHour = (int)$asMoment->format('G');
 $asGreeting = $asHour < 12 ? 'Good morning' : ($asHour < 17 ? 'Good afternoon' : 'Good evening');
 // Seconds since midnight, company time — the running clock counts up from this.
 $asSecs = ($asHour * 3600) + ((int)$asMoment->format('i') * 60) + (int)$asMoment->format('s');
+// When the company day this page was drawn for ends, as a Unix time in ms. A
+// tab left open overnight, or reopened from the browser's cache next morning,
+// still shows yesterday's bar — Check Out for a day already finished — so past
+// this moment the page fetches itself again.
+$asDayEndsMs = $asMoment->modify('tomorrow')->getTimestamp() * 1000;
 
 $asBlocking = ($asState['stage'] === 'check_in') && attendance_self_blocking();
 
@@ -469,6 +474,35 @@ if (!function_exists('h')) {
   <span class="as-bar-warn">Ask HR</span>
 </div>
 <?php endif; ?>
+<script>
+(function () {
+  // Never show a day that is over. Drawn for one date, the bar and pop-ups go
+  // stale at company midnight: reload then, and whenever the browser puts this
+  // page back from its back/forward cache. replace() rather than reload() so a
+  // page that was a form result is fetched with GET, not posted again. Once per
+  // drawn day only, so a computer whose clock is a day out cannot loop.
+  var endsAt = <?= json_encode($asDayEndsMs) ?>;
+  var key = 'as_day_reload_' + <?= json_encode($asState['work_date']) ?>;
+  function refresh() {
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, '1');
+    } catch (e) {}
+    window.location.replace(window.location.href);
+  }
+  function check() {
+    if (Date.now() >= endsAt) refresh();
+  }
+  check();
+  setInterval(check, 60000);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') check();
+  });
+  window.addEventListener('pageshow', function (e) {
+    if (e.persisted) { window.location.replace(window.location.href); } else { check(); }
+  });
+}());
+</script>
 <script>
 (function () {
   // The bar can be dragged anywhere on screen, and stays where it was left on

@@ -19,9 +19,18 @@ foreach ($leases as $l) {
     }
 }
 $accounts = ($tableOk && $company) ? fin_lease_posting_accounts($conn, $companyId) : [];
+// The contract and commission rows pick their account from a list, starting at the lease's default.
+$choices = [];
+$form = ['date' => '', 'amounts' => [], 'accounts' => []];
+if ($lease) {
+    foreach (FIN_LEASE_POSTING_CHOOSABLE as $key) {
+        $choices[$key] = fin_lease_posting_choices($conn, $companyId, $key);
+        $accounts[$key] = fin_lease_posting_default($key, $choices[$key], $lease);
+        $form['accounts'][$key] = (int)($accounts[$key]['id'] ?? 0);
+    }
+}
 
 $amount = static fn($n): string => (float)$n > 0 ? number_format((float)$n, 2, '.', '') : '';
-$form = ['date' => '', 'amounts' => []];
 if ($lease) {
     $form['date'] = $lease['start_date'] ?: date('Y-m-d');
     $form['amounts'] = array_map($amount, fin_lease_posting_amounts($lease));
@@ -30,6 +39,9 @@ if ($lease) {
 if ($lease && $_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     $form['date'] = trim((string)($_POST['date'] ?? ''));
+    foreach (FIN_LEASE_POSTING_CHOOSABLE as $key) {
+        $form['accounts'][$key] = (int)($_POST['account'][$key] ?? 0);
+    }
     foreach (FIN_LEASE_POSTING_ROWS as $key => $row) {
         $form['amounts'][$key] = trim((string)($_POST['amount'][$key] ?? ''));
     }
@@ -64,6 +76,12 @@ $pageStyles = '
   .lp-debtor .lp-acct, .lp-debtor input.lp-in { background: #e4edfb; border-color: #3b74d6; color: #1b3f7d; }
   .lp-income .lp-acct, .lp-income input.lp-in { background: #dff2e8; border-color: #2f7d5b; color: #17513a; }
   .lp-liability .lp-acct, .lp-liability input.lp-in { background: #f7dfae; border-color: #c98a1b; color: #7a4f08; }
+  .lp-liability .select2-selection { background-color: #f7dfae !important; border-color: #c98a1b !important; cursor: pointer; }
+  .lp-liability .select2-selection__rendered { color: #7a4f08 !important; font-weight: 600; }
+  .lp-liability .select2-selection:hover { border-color: #7a4f08 !important; }
+  .lp-income .select2-selection { background-color: #dff2e8 !important; border-color: #2f7d5b !important; cursor: pointer; }
+  .lp-income .select2-selection__rendered { color: #17513a !important; font-weight: 600; }
+  .lp-income .select2-selection:hover { border-color: #17513a !important; }
   .lp-miss .lp-acct { background: #fdecec; border-color: #dc3545; color: #b02a37; }
   .lp-total { display: inline-block; min-width: 160px; padding: .45rem .8rem; border-radius: .45rem; border: 1px solid; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
   .lp-total small { display: block; font-weight: 400; font-size: .7rem; }
@@ -137,7 +155,17 @@ require __DIR__ . '/../includes/fin_layout_header.php';
           ?>
             <tr class="lp-<?= h($row['kind']) ?><?= $a ? '' : ' lp-miss' ?>">
               <td class="fw-semibold"><?= h($key === 'tenant' ? $lease['tenant_name'] : $row['label']) ?></td>
+              <?php if (!empty($choices[$key])): ?>
+              <td>
+                <select class="form-select" name="account[<?= h($key) ?>]" aria-label="<?= h($row['label']) ?> account">
+                  <?php foreach ($choices[$key] as $c): ?>
+                    <option value="<?= (int)$c['id'] ?>" <?= (int)$c['id'] === $form['accounts'][$key] ? 'selected' : '' ?>><?= h($c['code'] . ' ' . $c['name']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </td>
+              <?php else: ?>
               <td><span class="lp-acct"><?= $a ? h($a['code'] . ' ' . $a['name']) : h($row['code'] . ' is not in the chart') ?></span></td>
+              <?php endif; ?>
               <td class="lp-amt"><?= $isDebit ? $input : '<div class="lp-none">--</div>' ?></td>
               <td class="lp-amt"><?= $isDebit ? '<div class="lp-none">--</div>' : $input ?></td>
             </tr>

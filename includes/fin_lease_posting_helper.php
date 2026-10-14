@@ -4,11 +4,17 @@
  *
  *   Dr  Sundry Debtors (the tenant)      everything the lease charges, tagged with the tenant
  *   Cr  Deferred Revenue                 the contract amount
- *   Cr  Admin Fee / Chiller Fees / Ejari Income / Other Income
- *   Cr  Security Deposit
+ *   Cr  Security Deposit                 not on a renewal: the deposit is not collected again
+ *   Cr  Chiller Fees / Ejari Income / Admin Fee / Commission / AMC
  *
- * The rows and their accounts are fixed (FIN_LEASE_POSTING_ROWS); the amounts
- * come from the lease and can be changed before posting. The voucher keeps the
+ * The rows follow the Lease Information card of lease_view.php, in its order and
+ * with its names. Their accounts are fixed (FIN_LEASE_POSTING_ROWS), except:
+ *   - the contract goes to any "Deferred Revenue" account, by default the one
+ *     named after the lease's building ("Deferred Revenue - Ayla" for AYLA
+ *     RESIDENCE), else 2112009;
+ *   - the commission goes to any revenue account (4xxxxxx), by default the first
+ *     one named "...Commission...", else 4200001 OTHER INCOME.
+ * The amounts come from the lease and can be changed before posting. The voucher keeps the
  * lease (fin_vouchers.lease_id): a lease is posted once, and can be posted again
  * only after that voucher is deleted.
  */
@@ -17,14 +23,18 @@ require_once __DIR__ . '/fin_voucher_helper.php';
 
 /** Row key => what it is called, the account code it posts to, its side and its colour group. */
 const FIN_LEASE_POSTING_ROWS = [
-    'tenant'   => ['label' => 'Tenant',           'code' => '1121005', 'side' => 'debit',  'kind' => 'debtor'],
-    'contract' => ['label' => 'Contract',         'code' => '2112009', 'side' => 'credit', 'kind' => 'liability'],
-    'admin'    => ['label' => 'Admin Fee',        'code' => '4100010', 'side' => 'credit', 'kind' => 'income'],
-    'chiller'  => ['label' => 'Chiller Fee',      'code' => '4100009', 'side' => 'credit', 'kind' => 'income'],
-    'ejari'    => ['label' => 'Ejari Fee',        'code' => '4100008', 'side' => 'credit', 'kind' => 'income'],
-    'deposit'  => ['label' => 'Security Deposit', 'code' => '2112010', 'side' => 'credit', 'kind' => 'liability'],
-    'other'    => ['label' => 'Other Charges',    'code' => '4200001', 'side' => 'credit', 'kind' => 'income'],
+    'tenant'     => ['label' => 'Tenant',           'code' => '1121005', 'side' => 'debit',  'kind' => 'debtor'],
+    'contract'   => ['label' => 'Contract Amount',  'code' => '2112009', 'side' => 'credit', 'kind' => 'liability'],
+    'deposit'    => ['label' => 'Security Deposit', 'code' => '2112010', 'side' => 'credit', 'kind' => 'liability'],
+    'chiller'    => ['label' => 'Chiller Fees',     'code' => '4100009', 'side' => 'credit', 'kind' => 'income'],
+    'ejari'      => ['label' => 'Ejari Fees',       'code' => '4100008', 'side' => 'credit', 'kind' => 'income'],
+    'admin'      => ['label' => 'Admin Fees',       'code' => '4100010', 'side' => 'credit', 'kind' => 'income'],
+    'commission' => ['label' => 'Commission Fees',  'code' => '4200001', 'side' => 'credit', 'kind' => 'income'],
+    'amc'        => ['label' => 'AMC Amount',       'code' => '4200001', 'side' => 'credit', 'kind' => 'income'],
 ];
+
+/** The rows whose account is picked from a list on the page. */
+const FIN_LEASE_POSTING_CHOOSABLE = ['contract', 'commission'];
 
 function fin_lease_posting_ready(PDO $conn): bool
 {
@@ -44,22 +54,90 @@ function fin_lease_posting_accounts(PDO $conn, int $companyId): array
     return $out;
 }
 
+/** The accounts the contract can be credited to: every postable account named "Deferred Revenue…", by code. */
+function fin_lease_posting_contract_accounts(PDO $conn, int $companyId): array
+{
+    return array_values(array_filter(
+        fin_voucher_ledger_accounts($conn, $companyId),
+        static fn($a) => $a['code'] === FIN_LEASE_POSTING_ROWS['contract']['code'] || stripos($a['name'], 'deferred revenue') === 0
+    ));
+}
+
+/**
+ * The contract account for a building: the one whose name after "Deferred Revenue"
+ * is a word or words of the building's name ("Ayla" in "AYLA RESIDENCE"), the
+ * longest such match winning; else 2112009; else null.
+ */
+function fin_lease_posting_contract_default(array $choices, ?string $building): ?array
+{
+    $words = static fn(string $s): string => ' ' . trim(preg_replace('/[^a-z0-9]+/', ' ', strtolower($s))) . ' ';
+    $bld = $words((string)$building);
+    $best = null;
+    $bestLen = 0;
+    foreach ($choices as $a) {
+        $suffix = trim($words(preg_replace('/^deferred revenue/i', '', $a['name'])));
+        if ($suffix !== '' && strlen($suffix) > $bestLen && str_contains($bld, ' ' . $suffix . ' ')) {
+            $best = $a;
+            $bestLen = strlen($suffix);
+        }
+    }
+    if ($best) {
+        return $best;
+    }
+    foreach ($choices as $a) {
+        if ($a['code'] === FIN_LEASE_POSTING_ROWS['contract']['code']) {
+            return $a;
+        }
+    }
+    return null;
+}
+
+/** The accounts a choosable row can post to (FIN_LEASE_POSTING_CHOOSABLE), by code. */
+function fin_lease_posting_choices(PDO $conn, int $companyId, string $key): array
+{
+    if ($key === 'contract') {
+        return fin_lease_posting_contract_accounts($conn, $companyId);
+    }
+    // Commission: any revenue account.
+    return array_values(array_filter(fin_voucher_ledger_accounts($conn, $companyId), static fn($a) => str_starts_with($a['code'], '4')));
+}
+
+/** The account a choosable row starts at for this lease, or null when the chart has none. */
+function fin_lease_posting_default(string $key, array $choices, array $lease): ?array
+{
+    if ($key === 'contract') {
+        return fin_lease_posting_contract_default($choices, $lease['building_name'] ?? null);
+    }
+    foreach ($choices as $a) {
+        if (stripos($a['name'], 'commission') !== false) {
+            return $a;
+        }
+    }
+    foreach ($choices as $a) {
+        if ($a['code'] === FIN_LEASE_POSTING_ROWS[$key]['code']) {
+            return $a;
+        }
+    }
+    return null;
+}
+
 /** Leases with their tenant, unit and the voucher they are posted as (voucher_id is null when not posted). */
 function fin_lease_posting_query(string $where): string
 {
     return "
         SELECT l.id, l.tenant_id, l.lease_number, l.status, l.start_date, l.end_date,
                l.contract_amount, l.admin_fees, l.chiller_fees, l.ejari_fees, l.security_deposit,
-               l.commission_fees, l.amc_amount,
+               l.commission_fees, l.amc_amount, l.is_renewal_lease,
                COALESCE(NULLIF(TRIM(IF(t.tenant_type = 'company', t.company_name, '')), ''),
                         NULLIF(TRIM(CONCAT_WS(' ', t.first_name, t.last_name)), ''),
                         NULLIF(TRIM(t.company_name), ''),
                         CONCAT('Tenant #', l.tenant_id)) AS tenant_name,
-               u.unit_number,
+               u.unit_number, b.name AS building_name,
                v.id AS voucher_id, v.voucher_no
           FROM re_leases l
           LEFT JOIN re_tenants t ON t.id = l.tenant_id
           LEFT JOIN re_units u ON u.id = l.unit_id
+          LEFT JOIN re_buildings b ON b.id = u.building_id
           LEFT JOIN fin_vouchers v ON v.lease_id = l.id AND v.company_id = l.company_id AND v.status = 'posted'
          WHERE l.company_id = ? AND {$where}";
 }
@@ -81,16 +159,21 @@ function fin_lease_posting_get(PDO $conn, int $companyId, int $leaseId): ?array
     return $lease ?: null;
 }
 
-/** Row key => the amount the lease gives it. The tenant is debited with the sum of the rest. */
+/**
+ * Row key => the amount the lease gives it, as lease_view.php shows it: a renewal
+ * has no security deposit (it is not collected again). The tenant is debited
+ * with the sum of the rest.
+ */
 function fin_lease_posting_amounts(array $lease): array
 {
     $out = [
-        'contract' => (float)$lease['contract_amount'],
-        'admin'    => (float)$lease['admin_fees'],
-        'chiller'  => (float)$lease['chiller_fees'],
-        'ejari'    => (float)$lease['ejari_fees'],
-        'deposit'  => (float)$lease['security_deposit'],
-        'other'    => (float)$lease['commission_fees'] + (float)$lease['amc_amount'],
+        'contract'   => (float)$lease['contract_amount'],
+        'deposit'    => !empty($lease['is_renewal_lease']) ? 0.0 : (float)$lease['security_deposit'],
+        'chiller'    => (float)$lease['chiller_fees'],
+        'ejari'      => (float)$lease['ejari_fees'],
+        'admin'      => (float)$lease['admin_fees'],
+        'commission' => (float)$lease['commission_fees'],
+        'amc'        => (float)$lease['amc_amount'],
     ];
     $out = array_map(static fn($n) => round($n, 2), $out);
     return ['tenant' => round(array_sum($out), 2)] + $out;
@@ -98,7 +181,8 @@ function fin_lease_posting_amounts(array $lease): array
 
 /**
  * Post a lease as a journal voucher. Returns the voucher id.
- * $data: date (Y-m-d) and amounts (row key => amount as typed).
+ * $data: date (Y-m-d), amounts (row key => amount as typed) and accounts (row
+ * key => account id, for the choosable rows; left out = that row's default).
  * Throws InvalidArgumentException with a message fit to show the user.
  */
 function fin_lease_post(PDO $conn, int $companyId, int $leaseId, array $data, ?int $userId = null): int
@@ -119,6 +203,19 @@ function fin_lease_post(PDO $conn, int $companyId, int $leaseId, array $data, ?i
         }
 
         $accounts = fin_lease_posting_accounts($conn, $companyId);
+        foreach (FIN_LEASE_POSTING_CHOOSABLE as $key) {
+            $choices = fin_lease_posting_choices($conn, $companyId, $key);
+            $pick = (int)($data['accounts'][$key] ?? 0);
+            if (!$pick) {
+                $accounts[$key] = fin_lease_posting_default($key, $choices, $lease);
+                continue;
+            }
+            $chosen = array_values(array_filter($choices, static fn($a) => (int)$a['id'] === $pick));
+            if (!$chosen) {
+                throw new InvalidArgumentException(FIN_LEASE_POSTING_ROWS[$key]['label'] . ': choose ' . ($key === 'contract' ? 'a Deferred Revenue' : 'a revenue') . ' account.');
+            }
+            $accounts[$key] = $chosen[0];
+        }
         $amounts = is_array($data['amounts'] ?? null) ? $data['amounts'] : [];
         // The debtor line is the tenant's, so it counts in the tenant's balance.
         $tenant = 'tenant:' . (int)$lease['tenant_id'];
