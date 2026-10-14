@@ -67,11 +67,11 @@ require __DIR__ . '/includes/rpay_layout_header.php';
   <div class="table-responsive">
     <table class="table rpay-table align-middle">
       <thead>
-        <tr><th>Title</th><th>Building</th><th>Shop / unit</th><th class="text-end">Amount</th><th>Created on</th><th>Status</th><th></th></tr>
+        <tr><th>Title</th><th>Building</th><th>Income head</th><th>Shop / unit</th><th class="text-end">Amount</th><th>Created on</th><th>Status</th><th></th></tr>
       </thead>
       <tbody>
         <?php if (!$entries): ?>
-          <tr><td colspan="7" class="text-muted text-center py-5">No entries yet. Add the first one.</td></tr>
+          <tr><td colspan="8" class="text-muted text-center py-5">No entries yet. Add the first one.</td></tr>
         <?php endif; ?>
         <?php foreach ($entries as $e): ?>
           <?php $active = !empty($e['active']); $auto = !empty($e['auto_create']); ?>
@@ -81,6 +81,13 @@ require __DIR__ . '/includes/rpay_layout_header.php';
               <?php if (!empty($e['notes'])): ?><div class="small text-muted"><?= h($e['notes']) ?></div><?php endif; ?>
             </td>
             <td><?= h($e['building']['name'] ?? '') ?></td>
+            <td>
+              <?php if (!empty($e['head'])): ?>
+                <?= h($e['head']['name'] ?? '') ?>
+              <?php else: ?>
+                <a class="small text-decoration-none" href="<?= h($rpayBase) ?>/entry_form.php?id=<?= (int)$e['id'] ?>">Set head</a>
+              <?php endif; ?>
+            </td>
             <td><?= h($e['unit'] ?? '') ?></td>
             <td class="num text-end fw-semibold"><?= h(rpay_money($e['amount'] ?? 0)) ?></td>
             <td>

@@ -22,7 +22,7 @@ $rpayBase = get_application_web_root() . '/modules/recurring_payments';
 
 // Only what Reem needs to hear; Reem decides what a wrong value means.
 $filters = [];
-foreach (['month', 'building', 'unit', 'status'] as $k) {
+foreach (['month', 'building', 'head', 'unit', 'status'] as $k) {
     if (is_string($_GET[$k] ?? null) && $_GET[$k] !== '') {
         $filters[$k] = $_GET[$k];
     }
@@ -50,6 +50,7 @@ try {
 }
 $month = (string)($data['month'] ?? date('Y-m'));
 $buildings = $data['buildings'] ?? [];
+$heads = $data['heads'] ?? [];
 $units = $data['units'] ?? [];
 $dues = $data['dues'] ?? [];
 $totals = $data['totals'] ?? [];
@@ -90,17 +91,27 @@ require __DIR__ . '/includes/rpay_layout_header.php';
 <div class="card card-round mb-3">
   <div class="card-body">
     <form method="get" class="row g-2 align-items-end" action="<?= h($rpayBase) ?>/index.php">
-      <div class="col-6 col-md-3">
+      <div class="col-6 col-md-2">
         <label class="form-label small fw-semibold mb-1">Month</label>
         <input type="month" name="month" class="form-control" value="<?= h($month) ?>">
       </div>
-      <div class="col-6 col-md-3">
+      <div class="col-6 col-md-2">
         <label class="form-label small fw-semibold mb-1">Building</label>
         <select name="building" class="form-select" data-search>
           <option value="">All buildings</option>
           <?php foreach ($buildings as $b): ?>
             <option value="<?= (int)$b['id'] ?>"<?= (string)($filters['building'] ?? '') === (string)$b['id'] ? ' selected' : '' ?>><?= h($b['name']) ?></option>
           <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-6 col-md-2">
+        <label class="form-label small fw-semibold mb-1">Income head</label>
+        <select name="head" class="form-select" data-search>
+          <option value="">All</option>
+          <?php foreach ($heads as $head): ?>
+            <option value="<?= (int)$head['id'] ?>"<?= (string)($filters['head'] ?? '') === (string)$head['id'] ? ' selected' : '' ?>><?= h($head['name']) ?></option>
+          <?php endforeach; ?>
+          <option value="none"<?= ($filters['head'] ?? '') === 'none' ? ' selected' : '' ?>>No income head</option>
         </select>
       </div>
       <div class="col-6 col-md-2">
@@ -131,12 +142,12 @@ require __DIR__ . '/includes/rpay_layout_header.php';
   <div class="table-responsive">
     <table class="table rpay-table align-middle">
       <thead>
-        <tr><th>Title</th><th>Building</th><th>Shop / unit</th><th>Due</th><th class="text-end">Amount</th><th>Status</th><th></th></tr>
+        <tr><th>Title</th><th>Building</th><th>Income head</th><th>Shop / unit</th><th>Due</th><th class="text-end">Amount</th><th>Status</th><th></th></tr>
       </thead>
       <tbody>
         <?php if (!$dues): ?>
-          <tr><td colspan="7" class="text-muted text-center py-5">
-            No payments for <?= h(rpay_month_label($month)) ?><?= $status !== '' || !empty($filters['building']) || !empty($filters['unit']) ? ' with these filters' : '' ?>.
+          <tr><td colspan="8" class="text-muted text-center py-5">
+            No payments for <?= h(rpay_month_label($month)) ?><?= $status !== '' || !empty($filters['building']) || !empty($filters['head']) || !empty($filters['unit']) ? ' with these filters' : '' ?>.
             A payment appears here on its entry's day of the month.
           </td></tr>
         <?php endif; ?>
@@ -145,6 +156,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           <tr>
             <td class="fw-semibold"><?= h($d['title'] ?? '') ?></td>
             <td><?= h($d['building']['name'] ?? '') ?></td>
+            <td><?= h($d['head']['name'] ?? '') ?></td>
             <td><?= h($d['unit'] ?? '') ?></td>
             <td class="num"><?= h(rpay_date($d['due_date'] ?? '')) ?></td>
             <td class="num text-end fw-semibold"><?= h(rpay_money($d['amount'] ?? 0)) ?></td>

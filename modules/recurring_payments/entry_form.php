@@ -28,6 +28,7 @@ try {
     rpay_stop($e);
 }
 $buildings = $data['buildings'] ?? [];
+$heads = $data['heads'] ?? [];
 
 $entry = null;
 if ($id > 0) {
@@ -50,6 +51,8 @@ $form = [
     'title' => $entry['title'] ?? '',
     'building_id' => $entry ? (string)($entry['building']['id'] ?? '') : '',
     'new_building' => '',
+    'head_id' => $entry ? (string)($entry['head']['id'] ?? '') : '',
+    'new_head' => '',
     'unit' => $entry['unit'] ?? '',
     'amount' => $entry ? number_format((float)($entry['amount'] ?? 0), 2, '.', '') : '',
     'day' => $entry ? (string)($entry['day'] ?? 1) : '1',
@@ -63,7 +66,7 @@ $form['start_date'] = $savedStart;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
-    foreach (['title', 'building_id', 'new_building', 'unit', 'amount', 'start_date', 'notes'] as $k) {
+    foreach (['title', 'building_id', 'new_building', 'head_id', 'new_head', 'unit', 'amount', 'start_date', 'notes'] as $k) {
         $form[$k] = is_string($_POST[$k] ?? null) ? $_POST[$k] : '';
     }
     $form['auto_create'] = !empty($_POST['auto_create']);
@@ -126,6 +129,23 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         <label class="form-label fw-semibold">Or a new building <span class="text-muted fw-normal small">(optional)</span></label>
         <input type="text" name="new_building" class="form-control" maxlength="<?= RPAY_NAME_MAX ?>"
                value="<?= h($form['new_building']) ?>" placeholder="Type its name to add it">
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">Income head</label>
+        <select name="head_id" class="form-select" data-search data-placeholder="Pick an income head">
+          <option value=""></option>
+          <?php foreach ($heads as $head): ?>
+            <option value="<?= (int)$head['id'] ?>"<?= (string)$form['head_id'] === (string)$head['id'] ? ' selected' : '' ?>><?= h($head['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+        <div class="form-text">What the payment is for. The report adds up each building by this.</div>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">Or a new income head <span class="text-muted fw-normal small">(optional)</span></label>
+        <input type="text" name="new_head" class="form-control" maxlength="<?= RPAY_NAME_MAX ?>"
+               value="<?= h($form['new_head']) ?>" placeholder="e.g. Shop, DEWA, Washing Machine">
       </div>
 
       <div class="col-md-6">

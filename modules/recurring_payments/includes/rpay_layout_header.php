@@ -118,6 +118,12 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($rpayBase) ?>/buildings.php" class="slink <?= $currentPage === 'buildings.php' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-building"></i></span><span class="slabel">Buildings</span>
       </a>
+      <a href="<?= h($rpayBase) ?>/heads.php" class="slink <?= $currentPage === 'heads.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-tags"></i></span><span class="slabel">Income Heads</span>
+      </a>
+      <a href="<?= h($rpayBase) ?>/report.php" class="slink <?= $currentPage === 'report.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-bar-chart"></i></span><span class="slabel">Income by Building</span>
+      </a>
       <a href="<?= h($rpayBase) ?>/accounts.php" class="slink <?= in_array($currentPage, ['accounts.php', 'account.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-wallet2"></i></span><span class="slabel">Accounts</span>
       </a>

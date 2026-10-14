@@ -20,7 +20,7 @@ $code = rpay_boot($conn);
 $rpayBase = get_application_web_root() . '/modules/recurring_payments';
 $dueId = (int)($_GET['due'] ?? 0);
 $filters = [];
-foreach (['month', 'building', 'unit', 'status'] as $k) {
+foreach (['month', 'building', 'head', 'unit', 'status'] as $k) {
     if (is_string($_GET[$k] ?? null) && $_GET[$k] !== '') {
         $filters[$k] = $_GET[$k];
     }
