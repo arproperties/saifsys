@@ -1,10 +1,11 @@
 <?php
 /**
- * Recurring Payments — show the file kept with a paid line or with a transfer.
+ * Recurring Payments — show the file kept with a receipt, a paid line (from before receipts) or a transfer.
  * The file is in Reem. This page asks Reem for it as the person logged in here and
  * passes it on.
  *
  *   file.php?kind=due&id=12
+ *   file.php?kind=receipt&id=7
  *   file.php?kind=transfer&id=3
  */
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -19,7 +20,7 @@ require_login(get_application_web_root() . '/login');
 $code = rpay_boot($conn);
 
 $id = (int)($_GET['id'] ?? 0);
-$of = ($_GET['kind'] ?? '') === 'transfer' ? '/transfers/' : '/dues/';
+$of = ['transfer' => '/transfers/', 'receipt' => '/receipts/'][$_GET['kind'] ?? ''] ?? '/dues/';
 
 try {
     [$bytes, $type] = binv_reem($code, 'GET', $of . $id . '/attachment', null, null, true, 30, RPAY_REEM_PATH);

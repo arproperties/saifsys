@@ -2,7 +2,7 @@
 /**
  * Recurring Payments — one month's payments, and marking them paid.
  * Reem creates each line on its entry's day of the month; this page lists what Reem
- * has and puts a line back to pending. Marking one paid is pay.php.
+ * has and puts a line back to pending. Receiving money for one, all or a part, is pay.php.
  *
  *   index.php                                  this month, every building
  *   index.php?month=2026-09&building=3&unit=Shop+3&status=pending
@@ -35,7 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $dueId = (int)($_POST['due'] ?? 0);
     try {
         $due = rpay_reem($code, 'POST', '/dues/' . $dueId . '/pending');
-        binv_flash('"' . ($due['title'] ?? 'Payment') . '" is now pending. The money is out of its account again.');
+        binv_flash('"' . ($due['title'] ?? 'Payment') . '" is now pending. Its receipts are deleted and the money is out of their accounts again.');
     } catch (BinvError $e) {
         binv_flash($e->getMessage(), 'danger');
     }
@@ -76,14 +76,14 @@ require __DIR__ . '/includes/rpay_layout_header.php';
     <div class="card card-round h-100"><div class="card-body">
       <div class="small text-muted">Pending</div>
       <div class="rpay-total text-warning-emphasis"><?= h(rpay_money($totals['pending'] ?? 0)) ?></div>
-      <div class="small text-muted"><?= (int)($totals['pending_count'] ?? 0) ?> payment<?= (int)($totals['pending_count'] ?? 0) === 1 ? '' : 's' ?></div>
+      <div class="small text-muted"><?= (int)($totals['pending_count'] ?? 0) ?> payment<?= (int)($totals['pending_count'] ?? 0) === 1 ? '' : 's' ?><?= (int)($totals['partly_count'] ?? 0) > 0 ? ', ' . (int)$totals['partly_count'] . ' partly paid' : '' ?></div>
     </div></div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="card card-round h-100"><div class="card-body">
-      <div class="small text-muted">Paid</div>
+      <div class="small text-muted">Received</div>
       <div class="rpay-total text-success"><?= h(rpay_money($totals['paid'] ?? 0)) ?></div>
-      <div class="small text-muted"><?= (int)($totals['paid_count'] ?? 0) ?> payment<?= (int)($totals['paid_count'] ?? 0) === 1 ? '' : 's' ?></div>
+      <div class="small text-muted"><?= (int)($totals['paid_count'] ?? 0) ?> paid in full</div>
     </div></div>
   </div>
 </div>
@@ -152,7 +152,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           </td></tr>
         <?php endif; ?>
         <?php foreach ($dues as $d): ?>
-          <?php $paid = ($d['status'] ?? '') === 'paid'; ?>
+          <?php $paid = ($d['status'] ?? '') === 'paid'; $partly = !$paid && (float)($d['received'] ?? 0) > 0; ?>
           <tr>
             <td class="fw-semibold"><?= h($d['title'] ?? '') ?></td>
             <td><?= h($d['building']['name'] ?? '') ?></td>
@@ -161,21 +161,26 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             <td class="num"><?= h(rpay_date($d['due_date'] ?? '')) ?></td>
             <td class="num text-end fw-semibold"><?= h(rpay_money($d['amount'] ?? 0)) ?></td>
             <td>
-              <span class="badge text-bg-<?= $paid ? 'success' : 'warning' ?>"><?= $paid ? 'Paid' : 'Pending' ?></span>
-              <?php if ($paid && !empty($d['paid_on'])): ?>
+              <span class="badge text-bg-<?= $paid ? 'success' : ($partly ? 'info' : 'warning') ?>"><?= $paid ? 'Paid' : ($partly ? 'Partly paid' : 'Pending') ?></span>
+              <?php if ($partly): ?>
+                <div class="small"><span class="text-success"><?= h(rpay_money($d['received'])) ?> in</span> · <span class="text-warning-emphasis fw-semibold"><?= h(rpay_money($d['left'] ?? 0)) ?> left</span></div>
+              <?php endif; ?>
+              <?php if (($paid || $partly) && !empty($d['paid_on'])): ?>
                 <div class="small text-muted"><?= h(rpay_date($d['paid_on'])) ?><?= !empty($d['paid_by']) ? ' · ' . h($d['paid_by']) : '' ?></div>
               <?php endif; ?>
-              <?php if ($paid && !empty($d['account']['name'])): ?>
+              <?php if (($paid || $partly) && !empty($d['account']['name'])): ?>
                 <div class="small"><i class="bi bi-wallet2"></i> <?= h($d['account']['name']) ?></div>
               <?php endif; ?>
               <?php if (!empty($d['attachment'])): ?>
                 <a class="small text-decoration-none" target="_blank" rel="noopener" href="<?= h(rpay_file_url($rpayBase, 'due', (int)$d['id'])) ?>"><i class="bi bi-paperclip"></i> Attachment</a>
+              <?php elseif (!empty($d['receipt_files'])): ?>
+                <a class="small text-decoration-none" href="<?= h($payUrl . (int)$d['id']) ?>"><i class="bi bi-paperclip"></i> Attachments</a>
               <?php endif; ?>
             </td>
             <td class="text-end text-nowrap">
-              <?php if ($paid): ?>
-                <a href="<?= h($payUrl . (int)$d['id']) ?>" class="btn btn-sm btn-light border">Change</a>
-                <form method="post" action="<?= h($selfUrl) ?>" class="d-inline">
+              <?php if ($paid || $partly): ?>
+                <a href="<?= h($payUrl . (int)$d['id']) ?>" class="btn btn-sm <?= $paid ? 'btn-light border' : 'btn-success' ?>"><?= $paid ? 'Receipts' : '<i class="bi bi-plus-lg"></i> Add payment' ?></a>
+                <form method="post" action="<?= h($selfUrl) ?>" class="d-inline" onsubmit="return confirm('Set this back to pending? Every receipt on it is deleted, with its file, and the money comes out of its account.');">
                   <?php csrf_field(); ?>
                   <input type="hidden" name="due" value="<?= (int)$d['id'] ?>">
                   <button class="btn btn-sm btn-light border">Set pending</button>

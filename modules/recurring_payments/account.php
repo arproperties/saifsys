@@ -55,7 +55,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           <tr><td colspan="6" class="text-muted text-center py-5">Nothing has gone through this account yet.</td></tr>
         <?php endif; ?>
         <?php foreach ($movements as $m): ?>
-          <?php $amount = (float)($m['amount'] ?? 0); $kind = ($m['kind'] ?? '') === 'transfer' ? 'transfer' : 'due'; ?>
+          <?php $amount = (float)($m['amount'] ?? 0); $kind = in_array($m['kind'] ?? '', ['transfer', 'receipt'], true) ? $m['kind'] : 'due'; ?>
           <tr>
             <td class="num"><?= h(rpay_date($m['date'] ?? '')) ?></td>
             <td><?= h($m['text'] ?? '') ?></td>
