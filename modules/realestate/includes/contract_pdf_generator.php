@@ -113,6 +113,28 @@ if (!class_exists('ContractPDFGenerator')) {
             $unitNo = $lease['unit_number'] ?? '';
             $premisesNumber = $lease['premises_number'] ?? '';
 
+            // Multi-unit lease: list every unit, not just the lease's main unit
+            if (!empty($lease['is_multi_unit'])) {
+                $stmt = $this->conn->prepare("
+                    SELECT u.unit_number, u.premises_number, b.name AS building_name
+                    FROM re_lease_units lu
+                    JOIN re_units u ON u.id = lu.unit_id
+                    JOIN re_buildings b ON b.id = u.building_id
+                    WHERE lu.lease_id = ?
+                    ORDER BY lu.sort_order ASC, lu.id ASC
+                ");
+                $stmt->execute([$lease['id']]);
+                $leaseUnits = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                if ($leaseUnits) {
+                    $unitNo = implode(', ', array_filter(array_map(fn($u) => trim((string)$u['unit_number']), $leaseUnits), 'strlen'));
+                    $premisesNumber = implode(', ', array_filter(array_map(fn($u) => trim((string)$u['premises_number']), $leaseUnits), 'strlen'));
+                    $buildingNames = array_values(array_unique(array_filter(array_map(fn($u) => trim((string)$u['building_name']), $leaseUnits), 'strlen')));
+                    if ($buildingNames) {
+                        $propertyName = implode(', ', $buildingNames);
+                    }
+                }
+            }
+
             if (isset($lease['number_of_installments']) && (int)$lease['number_of_installments'] > 0) {
                 $numberOfInstallments = (int)$lease['number_of_installments'];
             } else {
