@@ -25,6 +25,7 @@ require_once __DIR__ . '/includes/invoice_engine.php';
 require_once __DIR__ . '/../../includes/renewal_portal_urls.php';
 require_once __DIR__ . '/../../includes/renewal_workflow_transitions.php';
 require_once __DIR__ . '/../../includes/renewal_negotiation_thread.php';
+require_once __DIR__ . '/includes/renewal_service.php';
 
 /**
  * Renewal workflow FSM status. Required because SELECT rw.*, l.* lets l.status (lease) overwrite rw.status.
@@ -388,8 +389,22 @@ $emailHistoryStmt = $conn->prepare("
 $emailHistoryStmt->execute([$workflowId]);
 $emailHistory = $emailHistoryStmt->fetchAll(PDO::FETCH_ASSOC);
 
+// A renewal run from Reem (Jarvis) is shown here but changed only there: Reem emails the
+// tenant and moves this workflow along itself, so a change made here would not reach it.
+$runByReem = false;
+try {
+    $rbr = $conn->prepare("SELECT 1 FROM re_renewal_portal_events WHERE workflow_id = ? AND event_type = 'reem_started' LIMIT 1");
+    $rbr->execute([$workflowId]);
+    $runByReem = (bool)$rbr->fetchColumn();
+} catch (Throwable $e) {
+    $runByReem = false;
+}
+
 // Handle actions (Send Notice, Save Response/Notes, Approve/Reject)
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $runByReem) {
+    csrf_verify();
+    $error = 'This renewal is run from Reem. Make changes there: Lease renewals in the Reem app.';
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     $action = $_POST['action'] ?? '';
 
@@ -1190,123 +1205,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $success = 'Reply posted. The tenant will see it in Tenant Portal → Renewal → Discussion with management.';
         } elseif ($action === 'approve_convert') {
             $userId = current_user_id();
-            $apSt = lease_renewal_view_rw_status($workflow);
-            $isAdminOverride = !renewal_wf_can_approve_convert($apSt) && lease_renewal_view_user_can_admin_override($conn);
-            if (!renewal_wf_can_approve_convert($apSt) && !$isAdminOverride) {
-                throw new Exception('Approve & Convert is only allowed after tenant acceptance/signature, unless the current user is Owner/Admin.');
-            }
-
-            // Convert workflow: prepare the renewal lease now, activate it only when its start date arrives.
-            $stmt = $conn->prepare("SELECT lease_id, new_lease_id FROM re_lease_renewal_workflows WHERE id = ? AND (new_lease_id IS NOT NULL)");
-            $stmt->execute([$workflowId]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            if (!$row) {
-                throw new Exception("New lease is not linked. Cannot convert.");
-            }
-            $oldLeaseId = (int)$row['lease_id'];
-            $newLeaseId = (int)$row['new_lease_id'];
-
-            $leaseCheck = $conn->prepare("SELECT id, status, start_date, accounting_mode FROM re_leases WHERE id = ? AND company_id = ? LIMIT 1");
-            $leaseCheck->execute([$newLeaseId, $currentCompanyId]);
-            $newLeaseRow = $leaseCheck->fetch(PDO::FETCH_ASSOC);
-            if (!$newLeaseRow) {
-                throw new Exception('Linked renewal lease was not found.');
-            }
-            if (!in_array((string)$newLeaseRow['status'], ['draft', 'active'], true)) {
-                throw new Exception('Linked renewal lease is not in a convertible state.');
-            }
-
-            $newStartDate = !empty($newLeaseRow['start_date']) ? date('Y-m-d', strtotime((string)$newLeaseRow['start_date'])) : date('Y-m-d');
-            $activateNow = $newStartDate <= date('Y-m-d');
-
-            $conn->beginTransaction();
-            try {
-                // Renewals: no commission (admin/renewal fees only); reset if draft was edited manually.
-                if (function_exists('re_obligation_column_exists') && re_obligation_column_exists($conn, 're_leases', 'accounting_mode')) {
-                    $conn->prepare("UPDATE re_leases SET commission_fees = 0, split_commission_fees = 0, accounting_mode = 'invoice' WHERE id = ? AND company_id = ?")
-                        ->execute([$newLeaseId, $currentCompanyId]);
-                } else {
-                    $conn->prepare("UPDATE re_leases SET commission_fees = 0, split_commission_fees = 0 WHERE id = ? AND company_id = ?")
-                        ->execute([$newLeaseId, $currentCompanyId]);
-                }
-
-                // Operational schedule/cheques can be prepared in advance, but the lease remains draft until start date.
-                generateLeaseInstallmentsForConversion($conn, $currentCompanyId, $newLeaseId, $userId);
-
-                // Invoice Mode: prepare obligations and approved invoice candidates from the staged lease.
-                if (function_exists('re_obligation_engine_generate_for_lease')) {
-                    $obRes = re_obligation_engine_generate_for_lease($conn, $currentCompanyId, $newLeaseId, $userId);
-                    if (empty($obRes['success'])) {
-                        throw new Exception($obRes['error'] ?? 'Could not prepare renewal lease obligations.');
-                    }
-                }
-                if (function_exists('re_invoice_engine_prepare_candidates_for_lease')) {
-                    $candRes = re_invoice_engine_prepare_candidates_for_lease($conn, $currentCompanyId, $newLeaseId, $userId);
-                    if (empty($candRes['success'])) {
-                        throw new Exception($candRes['error'] ?? 'Could not prepare renewal invoice candidates.');
-                    }
-                }
-
-                if ($activateNow) {
-                    $conn->prepare("UPDATE re_leases SET status = 'active', updated_at = NOW() WHERE id = ? AND company_id = ?")
-                        ->execute([$newLeaseId, $currentCompanyId]);
-                    $conn->prepare("UPDATE re_leases SET status = 'expired', move_out_date = COALESCE(move_out_date, end_date), updated_at = NOW() WHERE id = ? AND company_id = ? AND status = 'active'")
-                        ->execute([$oldLeaseId, $currentCompanyId]);
-                } else {
-                    $conn->prepare("UPDATE re_leases SET status = 'draft', updated_at = NOW() WHERE id = ? AND company_id = ?")
-                        ->execute([$newLeaseId, $currentCompanyId]);
-                }
-
-                $u = $conn->prepare("
-                    UPDATE re_lease_renewal_workflows
-                    SET status = 'converted',
-                        approved_by = ?,
-                        converted_by = ?,
-                        workflow_step = 'completed'
-                    WHERE id = ? AND status = ?
-                ");
-                $u->execute([$userId, $userId, $workflowId, $apSt]);
-                if ($u->rowCount() === 0) {
-                    throw new Exception('Could not convert workflow (status may have changed).');
-                }
-
-                $conn->commit();
-            } catch (Throwable $e) {
-                if ($conn->inTransaction()) {
-                    $conn->rollBack();
-                }
-                throw $e;
-            }
-
-            if (!$activateNow && function_exists('re_accounting_log_mode_change')) {
-                re_accounting_log_mode_change($conn, $currentCompanyId, $newLeaseId, (string)($newLeaseRow['accounting_mode'] ?? 'legacy'), 'invoice', $userId, 'Renewal staged in Invoice Mode until start date.', 'renewal_workflow_convert');
-            }
-            renewal_wf_log_admin_event(
-                $conn,
-                $workflowId,
-                $currentCompanyId,
-                $userId,
-                $isAdminOverride ? 'owner_admin_override_convert' : 'admin_approve_convert',
-                $isAdminOverride
-                    ? ($activateNow ? 'Owner/Admin override: renewal activated immediately.' : 'Owner/Admin override: renewal staged until start date.')
-                    : ($activateNow ? 'Renewal approved; start date reached, new lease activated and old lease expired.' : 'Renewal approved; new lease staged until start date and old lease remains active.')
-            );
-
-            // Tenant in-app notification: renewal completed/converted
-            if (is_file(__DIR__ . '/../../includes/tenant_notifications.php')) require_once __DIR__ . '/../../includes/tenant_notifications.php';
-            if (function_exists('tenant_notification_create')) tenant_notification_create($conn, [
-                'company_id' => $currentCompanyId,
-                'lease_id' => $newLeaseId > 0 ? $newLeaseId : $oldLeaseId,
-                'type' => 'renewal_status',
-                'entity_type' => 'renewal',
-                'entity_id' => (int)$workflowId,
-                'title' => $activateNow ? 'Lease renewed' : 'Lease renewal approved',
-                'body' => $activateNow ? 'Your lease renewal is complete. Your new lease is now active.' : 'Your lease renewal is approved. The new lease will become active on its start date.',
-            ]);
-
-            $success = $isAdminOverride
-                ? ($activateNow ? "Renewal converted by Owner/Admin override (new ACTIVE, old EXPIRED)." : "Renewal approved by Owner/Admin override and staged. The old lease remains active until {$newStartDate}.")
-                : ($activateNow ? "Renewal approved and leases converted (new ACTIVE, old EXPIRED)." : "Renewal approved and staged. The old lease remains active until the new lease start date ({$newStartDate}).");
+            $done = re_renewal_convert($conn, (int)$currentCompanyId, (int)$userId, (int)$workflowId, lease_renewal_view_user_can_admin_override($conn));
+            $success = $done['message'];
 
             try {
                 require_once __DIR__ . '/../../includes/audit_bridge.php';
@@ -1320,10 +1220,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     (string)$success,
                     null,
                     [
-                        'old_lease_id' => (int)$oldLeaseId,
-                        'new_lease_id' => (int)$newLeaseId,
-                        'activate_now' => (bool)$activateNow,
-                        'admin_override' => (bool)$isAdminOverride,
+                        'old_lease_id' => (int)$done['old_lease_id'],
+                        'new_lease_id' => (int)$done['new_lease_id'],
+                        'activate_now' => (bool)$done['activate_now'],
+                        'admin_override' => (bool)$done['admin_override'],
                     ],
                     (int)$userId
                 );
@@ -1537,6 +1437,12 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             <div class="alert alert-success alert-dismissible fade show">
                 <?= h($success) ?>
                 <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        <?php endif; ?>
+        <?php if ($runByReem): ?>
+            <div class="alert alert-info">
+                <i class="fas fa-robot me-1"></i> <strong>Run from Reem.</strong> Reem emails the tenant and keeps this renewal up to date.
+                To change anything, open Lease renewals in the Reem app; changes made here are not saved.
             </div>
         <?php endif; ?>
         <?php if ($error): ?>

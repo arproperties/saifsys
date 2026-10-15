@@ -12,6 +12,7 @@ require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/includes/lease_vat_calculator.php';
 require_once __DIR__ . '/includes/lease_number_sequence.php';
 require_once __DIR__ . '/includes/lease_lifecycle_guard.php';
+require_once __DIR__ . '/includes/renewal_service.php';
 require_once __DIR__ . '/../../includes/table_sort.php';
 
 require_login();
@@ -46,22 +47,6 @@ $initiateForm = [
     'terms_text' => '',
     'required_documents_text' => ''
 ];
-
-function normalizeMultilineInput(?string $text): string {
-    $text = trim((string)$text);
-    if ($text === '') {
-        return '';
-    }
-    $lines = preg_split('/\R/u', $text) ?: [];
-    $clean = [];
-    foreach ($lines as $line) {
-        $line = trim((string)$line);
-        if ($line !== '') {
-            $clean[] = $line;
-        }
-    }
-    return implode("\n", $clean);
-}
 
 function handleRenewalStampUpload(string $inputName, string $targetBaseDir): ?string {
     if (empty($_FILES[$inputName]['tmp_name'])) {
@@ -118,23 +103,8 @@ function renewalSaveExpiringWindowDays(PDO $conn, int $companyId, int $days): vo
     $stmt->execute([renewalExpiringWindowSettingKey($companyId), (string)$days]);
 }
 
-$defaultTermsText = implode("\n", [
-    'If the tenant wishes to terminate the contract on expiry and the tenant has not served 60 days prior written notice to the Landlord/Agent; the tenants are liable to pay outstanding rental dues and three months rental penalty from the date of key handover.',
-    'If the tenant fails to renew the tenancy contract on or before its expiration, the contract will be automatically terminated, and the tenant will be deemed to have vacated the premises. Upon the expiration of the tenancy contract, the tenant is granted a grace period of 3 days to vacate the premises. During this period, the tenant must ensure that the unit is returned in good condition, as specified in the contract.',
-    'In any case where the tenant does not vacate the premises or fails to renew the contract on time, a late renewal fee of 1,000 AED will be applicable. This fee will be due immediately and must be paid in full to proceed with the renewal or allow the tenant to remain in the property.',
-    'In the event of non-renewal or failure to vacate, the landlord reserves the right to initiate further actions, including but not limited to, filing with the Notary Public or initiating an RDC case.',
-    'Please note that the additional parking slot is not included in the rent amount provided.'
-]);
-
-$defaultDocumentsText = implode("\n", [
-    'Valid Occupant passport copy & visa page (Residential)',
-    'Valid cheque signatory Passport copy (Residential/Commercial)',
-    'Valid Trade license copy (Applicable Tenancy in the name of company or Commercial)',
-    'Valid Owner/signatory passport copy (Commercial)',
-    'Valid sponsor passport copy (Commercial)',
-    'L.L.C agreement (If applicable)',
-    'Power of attorney (If applicable)'
-]);
+$defaultTermsText = re_renewal_default_terms();
+$defaultDocumentsText = re_renewal_default_documents();
 
 $renewalExpiringWindowDays = renewalGetExpiringWindowDays($conn, $currentCompanyId);
 
@@ -165,416 +135,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $initiateForm['small_store_enabled'] = !empty($_POST['small_store_enabled']) ? '1' : '0';
         $initiateForm['big_store_enabled'] = !empty($_POST['big_store_enabled']) ? '1' : '0';
 
-        $targetRenewalDate = $_POST['target_renewal_date'] ?? null; // optional (kept for backward compatibility)
-        $increaseType = $_POST['increase_type'] ?? 'percentage'; // percentage|fixed
-        $increaseType = in_array($increaseType, ['percentage', 'fixed'], true) ? $increaseType : 'percentage';
-        $increaseValue = !empty($_POST['increase_value']) ? (float)$_POST['increase_value'] : 0.0;
-        $overrideProposedRent = !empty($_POST['proposed_rent']) ? (float)$_POST['proposed_rent'] : null;
-        $adminFees = !empty($_POST['admin_fees']) ? (float)$_POST['admin_fees'] : null;
-        $chillerFeeInput = (isset($_POST['chiller_charges']) && $_POST['chiller_charges'] !== '')
-            ? (float)$_POST['chiller_charges']
-            : null;
-        $numberOfChequesInput = !empty($_POST['number_of_cheques']) ? (int)$_POST['number_of_cheques'] : 0;
-        $additionalParkingEnabled = !empty($_POST['additional_parking_enabled']) ? 1 : 0;
-        $additionalParkingFee = !empty($_POST['additional_parking_fee']) ? (float)$_POST['additional_parking_fee'] : 0.0;
-        $smallStoreEnabled = !empty($_POST['small_store_enabled']) ? 1 : 0;
-        $smallStoreFee = !empty($_POST['small_store_fee']) ? (float)$_POST['small_store_fee'] : 0.0;
-        $bigStoreEnabled = !empty($_POST['big_store_enabled']) ? 1 : 0;
-        $bigStoreFee = !empty($_POST['big_store_fee']) ? (float)$_POST['big_store_fee'] : 0.0;
-        $termsTextInput = normalizeMultilineInput($_POST['terms_text'] ?? '');
-        $requiredDocsInput = normalizeMultilineInput($_POST['required_documents_text'] ?? '');
-
-        $proposedStartDate = !empty($_POST['proposed_start_date']) ? $_POST['proposed_start_date'] : null;
-        $proposedEndDate   = !empty($_POST['proposed_end_date']) ? $_POST['proposed_end_date'] : null;
-        $assignedTo = !empty($_POST['assigned_to']) ? (int)$_POST['assigned_to'] : null;
-        
+        // A lease Reem (Jarvis) is already renewing with the tenant by email is left to Reem.
+        $reemOpen = $conn->prepare("SELECT rw.id FROM re_lease_renewal_workflows rw
+            WHERE rw.lease_id = ? AND rw.status NOT IN ('rejected', 'converted')
+              AND EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type = 'reem_started')
+            LIMIT 1");
+        $reemOpen->execute([(int)$leaseId]);
+        if ($reemOpen->fetchColumn()) {
+            $error = 'Reem is already renewing this lease with the tenant by email. Open Lease renewals in the Reem app.';
+        } else
         try {
-            // Load old lease + property context
-            $stmtOld = $conn->prepare("
-                SELECT l.*, 
-                       u.unit_number, u.unit_type, u.premises_number,
-                       u.building_id,
-                       b.name AS building_name,
-                       bs.template_code,
-                       COALESCE(bs.show_chiller_row, CASE WHEN b.name LIKE '%Park Place%' THEN 1 ELSE 0 END) AS bs_show_chiller_row,
-                       COALESCE(bs.show_chiller_term, CASE WHEN b.name LIKE '%Park Place%' THEN 1 ELSE 0 END) AS bs_show_chiller_term,
-                       COALESCE(bs.admin_fee_label, 'Lease Renewal Charges') AS bs_admin_fee_label,
-                       COALESCE(bs.default_parking_fee, 0) AS bs_default_parking_fee,
-                       COALESCE(bs.default_small_store_fee, 0) AS bs_default_small_store_fee,
-                       COALESCE(bs.default_big_store_fee, 0) AS bs_default_big_store_fee,
-                       COALESCE(bs.vat_enabled, 1) AS bs_vat_enabled,
-                       COALESCE(bs.vat_rate, 5.00) AS bs_vat_rate,
-                       COALESCE(bs.show_grand_total_row, 0) AS bs_show_grand_total_row,
-                       bs.terms_text AS bs_terms_text,
-                       bs.required_documents_text AS bs_required_documents_text
-                FROM re_leases l
-                JOIN re_units u ON u.id = l.unit_id
-                JOIN re_buildings b ON b.id = u.building_id
-                LEFT JOIN re_renewal_notice_building_settings bs ON bs.company_id = l.company_id AND bs.building_id = u.building_id
-                WHERE l.id = ? AND l.company_id = ?
-            ");
-            $stmtOld->execute([$leaseId, $currentCompanyId]);
-            $oldLease = $stmtOld->fetch(PDO::FETCH_ASSOC);
-            if (!$oldLease) {
-                throw new Exception("Lease not found");
-            }
-
-            $tenantId = (int)$oldLease['tenant_id'];
-            $unitId   = (int)$oldLease['unit_id'];
-            $buildingId = (int)($oldLease['building_id'] ?? 0);
-            $buildingName = (string)($oldLease['building_name'] ?? '');
-
-            // current_rent is annual base rent (fallback: monthly_rent * 12)
-            $currentRent = $oldLease['annual_rent'] !== null && $oldLease['annual_rent'] !== ''
-                ? (float)$oldLease['annual_rent']
-                : (float)$oldLease['monthly_rent'] * 12;
-
-            // Calculate new rent
-            if ($increaseType === 'percentage') {
-                $calculatedNewRent = $currentRent + ($currentRent * ($increaseValue / 100.0));
-            } else {
-                $calculatedNewRent = $currentRent + $increaseValue;
-            }
-            $calculatedNewRent = round($calculatedNewRent, 2);
-
-            // Manual override (if admin filled proposed_rent)
-            $proposedRent = $overrideProposedRent !== null ? round($overrideProposedRent, 2) : $calculatedNewRent;
-
-            // Proposed dates defaults: same duration, starting 1 day after old end
-            if (!$proposedStartDate) {
-                $dt = new DateTime($oldLease['end_date']);
-                $dt->modify('+1 day');
-                $proposedStartDate = $dt->format('Y-m-d');
-            }
-            if (!$proposedEndDate) {
-                $oldStart = new DateTime($oldLease['start_date']);
-                $oldEnd   = new DateTime($oldLease['end_date']);
-                $durationDays = $oldEnd->diff($oldStart)->days;
-                $dtEnd = new DateTime($proposedStartDate);
-                $dtEnd->modify('+' . $durationDays . ' days');
-                $proposedEndDate = $dtEnd->format('Y-m-d');
-            }
-
-            // Building-driven settings (SQL uses Park Place fallback when no bs row — same as expiring-lease list)
-            $showChillerRow = (int)($oldLease['bs_show_chiller_row'] ?? 0);
-            $showChillerTerm = (int)($oldLease['bs_show_chiller_term'] ?? 0);
-            $adminFeeLabel = trim((string)($oldLease['bs_admin_fee_label'] ?? 'Lease Renewal Charges'));
-            if ($adminFeeLabel === '') {
-                $adminFeeLabel = 'Lease Renewal Charges';
-            }
-            $vatEnabled = (int)($oldLease['bs_vat_enabled'] ?? 1);
-            $vatRate = (float)($oldLease['bs_vat_rate'] ?? 5.0);
-            if ($vatRate <= 0) {
-                $vatRate = 5.0;
-            }
-            $templateCode = trim((string)($oldLease['template_code'] ?? 'renewal_notice_unified_v1'));
-            if ($templateCode === '') {
-                $templateCode = 'renewal_notice_unified_v1';
-            }
-            $oldChiller = !empty($oldLease['chiller_fees']) ? (float)$oldLease['chiller_fees'] : 0.0;
-            $chillerCharges = $showChillerRow ? ($chillerFeeInput !== null ? $chillerFeeInput : $oldChiller) : 0.0;
-
-            // Admin fees: admin input wins, otherwise keep existing
-            $oldAdmin = !empty($oldLease['admin_fees']) ? (float)$oldLease['admin_fees'] : 0.0;
-            $adminFeesFinal = $adminFees !== null ? (float)$adminFees : $oldAdmin;
-
-            if (!$additionalParkingEnabled) {
-                $additionalParkingFee = 0.0;
-            }
-            if (!$smallStoreEnabled) {
-                $smallStoreFee = 0.0;
-            }
-            if (!$bigStoreEnabled) {
-                $bigStoreFee = 0.0;
-            }
-
-            // VAT base (extras, excluding rent & Ejari) + optional VAT on rent (commercial / shop).
-            $vatBase = $adminFeesFinal + $chillerCharges + $additionalParkingFee + $smallStoreFee + $bigStoreFee;
-            $rera = 300.0;
-            $bidInit = (int)($oldLease['building_id'] ?? 0);
-            if ($bidInit > 0) {
-                $rsRera = $conn->prepare("SELECT COALESCE(rera_charges, 300) AS rera FROM re_renewal_notice_building_settings WHERE company_id = ? AND building_id = ? LIMIT 1");
-                $rsRera->execute([$currentCompanyId, $bidInit]);
-                $rRera = $rsRera->fetch(PDO::FETCH_ASSOC);
-                if ($rRera && isset($rRera['rera'])) {
-                    $rera = (float)$rRera['rera'];
-                }
-            }
-            $vatApplicableOnRent = !empty($oldLease['vat_applicable_on_rent'])
-                ? 1
-                : (lease_vat_unit_is_commercial((string)($oldLease['unit_type'] ?? '')) ? 1 : 0);
-            $vatDist = lease_vat_normalize_distribution($oldLease['vat_distribution_type'] ?? 'first_installment');
-            $vatCalc = lease_vat_compute_amounts([
-                'annual_rent' => $proposedRent,
-                'vat_applicable_on_rent' => $vatApplicableOnRent,
-                'vat_applicable_on_extra_charges' => $vatEnabled,
-                'lease_vat_rate' => $vatRate,
-                'extra_charges_base' => $vatBase,
-            ]);
-            $vatExtra = $vatCalc['extra_vat'];
-            $rentVat = $vatCalc['rent_vat'];
-
-            $numberOfCheques = $numberOfChequesInput > 0 ? $numberOfChequesInput : (int)($oldLease['number_of_installments'] ?? 4);
-            if ($numberOfCheques <= 0) {
-                $numberOfCheques = 4;
-            }
-
-            $termsTextFinal = $termsTextInput !== '' ? $termsTextInput : normalizeMultilineInput((string)($oldLease['bs_terms_text'] ?? $defaultTermsText));
-            $requiredDocsFinal = $requiredDocsInput !== '' ? $requiredDocsInput : normalizeMultilineInput((string)($oldLease['bs_required_documents_text'] ?? $defaultDocumentsText));
-            $showGrandTotalRow = (int)($oldLease['bs_show_grand_total_row'] ?? 0);
-            $grandTotal = round($proposedRent + $vatBase + $rentVat + $vatExtra + $rera, 2);
-
-            $stampRelativePath = handleRenewalStampUpload('stamp_image', __DIR__ . '/../../uploads/renewal_notices/stamps');
-
-            // If target date not provided, use proposed start date.
-            if (!$targetRenewalDate) {
-                $targetRenewalDate = $proposedStartDate;
-            }
-
+            $made = null;
             $conn->beginTransaction();
-
-            // 1) Insert renewal workflow
-            $stmt = $conn->prepare("
-                INSERT INTO re_lease_renewal_workflows
-                (
-                    lease_id,
-                    tenant_id,
-                    unit_id,
-                    status,
-                    workflow_step,
-                    initiated_date,
-                    target_renewal_date,
-                    current_rent,
-                    increase_type,
-                    increase_value,
-                    calculated_new_rent,
-                    proposed_rent,
-                    chiller_charges,
-                    admin_fees,
-                    vat_extra_charges,
-                    template_code,
-                    building_id,
-                    show_chiller_row,
-                    show_chiller_term,
-                    admin_fee_label,
-                    vat_enabled,
-                    vat_rate,
-                    additional_parking_enabled,
-                    additional_parking_fee,
-                    small_store_enabled,
-                    small_store_fee,
-                    big_store_enabled,
-                    big_store_fee,
-                    number_of_cheques,
-                    terms_text,
-                    required_documents_text,
-                    stamp_image_path,
-                    show_grand_total_row,
-                    grand_total_amount,
-                    proposed_start_date,
-                    proposed_end_date,
-                    assigned_to,
-                    created_by,
-                    rent_vat_amount,
-                    vat_applicable_on_rent,
-                    vat_distribution_type,
-                    vat_notes
-                )
-                VALUES
-                (?, ?, ?, 'initiated', 'initiated', CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ");
-            $stmt->execute([
-                $leaseId,
-                $tenantId,
-                $unitId,
-                $targetRenewalDate,
-                $currentRent,
-                $increaseType,
-                $increaseValue,
-                $calculatedNewRent,
-                $proposedRent,
-                $chillerCharges,
-                $adminFeesFinal,
-                $vatExtra,
-                $templateCode,
-                $buildingId,
-                $showChillerRow,
-                $showChillerTerm,
-                $adminFeeLabel,
-                $vatEnabled,
-                $vatRate,
-                $additionalParkingEnabled,
-                $additionalParkingFee,
-                $smallStoreEnabled,
-                $smallStoreFee,
-                $bigStoreEnabled,
-                $bigStoreFee,
-                $numberOfCheques,
-                $termsTextFinal,
-                $requiredDocsFinal,
-                $stampRelativePath,
-                $showGrandTotalRow,
-                $grandTotal,
-                $proposedStartDate,
-                $proposedEndDate,
-                $assignedTo,
-                $userId,
-                $rentVat,
-                $vatApplicableOnRent ? 1 : 0,
-                $vatDist,
-                null,
+            $made = re_renewal_create($conn, (int)$currentCompanyId, (int)$userId, (int)$leaseId, [
+                'target_renewal_date' => $_POST['target_renewal_date'] ?? null, // optional (kept for backward compatibility)
+                'increase_type' => $_POST['increase_type'] ?? 'percentage',
+                'increase_value' => $_POST['increase_value'] ?? '',
+                'proposed_rent' => $_POST['proposed_rent'] ?? '',
+                'admin_fees' => $_POST['admin_fees'] ?? '',
+                'chiller_charges' => $_POST['chiller_charges'] ?? '',
+                'number_of_cheques' => $_POST['number_of_cheques'] ?? '',
+                'additional_parking_enabled' => !empty($_POST['additional_parking_enabled']),
+                'additional_parking_fee' => $_POST['additional_parking_fee'] ?? '',
+                'small_store_enabled' => !empty($_POST['small_store_enabled']),
+                'small_store_fee' => $_POST['small_store_fee'] ?? '',
+                'big_store_enabled' => !empty($_POST['big_store_enabled']),
+                'big_store_fee' => $_POST['big_store_fee'] ?? '',
+                'terms_text' => $_POST['terms_text'] ?? '',
+                'required_documents_text' => $_POST['required_documents_text'] ?? '',
+                'proposed_start_date' => $_POST['proposed_start_date'] ?? '',
+                'proposed_end_date' => $_POST['proposed_end_date'] ?? '',
+                'assigned_to' => $_POST['assigned_to'] ?? '',
+                'stamp_image_path' => handleRenewalStampUpload('stamp_image', __DIR__ . '/../../uploads/renewal_notices/stamps'),
             ]);
-            $workflowNewId = (int)$conn->lastInsertId();
-
-            // Rent-change audit history
-            $h = $conn->prepare("
-                INSERT INTO re_lease_renewal_rent_history
-                    (company_id, workflow_id, lease_id, old_rent, increase_type, increase_value, calculated_new_rent, override_new_rent, changed_by, notes)
-                VALUES
-                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ");
-            $h->execute([
-                $currentCompanyId,
-                $workflowNewId,
-                $leaseId,
-                (float)$currentRent,
-                $increaseType,
-                (float)$increaseValue,
-                (float)$calculatedNewRent,
-                (float)$proposedRent,
-                $userId,
-                'Initial renewal initiation'
-            ]);
-
-            // 2) Create draft lease and link to parent lease (next lease # = max suffix + 1 for this unit/prefix)
-            $newLeaseNumber = lease_generate_number_for_unit($conn, $currentCompanyId, $unitId);
-            if ($newLeaseNumber === null || $newLeaseNumber === '') {
-                throw new Exception('Could not generate a draft lease number for this unit.');
-            }
-
-            // monthly_rent per installment (lease_add uses annual_rent / number_of_installments)
-            $numberOfInstallments = $numberOfCheques > 0 ? $numberOfCheques : (!empty($oldLease['number_of_installments']) ? (int)$oldLease['number_of_installments'] : 12);
-            $monthlyRentForInstallments = $numberOfInstallments > 0 ? round($proposedRent / $numberOfInstallments, 2) : round($proposedRent / 12.0, 2);
-
-            $stmtInsLease = $conn->prepare("
-                INSERT INTO re_leases
-                (
-                    company_id, unit_id, tenant_id, lease_number,
-                    start_date, end_date,
-                    annual_rent, monthly_rent, number_of_installments,
-                    security_deposit,
-                    chiller_fees, ejari_fees, admin_fees, commission_fees,
-                    amc_amount, split_amc_fees,
-                    add_fees_to_first_installment,
-                    deferred_revenue_mode,
-                    is_renewal_lease,
-                    split_chiller_fees, split_ejari_fees, split_admin_fees, split_commission_fees,
-                    split_additional_parking, split_additional_store,
-                    has_additional_parking, additional_parking_fee, additional_parking_start_date, additional_parking_end_date,
-                    has_additional_store, additional_store_fee, additional_store_start_date, additional_store_end_date,
-                    payment_day, payment_method, grace_period_days,
-                    renewal_terms, template_id,
-                    ejari_registration_number, ejari_issue_date, ejari_property_code,
-                    landlord_signature_path, tenant_signature_path, company_stamp_path,
-                    status, notes, created_by,
-                    parent_lease_id,
-                    vat_applicable_on_rent,
-                    vat_applicable_on_extra_charges,
-                    lease_vat_rate,
-                    rent_vat_amount,
-                    extra_services_vat_amount,
-                    total_vat_amount,
-                    vat_distribution_type,
-                    vat_notes,
-                    is_multi_unit
-                )
-                VALUES
-                (?, ?, ?, ?,
-                 ?, ?,
-                 ?, ?, ?,
-                 ?, 
-                 ?, ?, ?, ?,
-                 ?, ?,
-                 ?, 
-                 ?, 
-                 1,
-                 ?, ?, ?, ?,
-                 ?, ?,
-                 ?, ?, ?, ?,
-                 ?, ?, ?, ?,
-                 ?, ?, ?,
-                 ?, ?,
-                 ?, ?, ?,
-                 NULL, NULL, NULL,
-                 'draft', ?, ?,
-                 ?,
-                 ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ");
-
-            $stmtInsLease->execute([
-                $currentCompanyId,
-                $unitId,
-                $tenantId,
-                $newLeaseNumber,
-                $proposedStartDate,
-                $proposedEndDate,
-                $proposedRent,
-                $monthlyRentForInstallments,
-                $numberOfInstallments,
-                (float)($oldLease['security_deposit'] ?? 0),
-                $chillerCharges,
-                (float)($oldLease['ejari_fees'] ?? 0),
-                $adminFeesFinal,
-                0.00,
-                (float)($oldLease['amc_amount'] ?? 0),
-                (int)($oldLease['split_amc_fees'] ?? 0),
-                (int)($oldLease['add_fees_to_first_installment'] ?? 1),
-                (int)($oldLease['deferred_revenue_mode'] ?? 1),
-                (int)($oldLease['split_chiller_fees'] ?? 0),
-                (int)($oldLease['split_ejari_fees'] ?? 0),
-                (int)($oldLease['split_admin_fees'] ?? 0),
-                0,
-                (int)($oldLease['split_additional_parking'] ?? 0),
-                (int)($oldLease['split_additional_store'] ?? 0),
-                $additionalParkingEnabled,
-                $additionalParkingEnabled ? $additionalParkingFee : 0.0,
-                $additionalParkingEnabled ? $proposedStartDate : null,
-                $additionalParkingEnabled ? $proposedEndDate : null,
-                ($smallStoreEnabled || $bigStoreEnabled) ? 1 : 0,
-                (float)(($smallStoreEnabled ? $smallStoreFee : 0.0) + ($bigStoreEnabled ? $bigStoreFee : 0.0)),
-                ($smallStoreEnabled || $bigStoreEnabled) ? $proposedStartDate : null,
-                ($smallStoreEnabled || $bigStoreEnabled) ? $proposedEndDate : null,
-                (int)($oldLease['payment_day'] ?? 1),
-                $oldLease['payment_method'] ?? 'cheque',
-                (int)($oldLease['grace_period_days'] ?? 0),
-                $oldLease['renewal_terms'] ?? null,
-                $oldLease['template_id'] ?? null,
-                $oldLease['ejari_registration_number'] ?? null,
-                $oldLease['ejari_issue_date'] ?? null,
-                $oldLease['ejari_property_code'] ?? null,
-                $oldLease['notes'] ?? null,
-                $userId,
-                $leaseId,
-                $vatApplicableOnRent ? 1 : 0,
-                $vatEnabled ? 1 : 0,
-                $vatRate,
-                $rentVat,
-                $vatExtra,
-                $vatCalc['total_vat'],
-                $vatDist,
-                null,
-                (int)($oldLease['is_multi_unit'] ?? 0)
-            ]);
-
-            $newLeaseId = (int)$conn->lastInsertId();
-
-            // Link workflow -> new lease
-            $stmtUpd = $conn->prepare("UPDATE re_lease_renewal_workflows SET new_lease_id = ? WHERE id = ?");
-            $stmtUpd->execute([$newLeaseId, $workflowNewId]);
-
-            // Installments are generated only on "Approve & Convert" so negotiated amounts can change first.
-
             $conn->commit();
+            $workflowNewId = (int)$made['workflow_id'];
+            $newLeaseId = (int)$made['new_lease_id'];
 
             try {
                 require_once __DIR__ . '/../../includes/audit_bridge.php';
