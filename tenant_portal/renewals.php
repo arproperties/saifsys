@@ -30,6 +30,7 @@ try {
         INNER JOIN re_leases l ON l.id = rw.lease_id AND l.company_id = ?
         WHERE (rw.lease_id = ? OR rw.new_lease_id = ?)
           AND rw.status <> 'initiated'
+          AND NOT EXISTS (SELECT 1 FROM re_renewal_portal_events reem WHERE reem.workflow_id = rw.id AND reem.event_type = 'reem_started') -- run from Reem: answered by email
           AND (
             rw.notice_sent_at IS NOT NULL
             OR rw.renewal_notice_pdf_path IS NOT NULL

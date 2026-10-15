@@ -15,6 +15,7 @@
  *
  *   POST ?module=ars_booking&action=quote   -> the price saifsys would charge, nothing saved
  *   POST ?module=ars_booking&action=create  -> the booking, created
+ *   POST ?module=realestate_renewal&action=quote|start|rent|status|convert -> a lease renewal run from Reem, step by step
  */
 
 declare(strict_types=1);
@@ -22,7 +23,7 @@ declare(strict_types=1);
 define('JARVIS_ACT', true);
 
 // The modules that can act. Each is modules/<name>.php.
-const JARVIS_ACT_MODULES = ['ars_booking'];
+const JARVIS_ACT_MODULES = ['ars_booking', 'realestate_renewal'];
 
 require_once __DIR__ . '/../../../includes/db_connect.php';
 

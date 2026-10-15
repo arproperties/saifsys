@@ -117,6 +117,11 @@ $sql = "
             AND el.notification_type = 'lease_renewal_followup'
             AND DATE(el.created_at) = CURDATE()
       )
+      -- A renewal run from Reem (Jarvis) is chased by Reem, by email on its own thread.
+      AND NOT EXISTS (
+          SELECT 1 FROM re_renewal_portal_events ev
+          WHERE ev.workflow_id = rw.id AND ev.event_type = 'reem_started'
+      )
     ORDER BY rw.notice_sent_at ASC, rw.id ASC
 ";
 $stmt = $conn->prepare($sql);

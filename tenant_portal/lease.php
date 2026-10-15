@@ -58,9 +58,10 @@ $renewalRows = [];
 try {
     $rs = $conn->prepare("
         SELECT id, status, initiated_date, proposed_start_date, proposed_end_date
-        FROM re_lease_renewal_workflows
+        FROM re_lease_renewal_workflows rw
         WHERE (lease_id = ? OR new_lease_id = ?)
           AND status <> 'initiated'
+          AND NOT EXISTS (SELECT 1 FROM re_renewal_portal_events reem WHERE reem.workflow_id = rw.id AND reem.event_type = 'reem_started') -- run from Reem: answered by email
         ORDER BY id DESC
         LIMIT 5
     ");

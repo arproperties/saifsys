@@ -39,6 +39,8 @@ function tenant_renewal_fetch_workflow(PDO $conn, int $workflowId, int $leaseId,
         FROM re_lease_renewal_workflows rw
         INNER JOIN re_leases l ON l.id = rw.lease_id AND l.company_id = ?
         WHERE rw.id = ? AND (rw.lease_id = ? OR rw.new_lease_id = ?)
+          -- A renewal run from Reem (Jarvis) is answered by email, not here.
+          AND NOT EXISTS (SELECT 1 FROM re_renewal_portal_events reem WHERE reem.workflow_id = rw.id AND reem.event_type = 'reem_started')
         LIMIT 1
     ");
     $st->execute([$companyId, $workflowId, $leaseId, $leaseId]);
