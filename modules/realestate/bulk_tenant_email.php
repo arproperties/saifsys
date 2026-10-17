@@ -150,13 +150,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'selected_count' => (int)$validated['selected_count'],
                 'excluded_count' => (int)$validated['excluded_count'],
             ];
-            // Carry attachment in temp upload into session path after store
-            $att = re_bulk_email_store_attachment($conn, $companyId, $_FILES['attachment'] ?? []);
+            // Carry attachments in temp upload into session paths after store
+            $att = re_bulk_email_store_attachments($conn, $companyId, $_FILES['attachments'] ?? []);
             if (empty($att['ok'])) {
                 $error = $att['error'] ?? 'Attachment error.';
                 unset($_SESSION['re_bulk_email_preview']);
             } else {
-                $_SESSION['re_bulk_email_preview']['attachment'] = !empty($att['path']) ? $att : null;
+                $_SESSION['re_bulk_email_preview']['attachments'] = $att['attachments'] ?? [];
                 header('Location: bulk_tenant_email_preview.php');
                 exit;
             }
@@ -343,12 +343,20 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 <code>{{tenant_name}}</code>
                                 <code>{{building_name}}</code>
                                 <code>{{unit_number}}</code>
+                                <code>{{lease_number}}</code>
+                                <code>{{tenant_email}}</code>
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small text-muted mb-1">Attachment (optional)</label>
-                            <input type="file" name="attachment" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
-                            <div class="form-text">Max 5MB · PDF, JPG, PNG, DOC, DOCX</div>
+                            <label class="form-label small text-muted mb-1">Attachments (optional)</label>
+                            <input type="file" name="attachments[]" id="attachmentsInput" class="form-control" multiple accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
+                            <div class="form-text">Up to <?= (int)RE_BULK_EMAIL_MAX_ATTACH_FILES ?> files · <?= (int)(RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES / 1048576) ?>MB total · PDF, JPG, PNG, DOC, DOCX. Hold Ctrl/Cmd to pick several.</div>
+                            <div id="uploadStatus" class="d-none mt-2">
+                                <div class="progress" style="height:8px;">
+                                    <div class="progress-bar progress-bar-striped progress-bar-animated w-100" role="progressbar"></div>
+                                </div>
+                                <div class="small text-muted mt-1" id="uploadStatusText">Uploading…</div>
+                            </div>
                         </div>
                         <button type="submit" class="btn btn-primary w-100 py-2" id="btnPreview">
                             <i class="bi bi-eye me-1"></i> Preview &amp; confirm
@@ -404,13 +412,48 @@ document.getElementById('templatePick')?.addEventListener('change', function() {
   if (tinymce.get('body_html')) tinymce.get('body_html').setContent(body);
   else document.getElementById('body_html').value = body;
 });
+const MAX_ATTACH_FILES = <?= (int)RE_BULK_EMAIL_MAX_ATTACH_FILES ?>;
+const MAX_ATTACH_TOTAL = <?= (int)RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES ?>;
+const btnPreviewHtml = document.getElementById('btnPreview')?.innerHTML || '';
+function fmtMB(bytes) { return (bytes / 1048576).toFixed(1) + ' MB'; }
+function resetUploadUi() {
+  const btn = document.getElementById('btnPreview');
+  if (btn) { btn.disabled = false; btn.innerHTML = btnPreviewHtml; }
+  document.getElementById('uploadStatus')?.classList.add('d-none');
+}
 document.getElementById('bulkComposeForm')?.addEventListener('submit', function(e) {
   if (tinymce.get('body_html')) tinymce.get('body_html').save();
   if (!document.querySelectorAll('.lease-check:checked').length) {
     e.preventDefault();
     alert('Select at least one recipient.');
+    return;
+  }
+  const files = Array.from(document.getElementById('attachmentsInput')?.files || []);
+  const total = files.reduce((sum, f) => sum + f.size, 0);
+  if (files.length > MAX_ATTACH_FILES) {
+    e.preventDefault();
+    alert('You can attach up to ' + MAX_ATTACH_FILES + ' files.');
+    return;
+  }
+  if (total > MAX_ATTACH_TOTAL) {
+    e.preventDefault();
+    alert('Attachments total ' + fmtMB(total) + '. The limit is ' + fmtMB(MAX_ATTACH_TOTAL) + '.');
+    return;
+  }
+  const btn = document.getElementById('btnPreview');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>'
+      + (files.length ? 'Uploading…' : 'Preparing preview…');
+  }
+  if (files.length) {
+    document.getElementById('uploadStatusText').textContent =
+      'Uploading ' + files.length + ' file' + (files.length > 1 ? 's' : '') + ' (' + fmtMB(total) + '). Please keep this page open…';
+    document.getElementById('uploadStatus').classList.remove('d-none');
   }
 });
+// Coming back with the browser Back button restores the page from cache; re-enable the button.
+window.addEventListener('pageshow', resetUploadUi);
 document.getElementById('btnSaveTemplate')?.addEventListener('click', function() {
   if (tinymce.get('body_html')) tinymce.get('body_html').save();
   document.getElementById('st_name').value = document.getElementById('template_name').value;

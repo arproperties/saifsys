@@ -4,17 +4,26 @@
  */
 
 require_once __DIR__ . '/../../../includes/mailer.php';
+require_once __DIR__ . '/../../../includes/email_hourly_quota.php';
 require_once __DIR__ . '/../../../includes/rbac_department.php';
 require_once __DIR__ . '/lease_lifecycle_guard.php';
 
 if (!defined('RE_BULK_EMAIL_BATCH_SIZE')) {
     define('RE_BULK_EMAIL_BATCH_SIZE', 20);
 }
-if (!defined('RE_BULK_EMAIL_MAX_ATTACH_BYTES')) {
-    define('RE_BULK_EMAIL_MAX_ATTACH_BYTES', 5 * 1024 * 1024);
+if (!defined('RE_BULK_EMAIL_MAX_ATTACH_FILES')) {
+    define('RE_BULK_EMAIL_MAX_ATTACH_FILES', 10);
+}
+if (!defined('RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES')) {
+    // Base64 inflates ~33%: 20MB of files is ~27MB on the wire, check your SMTP provider's limit.
+    define('RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES', 20 * 1024 * 1024);
 }
 if (!defined('RE_BULK_EMAIL_STALE_SENDING_SECONDS')) {
     define('RE_BULK_EMAIL_STALE_SENDING_SECONDS', 300);
+}
+if (!defined('RE_BULK_EMAIL_SEND_DELAY_MS')) {
+    // Small gap between messages so a batch does not arrive as one burst.
+    define('RE_BULK_EMAIL_SEND_DELAY_MS', 1000);
 }
 
 /**
@@ -100,6 +109,8 @@ function re_bulk_email_apply_placeholders(string $text, array $vars): string
         '{{tenant_name}}' => (string)($vars['tenant_name'] ?? ''),
         '{{building_name}}' => (string)($vars['building_name'] ?? ''),
         '{{unit_number}}' => (string)($vars['unit_number'] ?? ''),
+        '{{lease_number}}' => (string)($vars['lease_number'] ?? ''),
+        '{{tenant_email}}' => (string)($vars['tenant_email'] ?? $vars['email'] ?? ''),
     ];
     return str_replace(array_keys($map), array_values($map), $text);
 }
@@ -295,6 +306,7 @@ function re_bulk_email_validate_selected_leases(
             'tenant_name' => re_bulk_email_tenant_display_name($r),
             'building_name' => (string)$r['building_name'],
             'unit_number' => (string)$r['unit_number'],
+            'lease_number' => (string)$r['lease_number'],
             'email' => $norm,
             'email_normalized' => $norm,
         ];
@@ -325,8 +337,9 @@ function re_bulk_email_store_attachment(PDO $conn, int $companyId, array $file):
         return ['ok' => false, 'error' => 'Attachment upload failed.'];
     }
     $size = (int)($file['size'] ?? 0);
-    if ($size <= 0 || $size > RE_BULK_EMAIL_MAX_ATTACH_BYTES) {
-        return ['ok' => false, 'error' => 'Attachment must be between 1 byte and 5MB.'];
+    // No per-file cap: only the combined size is limited (RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES).
+    if ($size <= 0 || $size > RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES) {
+        return ['ok' => false, 'error' => 'Attachment must be between 1 byte and ' . (int)(RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES / 1048576) . 'MB.'];
     }
     $orig = (string)($file['name'] ?? 'attachment');
     $ext = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
@@ -384,7 +397,111 @@ function re_bulk_email_store_attachment(PDO $conn, int $companyId, array $file):
 }
 
 /**
+ * Whether re_bulk_email_campaigns has the attachments_json column (migrations/re_bulk_tenant_email_multi_attach.sql).
+ */
+function re_bulk_email_multi_attach_ready(PDO $conn): bool
+{
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    try {
+        $col = $conn->query("SHOW COLUMNS FROM re_bulk_email_campaigns LIKE 'attachments_json'");
+        $ready = (bool)$col->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        $ready = false;
+    }
+    return $ready;
+}
+
+/**
+ * Store every file from a multiple file input (name="attachments[]").
+ * All-or-nothing: if any file fails, files already stored for this upload are removed.
+ *
+ * @return array{ok:bool,attachments?:list<array{path:string,name:string,mime:string,size:int}>,error?:string}
+ */
+function re_bulk_email_store_attachments(PDO $conn, int $companyId, array $files): array
+{
+    $list = [];
+    if (isset($files['name']) && is_array($files['name'])) {
+        foreach ($files['name'] as $i => $name) {
+            $list[] = [
+                'name' => $name,
+                'type' => $files['type'][$i] ?? '',
+                'tmp_name' => $files['tmp_name'][$i] ?? '',
+                'error' => $files['error'][$i] ?? UPLOAD_ERR_NO_FILE,
+                'size' => $files['size'][$i] ?? 0,
+            ];
+        }
+    } elseif ($files) {
+        $list[] = $files;
+    }
+    $list = array_values(array_filter($list, static function ($f) {
+        return ($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
+    }));
+    if (!$list) {
+        return ['ok' => true, 'attachments' => []];
+    }
+    if (count($list) > RE_BULK_EMAIL_MAX_ATTACH_FILES) {
+        return ['ok' => false, 'error' => 'You can attach up to ' . RE_BULK_EMAIL_MAX_ATTACH_FILES . ' files.'];
+    }
+    if (count($list) > 1 && !re_bulk_email_multi_attach_ready($conn)) {
+        return ['ok' => false, 'error' => 'Multiple attachments need migration migrations/re_bulk_tenant_email_multi_attach.sql. Attach one file or run the migration.'];
+    }
+    $total = 0;
+    foreach ($list as $f) {
+        $total += (int)($f['size'] ?? 0);
+    }
+    if ($total > RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES) {
+        return ['ok' => false, 'error' => 'Attachments must total ' . (int)(RE_BULK_EMAIL_MAX_ATTACH_TOTAL_BYTES / 1048576) . 'MB or less.'];
+    }
+
+    $stored = [];
+    foreach ($list as $f) {
+        $att = re_bulk_email_store_attachment($conn, $companyId, $f);
+        if (empty($att['ok'])) {
+            foreach ($stored as $done) {
+                @unlink(__DIR__ . '/../../../' . $done['path']);
+            }
+            return ['ok' => false, 'error' => (string)($f['name'] ?? 'File') . ': ' . ($att['error'] ?? 'Attachment error.')];
+        }
+        if (!empty($att['path'])) {
+            unset($att['ok']);
+            $stored[] = $att;
+        }
+    }
+    return ['ok' => true, 'attachments' => $stored];
+}
+
+/**
+ * Attachments of a campaign row: attachments_json when present, else the legacy single-file columns.
+ *
+ * @return list<array{path:string,name:string,mime:?string,size:?int}>
+ */
+function re_bulk_email_campaign_attachments(array $campaign): array
+{
+    if (!empty($campaign['attachments_json'])) {
+        $decoded = json_decode((string)$campaign['attachments_json'], true);
+        if (is_array($decoded)) {
+            return array_values(array_filter($decoded, static function ($a) {
+                return is_array($a) && !empty($a['path']);
+            }));
+        }
+    }
+    if (!empty($campaign['attachment_path'])) {
+        return [[
+            'path' => (string)$campaign['attachment_path'],
+            'name' => (string)($campaign['attachment_name'] ?: basename((string)$campaign['attachment_path'])),
+            'mime' => $campaign['attachment_mime'] ?? null,
+            'size' => isset($campaign['attachment_size']) ? (int)$campaign['attachment_size'] : null,
+        ]];
+    }
+    return [];
+}
+
+/**
  * @param list<array> $recipients from re_bulk_email_validate_selected_leases
+ * @param list<array> $attachments from re_bulk_email_store_attachments
  * @return array{ok:bool,campaign_id?:int,error?:string}
  */
 function re_bulk_email_create_campaign(
@@ -397,7 +514,7 @@ function re_bulk_email_create_campaign(
     int $selectedCount,
     int $excludedCount,
     array $filters,
-    ?array $attachment
+    array $attachments = []
 ): array {
     $subject = trim($subject);
     if ($subject === '') {
@@ -411,37 +528,52 @@ function re_bulk_email_create_campaign(
         return ['ok' => false, 'error' => 'No recipients.'];
     }
 
+    $attachments = array_values($attachments);
+    $multi = re_bulk_email_multi_attach_ready($conn);
+    if (count($attachments) > 1 && !$multi) {
+        return ['ok' => false, 'error' => 'Multiple attachments need migration migrations/re_bulk_tenant_email_multi_attach.sql.'];
+    }
+    // Legacy columns keep the first file so older screens/reports still show something.
+    $first = $attachments[0] ?? [];
+
     try {
         $conn->beginTransaction();
         $ins = $conn->prepare("
             INSERT INTO re_bulk_email_campaigns
             (company_id, subject, body_html, attachment_path, attachment_name, attachment_mime, attachment_size,
-             filters_json, selected_count, unique_email_count, excluded_no_email_count,
+             " . ($multi ? 'attachments_json, ' : '') . "filters_json, selected_count, unique_email_count, excluded_no_email_count,
              sent_count, failed_count, pending_count, status, created_by, confirmed_at, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,?,'queued',?,NOW(),NOW())
+            VALUES (?,?,?,?,?,?,?," . ($multi ? '?,' : '') . "?,?,?,?,0,0,?,'queued',?,NOW(),NOW())
         ");
-        $ins->execute([
+        $params = [
             $companyId,
             $subject,
             $bodyHtml,
-            $attachment['path'] ?? null,
-            $attachment['name'] ?? null,
-            $attachment['mime'] ?? null,
-            $attachment['size'] ?? null,
+            $first['path'] ?? null,
+            $first['name'] ?? null,
+            $first['mime'] ?? null,
+            $first['size'] ?? null,
+        ];
+        if ($multi) {
+            $params[] = $attachments ? json_encode($attachments, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null;
+        }
+        array_push(
+            $params,
             json_encode($filters, JSON_UNESCAPED_UNICODE),
             $selectedCount,
             count($recipients),
             $excludedCount,
             count($recipients),
-            $userId > 0 ? $userId : null,
-        ]);
+            $userId > 0 ? $userId : null
+        );
+        $ins->execute($params);
         $campaignId = (int)$conn->lastInsertId();
 
         $rIns = $conn->prepare("
             INSERT INTO re_bulk_email_recipients
             (campaign_id, company_id, tenant_id, lease_id, building_id, unit_id,
-             tenant_name, building_name, unit_number, email, email_normalized, status)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending')
+             tenant_name, building_name, unit_number, lease_number, email, email_normalized, status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending')
         ");
         foreach ($recipients as $r) {
             $rIns->execute([
@@ -454,6 +586,7 @@ function re_bulk_email_create_campaign(
                 (string)$r['tenant_name'],
                 (string)$r['building_name'],
                 (string)$r['unit_number'],
+                (string)($r['lease_number'] ?? ''),
                 (string)$r['email'],
                 (string)$r['email_normalized'],
             ]);
@@ -512,6 +645,32 @@ function re_bulk_email_refresh_counts(PDO $conn, int $companyId, int $campaignId
 }
 
 /**
+ * The "this hour is full, come back next hour" response.
+ */
+function re_bulk_email_hour_full_result(PDO $conn, int $companyId, int $campaignId, int $sent, int $failed, int $used): array
+{
+    re_bulk_email_refresh_counts($conn, $companyId, $campaignId);
+    $fresh = re_bulk_email_get_campaign($conn, $companyId, $campaignId);
+    $resumeAt = email_quota_next_window();
+    $resumeTs = strtotime($resumeAt . ' UTC') ?: time();
+
+    return [
+        'ok' => true,
+        'processed' => $sent + $failed,
+        'sent' => $sent,
+        'failed' => $failed,
+        'pending_remaining' => (int)($fresh['pending_count'] ?? 0),
+        'done' => false,
+        'paused' => true,
+        'hour_used' => $used,
+        'hour_limit' => EMAIL_HOURLY_LIMIT,
+        'resume_at_ts' => $resumeTs,
+        'retry_after' => max(0, $resumeTs - time()),
+        'campaign_status' => $fresh['status'] ?? null,
+    ];
+}
+
+/**
  * Claim and send up to $limit pending (or stale sending) recipients. Restart-safe.
  *
  * @return array{ok:bool,processed:int,sent:int,failed:int,pending_remaining:int,error?:string,done?:bool}
@@ -541,6 +700,15 @@ function re_bulk_email_process_batch(PDO $conn, int $companyId, int $campaignId,
         return ['ok' => false, 'processed' => 0, 'sent' => 0, 'failed' => 0, 'pending_remaining' => 0, 'error' => 'Email is not configured or disabled in Settings.'];
     }
 
+    // 50 per clock hour. Send what is left of this hour's allowance, then stop;
+    // the caller comes back when the next hour opens and continues the queue.
+    email_quota_prune($conn);
+    $accountKey = email_quota_account_key($settings);
+    $hourRemaining = email_quota_remaining($conn, $accountKey);
+    if ($hourRemaining <= 0) {
+        return re_bulk_email_hour_full_result($conn, $companyId, $campaignId, 0, 0, email_quota_used($conn, $accountKey));
+    }
+
     $conn->prepare("UPDATE re_bulk_email_campaigns SET status = 'sending', started_at = COALESCE(started_at, NOW()) WHERE id = ? AND company_id = ?")
         ->execute([$campaignId, $companyId]);
 
@@ -552,7 +720,7 @@ function re_bulk_email_process_batch(PDO $conn, int $companyId, int $campaignId,
           AND (last_attempt_at IS NULL OR last_attempt_at < (NOW() - INTERVAL " . (int)RE_BULK_EMAIL_STALE_SENDING_SECONDS . " SECOND))
     ")->execute([$campaignId, $companyId]);
 
-    $limit = max(1, min(50, $limit));
+    $limit = max(1, min(50, $limit, $hourRemaining));
     $pick = $conn->prepare("
         SELECT id FROM re_bulk_email_recipients
         WHERE campaign_id = ? AND company_id = ? AND status = 'pending'
@@ -563,19 +731,29 @@ function re_bulk_email_process_batch(PDO $conn, int $companyId, int $campaignId,
     $ids = array_map('intval', $pick->fetchAll(PDO::FETCH_COLUMN) ?: []);
 
     $attachments = [];
-    if (!empty($campaign['attachment_path'])) {
-        $abs = __DIR__ . '/../../../' . ltrim((string)$campaign['attachment_path'], '/');
+    foreach (re_bulk_email_campaign_attachments($campaign) as $att) {
+        $abs = __DIR__ . '/../../../' . ltrim((string)$att['path'], '/');
         if (is_file($abs)) {
             $attachments[] = [
                 'path' => $abs,
-                'name' => (string)($campaign['attachment_name'] ?: basename($abs)),
+                'name' => (string)($att['name'] ?: basename($abs)),
             ];
         }
     }
 
     $sent = 0;
     $failed = 0;
+    $first = true;
     foreach ($ids as $rid) {
+        // Other parts of the app share this mailbox, so re-check every time.
+        if (email_quota_remaining($conn, $accountKey) <= 0) {
+            return re_bulk_email_hour_full_result($conn, $companyId, $campaignId, $sent, $failed, email_quota_used($conn, $accountKey));
+        }
+        if (!$first && RE_BULK_EMAIL_SEND_DELAY_MS > 0) {
+            usleep(RE_BULK_EMAIL_SEND_DELAY_MS * 1000);
+        }
+        $first = false;
+
         // Claim only if still pending — never touch sent/failed.
         $claim = $conn->prepare("
             UPDATE re_bulk_email_recipients
@@ -598,6 +776,8 @@ function re_bulk_email_process_batch(PDO $conn, int $companyId, int $campaignId,
             'tenant_name' => $row['tenant_name'],
             'building_name' => $row['building_name'],
             'unit_number' => $row['unit_number'],
+            'lease_number' => $row['lease_number'],
+            'tenant_email' => $row['email'],
         ];
         $subject = re_bulk_email_apply_placeholders((string)$campaign['subject'], $vars);
         $body = re_bulk_email_apply_placeholders((string)$campaign['body_html'], $vars);
@@ -612,16 +792,31 @@ function re_bulk_email_process_batch(PDO $conn, int $companyId, int $campaignId,
                 SET status = 'sent', sent_at = NOW(), error_message = NULL
                 WHERE id = ? AND campaign_id = ? AND company_id = ? AND status = 'sending'
             ")->execute([$rid, $campaignId, $companyId]);
+            email_quota_record_send($conn, $accountKey);
             $sent++;
-        } else {
-            $err = substr((string)($result['error'] ?? 'Send failed'), 0, 500);
+            continue;
+        }
+
+        $err = substr((string)($result['error'] ?? 'Send failed'), 0, 500);
+
+        if (email_quota_is_limit_error($err)) {
+            // The hour is full, the address is fine. Put the tenant back in the
+            // queue without charging an attempt and pick them up next hour.
+            email_quota_mark_exhausted($conn, $accountKey);
             $conn->prepare("
                 UPDATE re_bulk_email_recipients
-                SET status = 'failed', error_message = ?
+                SET status = 'pending', attempts = GREATEST(attempts - 1, 0), error_message = NULL
                 WHERE id = ? AND campaign_id = ? AND company_id = ? AND status = 'sending'
-            ")->execute([$err, $rid, $campaignId, $companyId]);
-            $failed++;
+            ")->execute([$rid, $campaignId, $companyId]);
+            return re_bulk_email_hour_full_result($conn, $companyId, $campaignId, $sent, $failed, email_quota_used($conn, $accountKey));
         }
+
+        $conn->prepare("
+            UPDATE re_bulk_email_recipients
+            SET status = 'failed', error_message = ?
+            WHERE id = ? AND campaign_id = ? AND company_id = ? AND status = 'sending'
+        ")->execute([$err, $rid, $campaignId, $companyId]);
+        $failed++;
     }
 
     re_bulk_email_refresh_counts($conn, $companyId, $campaignId);
@@ -635,6 +830,9 @@ function re_bulk_email_process_batch(PDO $conn, int $companyId, int $campaignId,
         'failed' => $failed,
         'pending_remaining' => $pendingLeft,
         'done' => $pendingLeft === 0,
+        'paused' => false,
+        'hour_used' => email_quota_used($conn, $accountKey),
+        'hour_limit' => EMAIL_HOURLY_LIMIT,
         'campaign_status' => $fresh['status'] ?? null,
     ];
 }

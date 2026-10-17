@@ -60,7 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     (int)$validated['selected_count'],
                     (int)$validated['excluded_count'],
                     $filters,
-                    is_array($preview['attachment'] ?? null) ? $preview['attachment'] : null
+                    is_array($preview['attachments'] ?? null) ? $preview['attachments'] : []
                 );
                 if (empty($created['ok'])) {
                     $error = $created['error'] ?? 'Could not create campaign.';
@@ -86,6 +86,8 @@ $sample = $recipients[0] ?? [
     'tenant_name' => 'Sample Tenant',
     'building_name' => 'Sample Building',
     'unit_number' => '00',
+    'lease_number' => 'LEASE-0000',
+    'email' => 'sample@example.com',
 ];
 $sampleSubject = re_bulk_email_apply_placeholders((string)$preview['subject'], $sample);
 $sampleBody = re_bulk_email_apply_placeholders(re_bulk_email_sanitize_html((string)$preview['body_html']), $sample);
@@ -135,9 +137,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             <div class="card-header">Sample message (first recipient placeholders)</div>
             <div class="card-body">
                 <div class="mb-2"><strong>Subject:</strong> <?= h($sampleSubject) ?></div>
-                <?php if (!empty($preview['attachment']['name'])): ?>
-                    <div class="mb-2 small text-muted"><i class="bi bi-paperclip"></i> <?= h($preview['attachment']['name']) ?></div>
-                <?php endif; ?>
+                <?php foreach (($preview['attachments'] ?? []) as $att): ?>
+                    <div class="mb-1 small text-muted"><i class="bi bi-paperclip"></i> <?= h($att['name'] ?? '') ?></div>
+                <?php endforeach; ?>
                 <div class="border rounded p-3 bg-light"><?= $sampleBody ?></div>
             </div>
         </div>

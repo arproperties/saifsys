@@ -97,15 +97,15 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 <div class="card card-round mb-3">
     <div class="card-header">Message</div>
     <div class="card-body">
-        <?php if (!empty($campaign['attachment_name'])): ?>
-            <div class="small text-muted mb-2"><i class="bi bi-paperclip"></i> <?= h($campaign['attachment_name']) ?></div>
-        <?php endif; ?>
+        <?php foreach (re_bulk_email_campaign_attachments($campaign) as $att): ?>
+            <div class="small text-muted mb-1"><i class="bi bi-paperclip"></i> <?= h($att['name']) ?></div>
+        <?php endforeach; ?>
         <div class="border rounded p-3 bg-light"><?= re_bulk_email_sanitize_html((string)$campaign['body_html']) ?></div>
         <div class="form-text mt-2">Sent campaigns cannot be edited or deleted. Use Continue for pending, or Retry failed only.</div>
     </div>
 </div>
 
-<div id="sendProgress" class="alert alert-secondary d-none">Sending batch… <span id="sendProgressText"></span></div>
+<div id="sendProgress" class="alert alert-secondary d-none"><div><span id="sendProgressText">Sending batch…</span></div><div id="sendHourText" class="small mt-1 opacity-75"></div></div>
 
 <div class="card card-round">
     <div class="card-header">Recipients</div>
@@ -151,33 +151,83 @@ async function processBatch() {
   return res.json();
 }
 
+function tone(box, name) {
+  box.className = 'alert alert-' + name;
+}
+
+function countdownText(secs) {
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
+}
+
+/**
+ * The mail server allows a fixed number of messages per clock hour. When this
+ * hour's allowance is spent we wait for the next one and carry on, rather than
+ * hammering the server or abandoning the tenants still queued.
+ */
+function waitForNextHour(data, box, txt) {
+  const until = (data.resume_at_ts || 0) * 1000 || (Date.now() + (data.retry_after || 60) * 1000);
+  tone(box, 'warning');
+  return new Promise(resolve => {
+    const tick = () => {
+      const left = Math.max(0, Math.round((until - Date.now()) / 1000));
+      const at = new Date(until).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+      txt.textContent = `Sent ${data.hour_used || 0} of ${data.hour_limit || 50} allowed this hour. `
+        + `${data.pending_remaining || 0} tenant(s) still queued — continuing at ${at} (in ${countdownText(left)}).`;
+      if (left <= 0) {
+        clearInterval(timer);
+        tone(box, 'secondary');
+        txt.textContent = 'New hour — resuming…';
+        resolve();
+      }
+    };
+    const timer = setInterval(tick, 1000);
+    tick();
+  });
+}
+
 async function continueSending() {
   if (sending) return;
   sending = true;
   const box = document.getElementById('sendProgress');
   const txt = document.getElementById('sendProgressText');
+  const hourTxt = document.getElementById('sendHourText');
+  const btn = document.getElementById('btnContinue');
+  if (btn) btn.disabled = true;
   box.classList.remove('d-none');
   try {
     let guard = 0;
-    while (guard < 500) {
+    while (guard < 2000) {
       guard++;
       const data = await processBatch();
       if (!data.ok) {
         txt.textContent = data.error || 'Send error';
-        box.classList.replace('alert-secondary', 'alert-danger');
+        tone(box, 'danger');
         break;
       }
       document.getElementById('cntSent').textContent = data.sent_total ?? document.getElementById('cntSent').textContent;
       document.getElementById('cntFailed').textContent = data.failed_total ?? document.getElementById('cntFailed').textContent;
       document.getElementById('cntPending').textContent = data.pending_remaining ?? '0';
       if (data.campaign_status) document.getElementById('campStatus').textContent = data.campaign_status;
-      txt.textContent = `Batch sent ${data.sent || 0}, failed ${data.failed || 0}. Pending ${data.pending_remaining || 0}.`;
+      if (data.hour_limit) {
+        hourTxt.textContent = `This hour: ${data.hour_used || 0} of ${data.hour_limit} sent.`;
+      }
+
       if (data.done) {
-        box.classList.replace('alert-secondary', 'alert-success');
+        tone(box, 'success');
         txt.textContent = 'All pending deliveries finished.';
         setTimeout(() => location.reload(), 800);
         break;
       }
+
+      if (data.paused) {
+        // Hour is full. Wait it out, then keep going with the rest.
+        await waitForNextHour(data, box, txt);
+        continue;
+      }
+
+      txt.textContent = `Batch sent ${data.sent || 0}, failed ${data.failed || 0}. Pending ${data.pending_remaining || 0}.`;
+
       if ((data.processed || 0) === 0 && (data.pending_remaining || 0) > 0) {
         // nothing claimed — stop to avoid loop
         break;
@@ -185,10 +235,11 @@ async function continueSending() {
     }
   } catch (e) {
     box.classList.remove('d-none');
-    box.classList.replace('alert-secondary', 'alert-warning');
+    tone(box, 'warning');
     txt.textContent = 'Connection interrupted. Successfully sent emails were kept. Reopen and click Continue pending.';
   } finally {
     sending = false;
+    if (btn) btn.disabled = false;
   }
 }
 
