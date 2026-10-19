@@ -381,7 +381,8 @@ if ($action === 'summary') {
 if ($action === 'arrivals') {
     $date = jarvis_ars_date('date', $today);
     [$source, $sw] = jarvis_ars_source($conn);
-    $rows = jarvis_ars_fetch($conn, $cid, "b.check_in = ? AND b.status IN ('confirmed','checked_in','pending') AND $sw", [$date], 'bd.name, u.unit_number, b.booking_number', 500);
+    // Guests who already left still count for the day they arrived, so past days are right.
+    $rows = jarvis_ars_fetch($conn, $cid, "b.check_in = ? AND b.status IN ('confirmed','checked_in','pending','checked_out','completed') AND $sw", [$date], 'bd.name, u.unit_number, b.booking_number', 500);
     jarvis_api_send(['ok' => true, 'date' => $date, 'source' => $source, 'count' => count($rows), 'arrivals' => jarvis_ars_rows($rows)]);
 }
 

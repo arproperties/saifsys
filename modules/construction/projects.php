@@ -49,16 +49,22 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
     '<a href="project_add.php" class="btn btn-primary btn-sm"><i data-lucide="plus" style="width:14px;height:14px"></i> Add Project</a>'
 ) ?>
 
-<div class="mb-3 co-stat-toggles">
-    <a href="projects.php" class="co-stat-toggle <?= !$status ? 'active' : '' ?>">All</a>
-    <a href="projects.php?status=active" class="co-stat-toggle <?= $status === 'active' ? 'active' : '' ?>">Active</a>
-    <a href="projects.php?status=completed" class="co-stat-toggle <?= $status === 'completed' ? 'active' : '' ?>">Completed</a>
+<div class="mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <div class="co-stat-toggles">
+        <a href="projects.php" class="co-stat-toggle <?= !$status ? 'active' : '' ?>">All</a>
+        <a href="projects.php?status=active" class="co-stat-toggle <?= $status === 'active' ? 'active' : '' ?>">Active</a>
+        <a href="projects.php?status=completed" class="co-stat-toggle <?= $status === 'completed' ? 'active' : '' ?>">Completed</a>
+    </div>
+    <div class="input-group input-group-sm" style="max-width:360px;">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input type="search" id="projSearch" class="form-control" placeholder="Search code, name, type, manager..." autocomplete="off">
+    </div>
 </div>
 
 <div class="card card-round co-table-shell">
     <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0" id="projTable">
                 <thead class="table-light">
                     <tr>
                         <th>Code</th>
@@ -92,7 +98,26 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
         <?php if (empty($projects)): ?>
         <div class="p-4 text-center text-muted">No projects found.</div>
         <?php endif; ?>
+        <div id="projNoMatch" class="p-4 text-center text-muted" style="display:none;">No projects match your search.</div>
     </div>
 </div>
+
+<script>
+(function () {
+    var input = document.getElementById('projSearch');
+    var rows = document.querySelectorAll('#projTable tbody tr');
+    var noMatch = document.getElementById('projNoMatch');
+    input.addEventListener('input', function () {
+        var q = input.value.trim().toLowerCase();
+        var shown = 0;
+        rows.forEach(function (tr) {
+            var hit = !q || tr.textContent.toLowerCase().indexOf(q) !== -1;
+            tr.style.display = hit ? '' : 'none';
+            if (hit) shown++;
+        });
+        noMatch.style.display = (rows.length && !shown) ? '' : 'none';
+    });
+})();
+</script>
 
 <?php require_once __DIR__ . '/includes/construction_layout_footer.php'; ?>

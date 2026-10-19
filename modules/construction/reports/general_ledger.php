@@ -62,17 +62,78 @@ if ($accountId) {
         ");
         $stmt->execute([$accountId, $cid, $dateFrom, $dateTo]);
         $entries = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Qty / rate come from the supplier invoice line behind each posting.
+        // The ledger row does not store the line id, so match on invoice + account + amount.
+        $invoiceIds = [];
+        foreach ($entries as $row) {
+            if ($row['reference_type'] === 'co_supplier_invoice' && (int)$row['reference_id'] > 0) {
+                $invoiceIds[(int)$row['reference_id']] = true;
+            }
+        }
+        $itemsByInvoice = [];
+        if ($invoiceIds && co_db_table_exists($conn, 'co_supplier_invoice_items')) {
+            $ids = array_keys($invoiceIds);
+            $place = implode(',', array_fill(0, count($ids), '?'));
+            $itemStmt = $conn->prepare("
+                SELECT id, invoice_id, quantity, unit_price, subtotal
+                FROM co_supplier_invoice_items
+                WHERE company_id = ? AND expense_account_id = ? AND invoice_id IN ($place)
+                ORDER BY id
+            ");
+            $itemStmt->execute(array_merge([$cid, $accountId], $ids));
+            foreach ($itemStmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
+                $itemsByInvoice[(int)$item['invoice_id']][] = $item;
+            }
+        }
+        $usedItems = [];
+        foreach ($entries as &$row) {
+            $row['qty'] = null;
+            $row['rate'] = null;
+            $items = $itemsByInvoice[(int)$row['reference_id']] ?? [];
+            if ($row['reference_type'] !== 'co_supplier_invoice' || !$items) {
+                continue;
+            }
+            $isCredit = (float)$row['credit_amount'] > 0;
+            $amount = $isCredit ? (float)$row['credit_amount'] : (float)$row['debit_amount'];
+            // A reversal re-uses the same line, so track debit and credit sides separately.
+            $journalSide = (int)$row['journal_id'] . ($isCredit ? 'C' : 'D');
+            foreach ($items as $item) {
+                $key = $journalSide . ':' . $item['id'];
+                if (isset($usedItems[$key]) || abs((float)$item['subtotal'] - $amount) > 0.005) {
+                    continue;
+                }
+                $usedItems[$key] = true;
+                $row['qty'] = $isCredit ? -(float)$item['quantity'] : (float)$item['quantity'];
+                $row['rate'] = (float)$item['unit_price'];
+                break;
+            }
+        }
+        unset($row);
+        $periodQty = array_sum(array_map(fn($r) => (float)($r['qty'] ?? 0), $entries));
+
         $periodDebit = array_sum(array_map(fn($r) => (float)$r['debit_amount'], $entries));
         $periodCredit = array_sum(array_map(fn($r) => (float)$r['credit_amount'], $entries));
         $closing = $normal === 'debit' ? $opening + $periodDebit - $periodCredit : $opening + $periodCredit - $periodDebit;
     }
 }
 
-co_report_export($entries, [
+$exportRows = $entries;
+if ($entries) {
+    $exportRows[] = [
+        'description' => 'Total',
+        'qty' => $periodQty,
+        'debit_amount' => $periodDebit,
+        'credit_amount' => $periodCredit,
+    ];
+}
+co_report_export($exportRows, [
     'entry_date' => 'Date',
     'journal_number' => 'Journal',
     'reference_type' => 'Reference Type',
     'description' => 'Description',
+    'qty' => 'Qty',
+    'rate' => 'Rate',
     'debit_amount' => 'Debit',
     'credit_amount' => 'Credit',
     'balance' => 'Stored Balance',
@@ -103,13 +164,16 @@ require_once __DIR__ . '/../includes/construction_layout_header.php';
 <div class="card card-round">
     <div class="card-body p-0 table-responsive">
         <table class="table table-sm mb-0">
-            <thead class="table-light"><tr><th>Date</th><th>Journal</th><th>Reference</th><th>Description</th><th class="text-end">Debit</th><th class="text-end">Credit</th></tr></thead>
+            <thead class="table-light"><tr><th>Date</th><th>Journal</th><th>Reference</th><th>Description</th><th class="text-end">Qty</th><th class="text-end">Rate</th><th class="text-end">Debit</th><th class="text-end">Credit</th></tr></thead>
             <tbody>
             <?php foreach ($entries as $row): ?>
-                <tr><td><?= h($row['entry_date']) ?></td><td><?php if (!empty($row['journal_id'])): ?><a href="../journal_entry_view.php?id=<?= (int)$row['journal_id'] ?>"><?= h($row['journal_number']) ?></a><?php else: ?><?= h($row['journal_number']) ?><?php endif; ?></td><td><?= h($row['reference_type'] . ' #' . $row['reference_id']) ?></td><td><?= h($row['description'] ?: $row['journal_description']) ?></td><td class="text-end"><?= (float)$row['debit_amount'] ? co_format_money($row['debit_amount']) : '-' ?></td><td class="text-end"><?= (float)$row['credit_amount'] ? co_format_money($row['credit_amount']) : '-' ?></td></tr>
+                <tr><td><?= h($row['entry_date']) ?></td><td><?php if (!empty($row['journal_id'])): ?><a href="../journal_entry_view.php?id=<?= (int)$row['journal_id'] ?>"><?= h($row['journal_number']) ?></a><?php else: ?><?= h($row['journal_number']) ?><?php endif; ?></td><td><?= h($row['reference_type'] . ' #' . $row['reference_id']) ?></td><td><?= h($row['description'] ?: $row['journal_description']) ?></td><td class="text-end"><?= $row['qty'] !== null ? number_format($row['qty'], 2) : '-' ?></td><td class="text-end"><?= $row['rate'] !== null ? co_format_money($row['rate']) : '-' ?></td><td class="text-end"><?= (float)$row['debit_amount'] ? co_format_money($row['debit_amount']) : '-' ?></td><td class="text-end"><?= (float)$row['credit_amount'] ? co_format_money($row['credit_amount']) : '-' ?></td></tr>
             <?php endforeach; ?>
-            <?php if (!$entries): ?><tr><td colspan="6" class="text-center text-muted py-4">No ledger activity in this period.</td></tr><?php endif; ?>
+            <?php if (!$entries): ?><tr><td colspan="8" class="text-center text-muted py-4">No ledger activity in this period.</td></tr><?php endif; ?>
             </tbody>
+            <?php if ($entries): ?>
+            <tfoot class="table-light fw-bold"><tr><td colspan="4" class="text-end">Total</td><td class="text-end"><?= number_format($periodQty, 2) ?></td><td></td><td class="text-end"><?= co_format_money($periodDebit) ?></td><td class="text-end"><?= co_format_money($periodCredit) ?></td></tr></tfoot>
+            <?php endif; ?>
         </table>
     </div>
 </div>

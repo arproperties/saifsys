@@ -36,6 +36,29 @@ $stmt = $conn->prepare("
 $stmt->execute($params);
 $costs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// Posted supplier bills charged to a project count as project cost too.
+$projStmt = $conn->prepare("SELECT id, project_code, project_name FROM co_projects WHERE company_id = ?");
+$projStmt->execute([$cid]);
+$projectsById = [];
+foreach ($projStmt->fetchAll(PDO::FETCH_ASSOC) as $p) $projectsById[(int)$p['id']] = $p;
+foreach (co_project_supplier_bill_costs($conn, $cid, $project_id) as $b) {
+    $p = $projectsById[(int)$b['project_id']] ?? null;
+    if (!$p) continue;
+    $desc = trim(($b['supplier_name'] ?? '') . ' — Bill ' . $b['invoice_number'] . ($b['description'] ? ': ' . $b['description'] : ''));
+    $costs[] = [
+        'project_id' => $b['project_id'],
+        'project_code' => $p['project_code'],
+        'project_name' => $p['project_name'],
+        'cost_date' => $b['cost_date'],
+        'cost_type' => 'Supplier Bill',
+        'description' => $desc,
+        'amount' => $b['amount'],
+        'invoice_id' => $b['invoice_id'],
+    ];
+}
+usort($costs, static fn($a, $b) => strcmp((string)$b['cost_date'], (string)$a['cost_date']));
+$costTotal = array_sum(array_map(static fn($c) => (float)$c['amount'], $costs));
+
 $pageTitle = 'Project Costs';
 require_once __DIR__ . '/includes/construction_layout_header.php';
 ?>
@@ -56,13 +79,18 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
                     <?php foreach ($costs as $c): ?>
                     <tr>
                         <td><?= $c['cost_date'] ? date('Y-m-d', strtotime($c['cost_date'])) : '-' ?></td>
-                        <td><a href="project_view.php?id=<?= (int)$c['project_id'] ?>"><?= h($c['project_code']) ?></a></td>
+                        <td><a href="project_view.php?id=<?= (int)$c['project_id'] ?>"><?= h($c['project_code']) ?></a><div class="small text-muted"><?= h($c['project_name'] ?? '') ?></div></td>
                         <td><span class="badge bg-secondary"><?= h($c['cost_type']) ?></span></td>
-                        <td><?= h($c['description'] ?? '-') ?></td>
+                        <td><?php if (!empty($c['invoice_id'])): ?><a href="supplier_invoice_view.php?id=<?= (int)$c['invoice_id'] ?>"><?= h($c['description']) ?></a><?php else: ?><?= h($c['description'] ?? '-') ?><?php endif; ?></td>
                         <td><?= co_format_money($c['amount']) ?></td>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>
+                <?php if ($costs): ?>
+                <tfoot class="table-light">
+                    <tr><th colspan="4" class="text-end">Total</th><th><?= co_format_money($costTotal) ?></th></tr>
+                </tfoot>
+                <?php endif; ?>
             </table>
         </div>
         <?php if (empty($costs)): ?>

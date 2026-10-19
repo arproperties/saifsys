@@ -570,3 +570,32 @@ function co_delete_document($conn, $id, $company_id) {
     }
     return true;
 }
+
+/**
+ * Supplier bill lines charged to projects (draft and voided bills left out).
+ * Bills saved before line rows existed fall back to the header project and subtotal.
+ * Returns rows: project_id, cost_date, invoice_id, invoice_number, supplier_name, description, amount.
+ */
+function co_project_supplier_bill_costs(PDO $conn, int $companyId, int $projectId = 0): array {
+    $lineProject = $projectId ? " AND i.project_id = ?" : "";
+    $headProject = $projectId ? " AND si.project_id = ?" : "";
+    $sql = "
+        SELECT i.project_id, si.invoice_date AS cost_date, si.id AS invoice_id, si.invoice_number,
+               s.supplier_name, i.description, i.subtotal AS amount
+        FROM co_supplier_invoice_items i
+        JOIN co_supplier_invoices si ON si.id = i.invoice_id
+        LEFT JOIN co_suppliers s ON s.id = si.supplier_id
+        WHERE si.company_id = ? AND si.status NOT IN ('draft','voided') AND i.project_id IS NOT NULL{$lineProject}
+        UNION ALL
+        SELECT si.project_id, si.invoice_date, si.id, si.invoice_number,
+               s.supplier_name, si.description, si.subtotal
+        FROM co_supplier_invoices si
+        LEFT JOIN co_suppliers s ON s.id = si.supplier_id
+        WHERE si.company_id = ? AND si.status NOT IN ('draft','voided') AND si.project_id IS NOT NULL{$headProject}
+          AND NOT EXISTS (SELECT 1 FROM co_supplier_invoice_items x WHERE x.invoice_id = si.id)
+    ";
+    $params = $projectId ? [$companyId, $projectId, $companyId, $projectId] : [$companyId, $companyId];
+    $stmt = $conn->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}

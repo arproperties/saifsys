@@ -46,6 +46,23 @@ $matReqForProject = inv_material_requests_fetch_for_project($conn, $cid, $id);
 $totalCost = $conn->prepare("SELECT COALESCE(SUM(amount), 0) FROM co_project_costs WHERE project_id = ?");
 $totalCost->execute([$id]);
 $totalCost = (float)$totalCost->fetchColumn();
+// Same rows as project_costs.php for this project: direct costs + posted supplier bill lines.
+$pcStmt = $conn->prepare("SELECT cost_date, cost_type, description, amount FROM co_project_costs WHERE project_id = ?");
+$pcStmt->execute([$id]);
+$projectCostRows = $pcStmt->fetchAll(PDO::FETCH_ASSOC);
+foreach (co_project_supplier_bill_costs($conn, $cid, $id) as $b) {
+    $totalCost += (float)$b['amount'];
+    $projectCostRows[] = [
+        'cost_date' => $b['cost_date'],
+        'cost_type' => 'Supplier Bill',
+        'description' => trim(($b['supplier_name'] ?? '') . ' — Bill ' . $b['invoice_number'] . ($b['description'] ? ': ' . $b['description'] : '')),
+        'amount' => $b['amount'],
+        'invoice_id' => $b['invoice_id'],
+    ];
+}
+usort($projectCostRows, static fn($a, $b) => strcmp((string)$b['cost_date'], (string)$a['cost_date']));
+$projectCostCount = count($projectCostRows);
+$projectCostRows = array_slice($projectCostRows, 0, 10);
 
 $projectContractors = [];
 $projectContractorsMains = [];
@@ -253,7 +270,7 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
         <a href="project_documents.php?project_id=<?= $id ?>" class="btn btn-outline-secondary">Documents</a>
         <a href="supplier_invoices.php?project_id=<?= $id ?>" class="btn btn-outline-danger">Supplier Invoices<?= $projectSupplierInvoices ? ' (' . count($projectSupplierInvoices) . ')' : '' ?></a>
         <a href="project_contractors.php?project_id=<?= $id ?>" class="btn btn-outline-primary">+ Link Contractor</a>
-        <a href="project_costs.php?project_id=<?= $id ?>" class="btn btn-outline-success">Project Costs</a>
+        <a href="project_costs.php?project_id=<?= $id ?>" class="btn btn-outline-success">Project Costs<?= $projectCostCount ? ' (' . $projectCostCount . ')' : '' ?></a>
         <a href="project_labor.php?project_id=<?= $id ?>" class="btn btn-outline-info">Labor Assignments</a>
     </div>
     <?php if ($voCount > 0): ?>
@@ -306,6 +323,49 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
                 </div>
                 <?php if (count($projectSupplierInvoices) >= 10): ?>
                 <p class="text-muted small mt-2 mb-0">Showing latest 10. <a href="supplier_invoices.php?project_id=<?= $id ?>">View all</a>.</p>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
+    </div>
+    <div class="card card-round mb-3">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+            <h6 class="mb-0">Project Costs</h6>
+            <a href="project_costs.php?project_id=<?= $id ?>" class="btn btn-sm btn-outline-success">View all</a>
+        </div>
+        <div class="card-body">
+            <?php if (empty($projectCostRows)): ?>
+                <p class="text-muted mb-0">No costs for this project yet.</p>
+            <?php else: ?>
+                <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                            <th class="text-end">Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($projectCostRows as $pc): ?>
+                        <tr>
+                            <td><?= $pc['cost_date'] ? date('M j, Y', strtotime($pc['cost_date'])) : '-' ?></td>
+                            <td><span class="badge bg-secondary"><?= h($pc['cost_type']) ?></span></td>
+                            <td><?php if (!empty($pc['invoice_id'])): ?><a href="supplier_invoice_view.php?id=<?= (int)$pc['invoice_id'] ?>"><?= h($pc['description']) ?></a><?php else: ?><?= h($pc['description'] ?? '-') ?><?php endif; ?></td>
+                            <td class="text-end"><?= co_format_money($pc['amount']) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td colspan="3" class="text-end"><strong>Total (all)</strong></td>
+                            <td class="text-end"><strong><?= co_format_money($totalCost) ?></strong></td>
+                        </tr>
+                    </tfoot>
+                </table>
+                </div>
+                <?php if ($projectCostCount > 10): ?>
+                <p class="text-muted small mt-2 mb-0">Showing latest 10 of <?= $projectCostCount ?>. <a href="project_costs.php?project_id=<?= $id ?>">View all</a>.</p>
                 <?php endif; ?>
             <?php endif; ?>
         </div>

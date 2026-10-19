@@ -425,14 +425,29 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
         <?php if (empty($invoices)): ?>
         <div class="p-4 text-muted">No invoices yet. <a href="supplier_invoice_add.php?supplier_id=<?= $id ?>">Add an invoice</a>.</div>
         <?php else: ?>
+        <?php
+        $invTabCounts = ['all' => count($invoices), 'active' => 0, 'draft' => 0, 'posted' => 0, 'partially_paid' => 0, 'paid' => 0, 'voided' => 0];
+        foreach ($invoices as $inv) {
+            if (isset($invTabCounts[$inv['lifecycle']])) $invTabCounts[$inv['lifecycle']]++;
+            if ($inv['lifecycle'] !== 'voided') $invTabCounts['active']++;
+        }
+        $invTabs = ['active' => 'Active', 'all' => 'All', 'draft' => 'Draft', 'posted' => 'Unpaid', 'partially_paid' => 'Partially Paid', 'paid' => 'Paid', 'voided' => 'Voided'];
+        ?>
+        <ul class="nav nav-tabs px-3 pt-2" id="invStatusTabs">
+            <?php foreach ($invTabs as $key => $label): ?>
+            <li class="nav-item">
+                <a href="#" class="nav-link<?= $key === 'active' ? ' active' : '' ?>" data-inv-tab="<?= $key ?>"><?= $label ?> <span class="badge bg-light text-dark"><?= $invTabCounts[$key] ?></span></a>
+            </li>
+            <?php endforeach; ?>
+        </ul>
         <div class="table-responsive">
-            <table class="table table-sm mb-0">
+            <table class="table table-sm mb-0" id="invTable">
                 <thead class="table-light">
                     <tr><th>Date</th><th>Invoice #</th><th>Project</th><th class="text-end">Total</th><th class="text-end">Paid</th><th class="text-end">Balance</th><th>Status</th><th class="text-end">Actions</th></tr>
                 </thead>
                 <tbody>
                 <?php foreach ($invoices as $inv): ?>
-                <tr>
+                <tr data-inv-status="<?= h($inv['lifecycle']) ?>"<?= $inv['lifecycle'] === 'voided' ? ' style="display:none"' : '' ?>>
                     <td><?= h($inv['invoice_date']) ?></td>
                     <td><?= h($inv['invoice_number']) ?></td>
                     <td><?= $inv['project_code'] ? h($inv['project_code']) : '—' ?></td>
@@ -455,9 +470,26 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
                     </td>
                 </tr>
                 <?php endforeach; ?>
+                <tr id="invTabEmpty"<?= $invTabCounts['active'] > 0 ? ' style="display:none"' : '' ?>><td colspan="8" class="text-muted p-3">No invoices in this tab.</td></tr>
                 </tbody>
             </table>
         </div>
+        <script>
+        document.querySelectorAll('#invStatusTabs [data-inv-tab]').forEach(function (tab) {
+            tab.addEventListener('click', function (e) {
+                e.preventDefault();
+                var key = tab.dataset.invTab, shown = 0;
+                document.querySelectorAll('#invStatusTabs .nav-link').forEach(function (t) { t.classList.toggle('active', t === tab); });
+                document.querySelectorAll('#invTable tr[data-inv-status]').forEach(function (row) {
+                    var st = row.dataset.invStatus;
+                    var show = key === 'all' || (key === 'active' ? st !== 'voided' : st === key);
+                    row.style.display = show ? '' : 'none';
+                    if (show) shown++;
+                });
+                document.getElementById('invTabEmpty').style.display = shown ? 'none' : '';
+            });
+        });
+        </script>
         <?php endif; ?>
     </div>
 </div>

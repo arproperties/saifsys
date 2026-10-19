@@ -79,10 +79,17 @@ require_once __DIR__ . '/../includes/construction_layout_header.php';
     </div>
 </div>
 
+<div class="mb-3 no-print" style="max-width:360px;">
+    <div class="input-group input-group-sm">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input type="search" id="pcsSearch" class="form-control" placeholder="Search project, code, type or status..." autocomplete="off">
+    </div>
+</div>
+
 <div class="card card-round">
     <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0" id="pcsTable">
                 <thead class="table-light">
                     <tr><th>Project</th><th>Type</th><th>Status</th><th>Budget</th><th>Actual Cost</th><th>Variance</th></tr>
                 </thead>
@@ -107,7 +114,26 @@ require_once __DIR__ . '/../includes/construction_layout_header.php';
         <?php if (empty($projects)): ?>
         <div class="p-4 text-center text-muted">No projects found.</div>
         <?php endif; ?>
+        <div id="pcsNoMatch" class="p-4 text-center text-muted" style="display:none;">No projects match your search.</div>
     </div>
 </div>
+
+<script>
+(function () {
+    var input = document.getElementById('pcsSearch');
+    var rows = document.querySelectorAll('#pcsTable tbody tr');
+    var noMatch = document.getElementById('pcsNoMatch');
+    input.addEventListener('input', function () {
+        var q = input.value.trim().toLowerCase();
+        var shown = 0;
+        rows.forEach(function (tr) {
+            var hit = !q || tr.textContent.toLowerCase().indexOf(q) !== -1;
+            tr.style.display = hit ? '' : 'none';
+            if (hit) shown++;
+        });
+        noMatch.style.display = (rows.length && !shown) ? '' : 'none';
+    });
+})();
+</script>
 
 <?php require_once __DIR__ . '/../includes/construction_layout_footer.php'; ?>
