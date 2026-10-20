@@ -85,7 +85,7 @@ if (!class_exists('RenewalNoticePDFGenerator')) {
       {{#if show_rent_vat_row}}<tr><td class="label">VAT on rent ({{vat_rate_label}})</td><td class="value">{{rent_vat_display}} AED</td></tr>{{/if}}
       <tr><td class="label">VAT on additional charges ({{vat_rate_label}})</td><td class="value">{{vat_extra_charges_display}} AED</td></tr>
       <tr><td class="label">Total VAT</td><td class="value"><strong>{{vat_total_display}} AED</strong></td></tr>
-      <tr><td class="label">RERA Charges</td><td class="value">{{rera_charges_display}} AED</td></tr>
+      <tr><td class="label">Ejari Fee</td><td class="value">{{rera_charges_display}} AED</td></tr>
       <tr><td class="label">Payment Terms</td><td class="value">{{number_of_cheques}} Cheques</td></tr>
       {{#if show_grand_total_row}}<tr><td class="label">Total Annual Payable</td><td class="value"><strong>{{grand_total_display}} AED</strong></td></tr>{{/if}}
     </table>

@@ -371,11 +371,20 @@ function ops_pin_record_attempt(PDO $conn, string $deviceId, string $ip, ?int $u
     }
 }
 
-/** Attempts stop mattering once the window has passed; keep a day, no more. */
+/**
+ * Failures stop mattering once the window has passed; keep a day, no more.
+ * Successful sign-ins are kept 90 days: they are the only record of which
+ * handset signed in as whom, and a check-in made on someone else's phone with
+ * their PIN can only be traced through them.
+ */
 function ops_pin_prune_attempts(PDO $conn): void
 {
     try {
-        $conn->exec("DELETE FROM ops_pin_attempts WHERE attempted_at < (NOW() - INTERVAL 1 DAY)");
+        $conn->exec("
+            DELETE FROM ops_pin_attempts
+            WHERE (succeeded = 0 AND attempted_at < (NOW() - INTERVAL 1 DAY))
+               OR attempted_at < (NOW() - INTERVAL 90 DAY)
+        ");
     } catch (PDOException $e) {
         // Housekeeping. Never worth failing a sign-in over.
     }

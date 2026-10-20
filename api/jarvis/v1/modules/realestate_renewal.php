@@ -12,17 +12,22 @@
  * the person acting, "through Reem".
  *
  *   quote    what the renewal at this rent would be: the cheques one by one, as saifsys
- *            would make them on convert, and the charges. Saves nothing.
- *            Body: lease_id, end_date, rent, cheques.
+ *            would make them on convert, and the charges (fees: admin, chiller, parking,
+ *            small_store, big_store). Saves nothing. Body: lease_id, end_date, rent, cheques,
+ *            and optionally admin_fees, chiller_charges, additional_parking_fee, small_store_fee,
+ *            big_store_fee (the old lease's are kept when left out).
  *   start    the offer went to the tenant: the workflow and its draft lease, made at this
  *            rent and marked notice_sent. The old Ejari number is not carried over. Safe
  *            to call again (Reem's open workflow for the lease is returned). A renewal the
- *            staff started themselves is left to them.
- *            Body: lease_id, end_date, rent, cheques.
+ *            staff started themselves is left to them. Returns saifsys's renewal notice PDF
+ *            (notice: name, data base64), the same one the staff send, for Reem to attach.
+ *            Body: as for quote.
  *   rent     a new rent on the open workflow (a counter-offer, the RERA index rent, or the
  *            rent agreed). Body: workflow_id, rent, cheques, note.
  *   status   the workflow moved on: negotiation, accepted or rejected.
  *            Body: workflow_id, status, note.
+ *   contract the tenancy contract PDF of the renewal's draft lease (Contract Templates), the
+ *            one the staff's tenants sign. Body: workflow_id.
  *   note     a line on the workflow's log for an email out or in (Body: workflow_id, message),
  *            with the email itself added to its negotiation notes (text).
  *   file     a paper the tenant emailed (signed agreement, cheque photo), kept with the
@@ -41,6 +46,7 @@ if (!defined('JARVIS_ACT')) {
 
 $root = dirname(__DIR__, 4);
 require_once $root . '/modules/realestate/includes/renewal_service.php';
+require_once $root . '/modules/realestate/includes/renewal_notice_pdf_generator.php';
 
 const JARVIS_RN_EVENT = 'reem_started';
 
@@ -57,8 +63,14 @@ function jarvis_rn_log(PDO $conn, int $workflowId, int $companyId, int $actorId,
 /** The lease, still ending when Reem thinks it does. */
 function jarvis_rn_lease(PDO $conn, array $in): array
 {
-    $st = $conn->prepare("SELECT id, company_id, status, end_date, has_additional_parking, additional_parking_fee,
-            has_additional_store, additional_store_fee FROM re_leases WHERE id = ? LIMIT 1");
+    $st = $conn->prepare("SELECT l.id, l.company_id, l.status, l.end_date, l.has_additional_parking, l.additional_parking_fee,
+            l.has_additional_store, l.additional_store_fee, l.admin_fees, l.chiller_fees,
+            COALESCE(bs.show_chiller_row, CASE WHEN b.name LIKE '%Park Place%' THEN 1 ELSE 0 END) AS shows_chiller
+        FROM re_leases l
+        JOIN re_units u ON u.id = l.unit_id
+        JOIN re_buildings b ON b.id = u.building_id
+        LEFT JOIN re_renewal_notice_building_settings bs ON bs.company_id = l.company_id AND bs.building_id = b.id
+        WHERE l.id = ? LIMIT 1");
     $st->execute([(int)($in['lease_id'] ?? 0)]);
     $lease = $st->fetch(PDO::FETCH_ASSOC);
     if (!$lease) {
@@ -83,20 +95,61 @@ function jarvis_rn_rent(array $in): array
     return [$rent, $cheques];
 }
 
-/** What re_renewal_create() is given: the rent and cheques, the old lease's extras, no old Ejari. */
-function jarvis_rn_terms(array $lease, float $rent, int $cheques): array
+/** An amount in the body, or null when it is not given (then the old lease's is kept). */
+function jarvis_rn_amount(array $in, string $key): ?float
 {
-    $parking = !empty($lease['has_additional_parking']) && (float)$lease['additional_parking_fee'] > 0;
-    $store = !empty($lease['has_additional_store']) && (float)$lease['additional_store_fee'] > 0;
+    if (!isset($in[$key]) || $in[$key] === '' || $in[$key] === null) {
+        return null;
+    }
+    $n = round((float)$in[$key], 2);
+    if ($n < 0) {
+        jarvis_rn_fail('bad_fee', "$key cannot be below 0.");
+    }
+    return $n;
+}
+
+/**
+ * The renewal's charges as re_renewal_create() makes them: each amount given, otherwise the
+ * old lease's. Chiller only on a building whose notice shows it; 0 parking or store is none.
+ */
+function jarvis_rn_fees(array $lease, array $in): array
+{
+    $admin = jarvis_rn_amount($in, 'admin_fees');
+    $chiller = jarvis_rn_amount($in, 'chiller_charges');
+    $parking = jarvis_rn_amount($in, 'additional_parking_fee');
+    $small = jarvis_rn_amount($in, 'small_store_fee');
+    $big = jarvis_rn_amount($in, 'big_store_fee');
+    $shows = (int)$lease['shows_chiller'] === 1;
+    $oldParking = !empty($lease['has_additional_parking']) ? (float)$lease['additional_parking_fee'] : 0.0;
+    $oldStore = !empty($lease['has_additional_store']) ? (float)$lease['additional_store_fee'] : 0.0;
+    return [
+        // re_renewal_create() reads an admin fee of 0 as "keep the old one".
+        'admin' => $admin !== null && $admin > 0 ? $admin : (float)$lease['admin_fees'],
+        'chiller' => $shows ? ($chiller ?? (float)$lease['chiller_fees']) : 0.0,
+        'chiller_shown' => $shows,
+        'parking' => $parking ?? $oldParking,
+        'small_store' => $small ?? $oldStore,
+        'big_store' => $big ?? 0.0,
+    ];
+}
+
+/** What re_renewal_create() is given: the rent, cheques and charges, no old Ejari. */
+function jarvis_rn_terms(array $lease, float $rent, int $cheques, array $in): array
+{
+    $fees = jarvis_rn_fees($lease, $in);
     return [
         'increase_type' => 'fixed',
         'increase_value' => 0,
         'proposed_rent' => $rent,
         'number_of_cheques' => $cheques,
-        'additional_parking_enabled' => $parking,
-        'additional_parking_fee' => $parking ? (float)$lease['additional_parking_fee'] : 0,
-        'small_store_enabled' => $store,
-        'small_store_fee' => $store ? (float)$lease['additional_store_fee'] : 0,
+        'admin_fees' => $fees['admin'],
+        'chiller_charges' => $fees['chiller'],
+        'additional_parking_enabled' => $fees['parking'] > 0,
+        'additional_parking_fee' => $fees['parking'],
+        'small_store_enabled' => $fees['small_store'] > 0,
+        'small_store_fee' => $fees['small_store'],
+        'big_store_enabled' => $fees['big_store'] > 0,
+        'big_store_fee' => $fees['big_store'],
         'carry_ejari' => false,
     ];
 }
@@ -132,11 +185,22 @@ function jarvis_rn_workflow(PDO $conn, array $in): array
 
 $note = mb_substr(trim((string)($in['note'] ?? '')), 0, 2000);
 
+/** saifsys's own renewal notice for the workflow, the PDF the staff send, for Reem to attach. */
+function jarvis_rn_notice(PDO $conn, int $companyId, int $workflowId, string $root): array
+{
+    $rel = (new RenewalNoticePDFGenerator($conn, $companyId))->generateFromWorkflow($workflowId);
+    $bytes = @file_get_contents($root . '/' . ltrim($rel, '/'));
+    if ($bytes === false || $bytes === '') {
+        throw new Exception('The renewal notice PDF was not made.');
+    }
+    return ['name' => basename($rel), 'data' => base64_encode($bytes)];
+}
+
 if ($action === 'quote' || $action === 'start') {
     $lease = jarvis_rn_lease($conn, $in);
     $companyId = (int)$lease['company_id'];
     [$rent, $cheques] = jarvis_rn_rent($in);
-    $terms = jarvis_rn_terms($lease, $rent, $cheques);
+    $terms = jarvis_rn_terms($lease, $rent, $cheques, $in);
     if ((string)$lease['status'] !== 'active') {
         jarvis_rn_fail('lease_not_active', 'That lease is no longer active in saifsys.', 409);
     }
@@ -147,7 +211,7 @@ if ($action === 'quote' || $action === 'start') {
         } catch (Throwable $e) {
             jarvis_rn_fail('quote_failed', $e->getMessage(), 422);
         }
-        jarvis_api_send(['ok' => true, 'quote' => $quote]);
+        jarvis_api_send(['ok' => true, 'quote' => $quote + ['fees' => jarvis_rn_fees($lease, $in)]]);
     }
 
     $open = jarvis_rn_open_for_lease($conn, (int)$lease['id']);
@@ -155,7 +219,12 @@ if ($action === 'quote' || $action === 'start') {
         jarvis_rn_fail('staff_renewal', "The staff already have a renewal for this lease in saifsys (#{$open['id']}, {$open['status']}). Leave it to them.", 409);
     }
     if ($open && $open['status'] !== 'converted') {
-        jarvis_api_send(['ok' => true, 'renewal' => ['workflow_id' => (int)$open['id'], 'status' => $open['status'], 'already' => true]]);
+        try {
+            $notice = jarvis_rn_notice($conn, $companyId, (int)$open['id'], $root);
+        } catch (Throwable $e) {
+            jarvis_rn_fail('notice_failed', $e->getMessage(), 422);
+        }
+        jarvis_api_send(['ok' => true, 'renewal' => ['workflow_id' => (int)$open['id'], 'status' => $open['status'], 'already' => true, 'notice' => $notice]]);
     }
 
     $conn->beginTransaction();
@@ -165,6 +234,8 @@ if ($action === 'quote' || $action === 'start') {
             ->execute([$actorId, $made['workflow_id']]);
         jarvis_rn_log($conn, $made['workflow_id'], $companyId, $actorId, JARVIS_RN_EVENT,
             "Renewal offer emailed to the tenant at AED {$made['proposed_rent']} a year, {$made['number_of_cheques']} cheques");
+        // The notice is made before the commit, so a renewal is never started without it.
+        $notice = jarvis_rn_notice($conn, $companyId, (int)$made['workflow_id'], $root);
         $conn->commit();
     } catch (Throwable $e) {
         if ($conn->inTransaction()) {
@@ -172,7 +243,7 @@ if ($action === 'quote' || $action === 'start') {
         }
         jarvis_rn_fail('start_failed', $e->getMessage(), 422);
     }
-    jarvis_api_send(['ok' => true, 'renewal' => ['workflow_id' => (int)$made['workflow_id'], 'status' => 'notice_sent']]);
+    jarvis_api_send(['ok' => true, 'renewal' => ['workflow_id' => (int)$made['workflow_id'], 'status' => 'notice_sent', 'notice' => $notice]]);
 }
 
 $wf = jarvis_rn_workflow($conn, $in);
@@ -254,6 +325,26 @@ if ($action === 'convert') {
         error_log('jarvis renewal audit: ' . $e->getMessage());
     }
     jarvis_api_send(['ok' => true, 'renewal' => ['workflow_id' => $workflowId] + $done]);
+}
+
+if ($action === 'contract') {
+    // The tenancy contract of the renewal's draft lease, from Contract Templates: the one the
+    // tenant signs in the portal when the staff run the renewal.
+    $newLeaseId = (int)($wf['new_lease_id'] ?? 0);
+    if ($newLeaseId < 1) {
+        jarvis_rn_fail('no_draft_lease', 'This renewal has no draft lease in saifsys.', 409);
+    }
+    try {
+        require_once $root . '/modules/realestate/includes/contract_pdf_generator.php';
+        $rel = (new ContractPDFGenerator($conn, $companyId))->generateFromLease($newLeaseId);
+        $bytes = @file_get_contents($root . '/' . ltrim((string)$rel, '/'));
+        if ($bytes === false || $bytes === '') {
+            throw new Exception('The contract PDF was not made.');
+        }
+    } catch (Throwable $e) {
+        jarvis_rn_fail('contract_failed', $e->getMessage(), 422);
+    }
+    jarvis_api_send(['ok' => true, 'contract' => ['name' => basename((string)$rel), 'data' => base64_encode($bytes)]]);
 }
 
 if ($action === 'note') {
