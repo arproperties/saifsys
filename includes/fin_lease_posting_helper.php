@@ -9,6 +9,12 @@
  *
  * The rows follow the Lease Information card of lease_view.php, in its order and
  * with its names. Their accounts are fixed (FIN_LEASE_POSTING_ROWS), except:
+ *   - the tenant goes to any account under "Sundry Debtors", by default the one
+ *     named after the lease's building ("AYLA RESIDENCES - TENANTS" for AYLA
+ *     RESIDENCE), else 1121005;
+ *   - the deposit goes to any account under "Deposit Payable", by default the one
+ *     named after the building ("SECURITY DEPOSIT PAYABLE - PARK PLACE"), else 2112010;
+ *   - a villa with no account of its own is never pre-picked: the user chooses;
  *   - the contract goes to any "Deferred Revenue" account, by default the one
  *     named after the lease's building ("Deferred Revenue - Ayla" for AYLA
  *     RESIDENCE), else 2112009;
@@ -26,15 +32,15 @@ const FIN_LEASE_POSTING_ROWS = [
     'tenant'     => ['label' => 'Tenant',           'code' => '1121005', 'side' => 'debit',  'kind' => 'debtor'],
     'contract'   => ['label' => 'Contract Amount',  'code' => '2112009', 'side' => 'credit', 'kind' => 'liability'],
     'deposit'    => ['label' => 'Security Deposit', 'code' => '2112010', 'side' => 'credit', 'kind' => 'liability'],
-    'chiller'    => ['label' => 'Chiller Fees',     'code' => '4100009', 'side' => 'credit', 'kind' => 'income'],
-    'ejari'      => ['label' => 'Ejari Fees',       'code' => '4100008', 'side' => 'credit', 'kind' => 'income'],
-    'admin'      => ['label' => 'Admin Fees',       'code' => '4100010', 'side' => 'credit', 'kind' => 'income'],
+    'chiller'    => ['label' => 'Chiller Fees',     'code' => '4130009', 'side' => 'credit', 'kind' => 'income'],
+    'ejari'      => ['label' => 'Ejari Fees',       'code' => '4130004', 'side' => 'credit', 'kind' => 'income'],
+    'admin'      => ['label' => 'Admin Fees',       'code' => '4130002', 'side' => 'credit', 'kind' => 'income'],
     'commission' => ['label' => 'Commission Fees',  'code' => '4200001', 'side' => 'credit', 'kind' => 'income'],
     'amc'        => ['label' => 'AMC Amount',       'code' => '4200001', 'side' => 'credit', 'kind' => 'income'],
 ];
 
 /** The rows whose account is picked from a list on the page. */
-const FIN_LEASE_POSTING_CHOOSABLE = ['contract', 'commission'];
+const FIN_LEASE_POSTING_CHOOSABLE = ['tenant', 'contract', 'deposit', 'commission'];
 
 function fin_lease_posting_ready(PDO $conn): bool
 {
@@ -92,11 +98,91 @@ function fin_lease_posting_contract_default(array $choices, ?string $building): 
     return null;
 }
 
+/**
+ * The accounts a row can post to: every postable account under one whose name
+ * starts with $parent ("Sundry Debtors", "Deposit Payable"), and the row's own code, by code.
+ */
+function fin_lease_posting_accounts_under(PDO $conn, int $companyId, string $parent, string $key): array
+{
+    $stmt = $conn->prepare("
+        SELECT a.id
+          FROM fin_coa_accounts a
+          JOIN fin_coa_accounts p ON p.id = a.parent_id AND p.company_id = a.company_id
+         WHERE a.company_id = ? AND p.name LIKE ?
+    ");
+    $stmt->execute([$companyId, $parent . '%']);
+    $under = array_flip(array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN)));
+    return array_values(array_filter(
+        fin_voucher_ledger_accounts($conn, $companyId),
+        static fn($a) => isset($under[(int)$a['id']]) || $a['code'] === FIN_LEASE_POSTING_ROWS[$key]['code']
+    ));
+}
+
+/** The accounts the tenant can be debited to: those under "Sundry Debtors", and 1121005. */
+function fin_lease_posting_tenant_accounts(PDO $conn, int $companyId): array
+{
+    return fin_lease_posting_accounts_under($conn, $companyId, 'sundry debtors', 'tenant');
+}
+
+/**
+ * The account of a row for a building: the one whose name, less $strip ("- Tenants",
+ * "Security Deposit Payable -"), is the building's name or a word or words of it,
+ * plurals aside ("AYLA RESIDENCES - TENANTS" for AYLA RESIDENCE), the longest such
+ * match winning; else the row's own code; else null. An account named just "Villa"
+ * is never picked, nor the row's code for a villa: villas get their own accounts,
+ * until then the user chooses.
+ */
+function fin_lease_posting_building_default(array $choices, ?string $building, string $strip, string $key): ?array
+{
+    $words = static fn(string $s): string => ' ' . trim(preg_replace('/s\b/', '', preg_replace('/[^a-z0-9]+/', ' ', strtolower($s)))) . ' ';
+    $code = FIN_LEASE_POSTING_ROWS[$key]['code'];
+    $bld = $words((string)$building);
+    $best = null;
+    $bestLen = 0;
+    foreach ($choices as $a) {
+        $name = trim($words(preg_replace($strip, '', $a['name'])));
+        if ($name === '' || $name === 'villa' || $a['code'] === $code) {
+            continue;
+        }
+        if (strlen($name) > $bestLen && str_contains($bld, ' ' . $name . ' ')) {
+            $best = $a;
+            $bestLen = strlen($name);
+        }
+    }
+    if ($best || str_starts_with(trim($bld), 'villa')) {
+        return $best;
+    }
+    foreach ($choices as $a) {
+        if ($a['code'] === $code) {
+            return $a;
+        }
+    }
+    return null;
+}
+
+/** The tenant account for a building ("AYLA RESIDENCES - TENANTS"); see fin_lease_posting_building_default(). */
+function fin_lease_posting_tenant_default(array $choices, ?string $building): ?array
+{
+    return fin_lease_posting_building_default($choices, $building, '/[\s\-]*tenants?\s*$/i', 'tenant');
+}
+
+/** The deposit account for a building ("SECURITY DEPOSIT PAYABLE - PARK PLACE"); see fin_lease_posting_building_default(). */
+function fin_lease_posting_deposit_default(array $choices, ?string $building): ?array
+{
+    return fin_lease_posting_building_default($choices, $building, '/^\s*(security\s+)?deposits?(\s+payable)?[\s\-]*/i', 'deposit');
+}
+
 /** The accounts a choosable row can post to (FIN_LEASE_POSTING_CHOOSABLE), by code. */
 function fin_lease_posting_choices(PDO $conn, int $companyId, string $key): array
 {
+    if ($key === 'tenant') {
+        return fin_lease_posting_tenant_accounts($conn, $companyId);
+    }
     if ($key === 'contract') {
         return fin_lease_posting_contract_accounts($conn, $companyId);
+    }
+    if ($key === 'deposit') {
+        return fin_lease_posting_accounts_under($conn, $companyId, 'deposit payable', 'deposit');
     }
     // Commission: any revenue account.
     return array_values(array_filter(fin_voucher_ledger_accounts($conn, $companyId), static fn($a) => str_starts_with($a['code'], '4')));
@@ -105,8 +191,14 @@ function fin_lease_posting_choices(PDO $conn, int $companyId, string $key): arra
 /** The account a choosable row starts at for this lease, or null when the chart has none. */
 function fin_lease_posting_default(string $key, array $choices, array $lease): ?array
 {
+    if ($key === 'tenant') {
+        return fin_lease_posting_tenant_default($choices, $lease['building_name'] ?? null);
+    }
     if ($key === 'contract') {
         return fin_lease_posting_contract_default($choices, $lease['building_name'] ?? null);
+    }
+    if ($key === 'deposit') {
+        return fin_lease_posting_deposit_default($choices, $lease['building_name'] ?? null);
     }
     foreach ($choices as $a) {
         if (stripos($a['name'], 'commission') !== false) {
@@ -212,7 +304,7 @@ function fin_lease_post(PDO $conn, int $companyId, int $leaseId, array $data, ?i
             }
             $chosen = array_values(array_filter($choices, static fn($a) => (int)$a['id'] === $pick));
             if (!$chosen) {
-                throw new InvalidArgumentException(FIN_LEASE_POSTING_ROWS[$key]['label'] . ': choose ' . ($key === 'contract' ? 'a Deferred Revenue' : 'a revenue') . ' account.');
+                throw new InvalidArgumentException(FIN_LEASE_POSTING_ROWS[$key]['label'] . ': choose ' . (['tenant' => 'a Sundry Debtors', 'contract' => 'a Deferred Revenue', 'deposit' => 'a Deposit Payable'][$key] ?? 'a revenue') . ' account.');
             }
             $accounts[$key] = $chosen[0];
         }
@@ -231,6 +323,9 @@ function fin_lease_post(PDO $conn, int $companyId, int $leaseId, array $data, ?i
             }
             if ($amount == 0) {
                 continue;
+            }
+            if (!$accounts[$key] && in_array($key, FIN_LEASE_POSTING_CHOOSABLE, true) && fin_lease_posting_choices($conn, $companyId, $key)) {
+                throw new InvalidArgumentException("{$label}: choose an account.");
             }
             if (!$accounts[$key]) {
                 throw new InvalidArgumentException("{$label}: account {$row['code']} is not in the chart of accounts.");

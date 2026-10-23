@@ -66,6 +66,33 @@ check('any other building gets 2112009', '2112009', $pickFor('Gents Camp (G+5 Bu
 check('no building gets 2112009', '2112009', $pickFor(null));
 check('no 2112009 and no match', null, fin_lease_posting_contract_default([$defer[1]], 'Gents Camp'));
 
+$debtors = [['id' => 1, 'code' => '1121005', 'name' => 'SUNDRY DEBTORS'],
+            ['id' => 2, 'code' => '1221001', 'name' => 'AYLA RESIDENCES - TENANTS'],
+            ['id' => 3, 'code' => '1221002', 'name' => 'PARK PLACE - TENANTS'],
+            ['id' => 4, 'code' => '1221003', 'name' => 'VILLA - TENANTS']];
+$tenantFor = static fn(array $list, ?string $b) => fin_lease_posting_tenant_default($list, $b)['code'] ?? null;
+check('tenant account for AYLA RESIDENCE (plural aside)', '1221001', $tenantFor($debtors, 'AYLA RESIDENCE'));
+check('tenant account for PARK PLACE', '1221002', $tenantFor($debtors, 'Park Place'));
+check('a villa is never pre-picked', null, $tenantFor($debtors, 'Villa 267 Dubai South'));
+check('nor a villa named another way', null, $tenantFor($debtors, 'VILLA-02, Lootah Villa, Al Barsha'));
+check('any other building gets 1121005', '1121005', $tenantFor($debtors, 'Gents Camp'));
+check('no 1121005 and no match', null, $tenantFor(array_slice($debtors, 1), 'Gents Camp'));
+
+$deposits = [['id' => 1, 'code' => '2240001', 'name' => 'SECURITY DEPOSIT PAYABLE - AYLA RESIDENCE'],
+             ['id' => 2, 'code' => '2240002', 'name' => 'SECURITY DEPOSIT PAYABLE - PARK PLACE'],
+             ['id' => 3, 'code' => '2240003', 'name' => 'SECURITY DEPOSIT PAYABLE - VILLA'],
+             ['id' => 4, 'code' => '2240004', 'name' => 'SECURITY DEPOSIT PAYABLE - VILLA 279, JANUSIA, DAMAC HILLS 2'],
+             ['id' => 5, 'code' => '2240005', 'name' => 'SECURITY DEPOSIT PAYABLE - VILLA-02, Lootah Villa, Al Barsha'],
+             ['id' => 8, 'code' => '2240008', 'name' => 'SECURITY DEPOSIT PAYABLE - Villa 267 Dubai South']];
+$depositFor = static fn(?string $b) => fin_lease_posting_deposit_default($deposits, $b)['code'] ?? null;
+check('deposit account for AYLA RESIDENCE', '2240001', $depositFor('AYLA RESIDENCE'));
+check('deposit account for PARK PLACE', '2240002', $depositFor('PARK PLACE'));
+check('deposit account for a villa with its own account', '2240008', $depositFor('Villa 267 Dubai South'));
+check('deposit account for VILLA 279', '2240004', $depositFor('VILLA 279, JANUSIA, DAMAC HILLS 2'));
+check('deposit account for VILLA-02', '2240005', $depositFor('VILLA-02, Lootah Villa, Al Barsha'));
+check('a villa with no account of its own is not pre-picked', null, $depositFor('Villa 300 Arabian Ranches'));
+check('a building with no deposit account gets nothing', null, $depositFor('Gents Camp'));
+
 if (!fin_coa_table_ready($conn) || !fin_voucher_tables_ready($conn) || !fin_lease_posting_ready($conn)) {
     echo "Run the finance migrations up to fin_lease_posting.sql first.\n";
     exit(1);
@@ -112,7 +139,7 @@ try {
     check('a missing account stops the posting', true, str_contains(refusal(static fn() => $post($a, $leaseId, $amounts)), 'account 1121005 is not in the chart'));
 
     foreach ([['1121005', 'SUNDRY DEBTORS'], ['2112009', 'Deferred Revenue'], ['2112010', 'Security Deposit'],
-              ['4100008', 'Ejari Income Recieved'], ['4100009', 'Chiller Fees'], ['4100010', 'Admin Fee']] as [$code, $name]) {
+              ['4130004', 'EJARI FEE RECEIVED'], ['4130009', 'CHILLER FEE RECEIVED'], ['4130002', 'ADMIN FEES RECEIVED']] as [$code, $name]) {
         fin_coa_add_account($conn, $a, $code, $name);
     }
 
@@ -134,7 +161,7 @@ try {
     check('reference is the lease number', $lease['lease_number'], $v['reference']);
     check('lines: debtor first, zero rows left out',
         [['1121005', '63870.50', '0.00'], ['2112009', '0.00', '60000.00'], ['2112010', '0.00', '3000.00'],
-         ['4100008', '0.00', '220.00'], ['4100010', '0.00', '500.00'], ['4200001', '0.00', '100.00'], ['4200001', '0.00', '50.50']],
+         ['4130004', '0.00', '220.00'], ['4130002', '0.00', '500.00'], ['4200001', '0.00', '100.00'], ['4200001', '0.00', '50.50']],
         array_map(static fn($l) => [$l['code'], $l['debit'], $l['credit']], $v['lines']));
     $tb = array_column(fin_trial_balance($conn, $a, '2026-03-01', '2026-03-31')['rows'], null, 'code');
     check('trial balance shows the debtor', 63870.5, (float)$tb['1121005']['period_debit']);
@@ -162,7 +189,31 @@ try {
     $chosen = fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['contract' => (int)$choices['2112012'], 'commission' => $admin]], 7);
     $codes = array_column(fin_voucher_get($conn, $a, $chosen)['lines'], 'code');
     check('the contract goes to the chosen account', ['1121005', '2112012'], array_slice($codes, 0, 2));
-    check('the commission goes to the chosen account', '4100010', $codes[5]);
+    check('the commission goes to the chosen account', '4130002', $codes[5]);
+
+    // 5c. The tenant goes to an account under Sundry Debtors, and only to one.
+    fin_voucher_delete($conn, $a, $chosen, 7);
+    fin_coa_add_account($conn, $a, '1221000', 'SUNDRY DEBTORS');
+    fin_coa_add_account($conn, $a, '1221001', 'TEST BUILDING - TENANTS');
+    $debtorIds = array_column(fin_lease_posting_tenant_accounts($conn, $a), 'id', 'code');
+    check('the Sundry Debtors accounts are the choices', ['1121005', '1221001'], array_map('strval', array_keys($debtorIds)));
+    check('the tenant cannot go to a revenue account', 'Tenant: choose a Sundry Debtors account.',
+        refusal(static fn() => fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['tenant' => $admin]], 7)));
+    $toBuilding = fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['tenant' => (int)$debtorIds['1221001']]], 7);
+    $line = fin_voucher_get($conn, $a, $toBuilding)['lines'][0];
+    check('the tenant is debited to the chosen account', ['1221001', '63870.50'], [$line['code'], $line['debit']]);
+
+    // 5d. The deposit goes to an account under Deposit Payable, and only to one.
+    fin_voucher_delete($conn, $a, $toBuilding, 7);
+    fin_coa_add_account($conn, $a, '2240000', 'DEPOSIT PAYABLE');
+    fin_coa_add_account($conn, $a, '2240001', 'SECURITY DEPOSIT PAYABLE - TEST BUILDING');
+    $depositIds = array_column(fin_lease_posting_choices($conn, $a, 'deposit'), 'id', 'code');
+    check('the Deposit Payable accounts are the choices', ['2112010', '2240001'], array_map('strval', array_keys($depositIds)));
+    check('the deposit cannot go to a revenue account', 'Security Deposit: choose a Deposit Payable account.',
+        refusal(static fn() => fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['deposit' => $admin]], 7)));
+    $toDeposit = fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['deposit' => (int)$depositIds['2240001']]], 7);
+    $byCode = array_column(fin_voucher_get($conn, $a, $toDeposit)['lines'], 'credit', 'code');
+    check('the deposit is credited to the chosen account', '3000.00', $byCode['2240001'] ?? null);
 
     // 6. Only active leases.
     $conn->prepare("UPDATE re_leases SET status = 'expired' WHERE id = ?")->execute([$leaseIds[1] ?? 0]);

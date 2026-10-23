@@ -1,7 +1,7 @@
 <?php
 /**
  * Finance > Lease Posting: pick a contract and post its opening entry. The
- * tenant is debited under Sundry Debtors; the contract, fees and deposit are
+ * tenant is debited to its building's account under Sundry Debtors; the contract, fees and deposit are
  * credited to their accounts. Saving raises a journal voucher (?lease_id=).
  */
 require_once __DIR__ . '/../includes/fin_context.php';
@@ -19,12 +19,16 @@ foreach ($leases as $l) {
     }
 }
 $accounts = ($tableOk && $company) ? fin_lease_posting_accounts($conn, $companyId) : [];
-// The contract and commission rows pick their account from a list, starting at the lease's default.
+// The tenant, contract, deposit and commission rows pick their account from a list, starting at the lease's default.
 $choices = [];
 $form = ['date' => '', 'amounts' => [], 'accounts' => []];
-if ($lease) {
+if ($tableOk && $company) {
     foreach (FIN_LEASE_POSTING_CHOOSABLE as $key) {
         $choices[$key] = fin_lease_posting_choices($conn, $companyId, $key);
+    }
+}
+if ($lease) {
+    foreach (FIN_LEASE_POSTING_CHOOSABLE as $key) {
         $accounts[$key] = fin_lease_posting_default($key, $choices[$key], $lease);
         $form['accounts'][$key] = (int)($accounts[$key]['id'] ?? 0);
     }
@@ -59,7 +63,8 @@ if ($lease && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $missing = [];
 foreach ($accounts as $key => $a) {
-    if (!$a) {
+    // A row with a list is not missing: the user picks from it.
+    if (!$a && empty($choices[$key])) {
         $missing[] = FIN_LEASE_POSTING_ROWS[$key]['code'] . ' (' . FIN_LEASE_POSTING_ROWS[$key]['label'] . ')';
     }
 }
@@ -76,6 +81,9 @@ $pageStyles = '
   .lp-debtor .lp-acct, .lp-debtor input.lp-in { background: #e4edfb; border-color: #3b74d6; color: #1b3f7d; }
   .lp-income .lp-acct, .lp-income input.lp-in { background: #dff2e8; border-color: #2f7d5b; color: #17513a; }
   .lp-liability .lp-acct, .lp-liability input.lp-in { background: #f7dfae; border-color: #c98a1b; color: #7a4f08; }
+  .lp-debtor .select2-selection { background-color: #e4edfb !important; border-color: #3b74d6 !important; cursor: pointer; }
+  .lp-debtor .select2-selection__rendered { color: #1b3f7d !important; font-weight: 600; }
+  .lp-debtor .select2-selection:hover { border-color: #1b3f7d !important; }
   .lp-liability .select2-selection { background-color: #f7dfae !important; border-color: #c98a1b !important; cursor: pointer; }
   .lp-liability .select2-selection__rendered { color: #7a4f08 !important; font-weight: 600; }
   .lp-liability .select2-selection:hover { border-color: #7a4f08 !important; }
@@ -150,14 +158,16 @@ require __DIR__ . '/../includes/fin_layout_header.php';
           <tbody>
           <?php foreach (FIN_LEASE_POSTING_ROWS as $key => $row):
               $a = $accounts[$key];
+              $open = $a || !empty($choices[$key]);
               $isDebit = $row['side'] === 'debit';
-              $input = '<input class="form-control lp-in" name="amount[' . h($key) . ']" data-side="' . h($row['side']) . '" value="' . h($form['amounts'][$key] ?? '') . '" inputmode="decimal" placeholder="0.00" aria-label="' . h($row['label'] . ' ' . $row['side']) . '"' . ($a ? '' : ' disabled') . '>';
+              $input = '<input class="form-control lp-in" name="amount[' . h($key) . ']" data-side="' . h($row['side']) . '" value="' . h($form['amounts'][$key] ?? '') . '" inputmode="decimal" placeholder="0.00" aria-label="' . h($row['label'] . ' ' . $row['side']) . '"' . ($open ? '' : ' disabled') . '>';
           ?>
-            <tr class="lp-<?= h($row['kind']) ?><?= $a ? '' : ' lp-miss' ?>">
+            <tr class="lp-<?= h($row['kind']) ?><?= $open ? '' : ' lp-miss' ?>">
               <td class="fw-semibold"><?= h($key === 'tenant' ? $lease['tenant_name'] : $row['label']) ?></td>
               <?php if (!empty($choices[$key])): ?>
               <td>
                 <select class="form-select" name="account[<?= h($key) ?>]" aria-label="<?= h($row['label']) ?> account">
+                  <?php if (!$a): ?><option value="">Choose an account</option><?php endif; ?>
                   <?php foreach ($choices[$key] as $c): ?>
                     <option value="<?= (int)$c['id'] ?>" <?= (int)$c['id'] === $form['accounts'][$key] ? 'selected' : '' ?>><?= h($c['code'] . ' ' . $c['name']) ?></option>
                   <?php endforeach; ?>
