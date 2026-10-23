@@ -226,7 +226,7 @@ $halfColsStyle = 'grid-template-columns: repeat(' . (2 * $daysInMonth) . ', minm
 ?>
 <link rel="stylesheet" href="<?= h($calCssHref) ?>">
 
-<div class="abnb-cal mb-4">
+<div class="abnb-cal mb-4" style="--abnb-days: <?= (int)$daysInMonth ?>;">
     <div class="abnb-legend">
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--available"></span> Available</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--booked"></span> Booked</span>

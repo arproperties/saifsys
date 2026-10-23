@@ -78,7 +78,8 @@ if (!function_exists('ars_ui_assets')) {
 if (!function_exists('ars_ui_app_open')) {
     function ars_ui_app_open(array $attrs = []): string
     {
-        $class = trim(' ' . ($attrs['class'] ?? ''));
+        $class = trim((string)($attrs['class'] ?? ''));
+        $class = $class !== '' ? ' ' . $class : '';
         $extra = '';
         if (!empty($attrs['id']) && $attrs['id'] !== 'ars-app') {
             // Always keep #ars-app as primary isolation root; allow nested regions via class.

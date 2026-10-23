@@ -435,6 +435,44 @@
 #ars-app .abnb-bar--narrow .abnb-bar-name,
 #ars-app .abnb-bar--narrow .abnb-bar-meta { display: none; }
 
+/* ── Small screens ──────────────────────────────────────────────────
+   Below 1100px the days would shrink to slivers. Give each day a floor
+   width and let the grid scroll inside its own box, both ways, so the
+   header stays on top and the unit column stays on the left. */
+
+@media (max-width: 1100px) {
+  #ars-app .abnb-cal { --abnb-day-min: 38px; --abnb-sticky-top: 0px; }
+
+  #ars-app .abnb-grid {
+    overflow: auto;
+    max-height: calc(100dvh - 9rem);
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  #ars-app .abnb-head,
+  #ars-app .abnb-row {
+    min-width: calc(var(--abnb-unit) + var(--abnb-days, 31) * var(--abnb-day-min));
+  }
+
+  #ars-app .abnb-head-unit,
+  #ars-app .abnb-unit {
+    position: sticky;
+    left: 0;
+    z-index: 8;
+  }
+
+  #ars-app .abnb-head-unit { z-index: 21; }
+  #ars-app .abnb-row:hover .abnb-unit { background: var(--abnb-tint); }
+}
+
+@media (max-width: 820px) {
+  #ars-app .abnb-cal { --abnb-unit: 96px; --abnb-day-min: 36px; }
+  #ars-app .abnb-unit { padding: 0 0.5rem; }
+  #ars-app .abnb-unit-thumb { display: none; }
+  #ars-app .abnb-legend-hint { margin-left: 0; width: 100%; }
+}
+
 /* ── Empty ──────────────────────────────────────────────────────────── */
 
 #ars-app .abnb-empty { padding: 2.5rem 1rem; }
