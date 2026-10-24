@@ -81,6 +81,50 @@ function jarvis_hr_docs_file(PDO $conn, string $appRoot, int $id): ?string
     return $path === false ? null : jarvis_hr_docs_resolve($appRoot, (string)$path);
 }
 
+const JARVIS_HR_PAYROLL_MAX_MONTHS = 24;
+
+/**
+ * One employee's pay as payroll actually ran it, newest first: finalized or paid runs only
+ * (a draft is not what was paid, a cancelled one never was), within `$months` of `$today`.
+ * Reem sets it beside the contract's terms to flag what differs.
+ */
+function jarvis_hr_docs_payroll(PDO $conn, string $code, int $months, string $today): ?array
+{
+    $emp = $conn->prepare('SELECT id, employee_code, full_name FROM employees WHERE employee_code = ?');
+    $emp->execute([$code]);
+    $e = $emp->fetch(PDO::FETCH_ASSOC);
+    if (!$e) {
+        return null;
+    }
+    $months = max(1, min($months, JARVIS_HR_PAYROLL_MAX_MONTHS));
+    $since = (new DateTimeImmutable($today))->modify("-{$months} months")->format('Y-m-d');
+    $stmt = $conn->prepare("SELECT r.id, r.period_from, r.period_to, r.payroll_type, r.status,
+            i.base_pay, i.allowance, i.bonus, i.overtime, i.gross_pay, i.total_deductions, i.deductions, i.net_pay
+        FROM payroll_items i JOIN payroll_runs r ON r.id = i.payroll_run_id
+        WHERE i.employee_id = ? AND r.status IN ('finalized', 'paid') AND r.period_to >= ?
+        ORDER BY r.period_to DESC, r.id DESC");
+    $stmt->execute([(int)$e['id'], $since]);
+    $num = fn($v) => $v === null ? null : (float)$v;
+    return [
+        'employee_code' => (string)$e['employee_code'],
+        'employee_name' => (string)$e['full_name'],
+        'items' => array_map(fn(array $r) => [
+            'run_id' => (int)$r['id'],
+            'period_from' => (string)$r['period_from'],
+            'period_to' => (string)$r['period_to'],
+            'payroll_type' => (string)$r['payroll_type'],
+            'status' => (string)$r['status'],
+            'base_pay' => $num($r['base_pay']),
+            'allowance' => $num($r['allowance']),
+            'bonus' => $num($r['bonus']),
+            'overtime' => $num($r['overtime']),
+            'gross_pay' => $num($r['gross_pay']),
+            'deductions' => $num($r['total_deductions'] ?? $r['deductions']),
+            'net_pay' => $num($r['net_pay']),
+        ], $stmt->fetchAll(PDO::FETCH_ASSOC)),
+    ];
+}
+
 function jarvis_hr_docs_date($d): ?string
 {
     return $d && $d !== '0000-00-00' ? substr((string)$d, 0, 10) : null;

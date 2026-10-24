@@ -85,6 +85,33 @@ check(jarvis_hr_docs_file($conn, $app, 4) === null, 'a path that climbs out of u
 $conn->exec("UPDATE employee_documents SET file_path = '../secret.txt' WHERE id = 4");
 check(jarvis_hr_docs_file($conn, $app, 4) === null, 'a bare name that climbs out is refused');
 
+// ---- payroll -----------------------------------------------------------------
+$conn->exec("CREATE TABLE payroll_runs (id INT PRIMARY KEY, period_from DATE NOT NULL, period_to DATE NOT NULL,
+    status VARCHAR(20) NOT NULL, payroll_type VARCHAR(10) NOT NULL DEFAULT 'wps', company_id INT NOT NULL DEFAULT 1)");
+$conn->exec("CREATE TABLE payroll_items (id INT AUTO_INCREMENT PRIMARY KEY, payroll_run_id INT NOT NULL, employee_id INT NOT NULL,
+    base_pay DECIMAL(12,2) NOT NULL DEFAULT 0, allowance DECIMAL(12,2) NOT NULL DEFAULT 0, bonus DECIMAL(12,2) NOT NULL DEFAULT 0,
+    overtime DECIMAL(10,2) NULL, deductions DECIMAL(12,2) NOT NULL DEFAULT 0, gross_pay DECIMAL(10,2) NULL,
+    total_deductions DECIMAL(10,2) NULL, net_pay DECIMAL(12,2) NOT NULL DEFAULT 0)");
+$conn->exec("INSERT INTO payroll_runs VALUES
+    (1, '2026-06-01', '2026-06-30', 'paid', 'wps', 1), (2, '2026-07-01', '2026-07-31', 'paid', 'wps', 1),
+    (3, '2026-08-01', '2026-08-31', 'finalized', 'cash', 1), (4, '2026-09-01', '2026-09-30', 'draft', 'wps', 1),
+    (5, '2026-01-01', '2026-01-31', 'paid', 'wps', 1), (6, '2026-08-01', '2026-08-31', 'cancelled', 'wps', 1)");
+$conn->exec("INSERT INTO payroll_items (payroll_run_id, employee_id, base_pay, allowance, bonus, overtime, gross_pay, total_deductions, net_pay) VALUES
+    (1, 1, 800, 700, 0, 50, 1550, 0, 1550), (2, 1, 800, 700, 100, NULL, 1600, 20, 1580), (3, 1, 900, 700, 0, NULL, 1600, 0, 1600),
+    (4, 1, 900, 700, 0, NULL, 1600, 0, 1600), (5, 1, 700, 700, 0, NULL, 1400, 0, 1400), (6, 1, 1, 1, 1, NULL, 3, 0, 3),
+    (2, 2, 2000, 0, 0, NULL, 2000, 0, 2000)");
+
+$pay = jarvis_hr_docs_payroll($conn, 'E00007', 6, '2026-10-24');
+check($pay !== null && $pay['employee_code'] === 'E00007', 'payroll is found by employee code');
+check(array_column($pay['items'], 'run_id') === [3, 2, 1], 'payroll is newest first, finalized or paid only, within the months asked');
+$aug = $pay['items'][0];
+check($aug['period_from'] === '2026-08-01' && $aug['period_to'] === '2026-08-31' && $aug['payroll_type'] === 'cash', 'each line says its period and whether it was WPS or cash');
+check($aug['base_pay'] === 900.0 && $aug['allowance'] === 700.0 && $aug['net_pay'] === 1600.0, 'with its components as numbers');
+check($pay['items'][1]['bonus'] === 100.0 && $pay['items'][1]['deductions'] === 20.0, 'bonus and deductions');
+check(count(jarvis_hr_docs_payroll($conn, 'E00007', 12, '2026-10-24')['items']) === 4, 'a longer window reaches the January run');
+check(jarvis_hr_docs_payroll($conn, 'E99999', 6, '2026-10-24') === null, 'an unknown employee is null');
+check(count(jarvis_hr_docs_payroll($conn, 'E00007', 999, '2026-10-24')['items']) === 4, 'months are capped, not refused');
+
 // ---- tidy up -----------------------------------------------------------------
 $root->exec('DROP DATABASE IF EXISTS ' . TEST_DB);
 array_map('unlink', array_filter(glob($app . '/{,*/,*/*/,*/*/*/}*', GLOB_BRACE), 'is_file'));
