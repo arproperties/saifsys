@@ -409,7 +409,8 @@ function ars_booking_balances(PDO $conn, int $companyId, array $rows): array {
  * balance_due and payment_status. With $dueNowOnPlan, a booking on a monthly
  * plan then shows only what is due today (months still to come are owed but
  * not due). Rows need id, check_in, check_out, total_amount, balance_due and
- * paid_amount.
+ * paid_amount. Each row also gets balance_whole (what the stay still owes)
+ * and, on a plan, plan_schedule (ars_payment_plan_schedule()'s result).
  */
 function ars_booking_rows_apply_balances(PDO $conn, int $companyId, array $rows, bool $dueNowOnPlan = false): array {
     if (!$rows) {
@@ -432,11 +433,24 @@ function ars_booking_rows_apply_balances(PDO $conn, int $companyId, array $rows,
                 $f['total'], $f['balance'], $f['received'], (string)($r['payment_status'] ?? '')
             );
         }
+        // What the whole stay still owes, kept beside the due-now figure below.
+        $rows[$i]['balance_whole'] = max(0.0, round((float)($rows[$i]['balance_due'] ?? 0), 2));
         if (isset($plans[$id])) {
             // A typed Total is scheduled as one figure, as on the booking page.
             $originalStay = $f['source'] === 'payments' ? null : ($planContext[$id]['original_stay'] ?? null);
+            $overrides = $planContext[$id]['overrides'] ?? [];
             $rows[$i]['balance_due'] = ars_payment_plan_row_due_now(
-                $plans[$id], $rows[$i], null, $originalStay, $planContext[$id]['overrides'] ?? []
+                $plans[$id], $rows[$i], null, $originalStay, $overrides
+            );
+            $rows[$i]['plan_schedule'] = ars_payment_plan_schedule(
+                $plans[$id],
+                (string)($rows[$i]['check_in'] ?? ''),
+                (string)($rows[$i]['check_out'] ?? ''),
+                (float)($rows[$i]['total_amount'] ?? 0),
+                $rows[$i]['balance_whole'],
+                null,
+                $originalStay,
+                $overrides
             );
         }
     }
