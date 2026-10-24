@@ -92,8 +92,13 @@ function has_role(string $role, PDO $conn = null): bool {
     return in_array($role, $roles, true);
 }
 
-function require_login(string $loginPath = '../login'): void {
+function require_login(?string $loginPath = null): void {
     if (!current_user_id()) {
+        if ($loginPath === null) {
+            // Absolute path: a relative '../login' from /modules/<mod>/page lands on /modules/login (404).
+            require_once __DIR__ . '/url_helper.php';
+            $loginPath = get_application_web_root() . '/login';
+        }
         // Store current URL in session for clean redirect after login
         if (session_status() === PHP_SESSION_ACTIVE) {
             $currentUri = $_SERVER['REQUEST_URI'] ?? '/';

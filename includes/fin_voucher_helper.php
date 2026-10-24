@@ -76,13 +76,47 @@ function fin_voucher_account_tree(PDO $conn, int $companyId): array
 }
 
 /**
- * Accounts money can be paid from or received into. In the coding scheme 111 is
- * Cash & banks and 1111 Cash in hand, so petty cash offers 1111xxx and payments
- * and receipts offer 111xxxx. A chart coded differently falls back to all assets.
+ * Accounts money can be paid from or received into: the postable accounts under
+ * the group named Cash & banks (petty cash: Cash in hand), whatever its code.
+ * Charts are numbered differently per company (Ain Al Reem's Cash & banks is
+ * 1210000 and its 111xxxx is land), so the name decides, not the code. A chart
+ * without such a group falls back to codes 1111 / 111, then to all assets.
  */
 function fin_voucher_cash_accounts(PDO $conn, int $companyId, string $type): array
 {
     $all = fin_voucher_ledger_accounts($conn, $companyId);
+
+    $stmt = $conn->prepare("SELECT id, parent_id, name FROM fin_coa_accounts WHERE company_id = ? AND is_active = 1 AND level <> 'total'");
+    $stmt->execute([$companyId]);
+    $tree = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $norm = static fn(string $n): string => trim(preg_replace('/[^a-z]+/', ' ', str_replace('&', ' and ', strtolower($n))));
+    $patterns = $type === 'pc' ? ['/^cash in hand$/', '/^cash and banks?$/'] : ['/^cash and banks?$/'];
+    foreach ($patterns as $pattern) {
+        $under = [];
+        foreach ($tree as $a) {
+            if (preg_match($pattern, $norm($a['name']))) {
+                $under[(int)$a['id']] = true;
+            }
+        }
+        if (!$under) {
+            continue;
+        }
+        // Add children of what is already in, until nothing new turns up.
+        do {
+            $added = false;
+            foreach ($tree as $a) {
+                if (!isset($under[(int)$a['id']]) && $a['parent_id'] !== null && isset($under[(int)$a['parent_id']])) {
+                    $under[(int)$a['id']] = true;
+                    $added = true;
+                }
+            }
+        } while ($added);
+        $match = array_values(array_filter($all, static fn($a) => isset($under[(int)$a['id']])));
+        if ($match) {
+            return $match;
+        }
+    }
+
     foreach ([$type === 'pc' ? '1111' : '111', '111', '1'] as $prefix) {
         $match = array_values(array_filter($all, static fn($a) => strpos($a['code'], $prefix) === 0));
         if ($match) {
