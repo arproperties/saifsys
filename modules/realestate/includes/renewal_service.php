@@ -219,6 +219,12 @@ if (!function_exists('re_renewal_create')) {
             ? 1
             : (lease_vat_unit_is_commercial((string)($oldLease['unit_type'] ?? '')) ? 1 : 0);
         $vatDist = lease_vat_normalize_distribution($oldLease['vat_distribution_type'] ?? 'first_installment');
+        // Reem's renewals (reem_cheques): one cheque per installment, the chiller split over
+        // them all, and every fee, the VAT and the Ejari fee in the first.
+        $reemCheques = !empty($in['reem_cheques']);
+        if ($reemCheques) {
+            $vatDist = 'first_installment';
+        }
         $vatCalc = lease_vat_compute_amounts([
             'annual_rent' => $proposedRent,
             'vat_applicable_on_rent' => $vatApplicableOnRent,
@@ -434,19 +440,19 @@ if (!function_exists('re_renewal_create')) {
             $numberOfInstallments,
             (float)($oldLease['security_deposit'] ?? 0),
             $chillerCharges,
-            (float)($oldLease['ejari_fees'] ?? 0),
+            $reemCheques ? (float)$rera : (float)($oldLease['ejari_fees'] ?? 0),
             $adminFeesFinal,
             0.00,
             (float)($oldLease['amc_amount'] ?? 0),
             (int)($oldLease['split_amc_fees'] ?? 0),
-            (int)($oldLease['add_fees_to_first_installment'] ?? 1),
+            $reemCheques ? 1 : (int)($oldLease['add_fees_to_first_installment'] ?? 1),
             (int)($oldLease['deferred_revenue_mode'] ?? 1),
-            (int)($oldLease['split_chiller_fees'] ?? 0),
-            (int)($oldLease['split_ejari_fees'] ?? 0),
-            (int)($oldLease['split_admin_fees'] ?? 0),
+            $reemCheques ? 1 : (int)($oldLease['split_chiller_fees'] ?? 0),
+            $reemCheques ? 0 : (int)($oldLease['split_ejari_fees'] ?? 0),
+            $reemCheques ? 0 : (int)($oldLease['split_admin_fees'] ?? 0),
             0,
-            (int)($oldLease['split_additional_parking'] ?? 0),
-            (int)($oldLease['split_additional_store'] ?? 0),
+            $reemCheques ? 0 : (int)($oldLease['split_additional_parking'] ?? 0),
+            $reemCheques ? 0 : (int)($oldLease['split_additional_store'] ?? 0),
             $additionalParkingEnabled,
             $additionalParkingEnabled ? $additionalParkingFee : 0.0,
             $additionalParkingEnabled ? $proposedStartDate : null,
@@ -508,9 +514,12 @@ if (!function_exists('re_renewal_schedule')) {
      *
      * @return list<array{date:string,amount:float,type:string}>
      */
-    function re_renewal_schedule(PDO $conn, int $companyId, int $leaseId, int $userId): array
+    function re_renewal_schedule(PDO $conn, int $companyId, int $leaseId, int $userId, bool $reemCheques = false): array
     {
         generateLeaseInstallmentsForConversion($conn, $companyId, $leaseId, $userId);
+        if ($reemCheques) {
+            re_renewal_reem_cheques($conn, $companyId, $leaseId);
+        }
         $st = $conn->prepare("SELECT installment_date, amount, installment_type FROM re_lease_installments
             WHERE lease_id = ? AND company_id = ? ORDER BY installment_date ASC, id ASC");
         $st->execute([$leaseId, $companyId]);
@@ -519,6 +528,69 @@ if (!function_exists('re_renewal_schedule')) {
             'amount' => round((float)$r['amount'], 2),
             'type' => (string)($r['installment_type'] ?? '') ?: 'rent',
         ], $st->fetchAll(PDO::FETCH_ASSOC) ?: []);
+    }
+}
+
+if (!function_exists('re_renewal_reem_cheques')) {
+    /**
+     * The cheques of a renewal Reem runs, set right after saifsys has made them (with the
+     * fees in the first): the rent and the chiller each split in whole dirhams, what is left
+     * over going in the first cheque with the fees, the VAT and the Ejari fee; and the dates
+     * the same day of the month, evenly apart (every 2 months for 6 cheques), never the
+     * lease's last day. The cheque rows follow their installments. Totals do not change.
+     */
+    function re_renewal_reem_cheques(PDO $conn, int $companyId, int $leaseId): void
+    {
+        $st = $conn->prepare("SELECT start_date, end_date, annual_rent, chiller_fees, split_chiller_fees, add_fees_to_first_installment
+            FROM re_leases WHERE id = ? AND company_id = ? LIMIT 1");
+        $st->execute([$leaseId, $companyId]);
+        $lease = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$lease || empty($lease['add_fees_to_first_installment'])) {
+            return;
+        }
+        $st = $conn->prepare("SELECT id, amount FROM re_lease_installments
+            WHERE lease_id = ? AND company_id = ? AND (installment_type IS NULL OR installment_type = '' OR installment_type = 'rent')
+            ORDER BY installment_date ASC, id ASC");
+        $st->execute([$leaseId, $companyId]);
+        $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $n = count($rows);
+        if ($n < 1) {
+            return;
+        }
+
+        $rent = round((float)$lease['annual_rent'], 2);
+        $chiller = !empty($lease['split_chiller_fees']) ? round((float)$lease['chiller_fees'], 2) : 0.0;
+        $all = round(array_sum(array_map(static fn($r) => (float)$r['amount'], $rows)), 2);
+        $fees = round($all - $rent - $chiller, 2); // the fees, VAT and Ejari saifsys put in the first
+        $per = floor($rent / $n) + floor($chiller / $n);
+        $amounts = array_fill(0, $n, (float)$per);
+        $amounts[0] = round($rent + $chiller - $per * ($n - 1) + $fees, 2);
+
+        // Evenly apart by whole months when the term divides into them; otherwise saifsys's dates.
+        $start = new DateTime((string)$lease['start_date']);
+        $end = (new DateTime((string)$lease['end_date']))->modify('+1 day');
+        $months = ((int)$end->format('Y') - (int)$start->format('Y')) * 12 + (int)$end->format('n') - (int)$start->format('n');
+        $step = ($months > 0 && $months % $n === 0) ? intdiv($months, $n) : 0;
+        $day = (int)$start->format('j');
+
+        $setInst = $conn->prepare("UPDATE re_lease_installments SET amount = ?" . ($step ? ", installment_date = ?" : '') . " WHERE id = ? AND company_id = ?");
+        $setPdc = $conn->prepare("UPDATE re_post_dated_cheques SET cheque_amount = ?" . ($step ? ", cheque_date = ?" : '') . " WHERE installment_id = ? AND company_id = ?");
+        $setChq = $conn->prepare("UPDATE re_lease_cheques SET cheque_amount = ?" . ($step ? ", cheque_date = ?" : '') . " WHERE installment_id = ? AND company_id = ?");
+        foreach ($rows as $i => $row) {
+            $args = [$amounts[$i]];
+            if ($step) {
+                $m = (int)$start->format('n') - 1 + $i * $step;
+                $y = (int)$start->format('Y') + intdiv($m, 12);
+                $m = $m % 12 + 1;
+                $last = (int)(new DateTime(sprintf('%04d-%02d-01', $y, $m)))->format('t');
+                $args[] = sprintf('%04d-%02d-%02d', $y, $m, min($day, $last));
+            }
+            $args[] = (int)$row['id'];
+            $args[] = $companyId;
+            $setInst->execute($args);
+            $setPdc->execute($args);
+            $setChq->execute($args);
+        }
     }
 }
 
@@ -535,7 +607,7 @@ if (!function_exists('re_renewal_quote')) {
         $conn->beginTransaction();
         try {
             $made = re_renewal_create($conn, $companyId, $userId, $leaseId, $in);
-            $cheques = re_renewal_schedule($conn, $companyId, $made['new_lease_id'], $userId);
+            $cheques = re_renewal_schedule($conn, $companyId, $made['new_lease_id'], $userId, !empty($in['reem_cheques']));
         } finally {
             $conn->rollBack();
         }
@@ -554,7 +626,7 @@ if (!function_exists('re_renewal_convert')) {
      *
      * @return array{activate_now:bool,old_lease_id:int,new_lease_id:int,admin_override:bool,start_date:string,message:string}
      */
-    function re_renewal_convert(PDO $conn, int $companyId, int $userId, int $workflowId, bool $mayOverride = false): array
+    function re_renewal_convert(PDO $conn, int $companyId, int $userId, int $workflowId, bool $mayOverride = false, bool $reemCheques = false): array
     {
         $st = $conn->prepare("SELECT status, lease_id, new_lease_id FROM re_lease_renewal_workflows WHERE id = ? LIMIT 1");
         $st->execute([$workflowId]);
@@ -599,6 +671,9 @@ if (!function_exists('re_renewal_convert')) {
 
             // Operational schedule/cheques can be prepared in advance, but the lease remains draft until start date.
             generateLeaseInstallmentsForConversion($conn, $companyId, $newLeaseId, $userId);
+            if ($reemCheques) {
+                re_renewal_reem_cheques($conn, $companyId, $newLeaseId);
+            }
 
             // Invoice Mode: prepare obligations and approved invoice candidates from the staged lease.
             if (function_exists('re_obligation_engine_generate_for_lease')) {

@@ -49,6 +49,16 @@ require_once $root . '/modules/realestate/includes/renewal_service.php';
 require_once $root . '/modules/realestate/includes/renewal_notice_pdf_generator.php';
 
 const JARVIS_RN_EVENT = 'reem_started';
+// A renewal started with Reem's cheques (fees, VAT and Ejari in the first, whole dirhams,
+// evenly apart). Renewals started before keep saifsys's own, as their tenants were sent.
+const JARVIS_RN_CHEQUES = 'reem_cheques';
+
+function jarvis_rn_has_event(PDO $conn, int $workflowId, string $type): bool
+{
+    $st = $conn->prepare("SELECT 1 FROM re_renewal_portal_events WHERE workflow_id = ? AND event_type = ? LIMIT 1");
+    $st->execute([$workflowId, $type]);
+    return (bool)$st->fetchColumn();
+}
 
 function jarvis_rn_fail(string $code, string $message, int $status = 400, array $extra = []): void
 {
@@ -151,6 +161,7 @@ function jarvis_rn_terms(array $lease, float $rent, int $cheques, array $in): ar
         'big_store_enabled' => $fees['big_store'] > 0,
         'big_store_fee' => $fees['big_store'],
         'carry_ejari' => false,
+        'reem_cheques' => true,
     ];
 }
 
@@ -206,6 +217,11 @@ if ($action === 'quote' || $action === 'start') {
     }
 
     if ($action === 'quote') {
+        // A renewal Reem already has under way is priced the way it was started.
+        $open = jarvis_rn_open_for_lease($conn, (int)$lease['id']);
+        if ($open && (int)$open['reem'] && $open['status'] !== 'converted') {
+            $terms['reem_cheques'] = jarvis_rn_has_event($conn, (int)$open['id'], JARVIS_RN_CHEQUES);
+        }
         try {
             $quote = re_renewal_quote($conn, $companyId, $actorId, (int)$lease['id'], $terms);
         } catch (Throwable $e) {
@@ -234,6 +250,8 @@ if ($action === 'quote' || $action === 'start') {
             ->execute([$actorId, $made['workflow_id']]);
         jarvis_rn_log($conn, $made['workflow_id'], $companyId, $actorId, JARVIS_RN_EVENT,
             "Renewal offer emailed to the tenant at AED {$made['proposed_rent']} a year, {$made['number_of_cheques']} cheques");
+        jarvis_rn_log($conn, $made['workflow_id'], $companyId, $actorId, JARVIS_RN_CHEQUES,
+            'Cheques: fees, VAT and Ejari in the first; rent and chiller split in whole dirhams');
         // The notice is made before the commit, so a renewal is never started without it.
         $notice = jarvis_rn_notice($conn, $companyId, (int)$made['workflow_id'], $root);
         $conn->commit();
@@ -301,7 +319,8 @@ if ($action === 'convert') {
     // The schedule as it would be made now, compared before anything is kept.
     $conn->beginTransaction();
     try {
-        $cheques = re_renewal_schedule($conn, $companyId, (int)$wf['new_lease_id'], $actorId);
+        $reemCheques = jarvis_rn_has_event($conn, $workflowId, JARVIS_RN_CHEQUES);
+        $cheques = re_renewal_schedule($conn, $companyId, (int)$wf['new_lease_id'], $actorId, $reemCheques);
     } finally {
         $conn->rollBack();
     }
@@ -310,7 +329,7 @@ if ($action === 'convert') {
         jarvis_rn_fail('total_changed', "saifsys now makes the cheques AED $total in all, not AED $expected.", 409, ['cheques_total' => $total]);
     }
     try {
-        $done = re_renewal_convert($conn, $companyId, $actorId, $workflowId, false);
+        $done = re_renewal_convert($conn, $companyId, $actorId, $workflowId, false, $reemCheques);
     } catch (Throwable $e) {
         jarvis_rn_fail('convert_failed', $e->getMessage(), 422, ['workflow_id' => $workflowId]);
     }
