@@ -47,6 +47,12 @@ if (!defined('JARVIS_ACT')) {
 $root = dirname(__DIR__, 4);
 require_once $root . '/modules/realestate/includes/renewal_service.php';
 require_once $root . '/modules/realestate/includes/renewal_notice_pdf_generator.php';
+require_once $root . '/modules/realestate/includes/service_charge_schedule_helper.php';
+
+// Table changes these steps may need, made first: MySQL commits on ALTER, so never inside
+// the transactions below (a quote must save nothing).
+re_service_charge_ensure_apply_mode_column($conn);
+re_renewal_ensure_ev_column($conn);
 
 const JARVIS_RN_EVENT = 'reem_started';
 // A renewal started with Reem's cheques (fees, VAT and Ejari in the first, whole dirhams,
@@ -129,6 +135,7 @@ function jarvis_rn_fees(array $lease, array $in): array
     $parking = jarvis_rn_amount($in, 'additional_parking_fee');
     $small = jarvis_rn_amount($in, 'small_store_fee');
     $big = jarvis_rn_amount($in, 'big_store_fee');
+    $ev = jarvis_rn_amount($in, 'ev_fee');
     $shows = (int)$lease['shows_chiller'] === 1;
     $oldParking = !empty($lease['has_additional_parking']) ? (float)$lease['additional_parking_fee'] : 0.0;
     $oldStore = !empty($lease['has_additional_store']) ? (float)$lease['additional_store_fee'] : 0.0;
@@ -140,6 +147,7 @@ function jarvis_rn_fees(array $lease, array $in): array
         'parking' => $parking ?? $oldParking,
         'small_store' => $small ?? $oldStore,
         'big_store' => $big ?? 0.0,
+        'ev' => $ev ?? 0.0,
     ];
 }
 
@@ -162,6 +170,7 @@ function jarvis_rn_terms(array $lease, float $rent, int $cheques, array $in): ar
         'big_store_fee' => $fees['big_store'],
         'carry_ejari' => false,
         'reem_cheques' => true,
+        'ev_fee' => $fees['ev'],
     ];
 }
 

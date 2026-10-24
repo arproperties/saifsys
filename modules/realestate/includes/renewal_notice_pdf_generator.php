@@ -82,6 +82,7 @@ if (!class_exists('RenewalNoticePDFGenerator')) {
       {{#if show_additional_parking_row}}<tr><td class="label">Additional Parking Slot</td><td class="value">{{additional_parking_fee_display}} AED</td></tr>{{/if}}
       {{#if show_small_store_row}}<tr><td class="label">Small Storeroom</td><td class="value">{{small_store_fee_display}} AED</td></tr>{{/if}}
       {{#if show_big_store_row}}<tr><td class="label">Big Storeroom</td><td class="value">{{big_store_fee_display}} AED</td></tr>{{/if}}
+      {{#if show_ev_row}}<tr><td class="label">EV Charger</td><td class="value">{{ev_fee_display}} AED</td></tr>{{/if}}
       {{#if show_rent_vat_row}}<tr><td class="label">VAT on rent ({{vat_rate_label}})</td><td class="value">{{rent_vat_display}} AED</td></tr>{{/if}}
       <tr><td class="label">VAT on additional charges ({{vat_rate_label}})</td><td class="value">{{vat_extra_charges_display}} AED</td></tr>
       <tr><td class="label">Total VAT</td><td class="value"><strong>{{vat_total_display}} AED</strong></td></tr>
@@ -525,7 +526,8 @@ HTML;
             $parking = (int)($w['additional_parking_enabled'] ?? 0) === 1 ? (float)($w['additional_parking_fee'] ?? 0) : 0.0;
             $smallStore = (int)($w['small_store_enabled'] ?? 0) === 1 ? (float)($w['small_store_fee'] ?? 0) : 0.0;
             $bigStore = (int)($w['big_store_enabled'] ?? 0) === 1 ? (float)($w['big_store_fee'] ?? 0) : 0.0;
-            $vatBase = $adminFee + $chiller + $parking + $smallStore + $bigStore;
+            $evFee = (float)($w['ev_charger_fee'] ?? 0);
+            $vatBase = $adminFee + $chiller + $parking + $smallStore + $bigStore + $evFee;
             $vatOnRent = !empty($w['vat_applicable_on_rent']);
             $vatCalc = lease_vat_compute_amounts([
                 'annual_rent' => $newAnnualRent,
@@ -619,6 +621,8 @@ HTML;
                 'small_store_fee_display' => $this->formatMoney($smallStore),
                 'show_big_store_row' => $bigStore > 0,
                 'big_store_fee_display' => $this->formatMoney($bigStore),
+                'show_ev_row' => $evFee > 0,
+                'ev_fee_display' => $this->formatMoney($evFee),
                 'vat_rate_label' => $vatRateLabel,
                 'show_rent_vat_row' => $rentVat > 0.00001,
                 'rent_vat_display' => $this->formatMoney($rentVat),

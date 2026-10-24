@@ -214,6 +214,37 @@ if (!function_exists('re_service_charge_find_first_open_installment')) {
     }
 }
 
+if (!function_exists('re_service_charge_slice_vat')) {
+    /**
+     * A slice of a service charge as it goes into a cheque: its net, its VAT and the gross,
+     * from the charge's own VAT treatment, rate and amount basis.
+     *
+     * @return array{net:float,vat:float,gross:float,rate:float}
+     */
+    function re_service_charge_slice_vat(PDO $conn, int $companyId, int $serviceChargeId, float $slice): array
+    {
+        $slice = round($slice, 2);
+        $none = ['net' => $slice, 'vat' => 0.0, 'gross' => $slice, 'rate' => 0.0];
+        if (!re_service_charge_table_has_column($conn, 'vat_treatment') || !re_service_charge_table_has_column($conn, 'vat_rate')) {
+            return $none;
+        }
+        $basisCol = re_service_charge_table_has_column($conn, 'amount_basis') ? 'amount_basis' : "'vat_exclusive'";
+        $st = $conn->prepare("SELECT vat_treatment, vat_rate, $basisCol AS amount_basis FROM re_service_charges WHERE id = ? AND company_id = ? LIMIT 1");
+        $st->execute([$serviceChargeId, $companyId]);
+        $sc = $st->fetch(PDO::FETCH_ASSOC);
+        $rate = round((float)($sc['vat_rate'] ?? 0), 2);
+        if (!$sc || (string)$sc['vat_treatment'] !== 'standard' || $rate <= 0) {
+            return $none;
+        }
+        if ((string)($sc['amount_basis'] ?? '') === 'vat_inclusive') {
+            $net = round($slice / (1 + $rate / 100), 2);
+            return ['net' => $net, 'vat' => round($slice - $net, 2), 'gross' => $slice, 'rate' => $rate];
+        }
+        $vat = round($slice * $rate / 100, 2);
+        return ['net' => $slice, 'vat' => $vat, 'gross' => round($slice + $vat, 2), 'rate' => $rate];
+    }
+}
+
 if (!function_exists('re_service_charge_apply_amount_to_installment')) {
     /**
      * Increase one installment/cheque and create a linked billing item slice.
@@ -239,6 +270,15 @@ if (!function_exists('re_service_charge_apply_amount_to_installment')) {
 
         $installmentId = (int)$installment['id'];
         $instDate = (string)$installment['installment_date'];
+
+        // The VAT of the charge goes into the cheque and onto its bill too: the slice is the
+        // net amount (or the gross, for a charge entered VAT-inclusive). Before, the cheque
+        // and the bill carried the net alone and the 5% was never charged.
+        $tax = re_service_charge_slice_vat($conn, $companyId, $serviceChargeId, $sliceAmount);
+        $netSlice = $tax['net'];
+        $taxSlice = $tax['vat'];
+        $taxRate = $tax['rate'];
+        $sliceAmount = $tax['gross'];
 
         $exists = $conn->prepare("
             SELECT id FROM re_billing_items
@@ -319,16 +359,18 @@ if (!function_exists('re_service_charge_apply_amount_to_installment')) {
         $conn->prepare("
             INSERT INTO re_billing_items
                 (company_id, lease_id, item_type, item_name, item_description, amount,
-                 quantity, unit_price, total_amount, billing_period_start, billing_period_end,
+                 quantity, unit_price, tax_rate, tax_amount, total_amount, billing_period_start, billing_period_end,
                  billing_date, due_date, service_charge_id, installment_id, status, notes, created_by)
-            VALUES (?, ?, 'service_charge', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            VALUES (?, ?, 'service_charge', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
         ")->execute([
             $companyId,
             $leaseId,
             (string)($charge['charge_name'] ?? 'Service Charge'),
             (string)($charge['charge_description'] ?? 'Applied to installment/cheque'),
-            $sliceAmount,
-            $sliceAmount,
+            $netSlice,
+            $netSlice,
+            $taxRate,
+            $taxSlice,
             $sliceAmount,
             $instDate,
             $instDate,
@@ -510,13 +552,16 @@ if (!function_exists('re_service_charge_schedule_adjustment_total')) {
         if (!re_service_charge_table_has_column($conn, 'apply_mode')) {
             return 0.0;
         }
+        // What went into the cheques: the bills linked to them, VAT included.
         $stmt = $conn->prepare("
-            SELECT COALESCE(SUM(amount), 0)
-            FROM re_service_charges
-            WHERE company_id = ?
-              AND lease_id = ?
-              AND is_active = 1
-              AND apply_mode IN ('merge_first_installment', 'split_all_installments')
+            SELECT COALESCE(SUM(bi.total_amount), 0)
+            FROM re_billing_items bi
+            JOIN re_service_charges sc ON sc.id = bi.service_charge_id AND sc.company_id = bi.company_id
+            WHERE bi.company_id = ?
+              AND bi.lease_id = ?
+              AND bi.installment_id IS NOT NULL
+              AND sc.is_active = 1
+              AND sc.apply_mode IN ('merge_first_installment', 'split_all_installments')
         ");
         $stmt->execute([$companyId, $leaseId]);
         return round((float)$stmt->fetchColumn(), 2);
