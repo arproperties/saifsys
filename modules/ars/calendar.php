@@ -169,8 +169,62 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
             && in_array(strtolower((string)($bk['status'] ?? '')), ['confirmed', 'checked_in', 'checked-in'], true);
         // Only an in-house guest who owes goes red. A booked guest normally still
         // owes before arrival, so the bar stays gold; the tooltip carries the balance.
-        if ($isDue && $style['class'] === 'abnb-bar--inhouse') {
-            $style['class'] = 'abnb-bar--due';
+        $splitStyle = '';
+        $splitNote = '';
+        $owesStay = (float)($bk['balance_whole'] ?? $balanceDue) > 0.009;
+        if ($owesStay && $style['class'] === 'abnb-bar--inhouse') {
+            // In-house and still owing: green up to the first unpaid month,
+            // solid red over months whose date has passed, striped red over
+            // months still to come. Without a plan the whole balance is due
+            // now, so green covers the nights the money received pays for.
+            $paidUntil = $checkIn;
+            $upcomingFrom = $occEnd;
+            $schedule = $bk['plan_schedule'] ?? null;
+            if ($schedule) {
+                $firstUnpaid = null;
+                foreach ($schedule['instalments'] as $inst) {
+                    if ($firstUnpaid === null) {
+                        if ($inst['state'] !== 'paid' && $inst['unpaid'] > 0.009) {
+                            $firstUnpaid = $inst;
+                            $paidUntil = $inst['due_date'];
+                            if ($inst['state'] === 'upcoming') {
+                                $upcomingFrom = $inst['due_date'];
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    if ($inst['state'] === 'upcoming') {
+                        $upcomingFrom = $inst['due_date'];
+                        break;
+                    }
+                }
+                if ($firstUnpaid !== null) {
+                    $splitNote = ' · Paid until ' . date('j M', strtotime($paidUntil));
+                    if (!empty($schedule['next_due_date'])) {
+                        $splitNote .= ' · Next due ' . date('j M', strtotime($schedule['next_due_date']))
+                            . ' ' . number_format((float)$schedule['next_due_amount'], 2);
+                    }
+                }
+            } else {
+                $stayTotal = (float)($bk['total_amount'] ?? 0);
+                $paidShare = $stayTotal > 0.009
+                    ? max(0.0, min(1.0, ($stayTotal - (float)$bk['balance_whole']) / $stayTotal))
+                    : 0.0;
+                $paidNights = (int)floor($nights * $paidShare + 0.0001);
+                $paidUntil = date('Y-m-d', strtotime($checkIn . ' +' . $paidNights . ' days'));
+                $splitNote = ' · Paid until ' . date('j M', strtotime($paidUntil));
+            }
+            $pctOf = static function (string $date) use ($columnOf, $lineStart, $lineEnd): float {
+                $pct = (2 * $columnOf($date) - $lineStart) / ($lineEnd - $lineStart) * 100;
+                return round(max(0.0, min(100.0, $pct)), 2);
+            };
+            $paidPct = $pctOf($paidUntil);
+            $overduePct = max($paidPct, $pctOf($upcomingFrom));
+            if ($paidPct < 100) {
+                $style['class'] = 'abnb-bar--split';
+                $splitStyle = ' --abnb-paid-end: ' . $paidPct . '%; --abnb-overdue-end: ' . $overduePct . '%;';
+            }
         }
 
         if (($bk['booking_source'] ?? 'direct') === 'airbnb') {
@@ -182,6 +236,7 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
             . ' · ' . $nights . ' night' . ($nights === 1 ? '' : 's')
             . ' · ' . $style['label']
             . ($isDue ? ' · Balance due ' . number_format($balanceDue, 2) : '')
+            . $splitNote
             . (!empty($bk['is_early_checkout']) ? ' · Early check-out' : '');
 
         $bars[] = [
@@ -189,6 +244,7 @@ $buildBars = static function (array $bookings) use ($columnOf, $statusStyle, $da
             'start' => $lineStart,
             'end' => $lineEnd,
             'class' => $style['class'],
+            'split_style' => $splitStyle,
             'open_start' => $openStart,
             'open_end' => $openEnd,
             'narrow' => ($lineEnd - $lineStart) <= 2,
@@ -232,7 +288,8 @@ $halfColsStyle = 'grid-template-columns: repeat(' . (2 * $daysInMonth) . ', minm
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--booked"></span> Booked</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--inhouse"></span> Checked in</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--pending"></span> Pending</span>
-        <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--due"></span> Balance due</span>
+        <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--due"></span> Payment overdue</span>
+        <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--due-later"></span> Unpaid, not due yet</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--done"></span> Checked out</span>
         <span class="abnb-legend-item"><span class="abnb-swatch abnb-swatch--blocked"></span> Blocked</span>
         <span class="abnb-legend-hint">Bars run from check-in midday to check-out midday · prices in <?= h($currency) ?></span>
@@ -296,7 +353,7 @@ $halfColsStyle = 'grid-template-columns: repeat(' . (2 * $daysInMonth) . ', minm
                                 . ($bar['narrow'] ? ' abnb-bar--narrow' : '');
                         ?>
                         <a class="<?= h($barCls) ?>"
-                           style="grid-column: <?= (int)$bar['start'] ?> / <?= (int)$bar['end'] ?>;"
+                           style="grid-column: <?= (int)$bar['start'] ?> / <?= (int)$bar['end'] ?>;<?= h($bar['split_style']) ?>"
                            href="booking_view.php?id=<?= (int)$bar['id'] ?>"
                            title="<?= h($bar['tooltip']) ?>">
                             <span class="abnb-bar-name"><?= h($bar['guest']) ?></span>
