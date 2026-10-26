@@ -1330,6 +1330,9 @@ require __DIR__ . '/includes/admin/admin_layout_header.php';
       <?php if (has_role('Owner', $conn)): ?>
       <div class="col-md-4 col-lg-3"><a class="admin-info-card" href="<?= get_base_path() ?>/admin/usage_report.php"><div class="d-flex align-items-center gap-2 mb-2"><i data-lucide="activity" style="width:18px;height:18px;color:var(--admin-primary)"></i><strong>Usage report</strong></div><p class="small text-muted mb-0">Which pages &amp; app are used</p></a></div>
       <?php endif; ?>
+      <?php if (has_role('Owner', $conn) || has_role('Admin', $conn)): ?>
+      <div class="col-md-4 col-lg-3"><a class="admin-info-card" href="<?= get_base_path() ?>/admin/monthly_reports.php"><div class="d-flex align-items-center gap-2 mb-2"><i data-lucide="file-text" style="width:18px;height:18px;color:var(--admin-primary)"></i><strong>Monthly reports</strong></div><p class="small text-muted mb-0">Renewal &amp; new tenant checks (PDF)</p></a></div>
+      <?php endif; ?>
     </div>
     <div class="admin-settings-card">
       <div class="settings-header d-flex justify-content-between align-items-center">
