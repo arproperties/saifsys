@@ -45,6 +45,13 @@ if (substr($rawPath, -1) !== '/' && is_file($root . $path . '/index.php')) {
     return true;
 }
 
+// Uploaded files are not in git and a database refresh does not bring them, so a
+// local copy usually lists files this PC does not have. Send those to live instead.
+if (strpos($path, '/uploads/') === 0) {
+    header('Location: https://saifholdinggroup.com/sys' . $rawPath, true, 302);
+    return true;
+}
+
 // Clean URLs: /settings -> settings.php, /hr -> hr/index.php
 foreach ([$path . '.php', $path . '/index.php'] as $try) {
     if (is_file($root . $try)) {
