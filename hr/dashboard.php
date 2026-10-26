@@ -144,29 +144,37 @@ $cashAdvPending = scalar($conn, "SELECT COUNT(*)
                                  JOIN employees e ON e.id = ca.employee_id
                                  WHERE ca.request_status='pending'" . $companyClause . $currentStatusClause, array_merge($companyParams, $currentStatusParams));
 
-// Attendance today (if you’ve started using `attendance` table)
-$attPresent = scalar($conn, "SELECT COUNT(*)
-                             FROM attendance a
-                             JOIN employees e ON e.id = a.employee_id
-                             WHERE a.work_date=? AND a.status='approved'" . $companyClause . $currentStatusClause, array_merge([$today], $companyParams, $currentStatusParams));
-$attLeave   = scalar($conn, "SELECT COUNT(*)
-                             FROM attendance a
-                             JOIN employees e ON e.id = a.employee_id
-                             WHERE a.work_date=? AND a.status='on_leave'" . $companyClause . $currentStatusClause, array_merge([$today], $companyParams, $currentStatusParams));
-$attHalf    = scalar($conn, "SELECT COUNT(*)
-                             FROM attendance a
-                             JOIN employees e ON e.id = a.employee_id
-                             WHERE a.work_date=? AND a.status='half'" . $companyClause . $currentStatusClause, array_merge([$today], $companyParams, $currentStatusParams));
-$attAbsent  = scalar($conn, "SELECT COUNT(*)
-                             FROM attendance a
-                             JOIN employees e ON e.id = a.employee_id
-                             WHERE a.work_date=? AND a.status='absent'" . $companyClause . $currentStatusClause, array_merge([$today], $companyParams, $currentStatusParams));
-// Checked in but not yet approved. Present stays 'approved' only, so without
-// this tile a day's check-ins would be counted nowhere until HR acts on them.
-$attPending = scalar($conn, "SELECT COUNT(*)
-                             FROM attendance a
-                             JOIN employees e ON e.id = a.employee_id
-                             WHERE a.work_date=? AND a.status='pending'" . $companyClause . $currentStatusClause, array_merge([$today], $companyParams, $currentStatusParams));
+// Attendance today: one count per status for the current workforce in scope.
+// Every status counts toward "recorded", pending (checked in, not yet approved)
+// included; "not marked" is everyone in scope with no entry today. It does not
+// know rest days, so it is "not marked", not "missing".
+$attByStatus = [];
+foreach (fetchAllAssoc($conn, "SELECT a.status, COUNT(*) AS n
+                               FROM attendance a
+                               JOIN employees e ON e.id = a.employee_id
+                               WHERE a.work_date=?" . $companyClause . $currentStatusClause . "
+                               GROUP BY a.status", array_merge([$today], $companyParams, $currentStatusParams)) as $r) {
+    $attByStatus[$r['status']] = (int)$r['n'];
+}
+$attRecorded  = array_sum($attByStatus);
+$attNotMarked = max(0, (int)$currentWorkforce - $attRecorded);
+
+// Bar and legend order; each status opens today's attendance list filtered to it,
+// and "not marked" opens the attendance module's Missing check-ins page.
+$attSegments = [];
+foreach ([
+    'approved'       => ['Present',  'present'],
+    'pending'        => ['Pending',  'pending'],
+    'on_leave'       => ['On leave', 'leave'],
+    'half'           => ['Half day', 'half'],
+    'absent'         => ['Absent',   'absent'],
+    'excused_absent' => ['Excused',  'excused'],
+] as $key => [$label, $tone]) {
+    $attSegments[] = ['label' => $label, 'tone' => $tone, 'n' => $attByStatus[$key] ?? 0,
+                      'href' => $attendanceHref . '&status=' . $key];
+}
+$attSegments[] = ['label' => 'Not marked', 'tone' => 'none', 'n' => $attNotMarked,
+                  'href' => 'attendance_missing.php?day=' . urlencode($today) . $appendCompanyQuery];
 
 // Top OT this month
 $topOT = fetchAllAssoc($conn, "
@@ -199,7 +207,14 @@ $expList = fetchAllAssoc($conn, "
 ", array_merge($companyParams, $currentStatusParams));
 
 $pageTitle = 'HR Dashboard';
-$hrScopeLabel = $scopeLabel;
+// Breadcrumb lives in the top bar; the page header below keeps only the title.
+$hrTopbarCrumbs = [
+    ['label' => 'HR', 'href' => 'dashboard'],
+    ['label' => 'Dashboard'],
+];
+// The company shows once: as the filter below when there is a choice to make,
+// otherwise as the top-bar badge.
+$hrScopeLabel = ($isHRManager && count($companies) > 1) ? '' : $scopeLabel;
 require_once __DIR__ . '/includes/hr_layout_header.php';
 
 $companyFilterHtml = '';
@@ -218,7 +233,6 @@ if ($isHRManager && count($companies) > 1) {
           <?php endforeach; ?>
         </select>
       </div>
-      <button class="btn btn-sm btn-primary">Apply</button>
     </form>
     <?php
     $companyFilterHtml = ob_get_clean();
@@ -227,10 +241,7 @@ if ($isHRManager && count($companies) > 1) {
 echo hr_ui_page_header(
     'HR Dashboard',
     'Workforce, attendance, leave, and document signals for the selected company scope.',
-    [
-        ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
-        ['label' => 'Dashboard'],
-    ],
+    [],
     $companyFilterHtml
 );
 ?>
@@ -330,17 +341,33 @@ echo hr_ui_page_header(
     <div class="col-lg-4">
       <div class="hr-settings-card h-100">
         <div class="settings-header d-flex justify-content-between align-items-center">
-          <h6 class="mb-0">Attendance today</h6>
+          <h6 class="mb-0">Attendance today <span class="small text-muted fw-normal">· <?= h(date('D j M')) ?></span></h6>
           <a class="small" href="<?= h($attendanceHref) ?>">Manage</a>
         </div>
         <div class="card-body">
-          <div class="row text-center g-2">
-            <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attPresent ?></div><div class="small text-muted">Present</div></div>
-            <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attLeave ?></div><div class="small text-muted">On leave</div></div>
-            <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attHalf ?></div><div class="small text-muted">Half</div></div>
-            <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attAbsent ?></div><div class="small text-muted">Absent</div></div>
-            <div class="col-6"><div class="fw-semibold fs-5"><?= (int)$attPending ?></div><div class="small text-muted">Pending approval</div></div>
-          </div>
+          <?php if ((int)$currentWorkforce === 0): ?>
+            <div class="text-muted small">No current employees in this company.</div>
+          <?php else: ?>
+            <?php $attTotal = max((int)$currentWorkforce, $attRecorded); ?>
+            <div class="d-flex justify-content-between align-items-baseline mb-2">
+              <div><span class="fs-4 fw-semibold"><?= $attRecorded ?></span> <span class="text-muted">/ <?= (int)$currentWorkforce ?> recorded</span></div>
+              <span class="small text-muted"><?= (int)round($attRecorded * 100 / $attTotal) ?>%</span>
+            </div>
+            <div class="hr-att-bar mb-3" role="img" aria-label="<?= h(implode(', ', array_map(fn($s) => $s['label'] . ' ' . $s['n'], $attSegments))) ?>">
+              <?php foreach ($attSegments as $s): if ($s['n'] <= 0) continue; ?>
+                <span class="hr-att-seg hr-att-<?= h($s['tone']) ?>" style="flex-grow:<?= (int)$s['n'] ?>" title="<?= h($s['label'] . ': ' . $s['n']) ?>"></span>
+              <?php endforeach; ?>
+            </div>
+            <div class="hr-att-legend">
+              <?php foreach ($attSegments as $s): ?>
+                <a class="hr-att-item<?= $s['tone'] === 'none' ? ' hr-att-item-wide' : '' ?>" href="<?= h($s['href']) ?>">
+                  <span class="hr-att-dot hr-att-<?= h($s['tone']) ?>"></span>
+                  <span class="flex-grow-1"><?= h($s['label']) ?></span>
+                  <strong><?= (int)$s['n'] ?></strong>
+                </a>
+              <?php endforeach; ?>
+            </div>
+          <?php endif; ?>
         </div>
       </div>
     </div>

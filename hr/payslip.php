@@ -8,6 +8,7 @@ require_once __DIR__.'/includes/hr_payroll_company_access.php';
 require_once __DIR__.'/includes/hr_schedule_helper.php';
 require_once __DIR__.'/includes/hr_payroll_accounting.php';
 require_once __DIR__.'/includes/hr_loans.php';
+require_once __DIR__.'/includes/hr_payroll_cashback.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
@@ -65,6 +66,7 @@ $stmt = $conn->prepare("
     COALESCE(pi.net_pay,0)     AS net_pay,
     COALESCE(pi.adv_applied,0) AS adv_applied,     -- amount of cash advance taken this run
     COALESCE(pi.other_applied,0) AS other_applied, -- other deductions (fines/charges) this run
+    " . (hr_payroll_cashback_ready($conn) ? "pr.show_cashback, COALESCE(pi.cashback,0) AS cashback," : "0 AS show_cashback, 0 AS cashback,") . "
     pi.notes
   FROM payroll_runs pr
   JOIN payroll_items pi ON pi.payroll_run_id = pr.id
@@ -256,7 +258,8 @@ echo hr_ui_page_header(
             </span>
             <span><?= nf($abs_ded) ?></span>
           </div>
-          <div class="line"><span>Other deductions</span><span><?= nf($other_applied) ?></span></div>
+          <?php $billInDed = preg_match('/\(bill excess ([0-9,.]+)\)/', (string)($row['notes'] ?? ''), $bm) ? $bm[1] : ''; ?>
+          <div class="line"><span>Other deductions<?php if ($billInDed !== ''): ?> <span class="muted">(incl. bill excess <?= htmlspecialchars($billInDed) ?>)</span><?php endif; ?></span><span><?= nf($other_applied) ?></span></div>
           <?php if ($ded_adjust != 0.00): ?>
             <div class="line"><span>Adjustment</span><span><?= nf($ded_adjust) ?></span></div>
           <?php endif; ?>
@@ -274,6 +277,18 @@ echo hr_ui_page_header(
         <div class="muted">Net Pay</div>
         <div class="kpi"><?= nf($net) ?></div>
       </div>
+      <?php
+        // Cashback: an extra line under Net only, while the run's toggle is on.
+        $cashback = !empty($row['show_cashback']) ? (float)$row['cashback'] : 0.0;
+      ?>
+      <?php if ($cashback > 0.005): ?>
+        <div class="line mt-2"><span>Less: Cashback</span><span>(<?= nf($cashback) ?>)</span></div>
+        <div class="total-row d-flex justify-content-between mt-2">
+          <span>Balance paid to employee</span>
+          <span><?= nf($net - $cashback) ?></span>
+        </div>
+        <div class="muted small mt-2">Note: <?= htmlspecialchars(hr_payroll_cashback_note()) ?></div>
+      <?php endif; ?>
     </div>
 
     <?php if ($showLoanInfo): ?>

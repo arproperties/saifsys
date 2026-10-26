@@ -401,7 +401,7 @@ echo hr_ui_page_header(
   <div class="hr-settings-card">
     <div class="settings-header">Monthly summary</div>
     <div class="card-body p-0">
-    <div class="hr-table-shell border-0 shadow-none rounded-0">
+    <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
       <table class="table table-hover align-middle mb-0">
         <thead class="table-light">
           <tr>

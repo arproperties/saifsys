@@ -9,6 +9,7 @@ require_once __DIR__.'/../includes/audit_bridge.php';
 require_once __DIR__.'/includes/hr_payroll_company_access.php';
 require_once __DIR__.'/includes/hr_payroll_accounting.php';
 require_once __DIR__.'/includes/hr_wps_guards.php';
+require_once __DIR__.'/includes/hr_payroll_cashback.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 $run_id = (int)($_GET['id'] ?? 0);
@@ -160,6 +161,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pending_bonus']))
   exit;
 }
 
+// "Show cashback" toggle. Display only, so it may be switched on a posted run too.
+$cashbackReady = hr_payroll_cashback_ready($conn);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_show_cashback']) && $cashbackReady) {
+  csrf_verify();
+  $conn->prepare("UPDATE payroll_runs SET show_cashback = ? WHERE id = ?")
+    ->execute([!empty($_POST['show_cashback']) ? 1 : 0, $run_id]);
+  header('Location: payroll_run_view.php?id=' . $run_id);
+  exit;
+}
+$cashbackOn = hr_payroll_cashback_on($conn, $run);
+
 // Items
 $rows = $conn->prepare("
   SELECT pi.*, e.employee_code, e.full_name
@@ -245,8 +257,9 @@ if ($canAddPendingBonus) {
 }
 
 // Totals
-$tot = ['base'=>0,'allow'=>0,'bonus'=>0,'ded'=>0,'net'=>0,'adv'=>0,'oth'=>0];
+$tot = ['base'=>0,'allow'=>0,'bonus'=>0,'ded'=>0,'net'=>0,'adv'=>0,'oth'=>0,'cashback'=>0];
 foreach ($items as $r){
+  $tot['cashback'] += (float)($r['cashback'] ?? 0);
   $tot['base']  += (float)$r['base_pay'];
   $tot['allow'] += (float)$r['allowance'];
   $tot['bonus'] += (float)$r['bonus'];
@@ -379,7 +392,19 @@ echo hr_ui_page_header(
   <?php endif; ?>
 
   <div class="hr-settings-card mb-3">
-    <div class="settings-header">Summary</div>
+    <div class="settings-header d-flex align-items-center justify-content-between">
+      <span>Summary</span>
+      <?php if ($cashbackReady): ?>
+        <form method="post" class="no-print mb-0">
+          <?php csrf_field(); ?>
+          <input type="hidden" name="set_show_cashback" value="1">
+          <div class="form-check form-switch mb-0" title="Extra line under Net only. Net pay and WPS do not change.">
+            <input class="form-check-input" type="checkbox" role="switch" name="show_cashback" value="1" id="showCashbackToggle" <?= $cashbackOn ? 'checked' : '' ?> onchange="this.form.submit()">
+            <label class="form-check-label small fw-semibold" for="showCashbackToggle">Show cashback</label>
+          </div>
+        </form>
+      <?php endif; ?>
+    </div>
     <div class="card-body">
       <?php if (!$items): ?>
         <div class="text-muted">No items found for this run.</div>
@@ -392,7 +417,16 @@ echo hr_ui_page_header(
           <div class="col"><div class="small text-muted">Other Ded.</div><div class="fs-5 fw-semibold"><?= number_format($tot['oth'],2) ?></div></div>
           <div class="col"><div class="small text-muted">Total Deductions</div><div class="fs-5 fw-semibold"><?= number_format($tot['ded'],2) ?></div></div>
           <div class="col"><div class="small text-muted">Net</div><div class="fs-5 fw-bold"><?= number_format($tot['net'],2) ?></div></div>
+          <?php if ($cashbackOn): ?>
+            <div class="col"><div class="small text-muted">Cashback</div><div class="fs-5 fw-semibold">(<?= number_format($tot['cashback'],2) ?>)</div></div>
+            <div class="col"><div class="small text-muted">Net after cashback</div><div class="fs-5 fw-bold"><?= number_format($tot['net'] - $tot['cashback'],2) ?></div></div>
+          <?php endif; ?>
         </div>
+        <?php if ($cashbackOn): ?>
+          <div class="small text-muted mt-2 text-center">
+            Note: <?= htmlspecialchars(hr_payroll_cashback_note()) ?>
+          </div>
+        <?php endif; ?>
       <?php endif; ?>
     </div>
   </div>
@@ -412,6 +446,10 @@ echo hr_ui_page_header(
             <th>Deductions</th>
             <th title="Net pay compared with the WPS floor (85% of base + allowance). Green = room left, red = below the floor.">WPS Cap</th>
             <th>Net</th>
+            <?php if ($cashbackOn): ?>
+              <th title="Handed back by the employee. Not deducted from net pay or WPS.">Cashback</th>
+              <th>Net after cashback</th>
+            <?php endif; ?>
             <th>Payslip</th>
           </tr>
         </thead>
@@ -476,10 +514,14 @@ echo hr_ui_page_header(
                 <?php endif; ?>
               </td>
               <td class="fw-semibold"><?= number_format($r['net_pay'],2) ?></td>
+              <?php if ($cashbackOn): $cb = (float)($r['cashback'] ?? 0); ?>
+                <td><?= $cb > 0.005 ? '(' . number_format($cb,2) . ')' : '<span class="text-muted">—</span>' ?></td>
+                <td class="fw-semibold"><?= number_format((float)$r['net_pay'] - $cb,2) ?></td>
+              <?php endif; ?>
               <td><a class="btn btn-sm btn-outline-primary" target="_blank" href="payslip.php?run_id=<?= (int)$run_id ?>&employee_id=<?= (int)$r['employee_id'] ?>">Open</a></td>
             </tr>
           <?php endforeach; if(!$items): ?>
-            <tr><td colspan="10" class="text-center text-muted">—</td></tr>
+            <tr><td colspan="<?= $cashbackOn ? 12 : 10 ?>" class="text-center text-muted">—</td></tr>
           <?php endif; ?>
         </tbody>
       </table>

@@ -13,8 +13,10 @@ require_once __DIR__ . '/includes/hr_loans.php';
 require_once __DIR__ . '/includes/employee_view/load_employee.php';
 require_once __DIR__ . '/includes/employee_view/load_payroll.php';
 require_once __DIR__ . '/../modules/operations/includes/ops_pin.php';
+require_once __DIR__ . '/../modules/operations/includes/ops_attendance_reminder.php';
 require_once __DIR__ . '/includes/hr_employee_login.php';
 require_once __DIR__ . '/includes/hr_fleet.php';
+require_once __DIR__ . '/includes/hr_employee_bills.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
@@ -183,7 +185,9 @@ $employeeAvatarPath = null;
 $avatarMsg = '';
 $avatarErr = '';
 $canManageAvatar = (!$workerReadOnly && array_intersect($roles, ['Owner','Admin']));
-$avatarInitial = strtoupper(substr(trim($emp['full_name'] ?: $emp['employee_code'] ?: 'U'), 0, 1));
+// Named apart from the layout's $avatarInitial, which is the signed-in user's
+// and is set again when the header is included.
+$empInitial = mb_strtoupper(mb_substr(trim($emp['full_name'] ?: $emp['employee_code'] ?: 'U'), 0, 1));
 if (!empty($emp['user_id'])) {
     $avatarStmt = $conn->prepare("SELECT avatar_path FROM user WHERE id=?");
     $avatarStmt->execute([(int)$emp['user_id']]);
@@ -1728,6 +1732,17 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_deduction'])) {
 }
 
 // DEL deduction
+// A deduction behind an approved bill entry stays: the bill is final, and payroll may already hold it.
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['del_deduction']) && hr_bills_ready($conn)) {
+  $billLock = $conn->prepare("SELECT id FROM employee_bills WHERE deduction_id = ? AND status = 'approved' LIMIT 1");
+  $billLock->execute([(int)$_POST['del_deduction']]);
+  if ($billLock->fetchColumn()) {
+    csrf_verify();
+    $ded_msg = 'This deduction comes from an approved bill, so it cannot be deleted.';
+    unset($_POST['del_deduction']);
+  }
+}
+
 if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['del_deduction'])) {
     csrf_verify();
   $delDedId = (int)$_POST['del_deduction'];
@@ -2744,6 +2759,9 @@ try {
 
 /* ---------------- Assets (actions + data) ---------------- */
 $asset_msg = '';
+$asset_err = '';
+// Bills tab and the asset status / monthly-bill fields need migrations/hr_employee_bills.sql.
+$billsReady = hr_bills_ready($conn);
 
 if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_asset'])) {
     csrf_verify();
@@ -2752,13 +2770,26 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_asset'])) {
   $issue_date= $_POST['issue_date'] ?: date('Y-m-d');
   $return_due= $_POST['return_due'] ?: null;
   $notes     = trim($_POST['notes'] ?? '');
-  if ($item_name !== '') {
-    $stmt = $conn->prepare("INSERT INTO employee_assets
-      (employee_id,item_name,serial_no,issue_date,return_due,status,notes,created_by)
-      VALUES (?,?,?,?,?,'issued',?,?)");
-    $stmt->execute([$emp['id'],$item_name,$serial_no,$issue_date,$return_due,$notes,($_SESSION['user']['id'] ?? null)]);
+  $assetStatus = ($billsReady && ($_POST['asset_status'] ?? '') === 'suspended') ? 'suspended' : 'issued';
+  $hasBill   = $billsReady && !empty($_POST['has_bill']);
+  $billApproved = $hasBill ? round((float)($_POST['bill_approved'] ?? 0), 2) : null;
+  $billFrequency = hr_bills_frequency((string)($_POST['bill_frequency'] ?? 'monthly'));
+  if ($hasBill && $billApproved < 0) {
+    $asset_err = 'The approved amount cannot be negative.';
+  } elseif ($item_name !== '') {
+    if ($billsReady) {
+      $stmt = $conn->prepare("INSERT INTO employee_assets
+        (employee_id,item_name,serial_no,issue_date,return_due,status,has_bill,bill_approved,bill_frequency,notes,created_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+      $stmt->execute([$emp['id'],$item_name,$serial_no,$issue_date,$return_due,$assetStatus,$hasBill ? 1 : 0,$billApproved,$billFrequency,$notes,($_SESSION['user']['id'] ?? null)]);
+    } else {
+      $stmt = $conn->prepare("INSERT INTO employee_assets
+        (employee_id,item_name,serial_no,issue_date,return_due,status,notes,created_by)
+        VALUES (?,?,?,?,?,'issued',?,?)");
+      $stmt->execute([$emp['id'],$item_name,$serial_no,$issue_date,$return_due,$notes,($_SESSION['user']['id'] ?? null)]);
+    }
     $assetId = (int)$conn->lastInsertId();
-    $asset_msg = 'Asset issued.';
+    $asset_msg = 'Asset issued' . ($hasBill ? ' — bill approved at ' . number_format((float)$billApproved, 2) . ' ' . hr_bills_per($billFrequency) : '') . '.';
     audit_bridge_hr_ops(
       'asset_issued',
       'employee_assets',
@@ -2770,8 +2801,65 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_asset'])) {
         'item_name' => $item_name,
         'serial_no' => $serial_no !== '' ? $serial_no : null,
         'issue_date' => $issue_date,
+        'status' => $assetStatus,
+        'has_bill' => $hasBill,
+        'bill_approved' => $billApproved,
+        'bill_frequency' => $hasBill ? $billFrequency : null,
       ],
       'Asset #' . ($assetId > 0 ? $assetId : '?'),
+      isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
+    );
+  }
+}
+
+// EDIT asset: name, serial, dates, status, monthly bill. Bills already entered keep the approved amount they were saved with.
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['edit_asset']) && $billsReady && $canManageLoans) {
+    csrf_verify();
+  $id = (int)$_POST['edit_asset'];
+  $prevAsset = $conn->prepare("SELECT * FROM employee_assets WHERE id=? AND employee_id=? LIMIT 1");
+  $prevAsset->execute([$id, $emp['id']]);
+  $prevAssetRow = $prevAsset->fetch(PDO::FETCH_ASSOC);
+  $item_name = trim($_POST['item_name'] ?? '');
+  $newStatus = (string)($_POST['asset_status'] ?? '');
+  $hasBill   = !empty($_POST['has_bill']);
+  $billApproved = $hasBill ? round((float)($_POST['bill_approved'] ?? 0), 2) : null;
+  $billFrequency = hr_bills_frequency((string)($_POST['bill_frequency'] ?? 'monthly'));
+  if (!$prevAssetRow) {
+    $asset_err = 'That asset was not found.';
+  } elseif ($item_name === '') {
+    $asset_err = 'Item name is required.';
+  } elseif (!in_array($newStatus, ['issued', 'suspended', 'returned', 'lost'], true)) {
+    $asset_err = 'Choose a status.';
+  } elseif ($hasBill && $billApproved < 0) {
+    $asset_err = 'The approved amount cannot be negative.';
+  } else {
+    $returnDate = ($_POST['return_date'] ?? '') !== '' ? $_POST['return_date'] : null;
+    if ($newStatus === 'returned' && !$returnDate) {
+      $returnDate = date('Y-m-d');
+    }
+    $conn->prepare("UPDATE employee_assets
+      SET item_name=?, serial_no=?, issue_date=?, return_due=?, return_date=?, status=?, has_bill=?, bill_approved=?, bill_frequency=?, notes=?
+      WHERE id=? AND employee_id=?")
+      ->execute([
+        $item_name, trim($_POST['serial_no'] ?? ''), ($_POST['issue_date'] ?? '') ?: $prevAssetRow['issue_date'],
+        ($_POST['return_due'] ?? '') ?: null, $returnDate, $newStatus, $hasBill ? 1 : 0, $billApproved, $billFrequency,
+        trim($_POST['notes'] ?? ''), $id, $emp['id'],
+      ]);
+    $asset_msg = 'Asset updated.';
+    audit_bridge_hr_ops(
+      'asset_updated',
+      'employee_assets',
+      $id,
+      'Updated asset ' . $item_name . ' for ' . ($emp['full_name'] ?? $emp['employee_code'])
+        . ' — ' . hr_asset_status_label($newStatus)
+        . ($hasBill ? ', bill approved ' . number_format((float)$billApproved, 2) . ' ' . hr_bills_per($billFrequency) : ''),
+      isset($emp['company_id']) ? (int)$emp['company_id'] : null,
+      [
+        'employee_id' => (int)$emp['id'],
+        'from' => ['status' => $prevAssetRow['status'], 'has_bill' => (int)($prevAssetRow['has_bill'] ?? 0), 'bill_approved' => $prevAssetRow['bill_approved'] ?? null, 'bill_frequency' => $prevAssetRow['bill_frequency'] ?? null],
+        'to' => ['status' => $newStatus, 'has_bill' => $hasBill ? 1 : 0, 'bill_approved' => $billApproved, 'bill_frequency' => $billFrequency],
+      ],
+      'Asset #' . $id,
       isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
     );
   }
@@ -2856,6 +2944,123 @@ $assetRows = $assetRows->fetchAll(PDO::FETCH_ASSOC);
 $assetIssuedCount = (int)$conn->query("
   SELECT COUNT(*) FROM employee_assets WHERE employee_id={$emp['id']} AND status='issued'
 ")->fetchColumn();
+
+/* ---------------- Bills (actions + data) — hr/includes/hr_employee_bills.php ---------------- */
+$bill_msg = $_SESSION['bill_msg'] ?? '';
+$bill_err = $_SESSION['bill_err'] ?? '';
+unset($_SESSION['bill_msg'], $_SESSION['bill_err']);
+
+if ($billsReady && $_SERVER['REQUEST_METHOD'] === 'POST' && $canManageLoans && (
+    isset($_POST['add_bill']) || isset($_POST['edit_bill']) || isset($_POST['del_bill']) || isset($_POST['approve_bill'])
+    || isset($_POST['add_bill_item']) || isset($_POST['edit_bill_item']) || isset($_POST['del_bill_item'])
+)) {
+  csrf_verify();
+  $billUid = isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null;
+  $billCompany = isset($emp['company_id']) ? (int)$emp['company_id'] : null;
+  $billEmpLabel = (string)($emp['full_name'] ?? $emp['employee_code']);
+  $result = ['ok' => false, 'message' => 'Nothing was changed.'];
+
+  // Logged only when something was stored: an actual within the approved amount keeps nothing.
+  $logBill = static function (array $r) use ($emp, $billEmpLabel, $billCompany, $billUid): void {
+    if (!empty($r['bill_id'])) {
+      audit_bridge_hr_ops('bill_created', 'employee_bills', (int)$r['bill_id'], $r['message'] . ' (' . $billEmpLabel . ')', $billCompany,
+        ['employee_id' => (int)$emp['id'], 'spend' => (float)($_POST['bill_amount'] ?? 0), 'excess' => $r['excess'], 'deduction_id' => $r['deduction_id']],
+        'Bill #' . (int)$r['bill_id'], $billUid);
+    }
+  };
+
+  if (isset($_POST['add_bill'])) {
+    $result = hr_bills_create($conn, (int)$emp['id'], (string)($_POST['bill_item'] ?? ''), (string)($_POST['period'] ?? ''),
+      $_POST['bill_amount'] ?? '', trim((string)($_POST['bill_notes'] ?? '')), $_FILES['bill_evidence'] ?? null, $billUid);
+    if ($result['ok']) {
+      $logBill($result);
+    }
+  } elseif (isset($_POST['edit_bill'])) {
+    $billId = (int)$_POST['edit_bill'];
+    $result = hr_bills_update($conn, (int)$emp['id'], $billId, $_POST['bill_amount'] ?? '', trim((string)($_POST['bill_notes'] ?? '')),
+      $_FILES['bill_evidence'] ?? null, !empty($_POST['remove_evidence']), $billUid);
+    if ($result['ok']) {
+      audit_bridge_hr_ops('bill_updated', 'employee_bills', $billId, $result['message'] . ' (' . $billEmpLabel . ')', $billCompany,
+        ['employee_id' => (int)$emp['id'], 'bill_amount' => (float)($_POST['bill_amount'] ?? 0), 'excess' => $result['excess']],
+        'Bill #' . $billId, $billUid);
+    }
+  } elseif (isset($_POST['approve_bill'])) {
+    $billId = (int)$_POST['approve_bill'];
+    $result = hr_bills_approve($conn, (int)$emp['id'], $billId, $billUid);
+    if ($result['ok']) {
+      audit_bridge_hr_ops('bill_approved', 'employee_bills', $billId, $result['message'] . ' (' . $billEmpLabel . ')', $billCompany,
+        ['employee_id' => (int)$emp['id']], 'Bill #' . $billId, $billUid);
+    }
+  } elseif (isset($_POST['del_bill'])) {
+    $billId = (int)$_POST['del_bill'];
+    $result = hr_bills_delete($conn, (int)$emp['id'], $billId);
+    if ($result['ok']) {
+      $gone = $result['bill'];
+      audit_bridge_hr_ops('bill_deleted', 'employee_bills', $billId,
+        'Deleted bill entry ' . $gone['item_name'] . ', ' . $gone['period_label']
+          . ' — ' . number_format((float)$gone['bill_amount'], 2) . ' (' . $billEmpLabel . ')', $billCompany,
+        ['employee_id' => (int)$emp['id'], 'bill_amount' => (float)$gone['bill_amount'], 'excess' => (float)$gone['excess_amount']],
+        'Bill #' . $billId, $billUid);
+    }
+  } elseif (isset($_POST['add_bill_item']) || isset($_POST['edit_bill_item'])) {
+    $itemName = trim((string)($_POST['item_name'] ?? ''));
+    $itemApproved = $_POST['approved_amount'] ?? '';
+    $itemFrequency = hr_bills_frequency((string)($_POST['frequency'] ?? 'monthly'));
+    $itemStatus = ($_POST['item_status'] ?? 'active') === 'suspended' ? 'suspended' : 'active';
+    $itemStart = hr_bills_parse_date((string)($_POST['start_date'] ?? '')) ?? date('Y-m-d');
+    if ($itemName === '') {
+      $result = ['ok' => false, 'message' => 'Item name is required.'];
+    } elseif (!is_numeric($itemApproved) || (float)$itemApproved < 0) {
+      $result = ['ok' => false, 'message' => 'Enter the approved amount (0 or more).'];
+    } elseif (isset($_POST['add_bill_item'])) {
+      $conn->prepare("INSERT INTO employee_bill_items (employee_id, item_name, approved_amount, frequency, start_date, status, notes, created_by) VALUES (?,?,?,?,?,?,?,?)")
+        ->execute([(int)$emp['id'], mb_substr($itemName, 0, 120), round((float)$itemApproved, 2), $itemFrequency, $itemStart, $itemStatus,
+          trim((string)($_POST['item_notes'] ?? '')) ?: null, $billUid]);
+      $itemId = (int)$conn->lastInsertId();
+      $result = ['ok' => true, 'message' => 'Bill item ' . $itemName . ' added — approved ' . number_format((float)$itemApproved, 2) . ' ' . hr_bills_per($itemFrequency) . '.'];
+      audit_bridge_hr_ops('bill_item_created', 'employee_bill_items', $itemId, $result['message'] . ' (' . $billEmpLabel . ')', $billCompany,
+        ['employee_id' => (int)$emp['id'], 'item_name' => $itemName, 'approved_amount' => (float)$itemApproved, 'frequency' => $itemFrequency, 'start_date' => $itemStart],
+        'Bill item #' . $itemId, $billUid);
+      // The same row can carry an actual for the current period, so a new item and its excess are one step.
+      if (trim((string)($_POST['bill_amount'] ?? '')) !== '') {
+        $billResult = hr_bills_create($conn, (int)$emp['id'], 'i:' . $itemId, '', $_POST['bill_amount'], '', $_FILES['bill_evidence'] ?? null, $billUid);
+        if ($billResult['ok']) {
+          $result['message'] = 'Bill item ' . $itemName . ' added. ' . $billResult['message'];
+          $logBill($billResult);
+        } else {
+          $result = ['ok' => false, 'message' => 'Item ' . $itemName . ' was added, but the spend amount was not saved: ' . $billResult['message']];
+        }
+      }
+    } else {
+      $itemId = (int)$_POST['edit_bill_item'];
+      $upd = $conn->prepare("UPDATE employee_bill_items SET item_name=?, approved_amount=?, frequency=?, status=? WHERE id=? AND employee_id=?");
+      $upd->execute([mb_substr($itemName, 0, 120), round((float)$itemApproved, 2), $itemFrequency, $itemStatus, $itemId, (int)$emp['id']]);
+      $result = ['ok' => true, 'message' => 'Bill item ' . $itemName . ' updated — ' . number_format((float)$itemApproved, 2) . ' ' . hr_bills_per($itemFrequency) . '.'];
+      audit_bridge_hr_ops('bill_item_updated', 'employee_bill_items', $itemId, $result['message'] . ' (' . $billEmpLabel . ')', $billCompany,
+        ['employee_id' => (int)$emp['id'], 'approved_amount' => (float)$itemApproved, 'frequency' => $itemFrequency, 'status' => $itemStatus],
+        'Bill item #' . $itemId, $billUid);
+    }
+  } elseif (isset($_POST['del_bill_item'])) {
+    $itemId = (int)$_POST['del_bill_item'];
+    $used = $conn->prepare("SELECT COUNT(*) FROM employee_bills WHERE bill_item_id = ?");
+    $used->execute([$itemId]);
+    if ((int)$used->fetchColumn() > 0) {
+      $result = ['ok' => false, 'message' => 'This item has bills, so it cannot be deleted. Set it to Suspended instead.'];
+    } else {
+      $conn->prepare("DELETE FROM employee_bill_items WHERE id=? AND employee_id=?")->execute([$itemId, (int)$emp['id']]);
+      $result = ['ok' => true, 'message' => 'Bill item deleted.'];
+      audit_bridge_hr_ops('bill_item_deleted', 'employee_bill_items', $itemId, 'Deleted bill item #' . $itemId . ' (' . $billEmpLabel . ')', $billCompany,
+        ['employee_id' => (int)$emp['id']], 'Bill item #' . $itemId, $billUid);
+    }
+  }
+
+  $_SESSION[$result['ok'] ? 'bill_msg' : 'bill_err'] = $result['message'];
+  header('Location: employee_view.php?id=' . urlencode($employee_id) . '#tab-bills');
+  exit;
+}
+
+$billItems = $billsReady ? hr_bills_items($conn, (int)$emp['id']) : [];
+$billRows = $billsReady ? hr_bills_list($conn, (int)$emp['id']) : [];
 
 
 /* ---------------- Training (actions + data) ---------------- */
@@ -3439,6 +3644,15 @@ try {
 }
 
 $pageTitle = 'Employee profile';
+// Breadcrumb in the top bar; the profile card below carries the name as the title.
+// Workers on their own profile cannot open the HR list, so they keep the plain title.
+if (!$isWorkerSelfService) {
+    $hrTopbarCrumbs = [
+        ['label' => 'HR', 'href' => 'dashboard'],
+        ['label' => 'Employees', 'href' => 'employees'],
+        ['label' => 'Profile'],
+    ];
+}
 $pageStyles = <<<'HR_EMP_VIEW_CSS'
 .employee-page{
         --primary:#b8860b;
@@ -3467,10 +3681,10 @@ $pageStyles = <<<'HR_EMP_VIEW_CSS'
     .badge{border-radius:999px;font-weight:650;padding:.42em .65em}
     .form-control,.form-select{border-color:#dbe4f0;border-radius:12px}
     .form-control:focus,.form-select:focus{border-color:#d4af37;box-shadow:0 0 0 .2rem rgba(184,134,11,.12)}
-    .employee-actionbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1rem}
-    .employee-actionbar h3{font-weight:800;letter-spacing:-.03em}
     .employee-actions{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;justify-content:flex-end}
     .employee-hero{position:relative;border:0;background:linear-gradient(135deg,#ffffff 0,#fffef9 58%,#eef6ff 100%);box-shadow:var(--hr-shadow)}
+    .employee-hero-toolbar{position:relative;z-index:1;padding:1rem 1.35rem 0}
+    .employee-hero-toolbar + .employee-hero-body{padding-top:.75rem}
     .employee-hero::before{content:"";position:absolute;inset:0 0 auto 0;height:5px;background:linear-gradient(90deg,#b8860b,#d4af37,#059669)}
     .employee-hero-body{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:1.25rem;align-items:center;padding:1.35rem}
     .avatar{width:82px;height:82px;border-radius:24px;background:linear-gradient(135deg,#f5ecd0,#faf3d9);display:inline-flex;align-items:center;justify-content:center;font-size:1.8rem;font-weight:800;color:#9a7209;overflow:hidden;position:relative;box-shadow:inset 0 0 0 1px rgba(184,134,11,.12)}
@@ -3493,9 +3707,19 @@ $pageStyles = <<<'HR_EMP_VIEW_CSS'
     .profile-progress-card .progress{height:10px;border-radius:999px;background:#e2e8f0;overflow:hidden}
     .profile-progress-card .progress-bar{font-size:0}
     .inactive-employee-alert{border:1px solid #cbd5e1;background:#f8fafc;border-radius:14px;padding:.65rem .85rem}
-    .employee-tabs-wrap{position:sticky;top:0;z-index:20;margin-top:1rem;background:rgba(248,250,252,.92);backdrop-filter:blur(14px);border:1px solid rgba(226,232,240,.9);border-radius:18px;padding:.45rem;box-shadow:var(--hr-shadow-sm);overflow-x:auto;-webkit-overflow-scrolling:touch}
-    .employee-tabs-wrap::-webkit-scrollbar{height:6px}
-    .employee-tabs-wrap::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}
+    .employee-tabs-wrap{position:sticky;top:0;z-index:20;margin-top:1rem;background:rgba(248,250,252,.92);backdrop-filter:blur(14px);border:1px solid rgba(226,232,240,.9);border-radius:18px;padding:.45rem;box-shadow:var(--hr-shadow-sm);display:flex;align-items:center;gap:.4rem}
+    .employee-tabs-scroll{flex:1 1 auto;min-width:0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .employee-tabs-scroll::-webkit-scrollbar{height:6px}
+    .employee-tabs-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}
+    .employee-tabs-more{flex:0 0 auto}
+    .employee-tabs-more > .btn{border-radius:999px;white-space:nowrap;font-weight:700}
+    .employee-tabs-more > .btn.active{background:var(--hr-primary);border-color:var(--hr-primary);color:#fff}
+    #empTabsMore{min-width:240px;max-height:65vh;overflow-y:auto}
+    #empTabsMore .tab-row{display:flex;align-items:center;gap:.5rem;padding:.15rem .25rem;border-radius:8px}
+    #empTabsMore .tab-row:hover{background:var(--hr-surface-soft,#f8fafc)}
+    #empTabsMore .tab-row.current .tab-open{color:var(--hr-primary);font-weight:700}
+    #empTabsMore .tab-row .form-check-input{margin:0;flex:0 0 auto;cursor:pointer}
+    #empTabsMore .tab-open{flex:1 1 auto;text-align:left;border:0;background:none;padding:.3rem .25rem;color:inherit}
     .employee-tabs{border:0;display:flex;flex-wrap:nowrap;gap:.4rem;min-width:max-content}
     .employee-tabs .nav-link{border:0;border-radius:999px;color:#475569;font-weight:750;white-space:nowrap;padding:.58rem .92rem}
     .employee-tabs .nav-link:hover{background:rgba(184,134,11,0.10);color:var(--hr-primary)}
@@ -3562,7 +3786,6 @@ $pageStyles = <<<'HR_EMP_VIEW_CSS'
     @media (max-width:767.98px){
         body{font-size:.9rem}
         /* gutters come from .hr-content */
-        .employee-actionbar{align-items:flex-start;flex-direction:column}
         .employee-actions{width:100%;justify-content:flex-start}
         .employee-actions .btn,.employee-actions form{flex:1 1 auto}
         .employee-actions .btn{width:100%}
@@ -3757,51 +3980,14 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
         <?php endif; ?>
     </div>
     <?php endif; ?>
-    <div class="employee-actionbar">
-        <div>
-            <?php if (!empty($_SESSION['flash_success'])): ?>
-              <div class="alert alert-success mb-2"><?= htmlspecialchars($_SESSION['flash_success']) ?></div>
-              <?php unset($_SESSION['flash_success']); ?>
-            <?php endif; ?>
-            <?php if (!empty($_SESSION['flash_error'])): ?>
-              <div class="alert alert-danger mb-2"><?= htmlspecialchars($_SESSION['flash_error']) ?></div>
-              <?php unset($_SESSION['flash_error']); ?>
-            <?php endif; ?>
-            <div class="text-muted small fw-semibold text-uppercase">HR Module</div>
-            <h3 class="mb-0">Employee Profile</h3>
-        </div>
-        <div class="employee-actions">
-            <?php if ($isWorkerSelfService): ?>
-            <a class="btn btn-outline-secondary" href="<?= get_base_path() ? get_base_path() . '/' : '/' ?>dashboard.php">
-                <i class="bi bi-arrow-left me-1"></i>Back
-            </a>
-            <?php else: ?>
-            <a class="btn btn-outline-secondary" href="<?= get_base_path() ? get_base_path() . '/' : '/' ?>employees.php">
-                <i class="bi bi-arrow-left me-1"></i>Back
-            </a>
-            <?php endif; ?>
-            <a href="../profile.php?tab=security" class="btn btn-outline-primary">
-                <i class="bi bi-shield-lock me-1"></i>Change Password
-            </a>
-            <a href="../logout.php" class="btn btn-danger">
-                <i class="bi bi-box-arrow-right me-1"></i>Logout
-            </a>
-            <?php if (!$workerReadOnly): ?>
-                <a class="btn btn-primary" href="employee_edit?id=<?= urlencode($emp['id']) ?>">
-                    <i class="bi bi-pencil-square me-1"></i>Edit
-                </a>
-            <?php if (empty($emp['user_id'])): ?>
-              <form action="user_create_for_employee" method="post" class="d-inline m-0">
-                <?php csrf_field(); ?>
-                <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
-                <button class="btn btn-outline-primary">
-                    <i class="bi bi-person-plus me-1"></i>Create Login
-                </button>
-              </form>
-                <?php endif; ?>
-            <?php endif; ?>
-        </div>
-    </div>
+    <?php if (!empty($_SESSION['flash_success'])): ?>
+      <div class="alert alert-success mb-2"><?= htmlspecialchars($_SESSION['flash_success']) ?></div>
+      <?php unset($_SESSION['flash_success']); ?>
+    <?php endif; ?>
+    <?php if (!empty($_SESSION['flash_error'])): ?>
+      <div class="alert alert-danger mb-2"><?= htmlspecialchars($_SESSION['flash_error']) ?></div>
+      <?php unset($_SESSION['flash_error']); ?>
+    <?php endif; ?>
 
     <?php if ($contact_msg): ?>
         <div class="alert alert-success alert-dismissible fade show" role="alert">
@@ -3817,12 +4003,40 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
     <?php endif; ?>
 
     <div class="card employee-hero mb-4">
+        <!-- The page's actions sit in the profile card; the top bar carries the page name. -->
+        <div class="employee-actions employee-hero-toolbar">
+            <?php if (!$isWorkerSelfService): ?>
+            <a class="btn btn-sm btn-outline-secondary" href="employees">
+                <i class="bi bi-arrow-left me-1"></i>Back
+            </a>
+            <?php endif; ?>
+            <a href="../profile.php?tab=security" class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-shield-lock me-1"></i>Change Password
+            </a>
+            <a href="../logout.php" class="btn btn-sm btn-danger">
+                <i class="bi bi-box-arrow-right me-1"></i>Logout
+            </a>
+            <?php if (!$workerReadOnly): ?>
+                <a class="btn btn-sm btn-primary" href="employee_edit?id=<?= urlencode($emp['id']) ?>">
+                    <i class="bi bi-pencil-square me-1"></i>Edit
+                </a>
+            <?php if (empty($emp['user_id'])): ?>
+              <form action="user_create_for_employee" method="post" class="d-inline m-0">
+                <?php csrf_field(); ?>
+                <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
+                <button class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-person-plus me-1"></i>Create Login
+                </button>
+              </form>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
         <div class="employee-hero-body">
             <div class="avatar<?= $employeeAvatarPath ? ' has-photo' : '' ?>">
                 <?php if ($employeeAvatarPath): ?>
                     <img src="../<?= htmlspecialchars($employeeAvatarPath) ?>" alt="<?= htmlspecialchars($emp['full_name'] ?: $emp['employee_code']) ?>">
                 <?php else: ?>
-                    <?= htmlspecialchars($avatarInitial) ?>
+                    <?= htmlspecialchars($empInitial) ?>
                 <?php endif; ?>
                 <?php if ($canManageAvatar && !empty($emp['user_id'])): ?>
                     <div class="avatar-actions">
@@ -3944,14 +4158,14 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                             <strong><?= $profileCompletionPercent ?>%</strong>
                         </div>
                         <div class="progress">
-                            <div class="progress-bar <?= $profileCompletionPercent >= 100 ? 'bg-success' : ($profileCompletionPercent >= 75 ? 'bg-info' : ($profileCompletionPercent >= 50 ? 'bg-warning' : 'bg-danger')) ?>" 
-                                 role="progressbar" 
-                                 style="width: <?= $profileCompletionPercent ?>%" 
-                                 aria-valuenow="<?= $profileCompletionPercent ?>" 
-                                 aria-valuemin="0" 
+                            <div class="progress-bar <?= $profileCompletionPercent >= 100 ? 'bg-success' : ($profileCompletionPercent >= 75 ? 'bg-info' : ($profileCompletionPercent >= 50 ? 'bg-warning' : 'bg-danger')) ?>"
+                                 role="progressbar"
+                                 style="width: <?= $profileCompletionPercent ?>%"
+                                 aria-valuenow="<?= $profileCompletionPercent ?>"
+                                 aria-valuemin="0"
                                  aria-valuemax="100"
-                                 data-bs-toggle="tooltip" 
-                                 data-bs-placement="left" 
+                                 data-bs-toggle="tooltip"
+                                 data-bs-placement="left"
                                  title="<?= $profileCompleted ?>/<?= $profileTotal ?> fields completed"></div>
                         </div>
                         <?php if ($profileCompletionPercent < 100 && !$workerReadOnly): ?>
@@ -3967,6 +4181,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 
     <!-- Mobile friendly horizontal tab bar. Tab IDs remain unchanged for existing JS/hash links. -->
     <div class="employee-tabs-wrap">
+    <div class="employee-tabs-scroll">
     <ul class="nav nav-tabs employee-tabs" id="empTabs" role="tablist">
         <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button">Overview</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-docs" type="button">Documents</button></li>
@@ -3979,6 +4194,9 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
         </li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-bonus" type="button">Bonus</button></li>
         <?php if (!$workerReadOnly): ?>
+        <?php if ($billsReady): ?>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-bills" type="button">Bills</button></li>
+        <?php endif; ?>
         <li class="nav-item">
           <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-deduct" type="button">Deductions</button>
         </li>
@@ -3999,6 +4217,23 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-topworkers" type="button">Top Workers</button></li>
         <?php endif; ?>
     </ul>
+    </div>
+    <!-- More: every tab, to open it; the tick keeps it on the bar. A view choice kept
+         in this browser only; it changes nothing about who can open what. -->
+    <div class="dropdown employee-tabs-more">
+        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" id="empTabsMoreBtn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+            <span id="empTabsMoreLabel">More</span>
+        </button>
+        <div class="dropdown-menu dropdown-menu-end p-2" id="empTabsMore">
+            <div class="small text-muted px-1 mb-1">Tick to keep on the bar</div>
+            <div id="empTabsMoreList"></div>
+            <hr class="dropdown-divider">
+            <div class="d-flex justify-content-between px-1">
+                <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none" id="empTabsAll">Show all</button>
+                <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none" id="empTabsReset">Default</button>
+            </div>
+        </div>
+    </div>
     </div>
 
     <div class="tab-content">
@@ -4197,6 +4432,57 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     </div>
                                 </div>
                             <?php endif; ?>
+
+                            <?php
+                            /* Check-in reminders (web push, see ops_attendance_reminder.php).
+                               Read-only: staff turn them on themselves in the staff app. */
+                            $remReady  = ops_reminder_ready($conn);
+                            $remStatus = ($remReady && $opsPinUserId > 0) ? ops_reminder_status($conn, $opsPinUserId) : null;
+                            $remKinds  = ['not_checked_in' => 'Attendance not recorded', 'no_check_out' => 'Check-out missing'];
+                            ?>
+                            <hr class="my-3">
+                            <div>
+                                <div class="fw-semibold"><i class="bi bi-bell me-1"></i>Check-in reminders
+                                    <?php if (!$remReady): ?>
+                                        <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Not available yet</span>
+                                    <?php elseif (!$opsPinStatus): ?>
+                                        <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Needs a PIN first</span>
+                                    <?php elseif ($remStatus['phones']): ?>
+                                        <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1">
+                                            On · <?= count($remStatus['phones']) ?> phone<?= count($remStatus['phones']) === 1 ? '' : 's' ?>
+                                        </span>
+                                    <?php else: ?>
+                                        <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Off</span>
+                                    <?php endif; ?>
+                                </div>
+                                <?php if (!$remReady): ?>
+                                    <div class="stat-meta">Reminders are not set up on this server yet.</div>
+                                <?php elseif (!$opsPinStatus): ?>
+                                    <div class="stat-meta">Reminders come through the staff app, which needs a PIN to sign in.</div>
+                                <?php elseif (!$remStatus['phones']): ?>
+                                    <div class="stat-meta">Not turned on. Staff turn this on with <strong>Turn on</strong> on the staff app's home screen.</div>
+                                <?php else: ?>
+                                    <?php foreach ($remStatus['phones'] as $ph): ?>
+                                        <div class="stat-meta">
+                                            <?= htmlspecialchars($ph['device']) ?>
+                                            <?php if ($ph['last_seen']): ?> · last opened <?= htmlspecialchars(date('j M', strtotime((string)$ph['last_seen']))) ?><?php endif; ?>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                                <?php if ($remStatus && $remStatus['last']): $rl = $remStatus['last']; ?>
+                                    <div class="stat-meta mt-1">
+                                        Last reminder: <?= htmlspecialchars(date('j M', strtotime((string)$rl['work_date']))) ?>,
+                                        "<?= htmlspecialchars($remKinds[$rl['kind']] ?? $rl['kind']) ?>" —
+                                        <?php if ((int)$rl['delivered'] > 0): ?>
+                                            <span class="text-success">delivered</span>
+                                        <?php elseif ((int)$rl['phones'] > 0): ?>
+                                            <span class="text-danger">not delivered</span>
+                                        <?php else: ?>
+                                            <span class="text-muted">no phone to send to</span>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -5247,6 +5533,333 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                           </div>
 
                           <?php if (!$workerReadOnly): ?>
+                          <?php if ($billsReady): ?>
+                          <!-- Bills: an approved amount per day/week/month/year; only a spend amount over it is entered, and the excess goes to Deductions -->
+                          <div class="tab-pane fade" id="tab-bills">
+                            <div class="card mt-3">
+                              <div class="card-body">
+                                <div class="d-flex align-items-center mb-3">
+                                  <h6 class="mb-0">Bills</h6>
+                                  <div class="ms-auto small text-muted">Every period is taken as within the approved amount. Enter the spend amount only when it goes over — the excess is added to <strong>Deductions</strong>.</div>
+                                </div>
+
+                                <?php if ($bill_msg): ?><div class="alert alert-success py-2"><?= htmlspecialchars($bill_msg) ?></div><?php endif; ?>
+                                <?php if ($bill_err): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($bill_err) ?></div><?php endif; ?>
+
+                                <h6 class="fw-semibold mb-2">Bill items</h6>
+                                <table class="table table-bordered align-middle table-sm mb-2">
+                                  <thead class="table-light">
+                                    <tr>
+                                      <th>Item</th>
+                                      <th style="width:100px;">Frequency</th>
+                                      <th style="width:120px;" class="text-end">Approved</th>
+                                      <th style="width:230px;">Current period</th>
+                                      <th style="width:100px;">Status</th>
+                                      <th class="text-end" style="width:230px;">Actions</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                  <?php if (!$billItems): ?>
+                                    <tr><td colspan="6" class="text-center text-muted py-3">No bill items yet. Tick <strong>Has bill</strong> on an asset in the Assets tab, or add an item without an asset below.</td></tr>
+                                  <?php else: foreach ($billItems as $bi): $biKey = str_replace(':', '', $bi['key']); ?>
+                                    <tr>
+                                      <td class="fw-semibold"><?= htmlspecialchars($bi['name']) ?>
+                                        <div class="small text-muted fw-normal"><?= $bi['kind'] === 'asset' ? 'Asset' : 'No asset' ?> · from <?= htmlspecialchars(date('j M Y', strtotime($bi['start_date']))) ?></div>
+                                      </td>
+                                      <td><?= htmlspecialchars(hr_bills_frequencies()[$bi['frequency']]) ?></td>
+                                      <td class="text-end"><?= number_format($bi['approved'], 2) ?> <span class="small text-muted d-block"><?= hr_bills_per($bi['frequency']) ?></span></td>
+                                      <td class="small">
+                                        <?= htmlspecialchars($bi['period_label']) ?>:
+                                        <?php if ($bi['period_excess'] !== null && $bi['period_excess'] > 0.005): ?>
+                                          <span class="badge text-bg-danger"><?= number_format($bi['period_excess'], 2) ?> excess</span>
+                                        <?php elseif ($bi['start_date'] > date('Y-m-d')): ?>
+                                          <span class="badge text-bg-light border">Not started</span>
+                                        <?php else: ?>
+                                          <span class="badge text-bg-success">Within limit</span>
+                                        <?php endif; ?>
+                                      </td>
+                                      <td><span class="badge text-bg-<?= $bi['active'] ? 'success' : 'secondary' ?>"><?= htmlspecialchars($bi['status']) ?></span></td>
+                                      <td class="text-end">
+                                        <?php if ($bi['active']): ?>
+                                          <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="collapse" data-bs-target="#billActual<?= $biKey ?>">Enter spend</button>
+                                        <?php endif; ?>
+                                        <?php if ($bi['kind'] === 'item'): ?>
+                                          <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="collapse" data-bs-target="#billItemEdit<?= $biKey ?>">Edit</button>
+                                          <form method="post" class="d-inline" onsubmit="return confirm('Delete this bill item?')">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="del_bill_item" value="<?= (int)$bi['id'] ?>">
+                                            <button class="btn btn-sm btn-outline-danger">Delete</button>
+                                          </form>
+                                        <?php else: ?>
+                                          <div class="small text-muted">Edit in the Assets tab</div>
+                                        <?php endif; ?>
+                                      </td>
+                                    </tr>
+                                    <?php if ($bi['active']): ?>
+                                    <tr class="collapse" id="billActual<?= $biKey ?>">
+                                      <td colspan="6" class="bg-light">
+                                        <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end bill-actual-form" data-approved="<?= number_format($bi['approved'], 2, '.', '') ?>">
+                                          <?php csrf_field(); ?>
+                                          <input type="hidden" name="add_bill" value="1">
+                                          <input type="hidden" name="bill_item" value="<?= htmlspecialchars($bi['key']) ?>">
+                                          <div class="col-md-2">
+                                            <label class="form-label small"><?= $bi['frequency'] === 'weekly' ? 'Week (any day in it)' : ($bi['frequency'] === 'daily' ? 'Day' : ($bi['frequency'] === 'yearly' ? 'Year' : 'Month')) ?></label>
+                                            <?= hr_bills_period_input($bi['frequency'], $bi['start_date']) ?>
+                                          </div>
+                                          <div class="col-md-2">
+                                            <label class="form-label small">Spend amount *</label>
+                                            <input type="number" name="bill_amount" step="0.01" min="0" class="form-control form-control-sm bill-actual-amount" required>
+                                          </div>
+                                          <div class="col-md-3">
+                                            <label class="form-label small">Evidence</label>
+                                            <input type="file" name="bill_evidence" accept=".pdf,.jpg,.jpeg,.png,.webp" class="form-control form-control-sm">
+                                          </div>
+                                          <div class="col-md-3">
+                                            <label class="form-label small">Notes</label>
+                                            <input name="bill_notes" maxlength="255" class="form-control form-control-sm" placeholder="Optional">
+                                          </div>
+                                          <div class="col-md-2 d-flex gap-2">
+                                            <button class="btn btn-sm btn-primary">Save</button>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#billActual<?= $biKey ?>">Cancel</button>
+                                          </div>
+                                          <div class="col-12 small bill-actual-hint text-muted">Approved <?= number_format($bi['approved'], 2) ?> <?= hr_bills_per($bi['frequency']) ?>. Evidence: PDF or image, up to 5 MB.</div>
+                                        </form>
+                                      </td>
+                                    </tr>
+                                    <?php endif; ?>
+                                    <?php if ($bi['kind'] === 'item'): ?>
+                                    <tr class="collapse" id="billItemEdit<?= $biKey ?>">
+                                      <td colspan="6" class="bg-light">
+                                        <form method="post" class="row g-2 align-items-end">
+                                          <?php csrf_field(); ?>
+                                          <input type="hidden" name="edit_bill_item" value="<?= (int)$bi['id'] ?>">
+                                          <div class="col-md-3"><label class="form-label small">Item *</label><input name="item_name" value="<?= htmlspecialchars($bi['name']) ?>" maxlength="120" class="form-control form-control-sm" required></div>
+                                          <div class="col-md-2"><label class="form-label small">Approved *</label><input type="number" name="approved_amount" step="0.01" min="0" value="<?= number_format($bi['approved'], 2, '.', '') ?>" class="form-control form-control-sm" required></div>
+                                          <div class="col-md-2">
+                                            <label class="form-label small">Frequency</label>
+                                            <select name="frequency" class="form-select form-select-sm">
+                                              <?php foreach (hr_bills_frequencies() as $fk => $fl): ?><option value="<?= $fk ?>" <?= $bi['frequency'] === $fk ? 'selected' : '' ?>><?= $fl ?></option><?php endforeach; ?>
+                                            </select>
+                                          </div>
+                                          <div class="col-md-2">
+                                            <label class="form-label small">Status</label>
+                                            <select name="item_status" class="form-select form-select-sm">
+                                              <option value="active" <?= $bi['active'] ? 'selected' : '' ?>>Active</option>
+                                              <option value="suspended" <?= !$bi['active'] ? 'selected' : '' ?>>Suspended</option>
+                                            </select>
+                                          </div>
+                                          <div class="col-md-3 d-flex gap-2">
+                                            <button class="btn btn-sm btn-primary">Save</button>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#billItemEdit<?= $biKey ?>">Cancel</button>
+                                          </div>
+                                          <div class="col-12 small text-muted">A new approved amount or frequency applies to spend amounts entered from now on; entries already made keep theirs.</div>
+                                        </form>
+                                      </td>
+                                    </tr>
+                                    <?php endif; ?>
+                                  <?php endforeach; endif; ?>
+                                  </tbody>
+                                </table>
+                                <details class="mb-4">
+                                  <summary class="small fw-semibold text-primary" style="cursor:pointer">+ Add an item without an asset (e.g. fuel)</summary>
+                                  <form method="post" enctype="multipart/form-data" class="row g-2 mt-1">
+                                    <?php csrf_field(); ?>
+                                    <input type="hidden" name="add_bill_item" value="1">
+                                    <div class="col-md-2"><label class="form-label">Item *</label><input name="item_name" class="form-control" maxlength="120" required placeholder="e.g. Fuel"></div>
+                                    <div class="col-md-2"><label class="form-label">Approved *</label><input type="number" name="approved_amount" step="0.01" min="0" class="form-control" required></div>
+                                    <div class="col-md-2">
+                                      <label class="form-label">Frequency</label>
+                                      <select name="frequency" class="form-select">
+                                        <?php foreach (hr_bills_frequencies() as $fk => $fl): ?><option value="<?= $fk ?>" <?= $fk === 'monthly' ? 'selected' : '' ?>><?= $fl ?></option><?php endforeach; ?>
+                                      </select>
+                                    </div>
+                                    <div class="col-md-2"><label class="form-label">Start date</label><input type="date" name="start_date" value="<?= date('Y-m-d') ?>" class="form-control"></div>
+                                    <div class="col-md-2"><label class="form-label">Spend this period</label><input type="number" name="bill_amount" step="0.01" min="0" class="form-control" placeholder="Optional"></div>
+                                    <div class="col-md-2"><label class="form-label">Evidence</label><input type="file" name="bill_evidence" accept=".pdf,.jpg,.jpeg,.png,.webp" class="form-control"></div>
+                                    <div class="col-md-4"><label class="form-label">Notes</label><input name="item_notes" class="form-control" maxlength="255" placeholder="Optional"></div>
+                                    <div class="col-12 d-flex align-items-center gap-3">
+                                      <button class="btn btn-primary">Add item</button>
+                                      <span class="small text-muted">Leave <em>Spend this period</em> blank to add the item only. If it is over the approved amount, the excess goes to Deductions.</span>
+                                    </div>
+                                  </form>
+                                </details>
+
+                                <h6 class="fw-semibold mb-2">Excess history</h6>
+                                <div class="table-responsive">
+                                  <table class="table table-bordered align-middle table-sm mb-0">
+                                    <thead class="table-light">
+                                      <tr>
+                                        <th style="width:150px;">Period</th>
+                                        <th>Item</th>
+                                        <th class="text-end" style="width:100px;">Approved</th>
+                                        <th class="text-end" style="width:100px;">Spend</th>
+                                        <th class="text-end" style="width:100px;">Excess</th>
+                                        <th style="width:190px;">Deduction</th>
+                                        <th style="width:80px;">Evidence</th>
+                                        <th>Notes</th>
+                                        <th style="width:150px;">Status</th>
+                                        <th class="text-end" style="width:200px;">Actions</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                    <?php if (!$billRows): ?>
+                                      <tr><td colspan="10" class="text-center text-muted py-3">No excess entered. Periods without an entry are within the approved amount.</td></tr>
+                                    <?php else: foreach ($billRows as $br): ?>
+                                      <tr>
+                                        <td><?= htmlspecialchars($br['period_label']) ?> <span class="small text-muted d-block"><?= htmlspecialchars(hr_bills_frequencies()[$br['frequency']] ?? '') ?></span></td>
+                                        <td class="fw-semibold"><?= htmlspecialchars($br['item_name']) ?></td>
+                                        <td class="text-end"><?= number_format((float)$br['approved_amount'], 2) ?></td>
+                                        <td class="text-end"><?= number_format((float)$br['bill_amount'], 2) ?></td>
+                                        <td class="text-end <?= (float)$br['excess_amount'] > 0.005 ? 'text-danger fw-semibold' : 'text-muted' ?>"><?= number_format((float)$br['excess_amount'], 2) ?></td>
+                                        <td class="small">
+                                          <?php if ((float)$br['excess_amount'] <= 0.005): ?>
+                                            <span class="badge text-bg-success">Within limit</span>
+                                          <?php elseif ($br['deduction_id']): ?>
+                                            Deduction #<?= (int)$br['deduction_id'] ?> · <?= number_format((float)$br['ded_amount'], 2) ?>
+                                            <div class="text-muted">Remaining <?= number_format((float)$br['ded_remaining'], 2) ?><?= $br['taken'] ? ' · <span class="text-warning">taken in payroll / cash</span>' : '' ?></div>
+                                          <?php else: ?>
+                                            <span class="badge text-bg-warning text-dark" title="The deduction was deleted from the Deductions tab">Deduction removed</span>
+                                          <?php endif; ?>
+                                        </td>
+                                        <td>
+                                          <?php if (!empty($br['evidence_path'])): ?>
+                                            <a href="bill_file.php?id=<?= (int)$br['id'] ?>" target="_blank" class="btn btn-sm btn-outline-secondary" title="<?= htmlspecialchars((string)$br['evidence_name']) ?>">View</a>
+                                          <?php else: ?><span class="text-muted">—</span><?php endif; ?>
+                                        </td>
+                                        <td class="small"><?= htmlspecialchars((string)($br['notes'] ?? '')) ?></td>
+                                        <td class="small">
+                                          <?php if ($br['approved']): ?>
+                                            <span class="badge text-bg-success">Approved</span>
+                                            <div class="text-muted"><?= $br['approved_run_id'] ? 'In payroll run #' . (int)$br['approved_run_id'] : 'By HR' ?><?= $br['approved_at'] ? ' · ' . htmlspecialchars(date('j M Y', strtotime($br['approved_at']))) : '' ?></div>
+                                          <?php else: ?>
+                                            <span class="badge text-bg-warning text-dark">Pending</span>
+                                          <?php endif; ?>
+                                        </td>
+                                        <td class="text-end">
+                                          <?php if ($br['approved']): ?>
+                                            <span class="small text-muted">Locked</span>
+                                          <?php else: ?>
+                                          <form method="post" class="d-inline" onsubmit="return confirm('Approve this entry? It can no longer be edited or deleted.')">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="approve_bill" value="<?= (int)$br['id'] ?>">
+                                            <button class="btn btn-sm btn-success">Approve</button>
+                                          </form>
+                                          <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="collapse" data-bs-target="#billEdit<?= (int)$br['id'] ?>">Edit</button>
+                                          <?php if (!$br['locked']): ?>
+                                          <form method="post" class="d-inline" onsubmit="return confirm('Delete this entry<?= $br['deduction_id'] ? ' and its deduction' : '' ?>?')">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="del_bill" value="<?= (int)$br['id'] ?>">
+                                            <button class="btn btn-sm btn-outline-danger">Delete</button>
+                                          </form>
+                                          <?php endif; ?>
+                                          <?php endif; ?>
+                                        </td>
+                                      </tr>
+                                      <?php if (!$br['approved']): ?>
+                                      <tr class="collapse" id="billEdit<?= (int)$br['id'] ?>">
+                                        <td colspan="10" class="bg-light">
+                                          <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="edit_bill" value="<?= (int)$br['id'] ?>">
+                                            <div class="col-md-2">
+                                              <label class="form-label small">Spend amount</label>
+                                              <input type="number" name="bill_amount" step="0.01" min="0" value="<?= number_format((float)$br['bill_amount'], 2, '.', '') ?>" class="form-control form-control-sm" <?= $br['locked'] ? 'readonly title="Already taken in payroll or cash — the amount can no longer change"' : '' ?> required>
+                                            </div>
+                                            <div class="col-md-4">
+                                              <label class="form-label small">Notes</label>
+                                              <input name="bill_notes" value="<?= htmlspecialchars((string)($br['notes'] ?? '')) ?>" maxlength="255" class="form-control form-control-sm">
+                                            </div>
+                                            <div class="col-md-3">
+                                              <label class="form-label small"><?= !empty($br['evidence_path']) ? 'Replace evidence' : 'Add evidence' ?></label>
+                                              <input type="file" name="bill_evidence" accept=".pdf,.jpg,.jpeg,.png,.webp" class="form-control form-control-sm">
+                                              <?php if (!empty($br['evidence_path'])): ?>
+                                                <div class="form-check small mt-1"><input class="form-check-input" type="checkbox" name="remove_evidence" value="1" id="rmEv<?= (int)$br['id'] ?>"><label class="form-check-label" for="rmEv<?= (int)$br['id'] ?>">Remove current file</label></div>
+                                              <?php endif; ?>
+                                            </div>
+                                            <div class="col-md-3 d-flex gap-2">
+                                              <button class="btn btn-sm btn-primary">Save changes</button>
+                                              <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#billEdit<?= (int)$br['id'] ?>">Cancel</button>
+                                            </div>
+                                            <?php if ($br['locked']): ?>
+                                              <div class="col-12 small text-warning">Part of this entry's deduction has already been taken in payroll or cash, so only notes and evidence can change.</div>
+                                            <?php else: ?>
+                                              <div class="col-12 small text-muted">Bringing the spend amount within the approved <?= number_format((float)$br['approved_amount'], 2) ?> removes the entry and its deduction.</div>
+                                            <?php endif; ?>
+                                          </form>
+                                        </td>
+                                      </tr>
+                                      <?php endif; ?>
+                                    <?php endforeach; endif; ?>
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <script>
+                          // Enter actual: say live whether the amount is over the approved one.
+                          document.querySelectorAll('.bill-actual-form').forEach(function (form) {
+                            var approved = parseFloat(form.getAttribute('data-approved')) || 0;
+                            var amt = form.querySelector('.bill-actual-amount');
+                            var hint = form.querySelector('.bill-actual-hint');
+                            amt.addEventListener('input', function () {
+                              var actual = parseFloat(amt.value);
+                              if (isNaN(actual)) return;
+                              var excess = Math.round((actual - approved) * 100) / 100;
+                              if (excess > 0) {
+                                hint.className = 'col-12 small bill-actual-hint text-danger fw-semibold';
+                                hint.textContent = 'Excess ' + excess.toFixed(2) + ' over the approved ' + approved.toFixed(2) + ' will be added to Deductions.';
+                              } else {
+                                hint.className = 'col-12 small bill-actual-hint text-success';
+                                hint.textContent = 'Within the approved ' + approved.toFixed(2) + ' — nothing will be deducted or stored.';
+                              }
+                            });
+                          });
+
+                          // Month picker: "Oct 2026" box, year arrows, 12 months; months after data-max are disabled.
+                          (function () {
+                            var names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                            document.querySelectorAll('.bill-month-picker').forEach(function (box) {
+                              var hidden = box.querySelector('input[type=hidden]');
+                              var toggle = box.querySelector('.bmp-toggle');
+                              var label = box.querySelector('.bmp-label');
+                              var pop = box.querySelector('.bmp-pop');
+                              var yearEl = box.querySelector('.bmp-year');
+                              var grid = box.querySelector('.bmp-grid');
+                              var max = box.getAttribute('data-max') || '9999-12';
+                              var shownYear = parseInt((hidden.value || max).slice(0, 4), 10);
+                              function draw() {
+                                yearEl.textContent = shownYear;
+                                grid.innerHTML = '';
+                                names.forEach(function (n, i) {
+                                  var val = shownYear + '-' + String(i + 1).padStart(2, '0');
+                                  var b = document.createElement('button');
+                                  b.type = 'button';
+                                  b.textContent = n;
+                                  b.className = 'btn btn-sm ' + (val === hidden.value ? 'btn-primary' : 'btn-outline-secondary');
+                                  if (val > max) { b.disabled = true; b.title = 'Future month'; }
+                                  b.addEventListener('click', function () {
+                                    hidden.value = val;
+                                    label.textContent = n + ' ' + shownYear;
+                                    pop.classList.add('d-none');
+                                  });
+                                  grid.appendChild(b);
+                                });
+                                box.querySelector('.bmp-next').disabled = ((shownYear + 1) + '-01') > max;
+                              }
+                              toggle.addEventListener('click', function () {
+                                shownYear = parseInt((hidden.value || max).slice(0, 4), 10);
+                                draw();
+                                pop.classList.toggle('d-none');
+                              });
+                              box.querySelector('.bmp-prev').addEventListener('click', function () { shownYear--; draw(); });
+                              box.querySelector('.bmp-next').addEventListener('click', function () { shownYear++; draw(); });
+                              document.addEventListener('click', function (e) { if (!box.contains(e.target)) pop.classList.add('d-none'); });
+                            });
+                          })();
+                          </script>
+                          <?php endif; ?>
+
                           <!-- Deductions -->
                           <div class="tab-pane fade" id="tab-deduct">
                             <div class="card mt-3">
@@ -5318,7 +5931,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <td><?= htmlspecialchars($r['tx_date']) ?></td>
                                         <td><?= number_format($r['amount'],2) ?></td>
                                         <td><?= number_format($dedRem, 2) ?></td>
-                                        <td><span class="badge bg-secondary"><?= htmlspecialchars($r['dtype']) ?></span></td>
+                                        <td><span class="badge <?= ($r['dtype'] ?? '') === 'bill_excess' ? 'bg-warning text-dark' : 'bg-secondary' ?>"><?= htmlspecialchars(str_replace('_', ' ', (string)$r['dtype'])) ?></span></td>
                                         <td><?= htmlspecialchars($r['notes'] ?? '') ?></td>
                                         <td class="text-end">
                                           <?php if (!$workerReadOnly && $dedRem > 0.005): ?>
@@ -5419,11 +6032,12 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                 <div class="d-flex align-items-center mb-3">
                                   <h6 class="mb-0">Assets</h6>
                                   <div class="ms-auto small text-muted">
-                                    Currently issued: <strong><?= (int)$assetIssuedCount ?></strong>
+                                    <?= $billsReady ? 'Active' : 'Currently issued' ?>: <strong><?= (int)$assetIssuedCount ?></strong>
                                   </div>
                                 </div>
 
                                 <?php if($asset_msg): ?><div class="alert alert-success py-2"><?= htmlspecialchars($asset_msg) ?></div><?php endif; ?>
+                                <?php if($asset_err): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($asset_err) ?></div><?php endif; ?>
 
                                 <?php if (!$workerReadOnly): ?>
                                 <form method="post" class="row g-2 mb-3">
@@ -5449,6 +6063,31 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     <label class="form-label">Notes</label>
                                     <input name="notes" class="form-control" placeholder="Optional">
                                   </div>
+                                  <?php if ($billsReady): ?>
+                                  <div class="col-md-2">
+                                    <label class="form-label">Status</label>
+                                    <select name="asset_status" class="form-select">
+                                      <option value="issued" selected>Active</option>
+                                      <option value="suspended">Suspended</option>
+                                    </select>
+                                  </div>
+                                  <div class="col-md-2 d-flex align-items-end">
+                                    <div class="form-check mb-2">
+                                      <input class="form-check-input" type="checkbox" name="has_bill" value="1" id="assetHasBill" onchange="document.getElementById('assetApproved').disabled=!this.checked;document.getElementById('assetFreq').disabled=!this.checked">
+                                      <label class="form-check-label" for="assetHasBill">Has bill <span class="text-muted small">(e.g. SIM)</span></label>
+                                    </div>
+                                  </div>
+                                  <div class="col-md-2">
+                                    <label class="form-label">Approved</label>
+                                    <input type="number" name="bill_approved" id="assetApproved" step="0.01" min="0" class="form-control" placeholder="e.g. 500" disabled required>
+                                  </div>
+                                  <div class="col-md-2">
+                                    <label class="form-label">Frequency</label>
+                                    <select name="bill_frequency" id="assetFreq" class="form-select" disabled>
+                                      <?php foreach (hr_bills_frequencies() as $fk => $fl): ?><option value="<?= $fk ?>" <?= $fk === 'monthly' ? 'selected' : '' ?>><?= $fl ?></option><?php endforeach; ?>
+                                    </select>
+                                  </div>
+                                  <?php endif; ?>
                                   <div class="col-12">
                                     <button class="btn btn-primary">Add</button>
                                   </div>
@@ -5467,13 +6106,14 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <th style="width:120px;">Due</th>
                                         <th style="width:120px;">Returned</th>
                                         <th style="width:110px;">Status</th>
+                                        <?php if ($billsReady): ?><th class="text-end" style="width:130px;">Bill</th><?php endif; ?>
                                         <th>Notes</th>
                                         <th class="text-end" style="width:160px;">Actions</th>
                                       </tr>
                                     </thead>
                                     <tbody>
                                     <?php if(!$assetRows): ?>
-                                      <tr><td colspan="8" class="text-center text-muted py-3">No assets.</td></tr>
+                                      <tr><td colspan="<?= $billsReady ? 9 : 8 ?>" class="text-center text-muted py-3">No assets.</td></tr>
                                     <?php else: foreach($assetRows as $r): ?>
                                       <tr>
                                         <td><?= htmlspecialchars($r['issue_date']) ?></td>
@@ -5483,15 +6123,21 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <td><?= htmlspecialchars($r['return_date'] ?: '—') ?></td>
                                         <td>
                                           <?php
-                                            $m=['issued'=>'primary','returned'=>'success','lost'=>'danger'];
+                                            $m=['issued'=>'primary','suspended'=>'warning','returned'=>'success','lost'=>'danger'];
                                             $cls=$m[$r['status']]??'secondary';
                                           ?>
-                                          <span class="badge text-bg-<?= $cls ?>"><?= htmlspecialchars($r['status']) ?></span>
+                                          <span class="badge text-bg-<?= $cls ?>"><?= htmlspecialchars($billsReady ? hr_asset_status_label((string)$r['status']) : $r['status']) ?></span>
                                         </td>
+                                        <?php if ($billsReady): ?>
+                                        <td class="text-end"><?= !empty($r['has_bill']) ? number_format((float)$r['bill_approved'], 2) . ' <span class="text-muted small">' . hr_bills_per((string)($r['bill_frequency'] ?? 'monthly')) . '</span>' : '<span class="text-muted">—</span>' ?></td>
+                                        <?php endif; ?>
                                         <td><?= htmlspecialchars($r['notes'] ?: '') ?></td>
                                         <td class="text-end">
                                           <?php if (!$workerReadOnly): ?>
-                                          <?php if ($r['status']==='issued'): ?>
+                                          <?php if ($billsReady): ?>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="collapse" data-bs-target="#assetEdit<?= (int)$r['id'] ?>">Edit</button>
+                                          <?php endif; ?>
+                                          <?php if (in_array($r['status'], ['issued', 'suspended'], true)): ?>
                                             <form method="post" class="d-inline">
                                               <?php csrf_field(); ?>
                                               <input type="hidden" name="return_asset" value="<?= (int)$r['id'] ?>">
@@ -5516,6 +6162,49 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                           <?php endif; ?>
                                         </td>
                                       </tr>
+                                      <?php if ($billsReady && !$workerReadOnly): ?>
+                                      <tr class="collapse" id="assetEdit<?= (int)$r['id'] ?>">
+                                        <td colspan="9" class="bg-light">
+                                          <form method="post" class="row g-2 align-items-end">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="edit_asset" value="<?= (int)$r['id'] ?>">
+                                            <div class="col-md-3"><label class="form-label small">Item *</label><input name="item_name" value="<?= htmlspecialchars($r['item_name']) ?>" class="form-control form-control-sm" required></div>
+                                            <div class="col-md-2"><label class="form-label small">Serial/No.</label><input name="serial_no" value="<?= htmlspecialchars((string)$r['serial_no']) ?>" class="form-control form-control-sm"></div>
+                                            <div class="col-md-2"><label class="form-label small">Issue date</label><input type="date" name="issue_date" value="<?= htmlspecialchars($r['issue_date']) ?>" class="form-control form-control-sm"></div>
+                                            <div class="col-md-2"><label class="form-label small">Return due</label><input type="date" name="return_due" value="<?= htmlspecialchars((string)$r['return_due']) ?>" class="form-control form-control-sm"></div>
+                                            <div class="col-md-3"><label class="form-label small">Returned on</label><input type="date" name="return_date" value="<?= htmlspecialchars((string)$r['return_date']) ?>" class="form-control form-control-sm"></div>
+                                            <div class="col-md-2">
+                                              <label class="form-label small">Status</label>
+                                              <select name="asset_status" class="form-select form-select-sm">
+                                                <?php foreach (['issued', 'suspended', 'returned', 'lost'] as $assetStOpt): ?>
+                                                  <option value="<?= $assetStOpt ?>" <?= $r['status'] === $assetStOpt ? 'selected' : '' ?>><?= hr_asset_status_label($assetStOpt) ?></option>
+                                                <?php endforeach; ?>
+                                              </select>
+                                            </div>
+                                            <div class="col-md-2">
+                                              <div class="form-check mb-1">
+                                                <input class="form-check-input" type="checkbox" name="has_bill" value="1" id="aeBill<?= (int)$r['id'] ?>" <?= !empty($r['has_bill']) ? 'checked' : '' ?>
+                                                       onchange="document.getElementById('aeAppr<?= (int)$r['id'] ?>').disabled=!this.checked;document.getElementById('aeFreq<?= (int)$r['id'] ?>').disabled=!this.checked">
+                                                <label class="form-check-label small" for="aeBill<?= (int)$r['id'] ?>">Has bill</label>
+                                              </div>
+                                            </div>
+                                            <div class="col-md-2"><label class="form-label small">Approved</label><input type="number" step="0.01" min="0" name="bill_approved" id="aeAppr<?= (int)$r['id'] ?>" value="<?= $r['bill_approved'] !== null ? number_format((float)$r['bill_approved'], 2, '.', '') : '' ?>" class="form-control form-control-sm" <?= empty($r['has_bill']) ? 'disabled' : '' ?> required></div>
+                                            <div class="col-md-2">
+                                              <label class="form-label small">Frequency</label>
+                                              <select name="bill_frequency" id="aeFreq<?= (int)$r['id'] ?>" class="form-select form-select-sm" <?= empty($r['has_bill']) ? 'disabled' : '' ?>>
+                                                <?php foreach (hr_bills_frequencies() as $fk => $fl): ?><option value="<?= $fk ?>" <?= ($r['bill_frequency'] ?? 'monthly') === $fk ? 'selected' : '' ?>><?= $fl ?></option><?php endforeach; ?>
+                                              </select>
+                                            </div>
+                                            <div class="col-md-3"><label class="form-label small">Notes</label><input name="notes" value="<?= htmlspecialchars((string)$r['notes']) ?>" class="form-control form-control-sm"></div>
+                                            <div class="col-md-3 d-flex gap-2">
+                                              <button class="btn btn-sm btn-primary">Save</button>
+                                              <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#assetEdit<?= (int)$r['id'] ?>">Cancel</button>
+                                            </div>
+                                            <div class="col-12 small text-muted">A new approved amount applies to bills entered from now on; bills already entered keep theirs.</div>
+                                          </form>
+                                        </td>
+                                      </tr>
+                                      <?php endif; ?>
                                     <?php endforeach; endif; ?>
                                     </tbody>
                                   </table>
@@ -6928,6 +7617,88 @@ function switchToTab(tabId) {
         window.location.hash = tabId;
     }
 }
+
+// Profile tabs: the bar shows the ticked tabs; More lists every tab, to open it
+// or tick it onto the bar. A view choice kept in this browser (localStorage).
+// Built from the tabs already on the page, so it never offers a tab the
+// person's role does not have. Overview always stays on the bar.
+document.addEventListener('DOMContentLoaded', function () {
+    const KEY = 'hr.employeeView.barTabs';
+    // Money tabs (Payslips to Deductions) are all on the bar by default.
+    const DEFAULT_BAR = ['#tab-docs', '#tab-leave', '#tab-attendance', '#tab-schedule',
+        '#tab-payslips', '#tab-cashadv', '#tab-bonus', '#tab-bills', '#tab-deduct'];
+    const list = document.getElementById('empTabsMoreList');
+    const moreBtn = document.getElementById('empTabsMoreBtn');
+    const moreLabel = document.getElementById('empTabsMoreLabel');
+    if (!list || !moreBtn) return;
+
+    const load = () => {
+        try {
+            const v = JSON.parse(localStorage.getItem(KEY) || 'null');
+            return Array.isArray(v) ? v : DEFAULT_BAR.slice();
+        } catch (e) { return DEFAULT_BAR.slice(); }
+    };
+    const save = () => { try { localStorage.setItem(KEY, JSON.stringify(onBar)); } catch (e) {} };
+
+    const buttons = Array.from(document.querySelectorAll('#empTabs [data-bs-target]'))
+        .filter(b => b.getAttribute('data-bs-target') !== '#tab-overview');
+    const rows = new Map();
+    let onBar = load();
+
+    // When the open tab is not on the bar, More turns gold and carries its name.
+    const render = () => {
+        const active = document.querySelector('#empTabs .nav-link.active');
+        const activeTarget = active ? active.getAttribute('data-bs-target') : '';
+        buttons.forEach(btn => {
+            const t = btn.getAttribute('data-bs-target');
+            btn.closest('.nav-item').hidden = !onBar.includes(t);
+            const row = rows.get(t);
+            row.box.checked = onBar.includes(t);
+            row.el.classList.toggle('current', t === activeTarget);
+        });
+        const offBar = !!active && active.closest('.nav-item').hidden;
+        moreBtn.classList.toggle('active', offBar);
+        moreLabel.textContent = offBar ? active.textContent.trim() : 'More';
+    };
+
+    buttons.forEach(btn => {
+        const t = btn.getAttribute('data-bs-target');
+        const name = btn.textContent.trim();
+        const el = document.createElement('div');
+        el.className = 'tab-row';
+
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.className = 'form-check-input';
+        box.title = 'Keep on the bar';
+        box.setAttribute('aria-label', 'Keep ' + name + ' on the bar');
+        box.addEventListener('change', () => {
+            onBar = box.checked ? onBar.concat(t) : onBar.filter(x => x !== t);
+            save();
+            render();
+        });
+
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'tab-open';
+        open.textContent = name;
+        open.addEventListener('click', () => {
+            switchToTab(t.slice(1));
+            bootstrap.Dropdown.getOrCreateInstance(moreBtn).hide();
+        });
+
+        el.append(box, open);
+        list.appendChild(el);
+        rows.set(t, { el, box });
+    });
+
+    const setBar = (targets) => { onBar = targets; save(); render(); };
+    document.getElementById('empTabsAll').addEventListener('click', () => setBar(buttons.map(b => b.getAttribute('data-bs-target'))));
+    document.getElementById('empTabsReset').addEventListener('click', () => setBar(DEFAULT_BAR.slice()));
+    document.getElementById('empTabs').addEventListener('shown.bs.tab', render);
+
+    render();
+});
 
 // Avatar upload auto-submit with loading indicator
 document.addEventListener('DOMContentLoaded', function() {

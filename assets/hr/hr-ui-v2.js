@@ -40,6 +40,34 @@
     });
   }
 
+  // Collapsible menus: the one holding the current page starts open; the rest
+  // remember whether HR left them open (localStorage).
+  var NAV_OPEN_KEY = 'hr.nav.open';
+  function navOpenSet() {
+    try { return JSON.parse(localStorage.getItem(NAV_OPEN_KEY) || '[]') || []; } catch (e) { return []; }
+  }
+  function setGroupOpen(group, open) {
+    group.classList.toggle('open', open);
+    var head = group.querySelector('.hr-nav-head');
+    if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  function initNavGroups() {
+    var remembered = navOpenSet();
+    document.querySelectorAll('.hr-nav-collapsible').forEach(function (group) {
+      var key = group.getAttribute('data-nav-group');
+      if (remembered.indexOf(key) !== -1) setGroupOpen(group, true);
+      var head = group.querySelector('.hr-nav-head');
+      if (!head) return;
+      head.addEventListener('click', function () {
+        var open = !group.classList.contains('open');
+        setGroupOpen(group, open);
+        var set = navOpenSet().filter(function (k) { return k !== key; });
+        if (open) set.push(key);
+        try { localStorage.setItem(NAV_OPEN_KEY, JSON.stringify(set)); } catch (e) {}
+      });
+    });
+  }
+
   function initNavSearch() {
     var input = document.getElementById('hr-nav-search');
     if (!input) return;
@@ -54,6 +82,8 @@
           if (show) any = true;
         });
         group.style.display = any ? '' : 'none';
+        // While searching, show matches inside closed menus too.
+        group.classList.toggle('searching', !!q && any);
       });
     });
   }
@@ -128,6 +158,7 @@
     if (!document.body.classList.contains('hr-ui-v2')) return;
     initLucide();
     initMobileSidebar();
+    initNavGroups();
     initNavSearch();
     initUnsavedForms();
     cleanPhpUrls();

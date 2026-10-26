@@ -234,7 +234,7 @@ echo hr_ui_page_header(
   </div>
 
   <div class="hr-settings-card">
-    <div class="hr-table-shell border-0 shadow-none rounded-0">
+    <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
       <table class="table table-striped align-middle mb-0">
         <thead class="table-light">
           <tr>
@@ -264,7 +264,8 @@ echo hr_ui_page_header(
               <td class="text-end fw-semibold"><?= number_format((float)$r['closing'],2) ?></td>
               <?php if ($can_manage): ?>
               <td class="text-end">
-                <form method="post" class="d-inline">
+                <div class="hr-row-tools">
+                <form method="post">
                   <?php csrf_field(); ?>
                   <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
                   <input type="hidden" name="adjust" value="1">
@@ -277,12 +278,13 @@ echo hr_ui_page_header(
                   <input name="delta" type="number" step="0.5" class="form-control form-control-sm d-inline-block" style="width:100px" placeholder="+/-">
                   <button class="btn btn-sm btn-outline-primary">Adjust</button>
                 </form>
-                <form method="post" class="d-inline">
+                <form method="post">
                   <?php csrf_field(); ?>
                   <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
                   <input type="hidden" name="recalc" value="1">
                   <button class="btn btn-sm btn-outline-secondary">Recalc</button>
                 </form>
+                </div>
               </td>
               <?php endif; ?>
             </tr>

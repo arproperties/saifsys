@@ -127,6 +127,7 @@
       '<button type="button" class="icon-btn" data-action="core:settings" aria-label="' + esc(T.home.settings) + '">' + icon('settings') + '</button></header>' +
       '<div class="screen-body">' + S.installCard() +
       (S.modules.cleaning && S.modules.cleaning.attendanceBar ? S.modules.cleaning.attendanceBar() : '') +
+      (S.modules.cleaning && S.modules.cleaning.reminderCard ? S.modules.cleaning.reminderCard() : '') +
       '<h2 class="h3 section-title mt-4">' + esc(T.home.pick) + '</h2>' + tiles + '</div>' +
       '</main>';
   }

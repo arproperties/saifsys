@@ -517,6 +517,50 @@ function ops_api_resolve_places(PDO $conn, int $companyId, $input): array
 }
 
 // ---------------------------------------------------------------------------
+// GET ops/push/key, POST ops/push/subscribe and /unsubscribe
+// ---------------------------------------------------------------------------
+
+/** The public key the browser needs to subscribe, and this person's company's reminder time and switch. */
+function ops_api_handle_push_key(PDO $conn, array $user): void
+{
+    if (!ops_reminder_ready($conn)) {
+        customer_api_send_ok(['enabled' => false]);
+    }
+    $settings = ops_reminder_settings($conn, ops_reminder_user_company($conn, (int)$user['id']));
+    customer_api_send_ok([
+        'enabled' => $settings['enabled'],
+        'time' => $settings['time'],
+        'public_key' => web_push_vapid($conn)['public'],
+    ]);
+}
+
+/** One phone turning reminders on (or refreshing), or off. */
+function ops_api_handle_push_subscription(PDO $conn, array $user, string $action): void
+{
+    if (!ops_reminder_ready($conn)) {
+        customer_api_send_error('not_available', 'Reminders are not available yet.', 409);
+    }
+    $endpoint = trim((string)ops_api_param('endpoint', ''));
+    if ($endpoint === '') {
+        customer_api_send_error('bad_request', 'Missing subscription.', 422);
+    }
+    if ($action === 'unsubscribe') {
+        ops_push_unsubscribe($conn, (int)$user['id'], $endpoint);
+        customer_api_send_ok(['subscribed' => false]);
+    }
+    $keys = ops_api_param('keys', []);
+    $ok = is_array($keys) && ops_push_subscribe(
+        $conn, (int)$user['id'], $endpoint,
+        (string)($keys['p256dh'] ?? ''), (string)($keys['auth'] ?? ''),
+        (string)($_SERVER['HTTP_USER_AGENT'] ?? '')
+    );
+    if (!$ok) {
+        customer_api_send_error('bad_request', 'That subscription could not be saved.', 422);
+    }
+    customer_api_send_ok(['subscribed' => true]);
+}
+
+// ---------------------------------------------------------------------------
 // GET ops/attendance, POST ops/attendance/check-in, /check-out and /close-previous
 // ---------------------------------------------------------------------------
 

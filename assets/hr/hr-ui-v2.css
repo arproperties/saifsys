@@ -186,6 +186,85 @@ body.hr-ui-v2 .hr-nav-link .scope-chip {
   padding: 0.1rem 0.45rem;
 }
 
+/* Collapsible menus: a heading that opens its submenu */
+body.hr-ui-v2 .hr-nav-collapsible {
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+
+body.hr-ui-v2 .hr-nav-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--hr-radius-sm);
+  background: transparent;
+  color: var(--hr-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+body.hr-ui-v2 .hr-nav-head:hover {
+  background: var(--hr-page-bg);
+}
+
+body.hr-ui-v2 .hr-nav-head .nav-ico {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--hr-page-bg);
+  display: grid;
+  place-items: center;
+  color: var(--hr-text-muted);
+  flex-shrink: 0;
+}
+
+body.hr-ui-v2 .hr-nav-collapsible.has-active > .hr-nav-head,
+body.hr-ui-v2 .hr-nav-collapsible.has-active > .hr-nav-head .nav-ico {
+  color: var(--hr-primary);
+}
+
+body.hr-ui-v2 .hr-nav-chevron {
+  margin-left: auto;
+  color: var(--hr-text-dim);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+body.hr-ui-v2 .hr-nav-collapsible.open > .hr-nav-head .hr-nav-chevron {
+  transform: rotate(180deg);
+}
+
+body.hr-ui-v2 .hr-nav-collapsible > .hr-nav-sub {
+  display: none;
+  margin-left: 1.35rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--hr-border);
+}
+
+body.hr-ui-v2 .hr-nav-collapsible.open > .hr-nav-sub,
+body.hr-ui-v2 .hr-nav-collapsible.searching > .hr-nav-sub {
+  display: block;
+}
+
+body.hr-ui-v2 .hr-nav-sublink {
+  min-height: 34px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.86rem;
+}
+
+body.hr-ui-v2 .hr-nav-sublink .nav-ico {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
 body.hr-ui-v2 .hr-main {
   flex: 1;
   min-width: 0;
@@ -224,6 +303,20 @@ body.hr-ui-v2 .hr-page-sub {
 
 body.hr-ui-v2 .hr-crumb {
   color: var(--hr-text-dim);
+}
+
+/* Breadcrumb in the top bar, for pages that opt in with $hrTopbarCrumbs */
+body.hr-ui-v2 .hr-topbar-crumbs a {
+  color: var(--hr-text-dim);
+  text-decoration: none;
+}
+body.hr-ui-v2 .hr-topbar-crumbs a:hover {
+  color: var(--hr-primary);
+  text-decoration: underline;
+}
+body.hr-ui-v2 .hr-topbar-sep {
+  color: var(--hr-text-dim);
+  margin: 0 0.4rem;
 }
 
 body.hr-ui-v2 .hr-kpi {
@@ -639,6 +732,112 @@ body.hr-ui-v2 .hr-settings-card > .card-body.p-0 .table > :not(caption) > * > *,
 body.hr-ui-v2 .hr-table-shell .table > :not(caption) > * > * {
   padding-left: 1.15rem;
   padding-right: 1.15rem;
+}
+
+/* Attendance list: Edit / Approve / More stacked, all one width.
+   Twelve columns can outgrow the card, so scroll sideways rather than clip. */
+body.hr-ui-v2 .hr-table-shell.att-table-shell {
+  overflow-x: auto;
+}
+
+/* Dashboard: Attendance today — one stacked bar and a two-column legend, with
+   "not marked" as a full-width last row. */
+body.hr-ui-v2 .hr-att-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--hr-border);
+  gap: 2px;
+}
+body.hr-ui-v2 .hr-att-seg { min-width: 4px; }
+body.hr-ui-v2 .hr-att-present { background: var(--hr-success); }
+body.hr-ui-v2 .hr-att-pending { background: var(--hr-warning); }
+body.hr-ui-v2 .hr-att-leave   { background: var(--hr-info); }
+body.hr-ui-v2 .hr-att-half    { background: #a78bfa; }
+body.hr-ui-v2 .hr-att-absent  { background: var(--hr-danger); }
+body.hr-ui-v2 .hr-att-excused { background: #f472b6; }
+body.hr-ui-v2 .hr-att-none    { background: var(--hr-border-strong); }
+body.hr-ui-v2 .hr-att-legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.15rem 1rem;
+}
+body.hr-ui-v2 .hr-att-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.25rem 0.35rem;
+  border-radius: 8px;
+  color: var(--hr-text);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+body.hr-ui-v2 .hr-att-item:hover {
+  background: var(--hr-primary-soft);
+}
+body.hr-ui-v2 .hr-att-item-wide {
+  grid-column: 1 / -1;
+  margin-top: 0.3rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--hr-border);
+  border-radius: 0 0 8px 8px;
+}
+body.hr-ui-v2 .hr-att-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+/* Any wide HR table: scroll sideways instead of clipping the right-hand columns. */
+body.hr-ui-v2 .hr-table-shell.hr-table-scroll {
+  overflow-x: auto;
+}
+/* One line per cell (Employees list); without it, text wraps and scrolling is a last resort. */
+body.hr-ui-v2 .hr-table-shell.hr-table-nowrap > .table {
+  white-space: nowrap;
+}
+/* Row tools on one line, right-aligned, never wrapping (Leave balances: adjust form + Recalc). */
+body.hr-ui-v2 .hr-row-tools,
+body.hr-ui-v2 .hr-row-tools > form {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+}
+body.hr-ui-v2 .hr-row-tools {
+  gap: 0.5rem;
+}
+
+/* Row actions stacked in one column, all one width (Attendance, Leave requests).
+   hr-row-actions is the shared name; att-actions is kept for the attendance list. */
+body.hr-ui-v2 .att-actions-cell,
+body.hr-ui-v2 .hr-row-actions-cell {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center;
+}
+body.hr-ui-v2 .att-actions,
+body.hr-ui-v2 .hr-row-actions {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: 5rem;
+}
+body.hr-ui-v2 .att-actions .btn,
+body.hr-ui-v2 .hr-row-actions .btn {
+  padding-left: 0.4rem;
+  padding-right: 0.4rem;
+}
+body.hr-ui-v2 .att-actions > .btn,
+body.hr-ui-v2 .att-actions > .btn-group,
+body.hr-ui-v2 .att-actions > .btn-group > .btn,
+body.hr-ui-v2 .hr-row-actions > .btn,
+body.hr-ui-v2 .hr-row-actions > form,
+body.hr-ui-v2 .hr-row-actions > form > .btn {
+  width: 100%;
+  margin: 0;
 }
 
 /* Sticky employee tabs sit below the HR topbar */

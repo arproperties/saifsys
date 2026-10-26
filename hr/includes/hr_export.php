@@ -14,13 +14,15 @@ function hr_export_csv(string $filename, array $headers, array $rows): void
     $out = fopen('php://output', 'w');
     // BOM helps Excel open UTF-8 CSV with Arabic / special characters correctly.
     fprintf($out, chr(0xEF) . chr(0xBB) . chr(0xBF));
-    fputcsv($out, $headers);
+    // Separator, quote and escape spelled out: PHP 8.4+ deprecates relying on the
+    // escape default. These are the old defaults, so the file is byte-for-byte the same.
+    fputcsv($out, $headers, ',', '"', '\\');
     foreach ($rows as $row) {
         $line = [];
         foreach ($headers as $key => $label) {
             $line[] = $row[$key] ?? '';
         }
-        fputcsv($out, $line);
+        fputcsv($out, $line, ',', '"', '\\');
     }
     fclose($out);
     exit;

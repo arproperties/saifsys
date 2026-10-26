@@ -1,7 +1,9 @@
 <?php
 /**
  * HR Layout Header — light gold Control Center shell.
- * Include after auth/db. Optional: $pageTitle, $hrScopeLabel, $pageHead, $pageStyles
+ * Include after auth/db. Optional: $pageTitle, $hrScopeLabel, $pageHead, $pageStyles,
+ * $hrTopbarCrumbs (list of ['label','href'?]) — shown in the top bar in place of
+ * the title, for pages whose own header then drops its breadcrumb.
  */
 
 require_once __DIR__ . '/ui/hr_ui_helpers.php';
@@ -73,7 +75,7 @@ $logoSrc = function_exists('brand_logo_src') ? brand_logo_src($brand) : null;
   <title><?= hr_ui_h($pageTitle) ?> · HR | <?= hr_ui_h($brand['system_name'] ?? 'HeroSysgro') ?></title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <link href="<?= hr_ui_h($hrAssetBase) ?>/hr-ui-v2.css?v=20260904-1" rel="stylesheet">
+  <link href="<?= hr_ui_h($hrAssetBase) ?>/hr-ui-v2.css?v=20261026-11" rel="stylesheet">
   <?php if (!empty($pageStyles)): ?><style><?= $pageStyles ?></style><?php endif; ?>
   <?php if (!empty($pageHead)) {
       echo $pageHead;
@@ -106,19 +108,37 @@ if (is_file($asWidget)) { require $asWidget; }
              placeholder="Search HR…" aria-label="Search HR navigation" autocomplete="off">
     </div>
     <nav class="pb-2">
-      <?php foreach ($hrNavGroups as $group): ?>
-        <div class="hr-nav-group">
-          <div class="hr-nav-label"><?= hr_ui_h($group['label']) ?></div>
+      <?php foreach ($hrNavGroups as $group):
+        $collapsible = !empty($group['collapsible']);
+        $groupActive = false;
+        foreach ($group['items'] as $item) {
+          if (!empty($item['pages']) && in_array($currentPage, $item['pages'], true)) { $groupActive = true; }
+        }
+        $groupId = 'hr-nav-' . preg_replace('/[^a-z0-9_]/', '', (string)($group['key'] ?? md5($group['label'])));
+        ?>
+        <div class="hr-nav-group<?= $collapsible ? ' hr-nav-collapsible' . ($groupActive ? ' open has-active' : '') : '' ?>"
+             <?= $collapsible ? 'data-nav-group="' . hr_ui_h($group['key'] ?? '') . '"' : '' ?>>
+          <?php if ($collapsible): ?>
+            <button type="button" class="hr-nav-head" aria-expanded="<?= $groupActive ? 'true' : 'false' ?>" aria-controls="<?= hr_ui_h($groupId) ?>">
+              <span class="nav-ico"><i data-lucide="<?= hr_ui_h($group['icon'] ?? 'folder') ?>" style="width:16px;height:16px"></i></span>
+              <span class="text-truncate"><?= hr_ui_h($group['label']) ?></span>
+              <i data-lucide="chevron-down" class="hr-nav-chevron" style="width:16px;height:16px"></i>
+            </button>
+          <?php elseif ($group['label'] !== ''): ?>
+            <div class="hr-nav-label"><?= hr_ui_h($group['label']) ?></div>
+          <?php endif; ?>
+          <div class="<?= $collapsible ? 'hr-nav-sub' : '' ?>" id="<?= hr_ui_h($groupId) ?>">
           <?php foreach ($group['items'] as $item):
             $isActive = !empty($item['pages']) && in_array($currentPage, $item['pages'], true);
             ?>
-            <a class="hr-nav-link <?= $isActive ? 'active' : '' ?>"
+            <a class="hr-nav-link<?= $collapsible ? ' hr-nav-sublink' : '' ?> <?= $isActive ? 'active' : '' ?>"
                href="<?= hr_ui_h($item['href']) ?>"
                data-label="<?= hr_ui_h($item['label'] . ' ' . $group['label']) ?>">
               <span class="nav-ico"><i data-lucide="<?= hr_ui_h($item['icon']) ?>" style="width:16px;height:16px"></i></span>
               <span class="text-truncate"><?= hr_ui_h($item['label']) ?></span>
             </a>
           <?php endforeach; ?>
+          </div>
         </div>
       <?php endforeach; ?>
     </nav>
@@ -145,7 +165,20 @@ if (is_file($asWidget)) { require $asWidget; }
       </button>
       <div class="flex-grow-1 min-w-0">
         <div class="small text-muted text-uppercase fw-semibold" style="letter-spacing:.06em;font-size:.65rem">Human Resources</div>
-        <div class="fw-semibold text-truncate"><?= hr_ui_h($pageTitle) ?></div>
+        <?php if (!empty($hrTopbarCrumbs)): ?>
+          <nav class="hr-topbar-crumbs text-truncate" aria-label="Breadcrumb">
+            <?php foreach ($hrTopbarCrumbs as $i => $c): ?>
+              <?php if ($i > 0): ?><span class="hr-topbar-sep">›</span><?php endif; ?>
+              <?php if (!empty($c['href'])): ?>
+                <a href="<?= hr_ui_h($c['href']) ?>"><?= hr_ui_h($c['label']) ?></a>
+              <?php else: ?>
+                <span class="fw-semibold" aria-current="page"><?= hr_ui_h($c['label']) ?></span>
+              <?php endif; ?>
+            <?php endforeach; ?>
+          </nav>
+        <?php else: ?>
+          <div class="fw-semibold text-truncate"><?= hr_ui_h($pageTitle) ?></div>
+        <?php endif; ?>
       </div>
       <?php if ($hrScopeLabel !== ''): ?>
         <span class="hr-pill hr-pill-gold d-none d-md-inline-flex text-truncate" style="max-width:240px" title="Company scope">
