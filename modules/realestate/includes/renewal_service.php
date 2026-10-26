@@ -209,6 +209,9 @@ if (!function_exists('re_renewal_create')) {
         // EV charger (Reem's renewals): a yearly fee, with VAT, collected in the first cheque.
         $evFee = !empty($in['reem_cheques']) && re_renewal_has_ev_column($conn) ? max(0.0, round((float)($in['ev_fee'] ?? 0), 2)) : 0.0;
         $vatBase += $evFee;
+        // Pest control & cleaning (Reem's renewals): the same, a yearly fee with VAT in the first cheque.
+        $pestFee = !empty($in['reem_cheques']) && re_renewal_has_pest_column($conn) ? max(0.0, round((float)($in['pest_fee'] ?? 0), 2)) : 0.0;
+        $vatBase += $pestFee;
         $rera = 300.0;
         if ($buildingId > 0) {
             $rsRera = $conn->prepare("SELECT COALESCE(rera_charges, 300) AS rera FROM re_renewal_notice_building_settings WHERE company_id = ? AND building_id = ? LIMIT 1");
@@ -347,6 +350,9 @@ if (!function_exists('re_renewal_create')) {
         $workflowNewId = (int)$conn->lastInsertId();
         if ($evFee > 0) {
             $conn->prepare("UPDATE re_lease_renewal_workflows SET ev_charger_fee = ? WHERE id = ?")->execute([$evFee, $workflowNewId]);
+        }
+        if ($pestFee > 0) {
+            $conn->prepare("UPDATE re_lease_renewal_workflows SET pest_control_fee = ? WHERE id = ?")->execute([$pestFee, $workflowNewId]);
         }
 
         // Rent-change audit history
@@ -627,6 +633,32 @@ if (!function_exists('re_renewal_ensure_ev_column')) {
     }
 }
 
+if (!function_exists('re_renewal_has_pest_column')) {
+    /** Whether the renewal workflows can hold a pest control & cleaning fee (re_renewal_ensure_pest_column adds it). */
+    function re_renewal_has_pest_column(PDO $conn): bool
+    {
+        static $has = null;
+        if ($has === null) {
+            $st = $conn->prepare("SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 're_lease_renewal_workflows' AND COLUMN_NAME = 'pest_control_fee' LIMIT 1");
+            $st->execute();
+            $has = (bool)$st->fetchColumn();
+        }
+        return $has;
+    }
+}
+
+if (!function_exists('re_renewal_ensure_pest_column')) {
+    /** Adds the pest control & cleaning fee to the renewal workflows. Never inside a transaction: MySQL commits on ALTER. */
+    function re_renewal_ensure_pest_column(PDO $conn): void
+    {
+        if ($conn->inTransaction() || re_renewal_has_pest_column($conn)) {
+            return;
+        }
+        $conn->exec("ALTER TABLE re_lease_renewal_workflows ADD COLUMN pest_control_fee DECIMAL(10,2) NOT NULL DEFAULT 0.00");
+    }
+}
+
 if (!function_exists('re_renewal_reem_build')) {
     /**
      * The schedule of a renewal Reem runs, as on convert: the lease's extra services (parking,
@@ -663,6 +695,9 @@ if (!function_exists('re_renewal_reem_build')) {
         if ((float)($wf['ev_charger_fee'] ?? 0) > 0) {
             $services[] = ['EV Charger', (float)$wf['ev_charger_fee']];
         }
+        if ((float)($wf['pest_control_fee'] ?? 0) > 0) {
+            $services[] = ['Pest Control & Cleaning', (float)$wf['pest_control_fee']];
+        }
 
         // The lease: no old-style extras, and VAT on admin and chiller only.
         $extraBase = (float)($lease['admin_fees'] ?? 0) + (float)($lease['chiller_fees'] ?? 0);
@@ -683,7 +718,7 @@ if (!function_exists('re_renewal_reem_build')) {
         re_renewal_reem_cheques($conn, $companyId, $leaseId);
 
         // Made again each time, so trying again never leaves a second copy.
-        $names = ['Additional Parking Slot', 'Small Storeroom', 'Big Storeroom', 'EV Charger'];
+        $names = ['Additional Parking Slot', 'Small Storeroom', 'Big Storeroom', 'EV Charger', 'Pest Control & Cleaning'];
         $in = implode(',', array_fill(0, count($names), '?'));
         $conn->prepare("DELETE bi FROM re_billing_items bi JOIN re_service_charges sc ON sc.id = bi.service_charge_id
             WHERE sc.company_id = ? AND sc.lease_id = ? AND sc.charge_name IN ($in)")->execute(array_merge([$companyId, $leaseId], $names));
@@ -915,7 +950,7 @@ if (!function_exists('re_renewal_set_rent')) {
         }
 
         $vatBase = (float)$wf['admin_fees'] + (float)$wf['chiller_charges'] + (float)$wf['additional_parking_fee']
-            + (float)$wf['small_store_fee'] + (float)$wf['big_store_fee'] + (float)($wf['ev_charger_fee'] ?? 0);
+            + (float)$wf['small_store_fee'] + (float)$wf['big_store_fee'] + (float)($wf['ev_charger_fee'] ?? 0) + (float)($wf['pest_control_fee'] ?? 0);
         $vatRate = (float)$wf['vat_rate'] > 0 ? (float)$wf['vat_rate'] : 5.0;
         $vatCalc = lease_vat_compute_amounts([
             'annual_rent' => $rent,

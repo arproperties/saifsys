@@ -13,9 +13,9 @@
  *
  *   quote    what the renewal at this rent would be: the cheques one by one, as saifsys
  *            would make them on convert, and the charges (fees: admin, chiller, parking,
- *            small_store, big_store). Saves nothing. Body: lease_id, end_date, rent, cheques,
+ *            small_store, big_store, ev, pest). Saves nothing. Body: lease_id, end_date, rent, cheques,
  *            and optionally admin_fees, chiller_charges, additional_parking_fee, small_store_fee,
- *            big_store_fee (the old lease's are kept when left out).
+ *            big_store_fee, ev_fee, pest_fee (the old lease's are kept when left out).
  *   start    the offer went to the tenant: the workflow and its draft lease, made at this
  *            rent and marked notice_sent. The old Ejari number is not carried over. Safe
  *            to call again (Reem's open workflow for the lease is returned). A renewal the
@@ -53,6 +53,7 @@ require_once $root . '/modules/realestate/includes/service_charge_schedule_helpe
 // the transactions below (a quote must save nothing).
 re_service_charge_ensure_apply_mode_column($conn);
 re_renewal_ensure_ev_column($conn);
+re_renewal_ensure_pest_column($conn);
 
 const JARVIS_RN_EVENT = 'reem_started';
 // A renewal started with Reem's cheques (fees, VAT and Ejari in the first, whole dirhams,
@@ -76,12 +77,19 @@ function jarvis_rn_log(PDO $conn, int $workflowId, int $companyId, int $actorId,
     renewal_wf_log_admin_event($conn, $workflowId, $companyId, $actorId, $type, $message . ' (through Reem)');
 }
 
-/** The lease, still ending when Reem thinks it does. */
+/**
+ * The lease, still ending when Reem thinks it does. old_pest: its pest control / cleaning, a
+ * Service Charge under one name or another ("AMC Cleaning & Pest control", "PEST CONTROL", ...),
+ * for the renewal to start from.
+ */
 function jarvis_rn_lease(PDO $conn, array $in): array
 {
     $st = $conn->prepare("SELECT l.id, l.company_id, l.status, l.end_date, l.has_additional_parking, l.additional_parking_fee,
             l.has_additional_store, l.additional_store_fee, l.admin_fees, l.chiller_fees,
-            COALESCE(bs.show_chiller_row, CASE WHEN b.name LIKE '%Park Place%' THEN 1 ELSE 0 END) AS shows_chiller
+            COALESCE(bs.show_chiller_row, CASE WHEN b.name LIKE '%Park Place%' THEN 1 ELSE 0 END) AS shows_chiller,
+            (SELECT COALESCE(SUM(sc.amount), 0) FROM re_service_charges sc
+                WHERE sc.lease_id = l.id AND sc.company_id = l.company_id AND sc.is_active = 1
+                  AND (sc.charge_name LIKE '%pest%' OR sc.charge_name LIKE '%clean%')) AS old_pest
         FROM re_leases l
         JOIN re_units u ON u.id = l.unit_id
         JOIN re_buildings b ON b.id = u.building_id
@@ -136,6 +144,7 @@ function jarvis_rn_fees(array $lease, array $in): array
     $small = jarvis_rn_amount($in, 'small_store_fee');
     $big = jarvis_rn_amount($in, 'big_store_fee');
     $ev = jarvis_rn_amount($in, 'ev_fee');
+    $pest = jarvis_rn_amount($in, 'pest_fee');
     $shows = (int)$lease['shows_chiller'] === 1;
     $oldParking = !empty($lease['has_additional_parking']) ? (float)$lease['additional_parking_fee'] : 0.0;
     $oldStore = !empty($lease['has_additional_store']) ? (float)$lease['additional_store_fee'] : 0.0;
@@ -148,6 +157,7 @@ function jarvis_rn_fees(array $lease, array $in): array
         'small_store' => $small ?? $oldStore,
         'big_store' => $big ?? 0.0,
         'ev' => $ev ?? 0.0,
+        'pest' => $pest ?? (float)$lease['old_pest'],
     ];
 }
 
@@ -171,6 +181,7 @@ function jarvis_rn_terms(array $lease, float $rent, int $cheques, array $in): ar
         'carry_ejari' => false,
         'reem_cheques' => true,
         'ev_fee' => $fees['ev'],
+        'pest_fee' => $fees['pest'],
     ];
 }
 
