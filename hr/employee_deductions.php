@@ -210,7 +210,7 @@ echo hr_ui_page_header(
           <label class="form-label">Type</label>
           <select name="dtype" class="form-select">
             <option value="">All</option>
-            <?php foreach(['fine','charge_duty','uniform','other'] as $t): ?>
+            <?php foreach(['fine','charge_duty','uniform','other','bill_excess'] as $t): ?>
               <option value="<?= $t ?>" <?= $dtype===$t?'selected':'' ?>><?= ucwords(str_replace('_',' ',$t)) ?></option>
             <?php endforeach; ?>
           </select>

@@ -11,6 +11,8 @@ require_once __DIR__ . '/includes/hr_schedule_helper.php';
 require_once __DIR__ . '/includes/hr_payroll_accounting.php';
 require_once __DIR__ . '/includes/hr_loans.php';
 require_once __DIR__ . '/includes/hr_wps_guards.php';
+require_once __DIR__ . '/includes/hr_payroll_cashback.php';
+require_once __DIR__ . '/includes/hr_employee_bills.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 $run_id = (int)($_GET['id'] ?? $_POST['run_id'] ?? $_POST['id'] ?? 0);
@@ -33,6 +35,9 @@ $payrollType = (($run['payroll_type'] ?? 'wps') === 'cash') ? 'cash' : 'wps';
 $canOverrideValidation = hr_payroll_can_override_validation($conn);
 $runHasValidationOverride = hr_payroll_validation_override_schema_ready($conn)
     && !empty($run['validation_override']);
+// Cashback: display only, never part of net pay or WPS (hr_payroll_cashback.php).
+$cashbackReady = hr_payroll_cashback_ready($conn);
+$cashbackOn = hr_payroll_cashback_on($conn, $run);
 
 $companyName = '';
 try {
@@ -241,6 +246,25 @@ if ($hasDedRemaining) {
   }
 }
 
+// Open bill excess (Employee > Bills) dated up to the period end. It is part of
+// Other deductions; new rows start with it in Apply, and posting settles it first.
+$billOpenByEmp = [];
+if ($hasDedRemaining) try {
+  $stBill = $conn->prepare("
+    SELECT ed.employee_id, COALESCE(SUM(COALESCE(ed.remaining_balance, ed.amount)),0) amt
+    FROM employee_deductions ed
+    INNER JOIN employees e ON e.id = ed.employee_id AND e.company_id = ?
+    WHERE ed.dtype = 'bill_excess' AND COALESCE(ed.settle_status, 'open') = 'open' AND ed.tx_date <= ?
+    GROUP BY ed.employee_id
+  ");
+  $stBill->execute([$companyId, $to]);
+  foreach ($stBill->fetchAll(PDO::FETCH_ASSOC) as $r) {
+    $billOpenByEmp[(int)$r['employee_id']] = round((float)$r['amt'], 2);
+  }
+} catch (Throwable $e) {
+  $billOpenByEmp = []; // no 'bill_excess' type until migrations/hr_employee_bills.sql has run
+}
+
 // Open loans per employee, for the "Cash" repayment shortcut (employee pays HR outside WPS).
 $openLoansByEmp = [];
 if (hr_loans_schema_ready($conn) && hr_loan_settlements_table_ready($conn)) {
@@ -296,6 +320,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
   $abs_days   = $_POST['abs_days']   ?? [];
   $adv_apply  = $_POST['adv_apply']  ?? [];
   $ded_apply  = $_POST['ded_apply']  ?? [];
+  $cashback_in = $_POST['cashback'] ?? [];
+  $showCashback = $cashbackReady && !empty($_POST['show_cashback']);
 
   $is_post = isset($_POST['post_run']) && $_POST['post_run']==='1';
 
@@ -340,6 +366,13 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
       $bonus = $otA + $bonp + $bonProfile;
       $ded   = $advA + $dedA + $absDed;
       $net   = ($b + $a + $bonus) - $ded;
+      // Cashback is kept apart from net: WPS still pays the whole net.
+      $cashback = round(max(0.0, n($cashback_in[$eid] ?? 0)), 2);
+      // Checked with the toggle off too: a hidden amount must still fit if it is switched on later.
+      if ($cashback > $net + 0.005) {
+        throw new RuntimeException($e['full_name'] . ' cashback (' . number_format($cashback, 2) . ') is more than net pay (' . number_format($net, 2) . ').'
+          . ($showCashback ? '' : ' Turn on Show cashback to change it.'));
+      }
 
       $guardRows[] = [
         'name' => $e['full_name'],
@@ -354,15 +387,16 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
 
       $ins = $conn->prepare("
         INSERT INTO payroll_items
-          (payroll_run_id, employee_id, base_pay, allowance, bonus, overtime, ot_hours, unpaid_leave_days, deductions, net_pay, notes, adv_applied, other_applied" . ($hasProfileBonusCol ? ", profile_bonus" : "") . ")
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?" . ($hasProfileBonusCol ? ",?" : "") . ")
+          (payroll_run_id, employee_id, base_pay, allowance, bonus, overtime, ot_hours, unpaid_leave_days, deductions, net_pay, notes, adv_applied, other_applied" . ($hasProfileBonusCol ? ", profile_bonus" : "") . ($cashbackReady ? ", cashback" : "") . ")
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?" . ($hasProfileBonusCol ? ",?" : "") . ($cashbackReady ? ",?" : "") . ")
       ");
       $notes = [];
       if ($otA)   $notes[] = "OT ".number_format($otA,2);
       if ($bonp)  $notes[] = "Bonus+".number_format($bonp,2);
       if ($bonProfile) $notes[] = "Bonus ".number_format($bonProfile,2);
       if ($advA)  $notes[] = "Loan-".number_format($advA,2);
-      if ($dedA)  $notes[] = "Ded-".number_format($dedA,2);
+      $billPart = min($dedA, $billOpenByEmp[$eid] ?? 0.0);
+      if ($dedA)  $notes[] = "Ded-".number_format($dedA,2) . ($billPart > 0.005 ? " (bill excess ".number_format($billPart,2).")" : "");
       if ($abs > 0.005) $notes[] = "Abs(".rtrim(rtrim(number_format($abs, 2, '.', ''), '0'), '.')." d)-".number_format($absDed,2);
 
       $insParams = [
@@ -383,10 +417,20 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
       if ($hasProfileBonusCol) {
         $insParams[] = $bonProfile;
       }
+      if ($cashbackReady) {
+        $insParams[] = $cashback;
+      }
       $ins->execute($insParams);
       $postedItemIds[$eid] = (int)$conn->lastInsertId();
+      // Bills whose excess this run now includes are approved: they can no longer be edited or deleted under it.
+      if ($billPart > 0.005 && hr_bills_ready($conn)) {
+        hr_bills_approve_for_payroll($conn, $eid, $billPart, $to, $run_id, current_user_id());
+      }
     }
 
+    if ($cashbackReady) {
+      $conn->prepare("UPDATE payroll_runs SET show_cashback = ? WHERE id = ?")->execute([$showCashback ? 1 : 0, $run_id]);
+    }
     // WPS / take-home guards — override only when authorized + reason provided.
     $failures = hr_wps_collect_payroll_validation_failures($guardRows, $payrollType);
     $wantOverride = isset($_POST['validation_override']) && (string)$_POST['validation_override'] === '1';
@@ -460,7 +504,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
             WHERE employee_id = ?
               AND COALESCE(settle_status, 'open') = 'open'
               AND COALESCE(remaining_balance, amount) > 0
-            ORDER BY tx_date ASC, id ASC
+            ORDER BY (dtype = 'bill_excess') DESC, tx_date ASC, id ASC
             FOR UPDATE
           ");
           $dedStmt->execute([$eid]);
@@ -640,6 +684,20 @@ foreach ($emps as $e){
   $daily  = hr_schedule_salary_daily_rate($b + $a, $scheduleSummary);
   $absDed = $autoAbs * $daily;
   $bonus  = $otAmount + $bonusPlus + $bonusProfile;
+
+  // Bill excess starts in Other deductions Apply, up to what the 15% WPS cap leaves
+  // (a cent under it: the page blocks take-home at exactly 85%). The rest waits for next month.
+  // A saved draft that has not included bill excess yet (saved before the bill
+  // existed — its notes carry no "(bill excess …)") gets it added on top of
+  // whatever HR typed. Once saved with it, HR's value is kept.
+  $billOpen = min($billOpenByEmp[$eid] ?? 0.0, $ded_open);
+  $billAlreadyIn = $saved && preg_match('/\(bill excess [0-9,.]+\)/', (string)($saved['notes'] ?? ''));
+  if ($canEditRun && !$billAlreadyIn && $billOpen > 0.005) {
+    $room = round(($b + $a + $bonus) * hr_wps_max_deduction_ratio(), 2) - $absDed - $advApply - $dedApply - 0.01;
+    $billFits = min($billOpen, max(0.0, $ded_open - $dedApply));
+    // All of it when it fits; otherwise whole dirhams, so no stray fils carry over.
+    $dedApply += $billFits <= $room ? $billFits : max(0.0, floor($room));
+  }
   $ded    = $advApply + $dedApply + $absDed;
   $net    = ($b + $a + $bonus) - $ded;
 
@@ -658,6 +716,9 @@ foreach ($emps as $e){
     'adv_open'=>$adv_open, 'ded_open'=>$ded_open,
     'adv_apply'=>$advApply, 'ded_apply'=>$dedApply,
     'net'=>$net,
+    'cashback'=>$saved ? (float)($saved['cashback'] ?? 0) : 0.0,
+    'bill_open'=>$billOpen,
+    'bill_in_apply'=>min($dedApply, $billOpen),
   ];
 }
 $pageTitle = 'Build Payroll #' . (int)$run_id;
@@ -752,6 +813,8 @@ $pageStyles = '
   }
   .balance-pill.empty { background: #f1f3f5; color: #6c757d; }
   .td-net { font-weight: 700; color: #1b4332; }
+  .payroll-build-table:not(.show-cashback) .col-cashback { display: none; }
+  .td-net-after { font-weight: 700; color: #7a4b00; }
   .footer-actions { position: sticky; bottom: 0; background: #fff; border-top: 1px solid #eef0f3; z-index: 5; }
 ';
 ?>
@@ -838,11 +901,25 @@ echo hr_ui_page_header(
             <strong>Preview / Adjust</strong>
             <div class="small text-muted">Scroll horizontally if needed. Employee name stays fixed on the left.</div>
           </div>
-          <div class="small text-muted d-none d-md-block">Take-home % starts at 100% · red at/below 85%</div>
+          <div class="d-flex align-items-center gap-3">
+            <?php if ($cashbackReady): ?>
+              <div class="form-check form-switch mb-0" title="Extra line under Net only. Net pay and WPS do not change.">
+                <input class="form-check-input" type="checkbox" role="switch" name="show_cashback" value="1" id="showCashbackToggle" <?= $cashbackOn ? 'checked' : '' ?> <?= $canEditRun ? '' : 'disabled' ?>>
+                <label class="form-check-label small fw-semibold" for="showCashbackToggle">Show cashback</label>
+              </div>
+            <?php endif; ?>
+            <div class="small text-muted d-none d-md-block">Take-home % starts at 100% · red at/below 85%</div>
+          </div>
         </div>
+        <?php if ($cashbackReady): ?>
+          <div class="alert alert-info small rounded-0 border-0 border-bottom mb-0 py-2 col-cashback-note<?= $cashbackOn ? '' : ' d-none' ?>">
+            <strong>Cashback:</strong> <?= htmlspecialchars(hr_payroll_cashback_note()) ?>
+            Saved with Save Draft / Post.
+          </div>
+        <?php endif; ?>
 
         <div class="payroll-table-scroll">
-          <table class="table table-hover payroll-build-table mb-0" id="payrollBuildTable">
+          <table class="table table-hover payroll-build-table mb-0<?= $cashbackOn ? ' show-cashback' : '' ?>" id="payrollBuildTable">
             <thead>
               <tr>
                 <th class="col-sticky-code">Code</th>
@@ -858,6 +935,10 @@ echo hr_ui_page_header(
                 <th class="col-money">Abs Ded</th>
                 <th class="col-pct">Take-home %<span class="small-note">from 100%</span></th>
                 <th class="col-net">Net</th>
+                <?php if ($cashbackReady): ?>
+                  <th class="col-money col-cashback">Cashback<span class="small-note">not in WPS</span></th>
+                  <th class="col-net col-cashback">Net after<span class="small-note">cashback</span></th>
+                <?php endif; ?>
               </tr>
             </thead>
             <tbody>
@@ -898,15 +979,25 @@ echo hr_ui_page_header(
                 <td class="col-apply">
                   <div class="balance-pill <?= $r['ded_open'] > 0 ? '' : 'empty' ?>">Bal <?= number_format($r['ded_open'], 2) ?></div>
                   <input name="ded_apply[<?= $eid ?>]" value="<?= number_format($r['ded_apply'], 2, '.', '') ?>" class="form-control form-control-sm mt-1" min="0" max="<?= number_format($r['ded_open'], 2, '.', '') ?>" placeholder="Apply">
+                  <?php if ($r['bill_open'] > 0.005): ?>
+                    <div class="small text-muted mt-1" title="Open bill excess from the employee's Bills tab">
+                      <?php if ($r['bill_in_apply'] <= 0.005): ?>(bill excess open <?= number_format($r['bill_open'], 2) ?>)
+                      <?php else: ?>(incl. bill excess <?= number_format($r['bill_in_apply'], 2) ?><?= $r['bill_in_apply'] + 0.005 < $r['bill_open'] ? ' of ' . number_format($r['bill_open'], 2) . ', rest next month' : '' ?>)<?php endif; ?>
+                    </div>
+                  <?php endif; ?>
                 </td>
                 <td class="col-abs"><input name="abs_days[<?= $eid ?>]" type="number" step="0.5" min="0" value="<?= number_format((float)$r['abs_days'], 2, '.', '') ?>" class="form-control form-control-sm" title="Full absent = 1; attendance half-day = 0.5"></td>
                 <td class="col-money text-muted td-absded"><?= number_format($r['abs_ded'], 2) ?></td>
                 <td class="col-pct td-dedpct"><span class="badge text-bg-secondary">100%</span></td>
                 <td class="col-net td-net"><?= number_format($r['net'], 2) ?></td>
+                <?php if ($cashbackReady): ?>
+                  <td class="col-money col-cashback"><input name="cashback[<?= $eid ?>]" type="number" step="0.01" min="0" value="<?= number_format($r['cashback'], 2, '.', '') ?>" class="form-control form-control-sm" title="Handed back by the employee. Not deducted from net pay or WPS." <?= $canEditRun ? '' : 'disabled' ?>></td>
+                  <td class="col-net col-cashback td-net-after"><?= number_format($r['net'] - $r['cashback'], 2) ?></td>
+                <?php endif; ?>
               </tr>
             <?php endforeach; if (!$rows): ?>
               <tr>
-                <td colspan="13" class="text-center text-muted py-5">
+                <td colspan="<?= $cashbackReady ? 15 : 13 ?>" class="text-center text-muted py-5">
                   No <?= htmlspecialchars(strtolower(hr_payroll_payment_type_label($payrollType))) ?> employees found for this company and period.
                 </td>
               </tr>
@@ -1151,6 +1242,13 @@ echo hr_ui_page_header(
     const pctCell = row.querySelector('.td-dedpct');
     if (absCell) absCell.textContent = fmt2(a.absDed);
     if (netCell) netCell.textContent = fmt2(a.net);
+    // Cashback sits outside net: only "Net after cashback" moves.
+    const afterCell = row.querySelector('.td-net-after');
+    if (afterCell) {
+      const after = a.net - num(row.querySelector('input[name^="cashback["]')?.value);
+      afterCell.textContent = fmt2(after);
+      afterCell.classList.toggle('text-danger', after < -0.005);
+    }
     if (pctCell) {
       let cls = 'text-bg-success';
       if (a.takeHomePct <= minTakeHomePct) cls = 'text-bg-danger';
@@ -1185,6 +1283,25 @@ echo hr_ui_page_header(
         );
       }
     }
+    return issues;
+  }
+
+  // Not a WPS rule, so Override Validation does not lift it.
+  function collectCashbackIssues() {
+    const issues = [];
+    // Hidden amounts count too, so turning the toggle on later never shows a negative balance.
+    const hint = document.getElementById('showCashbackToggle')?.checked ? '' : ' Turn on Show cashback to change it.';
+    document.querySelectorAll('#payrollBuildTable tbody tr').forEach(function (row) {
+      const input = row.querySelector('input[name^="cashback["]');
+      if (!input) return;
+      const a = rowAmounts(row);
+      const cashback = num(input.value);
+      if (cashback < 0) {
+        issues.push(a.name + ' cashback cannot be negative.');
+      } else if (cashback > a.net + 0.005) {
+        issues.push(a.name + ' cashback (' + fmt2(cashback) + ') is more than net pay (' + fmt2(a.net) + ').' + hint);
+      }
+    });
     return issues;
   }
 
@@ -1242,6 +1359,12 @@ echo hr_ui_page_header(
 
   document.querySelectorAll('#payrollBuildTable tbody tr').forEach(recalcRow);
 
+  document.getElementById('showCashbackToggle')?.addEventListener('change', function () {
+    hideClientError();
+    table?.classList.toggle('show-cashback', this.checked);
+    document.querySelector('.col-cashback-note')?.classList.toggle('d-none', !this.checked);
+  });
+
   const advPrefill = <?= json_encode($advPrefill) ?>;
   if (advPrefill) {
     const inp = document.querySelector('input[name="adv_apply[' + advPrefill.eid + ']"]');
@@ -1296,6 +1419,15 @@ echo hr_ui_page_header(
 
     if (allowNativeSubmit) {
       allowNativeSubmit = false;
+      return;
+    }
+
+    const cashbackIssues = collectCashbackIssues();
+    if (cashbackIssues.length) {
+      e.preventDefault();
+      showClientError('<strong>' + actionLabel + ' blocked.</strong><ul class="mb-0 mt-2"><li>'
+        + cashbackIssues.slice(0, 8).map(function (m) { return m.replace(/[<>&]/g, ''); }).join('</li><li>')
+        + '</li></ul>');
       return;
     }
 

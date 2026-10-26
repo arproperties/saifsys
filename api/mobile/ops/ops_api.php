@@ -37,6 +37,7 @@ require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_pin.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_sources.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_billing.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_attendance.php';
+require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_attendance_reminder.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_checklist.php';
 require_once dirname(__DIR__, 3) . '/modules/operations/includes/ops_gas.php';
 

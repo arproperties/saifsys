@@ -364,73 +364,137 @@ echo hr_ui_page_header(
     </div>
   <?php endif; ?>
 
+  <?php
+    // One-line filter toolbar: every change applies at once. Status is set by the
+    // status cards below, so it rides along as a hidden field.
+    $todayF = date('Y-m-d');
+    $monWeek = date('Y-m-d', strtotime('monday this week'));
+    $datePresets = [
+      'Today'      => [$todayF, $todayF],
+      'Yesterday'  => [date('Y-m-d', strtotime('-1 day')), date('Y-m-d', strtotime('-1 day'))],
+      'This week'  => [$monWeek, $todayF],
+      'Last week'  => [date('Y-m-d', strtotime($monWeek . ' -7 days')), date('Y-m-d', strtotime($monWeek . ' -1 day'))],
+      'This month' => [date('Y-m-01'), $todayF],
+      'Last month' => [date('Y-m-01', strtotime('first day of last month')), date('Y-m-t', strtotime('first day of last month'))],
+    ];
+    $dateLabel = '';
+    foreach ($datePresets as $presetName => [$pf, $pt]) {
+      if ($df === $pf && $dt === $pt) { $dateLabel = $presetName; break; }
+    }
+    if ($dateLabel === '') {
+      $dfTs = strtotime((string)$df); $dtTs = strtotime((string)$dt);
+      $dateLabel = ($df && $dt && $dfTs && $dtTs)
+        ? (date('Y', $dfTs) === date('Y', $dtTs) ? date('j M', $dfTs) : date('j M Y', $dfTs)) . ' – ' . date('j M Y', $dtTs)
+        : 'All dates';
+    }
+    $keepQuery = $_GET;
+    unset($keepQuery['date_from'], $keepQuery['date_to'], $keepQuery['_csrf']);
+    $empLabel = '';
+    foreach ($employees as $e) {
+      if ((int)$e['id'] === $emp) { $empLabel = $e['label'] . (!empty($e['company_name']) ? ' - ' . $e['company_name'] : ''); break; }
+    }
+    $srcOpts = ['' => 'Recorded by: anyone', 'admin' => 'Recorded by: HR', 'self' => 'Recorded by: staff (self)', 'import' => 'Recorded by: import'];
+    $filtersChanged = $emp > 0 || $selectedCompanyId > 0 || $src !== '' || $st !== ''
+      || $df !== date('Y-m-01') || $dt !== $todayF;
+  ?>
   <div class="hr-filter-bar mb-3">
-  <form method="get">
-        <?php csrf_field(); ?>
-    <div class="row g-2">
-      <div class="col-md-3">
-        <label class="form-label">From</label>
-        <input type="date" name="date_from" class="form-control" value="<?= h($df) ?>">
-      </div>
-      <div class="col-md-3">
-        <label class="form-label">To</label>
-        <input type="date" name="date_to" class="form-control" value="<?= h($dt) ?>">
-      </div>
-      <div class="col-md-3">
-        <label class="form-label">Employee</label>
-        <select name="employee_id" class="form-select">
-          <option value="0">— All —</option>
-          <?php foreach ($employees as $e): ?>
-            <option value="<?= (int)$e['id'] ?>" <?= $emp==(int)$e['id']?'selected':''; ?>>
-              <?= h($e['label']) ?><?= !empty($e['company_name']) ? ' - ' . h($e['company_name']) : '' ?>
-            </option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <div class="col-md-3">
-        <label class="form-label">Company</label>
-        <select name="company_id" class="form-select">
-          <option value="0">All companies</option>
-          <?php foreach ($companies as $company): ?>
-            <option value="<?= (int)$company['id'] ?>" <?= $selectedCompanyId === (int)$company['id'] ? 'selected' : '' ?>>
-              <?= h($company['name']) ?>
-            </option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <div class="col-md-2">
-        <label class="form-label">Status</label>
-        <select name="status" class="form-select">
-          <?php
-            $opts = ['' => '— Any —'] + $attStatuses;
-            foreach ($opts as $k=>$v) {
-              $sel = ($st===$k)?'selected':'';
-              echo "<option value=\"".h($k)."\" $sel>".h($v)."</option>";
-            }
-          ?>
-        </select>
-      </div>
-      <div class="col-md-2">
-        <label class="form-label">Recorded by</label>
-        <select name="source" class="form-select">
-          <?php
-            $srcOpts = ['' => '— Any —', 'admin' => 'HR', 'self' => 'Staff (self)', 'import' => 'Import'];
-            foreach ($srcOpts as $k => $v) {
-              $sel = ($src === $k) ? 'selected' : '';
-              echo "<option value=\"".h($k)."\" $sel>".h($v)."</option>";
-            }
-          ?>
-        </select>
-      </div>
-      <div class="col-md-1 d-flex align-items-end">
-        <button class="btn btn-primary w-100">Apply</button>
+  <form method="get" id="attFilterForm" class="d-flex flex-wrap align-items-center gap-2">
+    <input type="hidden" name="status" value="<?= h($st) ?>">
+    <input type="hidden" name="employee_id" id="attEmpId" value="<?= (int)$emp ?>">
+
+    <div class="dropdown">
+      <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+        <i class="bi bi-calendar3 me-1"></i><?= h($dateLabel) ?>
+      </button>
+      <div class="dropdown-menu p-2 shadow-sm" style="min-width:260px">
+        <?php foreach ($datePresets as $presetName => [$pf, $pt]): ?>
+          <a class="dropdown-item rounded <?= $dateLabel === $presetName ? 'active' : '' ?>"
+             href="?<?= h(http_build_query($keepQuery + ['date_from' => $pf, 'date_to' => $pt])) ?>"><?= h($presetName) ?></a>
+        <?php endforeach; ?>
+        <div class="dropdown-divider"></div>
+        <div class="px-2 pb-1">
+          <div class="small text-muted mb-1">Custom range</div>
+          <div class="d-flex gap-1 mb-2">
+            <input type="date" name="date_from" class="form-control form-control-sm" value="<?= h($df) ?>" aria-label="From">
+            <input type="date" name="date_to" class="form-control form-control-sm" value="<?= h($dt) ?>" aria-label="To">
+          </div>
+          <button class="btn btn-sm btn-primary w-100">Show these dates</button>
+        </div>
       </div>
     </div>
+
+    <div class="position-relative" style="min-width:240px;flex:1 1 240px;max-width:340px">
+      <i class="bi bi-search position-absolute text-muted" style="left:.75rem;top:50%;transform:translateY(-50%)"></i>
+      <input type="search" id="attEmpSearch" class="form-control ps-5" list="attEmpList" placeholder="Search employee…"
+             value="<?= h($empLabel) ?>" autocomplete="off" aria-label="Employee">
+      <datalist id="attEmpList">
+        <?php foreach ($employees as $e): ?>
+          <option data-id="<?= (int)$e['id'] ?>" value="<?= h($e['label'] . (!empty($e['company_name']) ? ' - ' . $e['company_name'] : '')) ?>"></option>
+        <?php endforeach; ?>
+      </datalist>
+    </div>
+
+    <select name="company_id" class="form-select w-auto" aria-label="Company" data-auto-submit>
+      <option value="0">All companies</option>
+      <?php foreach ($companies as $company): ?>
+        <option value="<?= (int)$company['id'] ?>" <?= $selectedCompanyId === (int)$company['id'] ? 'selected' : '' ?>><?= h($company['name']) ?></option>
+      <?php endforeach; ?>
+    </select>
+
+    <select name="source" class="form-select w-auto" aria-label="Recorded by" data-auto-submit>
+      <?php foreach ($srcOpts as $k => $v): ?>
+        <option value="<?= h($k) ?>" <?= $src === $k ? 'selected' : '' ?>><?= h($v) ?></option>
+      <?php endforeach; ?>
+    </select>
+
+    <?php if ($filtersChanged): ?>
+      <a href="attendance" class="btn btn-link text-decoration-none ms-auto"><i class="bi bi-x-circle me-1"></i>Reset</a>
+    <?php endif; ?>
+    <noscript><button class="btn btn-primary">Apply</button></noscript>
   </form>
   </div>
+  <script>
+  (function () {
+    var form = document.getElementById('attFilterForm');
+    if (!form) return;
+    form.querySelectorAll('[data-auto-submit]').forEach(function (el) {
+      el.addEventListener('change', function () { form.submit(); });
+    });
+    // Employee: pick a name from the list → show that person; clear the box → everyone.
+    var search = document.getElementById('attEmpSearch');
+    var hidden = document.getElementById('attEmpId');
+    var options = document.querySelectorAll('#attEmpList option');
+    function pick() {
+      var v = search.value.trim();
+      if (v === '') {
+        if (hidden.value !== '0') { hidden.value = '0'; form.submit(); }
+        return;
+      }
+      for (var i = 0; i < options.length; i++) {
+        if (options[i].value === v) {
+          if (hidden.value !== options[i].getAttribute('data-id')) { hidden.value = options[i].getAttribute('data-id'); form.submit(); }
+          return;
+        }
+      }
+    }
+    search.addEventListener('change', pick);
+    search.addEventListener('input', function () { if (search.value === '') pick(); });
+  })();
+  </script>
 
+  <?php
+    // Closed until HR clicks +; reopened if the last Quick Add came back with an error.
+    $qaOpen = ($_POST['action'] ?? '') === 'quick_add' && $flash_err !== '';
+  ?>
   <div class="hr-settings-card mb-3">
-    <div class="settings-header">Quick Add (single day)</div>
+    <div class="settings-header d-flex align-items-center justify-content-between" role="button"
+         data-bs-toggle="collapse" data-bs-target="#quickAddBody" aria-expanded="<?= $qaOpen ? 'true' : 'false' ?>" aria-controls="quickAddBody">
+      <span>Quick Add (single day)</span>
+      <button type="button" class="btn btn-sm btn-outline-secondary quick-add-toggle" aria-label="Open Quick Add" tabindex="-1">
+        <i class="bi <?= $qaOpen ? 'bi-dash-lg' : 'bi-plus-lg' ?>"></i>
+      </button>
+    </div>
+    <div class="collapse<?= $qaOpen ? ' show' : '' ?>" id="quickAddBody">
     <form class="card-body row g-2" method="post">
         <?php csrf_field(); ?>
       <input type="hidden" name="action" value="quick_add">
@@ -471,7 +535,17 @@ echo hr_ui_page_header(
         <button class="btn btn-success">Add / Update</button>
       </div>
     </form>
+    </div>
   </div>
+  <script>
+  (function () {
+    var body = document.getElementById('quickAddBody');
+    if (!body) return;
+    var icon = document.querySelector('.quick-add-toggle i');
+    body.addEventListener('show.bs.collapse', function () { icon.className = 'bi bi-dash-lg'; });
+    body.addEventListener('hide.bs.collapse', function () { icon.className = 'bi bi-plus-lg'; });
+  })();
+  </script>
 
   <div class="row g-2 mb-3">
     <?php foreach ($attStatuses as $k => $v): ?>
@@ -492,7 +566,7 @@ echo hr_ui_page_header(
       <span class="small text-muted">Every status change asks for a reason.</span>
     </div>
     <div class="card-body p-0">
-    <div class="hr-table-shell border-0 shadow-none rounded-0">
+    <div class="hr-table-shell att-table-shell border-0 shadow-none rounded-0">
       <table class="table table-hover align-middle mb-0">
         <thead class="table-light">
           <tr>
@@ -507,7 +581,7 @@ echo hr_ui_page_header(
             <th>Source</th>
             <th>Notes</th>
             <th>Files</th>
-            <th class="text-end">Actions</th>
+            <th class="att-actions-cell">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -574,7 +648,8 @@ echo hr_ui_page_header(
                   </a>
                 <?php endforeach; endif; ?>
               </td>
-              <td class="text-end">
+              <td class="att-actions-cell">
+                <div class="att-actions">
                 <a class="btn btn-sm btn-outline-primary" href="attendance_edit.php?id=<?= $rowId ?>">Edit</a>
 
                 <button type="button" class="btn btn-sm btn-success"
@@ -585,7 +660,8 @@ echo hr_ui_page_header(
                         data-att-date="<?= h($r['work_date']) ?>">Approve</button>
 
                 <div class="btn-group">
-                  <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">More</button>
+                  <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown"
+                          data-bs-popper-config='{"strategy":"fixed"}'>More</button>
                   <ul class="dropdown-menu dropdown-menu-end">
                     <li class="px-3 py-1">
                       <button type="button" class="btn btn-sm btn-outline-danger w-100"
@@ -627,7 +703,7 @@ echo hr_ui_page_header(
                     </li>
                   </ul>
                 </div>
-
+                </div>
               </td>
             </tr>
           <?php endforeach; endif; ?>

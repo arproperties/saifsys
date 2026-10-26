@@ -50,9 +50,11 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
         ];
     }
 
+    // Dashboard on its own, then four menus that open and close ('collapsible').
     return [
         [
-            'label' => 'Overview',
+            'key' => 'overview',
+            'label' => '',
             'items' => [
                 [
                     'key' => 'dashboard',
@@ -64,7 +66,10 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
             ],
         ],
         [
+            'key' => 'people',
             'label' => 'People',
+            'icon' => 'users',
+            'collapsible' => true,
             'items' => [
                 [
                     'key' => 'employees',
@@ -74,6 +79,13 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'pages' => ['employees.php', 'employee_view.php', 'employee_add.php', 'employee_edit.php'],
                 ],
                 [
+                    'key' => 'org',
+                    'label' => 'Organization',
+                    'icon' => 'network',
+                    'href' => $hrBase . '/org_units',
+                    'pages' => ['org_units.php'],
+                ],
+                [
                     'key' => 'employee_pins',
                     'label' => 'Staff app PINs',
                     'icon' => 'key-round',
@@ -81,44 +93,70 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'pages' => ['employee_pins_bulk.php'],
                 ],
                 [
-                    'key' => 'org',
-                    'label' => 'Organization',
-                    'icon' => 'network',
-                    'href' => $hrBase . '/org_units',
-                    'pages' => ['org_units.php'],
+                    'key' => 'performance',
+                    'label' => 'Performance',
+                    'icon' => 'trending-up',
+                    'href' => $hrBase . '/performance',
+                    'pages' => ['performance.php', 'performance_detail.php', 'perf_settings.php'],
                 ],
             ],
         ],
         [
-            'label' => 'Time & Attendance',
+            'key' => 'attendance_leave',
+            'label' => 'Attendance & Leave',
+            'icon' => 'calendar-check-2',
+            'collapsible' => true,
             'items' => [
                 [
                     'key' => 'attendance',
                     'label' => 'Attendance',
                     'icon' => 'calendar-check-2',
                     'href' => $hrBase . '/attendance',
-                    'pages' => ['attendance.php', 'attendance_bulk.php', 'attendance_summary.php', 'attendance_edit.php'],
+                    'pages' => ['attendance.php', 'attendance_edit.php'],
                 ],
                 [
-                    'key' => 'attendance_missing',
-                    'label' => 'Missing check-ins',
-                    'icon' => 'user-x',
-                    'href' => $hrBase . '/attendance_missing',
-                    'pages' => ['attendance_missing.php'],
+                    'key' => 'attendance_bulk',
+                    'label' => 'Bulk apply',
+                    'icon' => 'copy-check',
+                    'href' => $hrBase . '/attendance_bulk',
+                    'pages' => ['attendance_bulk.php'],
                 ],
                 [
-                    'key' => 'overtime',
-                    'label' => 'Overtime',
-                    'icon' => 'clock',
-                    'href' => $hrBase . '/overtime',
-                    'pages' => ['overtime.php'],
+                    'key' => 'attendance_summary',
+                    'label' => 'Monthly summary',
+                    'icon' => 'table-2',
+                    'href' => $hrBase . '/attendance_summary',
+                    'pages' => ['attendance_summary.php'],
                 ],
+                [
+                    'key' => 'attendance_reminders',
+                    'label' => 'Reminders',
+                    'icon' => 'bell-ring',
+                    'href' => $hrBase . '/attendance_reminders',
+                    'pages' => ['attendance_reminders.php'],
+                ],
+                // Hidden from the menu (the pages still work by link):
+                // 'Missing check-ins' (attendance_missing) and 'Overtime' (overtime).
                 [
                     'key' => 'leave',
-                    'label' => 'Leave',
+                    'label' => 'Leave requests',
                     'icon' => 'calendar-x',
                     'href' => $hrBase . '/leave_requests',
-                    'pages' => ['leave_requests.php', 'leave_types.php', 'leave_balances.php'],
+                    'pages' => ['leave_requests.php'],
+                ],
+                [
+                    'key' => 'leave_types',
+                    'label' => 'Leave types',
+                    'icon' => 'list',
+                    'href' => $hrBase . '/leave_types',
+                    'pages' => ['leave_types.php'],
+                ],
+                [
+                    'key' => 'leave_balances',
+                    'label' => 'Leave balances',
+                    'icon' => 'scale',
+                    'href' => $hrBase . '/leave_balances',
+                    'pages' => ['leave_balances.php'],
                 ],
                 [
                     'key' => 'holidays',
@@ -130,11 +168,14 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
             ],
         ],
         [
-            'label' => 'Payroll & Finance',
+            'key' => 'payroll_menu',
+            'label' => 'Payroll',
+            'icon' => 'banknote',
+            'collapsible' => true,
             'items' => [
                 [
                     'key' => 'payroll',
-                    'label' => 'Payroll',
+                    'label' => 'Payroll runs',
                     'icon' => 'banknote',
                     'href' => $hrBase . '/payroll_runs',
                     'pages' => ['payroll_runs.php', 'payroll_run_build.php', 'payroll_run_view.php', 'payslip.php'],
@@ -146,10 +187,20 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'href' => $hrBase . '/cash_advances',
                     'pages' => ['cash_advances.php', 'loan_settle_cash.php'],
                 ],
+                [
+                    'key' => 'deductions',
+                    'label' => 'Deductions',
+                    'icon' => 'minus-circle',
+                    'href' => $hrBase . '/employee_deductions',
+                    'pages' => ['employee_deductions.php'],
+                ],
             ],
         ],
         [
+            'key' => 'admin',
             'label' => 'Administration',
+            'icon' => 'settings-2',
+            'collapsible' => true,
             'items' => [
                 [
                     'key' => 'documents',
@@ -171,13 +222,6 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'icon' => 'shield',
                     'href' => $hrBase . '/access',
                     'pages' => ['access.php'],
-                ],
-                [
-                    'key' => 'performance',
-                    'label' => 'Performance',
-                    'icon' => 'trending-up',
-                    'href' => $hrBase . '/performance',
-                    'pages' => ['performance.php', 'performance_detail.php', 'perf_settings.php'],
                 ],
                 [
                     'key' => 'reports',
@@ -204,6 +248,7 @@ function hr_nav_page_title(string $currentPage): string
         'attendance_summary.php' => 'Attendance summary',
         'attendance_edit.php' => 'Edit attendance',
         'attendance_missing.php' => 'Missing check-ins',
+        'attendance_reminders.php' => 'Check-in reminders',
         'employee_pins_bulk.php' => 'Staff app PINs',
         'overtime.php' => 'Overtime',
         'leave_requests.php' => 'Leave requests',
@@ -223,6 +268,7 @@ function hr_nav_page_title(string $currentPage): string
         'performance_detail.php' => 'Performance detail',
         'perf_settings.php' => 'Performance settings',
         'reports.php' => 'Reports',
+        'employee_deductions.php' => 'Deductions',
     ];
     return $map[$currentPage] ?? 'Human Resources';
 }

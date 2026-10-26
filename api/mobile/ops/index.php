@@ -42,8 +42,20 @@ if (function_exists('usage_track_identify')) {
     usage_track_identify('cleaning', $route, (int)$user['id']);
 }
 
+// The 18:00 attendance reminder: the first signed-in request after the time
+// starts the day's send (once a day; see ops_attendance_reminder.php).
+ops_reminder_maybe_run($conn);
+
 if ($route === 'auth/me' && $method === 'GET') {
     ops_api_handle_me($conn, $user);
+}
+
+// Web push for the 18:00 reminder: the site key, and saving / removing a phone.
+if ($route === 'push/key' && $method === 'GET') {
+    ops_api_handle_push_key($conn, $user);
+}
+if ($method === 'POST' && preg_match('#^push/(subscribe|unsubscribe)$#', $route, $m)) {
+    ops_api_handle_push_subscription($conn, $user, $m[1]);
 }
 
 // Attendance — the day's first and last entry, into HR's attendance table.

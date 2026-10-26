@@ -487,11 +487,11 @@ echo hr_ui_page_header(
   <div class="hr-settings-card">
     <div class="settings-header">Requests</div>
     <div class="card-body p-0">
-    <div class="hr-table-shell border-0 shadow-none rounded-0">
+    <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
       <table class="table table-hover align-middle mb-0">
         <thead class="table-light">
           <tr>
-            <th>#</th><th>Employee</th><th>Company</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Attachment</th><th class="text-end">Actions</th>
+            <th>#</th><th>Employee</th><th>Company</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Attachment</th><th class="hr-row-actions-cell">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -515,8 +515,9 @@ echo hr_ui_page_header(
                   <a href="../<?= htmlspecialchars($r['attachment_path']) ?>" target="_blank">File</a>
                 <?php else: ?>—<?php endif; ?>
               </td>
-              <td class="text-end">
+              <td class="hr-row-actions-cell">
                 <?php if ($can_manage_all && $r['status']==='pending'): ?>
+                <div class="hr-row-actions">
                   <form method="post" class="d-inline">
                     <?php csrf_field(); ?>
                     <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
@@ -531,6 +532,7 @@ echo hr_ui_page_header(
                     <input type="hidden" name="new_status" value="rejected">
                     <button class="btn btn-sm btn-outline-danger">Reject</button>
                   </form>
+                </div>
                 <?php else: ?>
                   <span class="text-muted">—</span>
                 <?php endif; ?>

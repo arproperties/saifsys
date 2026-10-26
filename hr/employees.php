@@ -47,8 +47,11 @@ if (!$isHRManager) {
 }
 
 if ($q !== '') {
-  $where[] = "(e.full_name LIKE :q OR e.nickname LIKE :q OR e.employee_code LIKE :q OR e.email LIKE :q OR e.phone LIKE :q)";
-  $params[':q'] = "%{$q}%";
+  // One placeholder per field: with real prepared statements a name cannot repeat.
+  $where[] = "(e.full_name LIKE :q1 OR e.nickname LIKE :q2 OR e.employee_code LIKE :q3 OR e.email LIKE :q4 OR e.phone LIKE :q5)";
+  foreach ([':q1', ':q2', ':q3', ':q4', ':q5'] as $qp) {
+    $params[$qp] = "%{$q}%";
+  }
 }
 if ($status !== 'all') {
   $where[] = "e.status = :status";
@@ -208,6 +211,11 @@ $viewQuery = $_GET;
 unset($viewQuery['page'], $viewQuery['view'], $viewQuery['export']);
 
 $pageTitle = 'Employees';
+// Breadcrumb lives in the top bar; the page header below keeps only the title.
+$hrTopbarCrumbs = [
+    ['label' => 'HR', 'href' => 'dashboard'],
+    ['label' => 'Employees'],
+];
 $pageStyles = '
 .emp-grid { background:#f2f4f7; border-top:1px solid #e4e7ec; padding:1.25rem; }
 .emp-ccard { display:flex; flex-direction:column; height:100%; background:#fff; border:1px solid #cfd4dc; border-top:4px solid var(--hr-primary);
@@ -233,10 +241,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 echo hr_ui_page_header(
     'Employees',
     'Search and manage the workforce directory.',
-    [
-        ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
-        ['label' => 'Employees'],
-    ],
+    [],
     '<a href="employees.php?' . htmlspecialchars(http_build_query($exportQuery), ENT_QUOTES, 'UTF-8') . '" class="btn btn-outline-primary"><i class="bi bi-download"></i> Export CSV</a>'
     . ' <a href="employee_edit.php" class="btn btn-primary"><i class="bi bi-plus-circle"></i> Add Employee</a>'
 );
@@ -257,7 +262,7 @@ echo hr_ui_page_header(
           </select>
         </div>
         <?php else: ?>
-        <div class="col-md-4">
+        <div class="col-md">
           <input type="text" class="form-control" name="q" placeholder="Search name, code, email, phone…" value="<?= htmlspecialchars($q) ?>">
         </div>
         <?php if ($isHRManager && count($companies) > 1): ?>
@@ -290,8 +295,8 @@ echo hr_ui_page_header(
           </select>
         </div>
         <?php endif; ?>
-        <div class="col-md-2">
-          <button class="btn btn-primary w-100" type="submit">Filter</button>
+        <div class="col-md-auto">
+          <button class="btn btn-primary px-3" type="submit"><i class="bi bi-funnel me-1"></i>Filter</button>
         </div>
       </form>
   </div>
@@ -346,7 +351,7 @@ echo hr_ui_page_header(
     </div>
     <?php else: ?>
     <div class="card-body p-0">
-      <div class="hr-table-shell border-0 shadow-none rounded-0">
+      <div class="hr-table-shell hr-table-scroll hr-table-nowrap border-0 shadow-none rounded-0">
         <table class="table table-hover align-middle mb-0">
           <thead class="table-light">
             <tr>

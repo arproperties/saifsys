@@ -6,6 +6,7 @@ require_once __DIR__.'/../includes/db_connect.php';
 require_once __DIR__.'/../includes/company_helper.php';
 require_once __DIR__.'/includes/hr_payroll_company_access.php';
 require_once __DIR__.'/includes/hr_payroll_accounting.php';
+require_once __DIR__.'/includes/hr_payroll_cashback.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 $run_id=(int)($_GET['id']??0);
@@ -16,6 +17,7 @@ $run->execute([$run_id]); $run=$run->fetch(PDO::FETCH_ASSOC);
 if(!$run){ http_response_code(404); exit('Run not found or not finalized'); }
 hr_payroll_require_run_access($conn, $run);
 $payrollType = (($run['payroll_type'] ?? 'wps') === 'cash') ? 'cash' : 'wps';
+$cashbackOn = hr_payroll_cashback_on($conn, $run);
 
 $rows=$conn->prepare("
   SELECT pi.*, e.employee_code, e.full_name
@@ -50,7 +52,12 @@ foreach($items as $pi){
     <tr><td>Bonus / OT</td><td><?= number_format($pi['bonus'],2) ?></td></tr>
     <tr><td>Deductions</td><td><?= number_format($pi['deductions'],2) ?></td></tr>
     <tr><td><b>Net Pay</b></td><td><b><?= number_format($pi['net_pay'],2) ?></b></td></tr>
+    <?php $cb = $cashbackOn ? (float)($pi['cashback'] ?? 0) : 0.0; if ($cb > 0.005): ?>
+      <tr><td>Less: Cashback</td><td>(<?= number_format($cb,2) ?>)</td></tr>
+      <tr><td><b>Balance paid to employee</b></td><td><b><?= number_format((float)$pi['net_pay'] - $cb,2) ?></b></td></tr>
+    <?php endif; ?>
   </table>
+  <?php if ($cb > 0.005): ?><div style="color:#666">Note: <?= htmlspecialchars(hr_payroll_cashback_note()) ?></div><?php endif; ?>
   <?php if(!empty($pi['notes'])): ?><div>Notes: <?= htmlspecialchars($pi['notes']) ?></div><?php endif; ?>
   </body></html>
   <?php

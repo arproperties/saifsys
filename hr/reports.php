@@ -252,7 +252,7 @@ echo hr_ui_page_header(
         <a class="btn btn-sm btn-outline-primary ms-auto" href="reports.php?<?= h(http_build_query($queryBase + ['export' => 'headcount'])) ?>">Export CSV</a>
       </div>
       <div class="card-body p-0">
-      <div class="hr-table-shell border-0 shadow-none rounded-0">
+      <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
         <table class="table table-sm align-middle mb-0">
           <thead class="table-light"><tr><th>Company</th><th>Status</th><th class="num">Employees</th></tr></thead>
           <tbody>
@@ -275,7 +275,7 @@ echo hr_ui_page_header(
         <a class="btn btn-sm btn-outline-primary ms-auto" href="reports.php?<?= h(http_build_query($queryBase + ['export' => 'leave'])) ?>">Export CSV</a>
       </div>
       <div class="card-body p-0">
-      <div class="hr-table-shell border-0 shadow-none rounded-0">
+      <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
         <table class="table table-sm align-middle mb-0">
           <thead class="table-light"><tr><th>Company</th><th class="num">Requests</th><th class="num">Days</th></tr></thead>
           <tbody>
@@ -298,7 +298,7 @@ echo hr_ui_page_header(
         <a class="btn btn-sm btn-outline-primary ms-auto" href="reports.php?<?= h(http_build_query($queryBase + ['export' => 'documents'])) ?>">Export CSV</a>
       </div>
       <div class="card-body p-0">
-      <div class="hr-table-shell border-0 shadow-none rounded-0">
+      <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
         <table class="table table-sm align-middle mb-0">
           <thead class="table-light"><tr><th>Company</th><th class="num">Documents</th><th>Next Expiry</th></tr></thead>
           <tbody>
@@ -321,7 +321,7 @@ echo hr_ui_page_header(
         <a class="btn btn-sm btn-outline-primary ms-auto" href="reports.php?<?= h(http_build_query($queryBase + ['export' => 'payroll'])) ?>">Export CSV</a>
       </div>
       <div class="card-body p-0">
-      <div class="hr-table-shell border-0 shadow-none rounded-0">
+      <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
         <table class="table table-sm align-middle mb-0">
           <thead class="table-light"><tr><th>Company</th><th class="num">Runs</th><th class="num">Employees</th><th class="num">Net Pay</th></tr></thead>
           <tbody>
@@ -346,7 +346,7 @@ echo hr_ui_page_header(
         <a class="btn btn-sm btn-outline-success ms-auto" href="reports.php?<?= h(http_build_query($queryBase + ['export' => 'visa_expiry'])) ?>">Export Excel</a>
       </div>
       <div class="card-body p-0">
-      <div class="hr-table-shell border-0 shadow-none rounded-0">
+      <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
         <table class="table table-sm align-middle mb-0">
           <thead class="table-light">
             <tr>
@@ -385,7 +385,7 @@ echo hr_ui_page_header(
         <a class="btn btn-sm btn-outline-primary ms-auto" href="reports.php?<?= h(http_build_query($queryBase + ['export' => 'attendance'])) ?>">Export CSV</a>
       </div>
       <div class="card-body p-0">
-      <div class="hr-table-shell border-0 shadow-none rounded-0">
+      <div class="hr-table-shell hr-table-scroll border-0 shadow-none rounded-0">
         <table class="table table-sm align-middle mb-0">
           <thead class="table-light"><tr><th>Company</th><th>Status</th><th class="num">Exceptions</th></tr></thead>
           <tbody>

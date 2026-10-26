@@ -3,7 +3,7 @@
  * signal. The API is never cached — jobs, trips and fixes always go to the
  * server, and the app keeps anything unsent on the phone itself.
  */
-const CACHE = 'staff-v7';
+const CACHE = 'staff-v8';
 const SHELL = ['index.php', 'app.css', 'js/core.js', 'js/driver.js', 'js/cleaning.js', 'js/app.js', 'manifest.json', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'audio/check/texts.json'];
 
 self.addEventListener('install', (event) => {
@@ -39,5 +39,35 @@ self.addEventListener('fetch', (event) => {
         caches.match(req.mode === 'navigate' ? 'index.php' : req, { ignoreSearch: true })
           .then((hit) => hit || caches.match('index.php'))
       )
+  );
+});
+
+// The 18:00 attendance reminder (modules/operations/includes/ops_attendance_reminder.php).
+self.addEventListener('push', (event) => {
+  let msg = {};
+  try { msg = event.data ? event.data.json() : {}; } catch (e) { msg = { body: event.data ? event.data.text() : '' }; }
+  event.waitUntil(self.registration.showNotification(msg.title || 'Staff', {
+    body: msg.body || '',
+    icon: 'icon-192.png',
+    badge: 'icon-192.png',
+    tag: msg.tag || 'attendance-reminder',
+    renotify: true,
+    data: { url: new URL(msg.url || './', self.registration.scope).href },
+  }));
+});
+
+// Tap: bring the app forward (or open it) on the home screen, where Check in / Check out is.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || self.registration.scope;
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const open = list.find((c) => c.url.startsWith(self.registration.scope));
+      if (open) {
+        open.postMessage({ type: 'open-attendance' });
+        return open.focus();
+      }
+      return self.clients.openWindow(url);
+    })
   );
 });
