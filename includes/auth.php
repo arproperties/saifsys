@@ -76,7 +76,7 @@ function get_user_roles_from_db(PDO $conn, int $user_id): array {
     return $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
 }
 
-function current_user_roles(PDO $conn = null): array {
+function current_user_roles(?PDO $conn = null): array {
     $uid = current_user_id();
     if (!$uid) return [];
     if ($conn instanceof PDO) {
@@ -87,7 +87,7 @@ function current_user_roles(PDO $conn = null): array {
     return isset($_SESSION['roles']) ? (array)$_SESSION['roles'] : [];
 }
 
-function has_role(string $role, PDO $conn = null): bool {
+function has_role(string $role, ?PDO $conn = null): bool {
     $roles = current_user_roles($conn);
     return in_array($role, $roles, true);
 }
@@ -110,7 +110,7 @@ function require_login(?string $loginPath = null): void {
     }
 }
 
-function require_role(array $allowed, PDO $conn = null): void {
+function require_role(array $allowed, ?PDO $conn = null): void {
     $roleMap = ['Account' => 'Accountant', 'Operation' => 'Dispatcher'];
     $allowed = array_map(fn($r) => $roleMap[$r] ?? $r, $allowed);
 

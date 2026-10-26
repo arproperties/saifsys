@@ -7,7 +7,7 @@
 /**
  * Get current company ID from session or default
  */
-function current_company_id(PDO $conn = null): ?int {
+function current_company_id(?PDO $conn = null): ?int {
     // Check session first
     if (!empty($_SESSION['current_company_id'])) {
         return (int)$_SESSION['current_company_id'];

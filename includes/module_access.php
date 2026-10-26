@@ -211,7 +211,7 @@ function ensure_current_company_supports_module(PDO $conn, string $module): void
 /**
  * Require module access (throws 403 if no access)
  */
-function require_module_access(PDO $conn, string $module, int $companyId = null): void {
+function require_module_access(PDO $conn, string $module, ?int $companyId = null): void {
     require_login();
     
     $userId = current_user_id();
