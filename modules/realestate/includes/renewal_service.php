@@ -455,7 +455,9 @@ if (!function_exists('re_renewal_create')) {
             $reemCheques ? (float)$rera : (float)($oldLease['ejari_fees'] ?? 0),
             $adminFeesFinal,
             0.00,
-            (float)($oldLease['amc_amount'] ?? 0),
+            // Reem's renewals: the old lease's AMC (cleaning & pest control) is not carried as a
+            // cheque of its own; Reem's Pest control & cleaning tick charges it in cheque 1.
+            $reemCheques ? 0.0 : (float)($oldLease['amc_amount'] ?? 0),
             (int)($oldLease['split_amc_fees'] ?? 0),
             $reemCheques ? 1 : (int)($oldLease['add_fees_to_first_installment'] ?? 1),
             (int)($oldLease['deferred_revenue_mode'] ?? 1),
