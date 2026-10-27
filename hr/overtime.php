@@ -6,6 +6,7 @@ require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/../includes/audit_bridge.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
+require_once __DIR__ . '/includes/hr_upload_guard.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
@@ -127,8 +128,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['create'])) {
             $dir = realpath(__DIR__ . '/..') . '/uploads/overtime_attachments';
             ensure_dir($dir);
             if (!is_writable($dir)) throw new Exception('Upload failed: folder not writable.');
-            $ext = pathinfo($_FILES['attachment']['name'], PATHINFO_EXTENSION);
-            $fname = 'ot_' . time() . '_' . mt_rand(1000,9999) . ($ext ? '.'.$ext : '');
+            $ext = hr_upload_safe_ext((string)$_FILES['attachment']['name']);
+            if ($ext === null) throw new Exception('Attachment must be a PDF or an image (JPG, PNG, WEBP).');
+            hr_upload_protect_dir($dir);
+            $fname = 'ot_' . time() . '_' . mt_rand(1000,9999) . '.' . $ext;
             if (!move_uploaded_file($_FILES['attachment']['tmp_name'], $dir.'/'.$fname)) {
                 throw new Exception('Upload failed.');
             }
