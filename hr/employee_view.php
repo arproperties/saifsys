@@ -3100,6 +3100,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_required_doc_rea
 
 $requiredDocs = hr_required_docs_status($conn, (int)$emp['id']);
 $requiredDocsPresent = count(array_filter($requiredDocs, static fn($r) => $r['present']));
+// Expiry of each uploaded one (same rules as the Employees list): valid / expiring / expired.
+$requiredDocsExpiry = hr_required_docs_details_map($conn, [(int)$emp['id']])[(int)$emp['id']] ?? [];
 $requiredDocsNotesReady = hr_required_docs_notes_ready($conn);
 
 
@@ -4401,7 +4403,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                             <div class="d-flex justify-content-between align-items-start mb-3">
                                 <div>
                                     <h6 class="card-title mb-1">Required documents</h6>
-                                    <div class="stat-meta">Quick check if Passport, Visa, LaborCard, Contract and National ID are found.</div>
+                                    <div class="stat-meta">Quick check if Passport, Visa, Labor Card, Contract and National ID are found, and when they expire.</div>
                                 </div>
                                 <div class="d-flex align-items-center gap-2">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="switchToTab('tab-docs')">
@@ -4416,9 +4418,56 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                             <?php if ($reqdoc_msg): ?><div class="alert alert-success py-2 small"><?= htmlspecialchars($reqdoc_msg) ?></div><?php endif; ?>
                             <?php if ($reqdoc_err): ?><div class="alert alert-danger py-2 small"><?= htmlspecialchars($reqdoc_err) ?></div><?php endif; ?>
 
-                            <?php if ($requiredDocsComplete): ?>
-                                <div class="text-success"><i class="bi bi-check-circle me-1"></i>All required documents present.</div>
-                            <?php else: ?>
+                            <?php
+                              // Uploaded documents that need renewing: expired first, then expiring soon.
+                              $renewDocs = [];
+                              foreach (['expired', 'expiring'] as $renewState) {
+                                foreach ($requiredDocsExpiry as $rType => $rCell) {
+                                  if ($rCell['state'] === $renewState) { $renewDocs[$rType] = $rCell; }
+                                }
+                              }
+                            ?>
+                            <?php if ($requiredDocsComplete && !$renewDocs): ?>
+                                <div class="text-success"><i class="bi bi-check-circle me-1"></i>All required documents present and valid.</div>
+                            <?php elseif ($requiredDocsComplete): ?>
+                                <div class="text-success mb-2"><i class="bi bi-check-circle me-1"></i>All required documents uploaded. <?= count($renewDocs) ?> need<?= count($renewDocs) === 1 ? 's' : '' ?> renewing:</div>
+                            <?php endif; ?>
+
+                            <?php foreach ($renewDocs as $rType => $rCell):
+                              $rLabel = HR_REQUIRED_DOC_LABELS[$rType];
+                              $rDate = date('d M Y', strtotime($rCell['expires_at']));
+                              $rExpired = $rCell['state'] === 'expired';
+                              $rDays = (int)(new DateTime('today'))->diff(new DateTime($rCell['expires_at']))->format('%r%a');
+                              $rWhen = $rExpired
+                                ? ($rDays === -1 ? '1 day ago' : abs($rDays) . ' days ago')
+                                : ($rDays === 0 ? 'today' : ($rDays === 1 ? 'in 1 day' : 'in ' . $rDays . ' days'));
+                            ?>
+                                <div class="border rounded p-2 mb-2 <?= $rExpired ? 'border-danger bg-danger-subtle' : 'border-warning bg-warning-subtle' ?>">
+                                    <div class="d-flex flex-wrap align-items-center gap-2">
+                                        <i class="bi <?= $rExpired ? 'bi-exclamation-triangle-fill text-danger' : 'bi-clock-history text-warning-emphasis' ?>"></i>
+                                        <strong><?= htmlspecialchars($rLabel) ?></strong>
+                                        <span class="<?= $rExpired ? 'text-danger fw-semibold' : 'text-warning-emphasis fw-semibold' ?>">
+                                            <?= $rExpired ? 'EXPIRED on ' . $rDate : 'expires on ' . $rDate ?> (<?= $rWhen ?>)
+                                        </span>
+                                        <span class="flex-grow-1 small text-muted">
+                                            —
+                                            <?php if ($workerReadOnly): ?>
+                                                <?= $rExpired ? 'please renew it and hand the new copy to HR.' : 'please start the renewal and hand the new copy to HR.' ?>
+                                            <?php else: ?>
+                                                <?= $rExpired ? 'renew it and upload the new copy.' : 'start the renewal and upload the new copy when ready.' ?>
+                                            <?php endif; ?>
+                                        </span>
+                                        <?php if (!$workerReadOnly): ?>
+                                            <button type="button" class="btn btn-sm <?= $rExpired ? 'btn-danger' : 'btn-outline-primary' ?>" data-bs-toggle="modal" data-bs-target="#docModal"
+                                                    onclick="newDoc(); document.getElementById('doc_type').value = <?= htmlspecialchars(json_encode($rType), ENT_QUOTES) ?>; if (window.hrExpiryRuleSync) hrExpiryRuleSync();">
+                                                <i class="bi bi-upload me-1"></i>Upload new
+                                            </button>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+
+                            <?php if (!$requiredDocsComplete): ?>
                                 <?php foreach ($requiredDocs as $rd): if ($rd['present']) continue;
                                     $rdKey = 'reqdoc-' . preg_replace('/[^a-z0-9]/', '', strtolower($rd['type'])); ?>
                                     <?php $rdExplained = $rd['state'] === 'explained'; ?>
@@ -4426,11 +4475,11 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <div class="d-flex flex-wrap align-items-center gap-2">
                                             <?php if ($rdExplained): ?>
                                                 <i class="bi bi-exclamation-circle-fill text-warning"></i>
-                                                <strong><?= htmlspecialchars($rd['type']) ?></strong>
+                                                <strong><?= htmlspecialchars(HR_REQUIRED_DOC_LABELS[$rd['type']] ?? $rd['type']) ?></strong>
                                                 <span class="text-muted">not on file, reason given</span>
                                             <?php else: ?>
                                                 <i class="bi bi-x-circle-fill text-danger"></i>
-                                                <strong><?= htmlspecialchars($rd['type']) ?></strong>
+                                                <strong><?= htmlspecialchars(HR_REQUIRED_DOC_LABELS[$rd['type']] ?? $rd['type']) ?></strong>
                                                 <span class="text-danger">missing</span>
                                             <?php endif; ?>
                                             <span class="flex-grow-1 small">
@@ -4462,7 +4511,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                                 <input type="hidden" name="doc_type" value="<?= htmlspecialchars($rd['type']) ?>">
                                                 <div class="input-group input-group-sm">
                                                     <input type="text" name="reason" class="form-control" maxlength="<?= (int)HR_REQUIRED_DOC_REASON_MAX ?>"
-                                                           value="<?= htmlspecialchars($rd['reason']) ?>" placeholder="Why is the <?= htmlspecialchars($rd['type']) ?> missing? Leave empty to remove the reason.">
+                                                           value="<?= htmlspecialchars($rd['reason']) ?>" placeholder="Why is the <?= htmlspecialchars(HR_REQUIRED_DOC_LABELS[$rd['type']] ?? $rd['type']) ?> missing? Leave empty to remove the reason.">
                                                     <button class="btn btn-primary">Save</button>
                                                 </div>
                                             </form>
@@ -4472,10 +4521,14 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                             <?php endif; ?>
 
                             <div class="d-flex flex-wrap gap-2 mt-2">
-                                <?php foreach ($requiredDocs as $rd): if (!$rd['present']) continue; ?>
+                                <?php foreach ($requiredDocs as $rd):
+                                    // Valid ones only; expired and expiring are listed above with what to do.
+                                    $vCell = $requiredDocsExpiry[$rd['type']] ?? null;
+                                    if (!$rd['present'] || ($vCell && $vCell['state'] !== 'valid')) continue; ?>
                                     <button type="button" class="badge bg-success-subtle text-success-emphasis border border-success-subtle px-2 py-1"
                                             onclick="switchToTab('tab-docs')" title="Open Documents">
-                                        <i class="bi bi-check-circle me-1"></i><?= htmlspecialchars($rd['type']) ?>
+                                        <i class="bi bi-check-circle me-1"></i><?= htmlspecialchars(HR_REQUIRED_DOC_LABELS[$rd['type']] ?? $rd['type']) ?>
+                                        <span class="fw-normal">· <?= !empty($vCell['expires_at']) ? 'Valid Till ' . htmlspecialchars(date('d M Y', strtotime($vCell['expires_at']))) : 'Uploaded' ?></span>
                                     </button>
                                 <?php endforeach; ?>
                             </div>
