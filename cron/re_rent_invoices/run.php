@@ -134,9 +134,11 @@ foreach ($leases as $lease) {
     $ended = $lease['status'] !== 'active';
     $lastDay = $ended ? (string)$lease['last_day'] : '9999-12-31';
     $tag = "lease #$leaseId {$lease['lease_number']}" . ($ended ? " ({$lease['status']}, up to $lastDay)" : '');
-    if (isset(RE_RENT_CRON_SKIP_LEASE_NUMBERS[$lease['lease_number']])) {
+    $skipReason = RE_RENT_CRON_SKIP_LEASE_NUMBERS[$lease['lease_number']]
+        ?? (str_starts_with((string)$lease['lease_number'], 'TESTDEV-') ? 'test lease' : null);
+    if ($skipReason !== null) {
         $totals['skipped']++;
-        $log("skip $tag: " . RE_RENT_CRON_SKIP_LEASE_NUMBERS[$lease['lease_number']]);
+        $log("skip $tag: $skipReason");
         continue;
     }
     $totals['leases']++;
