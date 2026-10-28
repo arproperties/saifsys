@@ -75,7 +75,8 @@ $logoSrc = function_exists('brand_logo_src') ? brand_logo_src($brand) : null;
   <title><?= hr_ui_h($pageTitle) ?> · HR | <?= hr_ui_h($brand['system_name'] ?? 'HeroSysgro') ?></title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <link href="<?= hr_ui_h($hrAssetBase) ?>/hr-ui-v2.css?v=20261026-11" rel="stylesheet">
+  <link href="<?= hr_ui_h($hrAssetBase) ?>/hr-ui-v2.css?v=20261028-3" rel="stylesheet">
+  <script>try { if (localStorage.getItem('hr.nav.hidden') === '1') document.documentElement.classList.add('hr-nav-hidden'); } catch (e) {}</script>
   <?php if (!empty($pageStyles)): ?><style><?= $pageStyles ?></style><?php endif; ?>
   <?php if (!empty($pageHead)) {
       echo $pageHead;
@@ -102,6 +103,10 @@ if (is_file($asWidget)) { require $asWidget; }
         <h1>Human Resources</h1>
         <small>Control Center</small>
       </div>
+      <button type="button" class="hr-nav-close d-none d-lg-inline-flex" data-hr-nav-toggle
+              aria-controls="hr-sidebar" title="Hide menu" aria-label="Hide menu">
+        <i data-lucide="panel-left-close" style="width:18px;height:18px"></i>
+      </button>
     </div>
     <div class="hr-nav-search">
       <input type="search" id="hr-nav-search" class="form-control form-control-sm"
@@ -162,6 +167,10 @@ if (is_file($asWidget)) { require $asWidget; }
     <header class="hr-topbar">
       <button type="button" class="btn btn-outline-secondary btn-sm d-lg-none" id="hr-mobile-menu-btn" aria-label="Open menu">
         <i data-lucide="menu" style="width:18px;height:18px"></i>
+      </button>
+      <button type="button" class="btn btn-outline-secondary btn-sm align-items-center hr-nav-open" data-hr-nav-toggle
+              aria-controls="hr-sidebar" title="Show menu" aria-label="Show menu">
+        <i data-lucide="panel-left-open" style="width:18px;height:18px"></i>
       </button>
       <div class="flex-grow-1 min-w-0">
         <div class="small text-muted text-uppercase fw-semibold" style="letter-spacing:.06em;font-size:.65rem">Human Resources</div>

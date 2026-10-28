@@ -710,6 +710,29 @@ body.hr-ui-v2 :focus-visible {
   outline-offset: 2px;
 }
 
+/* Desktop: the menu can be hidden to give the page the full width. */
+/* Close icon inside the menu; the open icon appears in the top bar once it is hidden. */
+body.hr-ui-v2 .hr-sidebar-brand:has(.hr-nav-close) { padding-right: 0.75rem; gap: 0.6rem; }
+body.hr-ui-v2 .hr-sidebar-brand:has(.hr-nav-close) h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.hr-ui-v2 .hr-nav-close {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hr-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--hr-text-muted);
+}
+body.hr-ui-v2 .hr-nav-close:hover { background: var(--hr-primary-soft, #f5efe0); color: var(--hr-text); }
+body.hr-ui-v2 .hr-nav-open { display: none; }
+@media (min-width: 992px) {
+  html.hr-nav-hidden body.hr-ui-v2 .hr-sidebar { display: none; }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-open { display: inline-flex; }
+}
+
 @media (max-width: 991px) {
   body.hr-ui-v2 .hr-sidebar {
     position: fixed;

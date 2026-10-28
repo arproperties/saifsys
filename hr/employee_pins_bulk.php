@@ -128,7 +128,7 @@ echo hr_ui_page_header(
       If the page is closed first, generate new ones for the people you missed.
       <div class="mt-2">
         <button type="button" class="btn btn-primary btn-sm" onclick="window.print()">Print</button>
-        <a class="btn btn-outline-secondary btn-sm" href="employee_pins_bulk.php<?= $selectedCompanyId ? '?company_id=' . (int)$selectedCompanyId : '' ?>">Back to the list</a>
+        <a class="btn btn-outline-secondary" href="employee_pins_bulk.php<?= $selectedCompanyId ? '?company_id=' . (int)$selectedCompanyId : '' ?>"><i class="bi bi-arrow-left me-1"></i>Back</a>
       </div>
     </div>
   <?php endif; ?>

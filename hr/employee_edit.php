@@ -579,7 +579,7 @@ if (deptSel) {
 JS;
 require_once __DIR__ . '/includes/hr_layout_header.php';
 
-$editActions = '<a class="btn btn-outline-secondary" href="employees">Back to list</a>';
+$editActions = '<a class="btn btn-outline-secondary" href="employees"><i class="bi bi-arrow-left me-1"></i>Back</a>';
 if ($is_edit) {
     $editActions .= ' <span class="badge text-bg-light align-self-center">Code: ' . htmlspecialchars($emp['employee_code'] ?: '—') . '</span>';
 }

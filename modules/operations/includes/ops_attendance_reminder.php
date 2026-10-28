@@ -1,26 +1,28 @@
 <?php
 /**
  * The daily attendance reminder for the staff app (/staff/), by web push.
- * Each company has its own time and on/off switch (HR → Reminders); 18:00 and
- * on until someone sets it. A person follows the company on their employee record.
+ * Each employee has their own time and on/off switch, set by HR on the employee
+ * profile (Overview → Mobile App PIN → Check-in reminders); on at 18:00 until
+ * HR changes it.
  *
  * WHO GETS ONE
  * ------------
- * Someone with reminders turned on (staff_push_subscriptions) whose employee is
- * current, who is due to work today, and who has either not checked in at all
- * or checked in and not out. Not when the day is HR-marked (leave, absent,
- * half, excused), covered by approved leave, a holiday, or a day off on their
- * work schedule (only where a schedule exists — shifts vary, so no schedule
- * means every day counts).
+ * Someone with reminders turned on in the staff app (staff_push_subscriptions)
+ * whose employee is current, whose switch is on, who is due to work today, and
+ * who has either not checked in at all or checked in and not out. Not when the
+ * day is HR-marked (leave, absent, half, excused), covered by approved leave, a
+ * holiday, their weekly off, or a day off on their work schedule (only where a schedule exists —
+ * shifts vary, so no schedule means every day counts).
  *
  * ONCE A DAY, WITHOUT A CRON
  * --------------------------
- * The first request after a company's reminder time claims that company's day
- * in staff_push_runs (INSERT IGNORE on work_date + company_id — only one request
- * can win) and sends to that company's staff, after its own reply has
- * gone out where the server allows it. staff_push_log holds one row per person
- * per day, so nothing is ever sent twice. cron/attendance_reminder.php does the
- * same if a scheduled task is ever added; whichever comes first does the day.
+ * The first request after a person's reminder time claims that person's day in
+ * staff_push_runs (INSERT IGNORE on work_date + company_id, where a person's
+ * claim is stored as company_id = -employee_id; only one request can win) and
+ * sends after its own reply has gone out where the server allows it.
+ * staff_push_log holds one row per person per day, so nothing is ever sent
+ * twice. cron/attendance_reminder.php does the same if a scheduled task is ever
+ * added; whichever comes first does the day.
  *
  * The time is company time (Asia/Dubai), whatever the server's own clock is.
  * Off until migrations/ops_staff_push.sql has run.
@@ -30,6 +32,7 @@ require_once __DIR__ . '/ops_attendance.php';
 require_once dirname(__DIR__, 3) . '/includes/web_push.php';
 require_once dirname(__DIR__, 3) . '/hr/includes/hr_schedule_helper.php';
 require_once dirname(__DIR__, 3) . '/hr/includes/hr_employee_lifecycle.php';
+require_once dirname(__DIR__, 3) . '/hr/includes/hr_weekly_off.php';
 
 /** The texts, exactly as agreed. */
 function ops_reminder_message(string $kind, string $firstName, string $checkIn = ''): array
@@ -64,32 +67,35 @@ function ops_reminder_ready(PDO $conn): bool
 }
 
 /**
- * One company's reminder time (H:i, Dubai) and on/off switch. Each company has
- * its own pair in `settings` (attendance_reminder_time.c3 / attendance_reminder_enabled.c3);
- * a company without one is on at 18:00. The old company-less keys, if present,
- * still apply underneath so a server that set them keeps its time.
+ * One employee's reminder time (H:i, Dubai) and on/off switch, kept in
+ * `settings` as attendance_reminder_time.e12 / attendance_reminder_enabled.e12.
+ * Someone HR has not set is on at 18:00.
  */
-function ops_reminder_settings(PDO $conn, ?int $companyId = null): array
+function ops_reminder_settings(PDO $conn, ?int $employeeId = null): array
 {
     $all = ops_reminder_settings_rows($conn);
     $out = ['time' => '18:00', 'enabled' => true];
-    $keys = ['attendance_reminder_time' => 'time', 'attendance_reminder_enabled' => 'enabled'];
-    $suffixes = $companyId ? ['', '.c' . $companyId] : [''];
-    foreach ($suffixes as $sfx) {
-        foreach ($keys as $key => $field) {
-            if (!array_key_exists($key . $sfx, $all)) {
-                continue;
-            }
-            $v = (string)$all[$key . $sfx];
-            if ($field === 'time' && preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $v)) {
-                $out['time'] = $v;
-            }
-            if ($field === 'enabled') {
-                $out['enabled'] = !in_array(strtolower(trim($v)), ['0', 'off', 'no', 'false'], true);
-            }
-        }
+    if (!$employeeId) {
+        return $out;
+    }
+    $time = (string)($all['attendance_reminder_time.e' . $employeeId] ?? '');
+    if (preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $time)) {
+        $out['time'] = $time;
+    }
+    if (array_key_exists('attendance_reminder_enabled.e' . $employeeId, $all)) {
+        $out['enabled'] = !in_array(strtolower(trim((string)$all['attendance_reminder_enabled.e' . $employeeId])), ['0', 'off', 'no', 'false'], true);
     }
     return $out;
+}
+
+/** Save one employee's reminder time and switch. */
+function ops_reminder_save_settings(PDO $conn, int $employeeId, bool $enabled, string $time): void
+{
+    $save = $conn->prepare("INSERT INTO settings (`key`, `value`) VALUES (?, ?)
+                            ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)");
+    $save->execute(['attendance_reminder_enabled.e' . $employeeId, $enabled ? '1' : '0']);
+    $save->execute(['attendance_reminder_time.e' . $employeeId, $time]);
+    ops_reminder_settings_rows($conn, true);
 }
 
 /** Every attendance_reminder_* setting, read once per request. */
@@ -98,7 +104,7 @@ function ops_reminder_settings_rows(PDO $conn, bool $refresh = false): array
     static $rows = null;
     if ($rows === null || $refresh) {
         try {
-            $st = $conn->query("SELECT `key`, `value` FROM settings WHERE `key` LIKE 'attendance\\_reminder\\_%'");
+            $st = $conn->query("SELECT `key`, `value` FROM settings WHERE `key` LIKE 'attendance\_reminder\_%'");
             $rows = $st ? $st->fetchAll(PDO::FETCH_KEY_PAIR) : [];
         } catch (Throwable $e) {
             $rows = [];
@@ -107,22 +113,22 @@ function ops_reminder_settings_rows(PDO $conn, bool $refresh = false): array
     return $rows;
 }
 
-/** The company a person's reminder follows: the one on their employee record. */
-function ops_reminder_user_company(PDO $conn, int $userId): ?int
+/** The employee record a person's reminder follows: the first one on their login. */
+function ops_reminder_user_employee(PDO $conn, int $userId): ?int
 {
-    $st = $conn->prepare("SELECT company_id FROM employees WHERE user_id = ? ORDER BY id ASC LIMIT 1");
+    $st = $conn->prepare("SELECT id FROM employees WHERE user_id = ? ORDER BY id ASC LIMIT 1");
     $st->execute([$userId]);
-    $cid = $st->fetchColumn();
-    return $cid ? (int)$cid : null;
+    $eid = $st->fetchColumn();
+    return $eid ? (int)$eid : null;
 }
 
-/** Companies with at least one phone turned on, by the same employee record the run uses. */
-function ops_reminder_companies_with_phones(PDO $conn): array
+/** Employees with at least one phone turned on, by the same employee record the run uses. */
+function ops_reminder_employees_with_phones(PDO $conn): array
 {
     return array_map('intval', $conn->query("
-        SELECT DISTINCT (SELECT e.company_id FROM employees e WHERE e.user_id = s.user_id ORDER BY e.id ASC LIMIT 1) AS cid
+        SELECT DISTINCT (SELECT e.id FROM employees e WHERE e.user_id = s.user_id ORDER BY e.id ASC LIMIT 1) AS eid
         FROM staff_push_subscriptions s
-        HAVING cid IS NOT NULL
+        HAVING eid IS NOT NULL
     ")->fetchAll(PDO::FETCH_COLUMN));
 }
 
@@ -132,38 +138,39 @@ function ops_reminder_now(): DateTimeImmutable
 }
 
 /**
- * Claim today's run for each company whose reminder time has passed (switched
- * on, with a phone to send to). INSERT IGNORE on (work_date, company_id): only
- * one request or cron run can win each company's day.
+ * Claim today's run for each employee whose reminder time has passed (switched
+ * on, with a phone to send to). INSERT IGNORE on (work_date, company_id), with
+ * the employee stored as company_id = -employee_id: only one request or cron
+ * run can win each person's day.
  *
- * @param list<int>|null $only limit to these companies
- * @return list<int> the companies this caller won
+ * @param list<int>|null $only limit to these employees
+ * @return list<int> the employees this caller won
  */
 function ops_reminder_claim_due(PDO $conn, DateTimeImmutable $now, ?array $only = null): array
 {
     $day = $now->format('Y-m-d');
     $claim = $conn->prepare("INSERT IGNORE INTO staff_push_runs (work_date, company_id, started_at) VALUES (?, ?, ?)");
     $won = [];
-    $companies = ops_reminder_companies_with_phones($conn);
+    $employees = ops_reminder_employees_with_phones($conn);
     if ($only !== null) {
-        $companies = array_values(array_intersect($companies, $only));
+        $employees = array_values(array_intersect($employees, $only));
     }
-    foreach ($companies as $cid) {
-        $s = ops_reminder_settings($conn, $cid);
+    foreach ($employees as $eid) {
+        $s = ops_reminder_settings($conn, $eid);
         if (!$s['enabled'] || $now->format('H:i') < $s['time']) {
             continue;
         }
-        $claim->execute([$day, $cid, $now->format('Y-m-d H:i:s')]);
+        $claim->execute([$day, -$eid, $now->format('Y-m-d H:i:s')]);
         if ($claim->rowCount() === 1) {
-            $won[] = $cid;
+            $won[] = $eid;
         }
     }
     return $won;
 }
 
 /**
- * Call on any request. Does nothing until a company's reminder time; then the
- * first caller after it runs that company's send (after its own response, where possible).
+ * Call on any request. Does nothing until someone's reminder time; then the
+ * first caller after it sends to them (after its own response, where possible).
  */
 function ops_reminder_maybe_run(PDO $conn): void
 {
@@ -172,38 +179,73 @@ function ops_reminder_maybe_run(PDO $conn): void
     }
     $now = ops_reminder_now();
     try {
-        $companies = ops_reminder_claim_due($conn, $now);
+        $employees = ops_reminder_claim_due($conn, $now);
     } catch (Throwable $e) {
         return;
     }
-    if (!$companies) {
+    if (!$employees) {
         return;
     }
     $day = $now->format('Y-m-d');
     // Send after the caller's reply where the server allows it, so nobody waits on push services.
-    register_shutdown_function(static function () use ($conn, $day, $companies): void {
+    register_shutdown_function(static function () use ($conn, $day, $employees): void {
         ignore_user_abort(true);
         if (function_exists('fastcgi_finish_request')) {
             fastcgi_finish_request();
         } elseif (function_exists('litespeed_finish_request')) {
             litespeed_finish_request();
         }
-        foreach ($companies as $cid) {
-            try {
-                ops_reminder_run($conn, $day, false, $cid);
-            } catch (Throwable $e) {
-                error_log('attendance reminder failed for company ' . $cid . ': ' . $e->getMessage());
-            }
+        try {
+            ops_reminder_run($conn, $day, false, $employees);
+        } catch (Throwable $e) {
+            error_log('attendance reminder failed: ' . $e->getMessage());
         }
     });
 }
 
 /**
- * Whether today is a working day for the reminder: not a holiday, not approved
- * leave, and not a day off where the person has a work schedule.
+ * Whether someone checked in and not out is simply still at work: their
+ * schedule that day has a duty that started near their check in (within 3
+ * hours) and has not ended yet — a 17:00 to 03:00 shift is not "Check-out
+ * missing" at 18:00. Without a schedule, nothing changes.
+ */
+function ops_reminder_still_on_duty(PDO $conn, array $employee, array $row, DateTimeImmutable $now): bool
+{
+    if (empty($row['check_in']) || empty($row['work_date'])) {
+        return false;
+    }
+    $day = (string)$row['work_date'];
+    $tz = $now->getTimezone();
+    $summary = hr_schedule_summary($conn, (int)$employee['id'], $day, $day);
+    $checkIn = new DateTimeImmutable($day . ' ' . $row['check_in'], $tz);
+    // Checked in for one duty and never out: on duty until that duty, or a
+    // later one the same day (double duty entered as one span), has ended.
+    $matched = false;
+    foreach (hr_schedule_ranges($summary['days'][$day]['label'] ?? '') as $r) {
+        $start = new DateTimeImmutable($day . ' ' . $r['start'], $tz);
+        $end = new DateTimeImmutable($day . ' ' . $r['end'], $tz);
+        if ($r['overnight']) {
+            $end = $end->modify('+1 day');
+        }
+        $matched = $matched || abs($checkIn->getTimestamp() - $start->getTimestamp()) <= 3 * 3600;
+        if ($matched && $now < $end) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Whether today is a working day for the reminder: not the person's weekly off,
+ * not a holiday, not approved leave, and not a day off where the person has a
+ * work schedule.
  */
 function ops_reminder_is_workday(PDO $conn, array $employee, string $day): bool
 {
+    $weeklyOff = hr_weekly_off_for_employee($conn, (int)$employee['id'], isset($employee['company_id']) ? (int)$employee['company_id'] : null, $day);
+    if ((int)date('N', strtotime($day)) === $weeklyOff) {
+        return false;
+    }
     $hol = $conn->prepare("
         SELECT COUNT(*) FROM holidays
         WHERE (location_id IS NULL OR location_id = ?)
@@ -226,12 +268,13 @@ function ops_reminder_is_workday(PDO $conn, array $employee, string $day): bool
 }
 
 /**
- * Work out who needs a reminder for $day and send it. With $companyId, only
- * people whose employee record is in that company (each company runs at its own time).
+ * Work out who needs a reminder for $day and send it. With $employeeIds, only
+ * those people (each person runs at their own time).
  *
+ * @param list<int>|null $employeeIds
  * @return array{considered:int, sent:int, skipped:array<string,int>, people:list<array>}
  */
-function ops_reminder_run(PDO $conn, string $day, bool $dryRun = false, ?int $companyId = null): array
+function ops_reminder_run(PDO $conn, string $day, bool $dryRun = false, ?array $employeeIds = null): array
 {
     $report = ['considered' => 0, 'sent' => 0, 'skipped' => [], 'people' => []];
     $skip = static function (string $why) use (&$report): void {
@@ -242,24 +285,27 @@ function ops_reminder_run(PDO $conn, string $day, bool $dryRun = false, ?int $co
     $empStmt = $conn->prepare("SELECT id, full_name, employee_code, company_id, location_id, status FROM employees WHERE user_id = ? ORDER BY id ASC LIMIT 1");
     $subsStmt = $conn->prepare("SELECT id, endpoint, p256dh, auth FROM staff_push_subscriptions WHERE user_id = ?");
     $logStmt = $conn->prepare("INSERT IGNORE INTO staff_push_log (user_id, employee_id, work_date, kind) VALUES (?, ?, ?, ?)");
+    $sentTo = [];
 
     foreach ($users as $userId) {
         $userId = (int)$userId;
         $empStmt->execute([$userId]);
         $employee = $empStmt->fetch(PDO::FETCH_ASSOC);
-        if ($companyId !== null && (!$employee || (int)$employee['company_id'] !== $companyId)) {
-            continue; // another company's run
+        if ($employeeIds !== null && (!$employee || !in_array((int)$employee['id'], $employeeIds, true))) {
+            continue; // someone else's run
         }
         $report['considered']++;
         if (!$employee) { $skip('no employee record'); continue; }
         if (!in_array((string)$employee['status'], $current, true)) { $skip('not a current employee'); continue; }
+        if (!ops_reminder_settings($conn, (int)$employee['id'])['enabled']) { $skip('switched off by HR'); continue; }
 
         $row = ops_attendance_current($conn, (int)$employee['id'], $day . ' 12:00:00');
         if ($row && !ops_attendance_status_is_open($row['status'] ?? null)) { $skip('day marked by HR'); continue; }
         if ($row && !empty($row['check_out'])) { $skip('checked in and out'); continue; }
-        if (!ops_reminder_is_workday($conn, $employee, $day)) { $skip('holiday, leave or day off'); continue; }
+        if (!ops_reminder_is_workday($conn, $employee, $day)) { $skip('holiday, leave, weekly off or day off'); continue; }
 
         $kind = ($row && !empty($row['check_in'])) ? 'no_check_out' : 'not_checked_in';
+        if ($kind === 'no_check_out' && ops_reminder_still_on_duty($conn, $employee, $row, ops_reminder_now())) { $skip('still on duty (schedule)'); continue; }
         $firstName = preg_split('/\s+/', trim((string)$employee['full_name']))[0] ?: 'Hello';
         $msg = ops_reminder_message($kind, $firstName, $row ? substr((string)$row['check_in'], 0, 5) : '');
         $person = ['user_id' => $userId, 'employee' => $employee['employee_code'], 'kind' => $kind, 'title' => $msg['title'], 'body' => $msg['body']];
@@ -292,11 +338,14 @@ function ops_reminder_run(PDO $conn, string $day, bool $dryRun = false, ?int $co
         $conn->prepare("UPDATE staff_push_log SET phones = ?, delivered = ? WHERE user_id = ? AND work_date = ?")
             ->execute([count($subs), $delivered, $userId, $day]);
         $report['sent'] += $delivered > 0 ? 1 : 0;
+        $sentTo[(int)$employee['id']] = $delivered > 0 ? 1 : 0;
         $report['people'][] = $person + ['phones' => count($subs), 'delivered' => $delivered];
     }
-    if (!$dryRun && $companyId !== null) {
-        $conn->prepare("UPDATE staff_push_runs SET finished_at = NOW(), sent = ? WHERE work_date = ? AND company_id = ?")
-            ->execute([$report['sent'], $day, $companyId]);
+    if (!$dryRun && $employeeIds !== null) {
+        $done = $conn->prepare("UPDATE staff_push_runs SET finished_at = NOW(), sent = ? WHERE work_date = ? AND company_id = ?");
+        foreach ($employeeIds as $eid) {
+            $done->execute([$sentTo[(int)$eid] ?? 0, $day, -(int)$eid]);
+        }
     }
     return $report;
 }

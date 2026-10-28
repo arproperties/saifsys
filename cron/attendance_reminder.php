@@ -2,15 +2,15 @@
 /**
  * The attendance reminder, from the command line.
  *
- * Not needed day to day: the first staff-app request after a company's reminder
- * time already runs it (modules/operations/includes/ops_attendance_reminder.php).
+ * Not needed day to day: the first staff-app request after a person's reminder
+ * time already sends it (modules/operations/includes/ops_attendance_reminder.php).
  * This is for a scheduled task if one is ever wanted, and for testing. Each
- * company runs at its own time (HR → Reminders).
+ * employee has their own time, set by HR on their profile.
  *
- *   php cron/attendance_reminder.php                     run every company whose time has passed and has not run today
- *   php cron/attendance_reminder.php --dry-run           who would get what today, per company, nothing sent
- *   php cron/attendance_reminder.php --send-now          TESTING: forget today's runs and send now, whatever the time
- *   php cron/attendance_reminder.php --send-now --company=3   the same, one company only
+ *   php cron/attendance_reminder.php                      send to everyone whose time has passed and who has not had today's
+ *   php cron/attendance_reminder.php --dry-run            who would get what today, nothing sent
+ *   php cron/attendance_reminder.php --send-now           TESTING: forget today's sends and send now, whatever the time
+ *   php cron/attendance_reminder.php --send-now --employee=12   the same, one employee only
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -29,17 +29,12 @@ $day = $now->format('Y-m-d');
 $args = array_slice($argv, 1);
 $only = null;
 foreach ($args as $a) {
-    if (preg_match('/^--company=(\d+)$/', $a, $m)) {
+    if (preg_match('/^--employee=(\d+)$/', $a, $m)) {
         $only = (int)$m[1];
     }
 }
-$companyName = static function (int $cid) use ($conn): string {
-    $st = $conn->prepare("SELECT name FROM companies WHERE id = ?");
-    $st->execute([$cid]);
-    return (string)($st->fetchColumn() ?: "Company $cid");
-};
-$print = static function (int $cid, array $report) use ($day, $companyName): void {
-    echo "{$companyName($cid)} (company $cid), day {$day}: {$report['considered']} people with reminders on, {$report['sent']} reminded.\n";
+$print = static function (array $report) use ($day): void {
+    echo "Day {$day}: {$report['considered']} people with reminders on, {$report['sent']} reminded.\n";
     foreach ($report['people'] as $p) {
         echo "  {$p['employee']}  {$p['title']}" . (isset($p['phones']) ? "  (phones {$p['phones']}, delivered {$p['delivered']})" : '') . "\n      {$p['body']}\n";
     }
@@ -48,37 +43,37 @@ $print = static function (int $cid, array $report) use ($day, $companyName): voi
     }
 };
 
-$companies = ops_reminder_companies_with_phones($conn);
+$employees = ops_reminder_employees_with_phones($conn);
 if ($only !== null) {
-    $companies = array_values(array_intersect($companies, [$only]));
+    $employees = array_values(array_intersect($employees, [$only]));
 }
-if (!$companies) {
-    echo "No phones have reminders turned on" . ($only !== null ? " in company $only" : '') . ".\n";
+if (!$employees) {
+    echo "No phones have reminders turned on" . ($only !== null ? " for employee $only" : '') . ".\n";
     exit(0);
 }
 
 if (in_array('--dry-run', $args, true)) {
-    foreach ($companies as $cid) {
-        $s = ops_reminder_settings($conn, $cid);
-        echo "-- reminders " . ($s['enabled'] ? "on at {$s['time']}" : 'off') . " (Dubai)\n";
-        $print($cid, ops_reminder_run($conn, $day, true, $cid));
+    foreach ($employees as $eid) {
+        $s = ops_reminder_settings($conn, $eid);
+        echo "-- employee $eid: reminders " . ($s['enabled'] ? "on at {$s['time']}" : 'off') . " (Dubai)\n";
     }
+    $print(ops_reminder_run($conn, $day, true, $employees));
 } elseif (in_array('--send-now', $args, true)) {
-    foreach ($companies as $cid) {
-        // Forget today's run and log for this company's people, then send.
-        $conn->prepare("DELETE l FROM staff_push_log l JOIN employees e ON e.id = l.employee_id WHERE l.work_date = ? AND e.company_id = ?")
-            ->execute([$day, $cid]);
-        $conn->prepare("DELETE FROM staff_push_runs WHERE work_date = ? AND company_id = ?")->execute([$day, $cid]);
-        $conn->prepare("INSERT INTO staff_push_runs (work_date, company_id) VALUES (?, ?)")->execute([$day, $cid]);
-        $print($cid, ops_reminder_run($conn, $day, false, $cid));
+    // Forget today's sends for these people, then send.
+    $forgetLog = $conn->prepare("DELETE FROM staff_push_log WHERE work_date = ? AND employee_id = ?");
+    $forgetRun = $conn->prepare("DELETE FROM staff_push_runs WHERE work_date = ? AND company_id = ?");
+    $claim = $conn->prepare("INSERT INTO staff_push_runs (work_date, company_id) VALUES (?, ?)");
+    foreach ($employees as $eid) {
+        $forgetLog->execute([$day, $eid]);
+        $forgetRun->execute([$day, -$eid]);
+        $claim->execute([$day, -$eid]);
     }
+    $print(ops_reminder_run($conn, $day, false, $employees));
 } else {
     $won = ops_reminder_claim_due($conn, $now, $only !== null ? [$only] : null);
     if (!$won) {
-        echo "Nothing due: no company's reminder time has passed, or each has already run today, or is switched off.\n";
+        echo "Nothing due: nobody's reminder time has passed, or each has already had today's, or is switched off.\n";
         exit(0);
     }
-    foreach ($won as $cid) {
-        $print($cid, ops_reminder_run($conn, $day, false, $cid));
-    }
+    $print(ops_reminder_run($conn, $day, false, $won));
 }

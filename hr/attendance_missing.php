@@ -97,7 +97,7 @@ echo hr_ui_page_header(
         ['label' => 'Attendance', 'href' => 'attendance.php'],
         ['label' => 'Missing'],
     ],
-    '<a class="btn btn-outline-secondary" href="attendance.php">All attendance</a>'
+    '<a class="btn btn-outline-secondary" href="attendance.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
 );
 ?>
 

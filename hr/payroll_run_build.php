@@ -821,7 +821,7 @@ $pageStyles = '
 <?php require_once __DIR__ . '/includes/hr_layout_header.php'; ?>
 
 <?php
-$buildActions = '<a class="btn btn-outline-secondary" href="payroll_runs.php">Back to runs</a>';
+$buildActions = '<a class="btn btn-outline-secondary" href="payroll_runs.php"><i class="bi bi-arrow-left me-1"></i>Back</a>';
 if (!$canEditRun) {
     $buildActions .= '<a class="btn btn-outline-primary" href="payroll_run_view.php?id=' . (int)$run_id . '">View posted</a>';
 }
@@ -1022,7 +1022,7 @@ echo hr_ui_page_header(
               Post Run
             </button>
           <?php else: ?>
-            <a class="btn btn-secondary" href="payroll_runs.php">Back</a>
+            <a class="btn btn-outline-secondary" href="payroll_runs.php"><i class="bi bi-arrow-left me-1"></i>Back</a>
           <?php endif; ?>
         </div>
       </div>

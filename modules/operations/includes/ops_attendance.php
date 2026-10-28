@@ -70,6 +70,15 @@ function ops_attendance_employee(PDO $conn, int $userId): ?array
 /** How many days back the app asks about a forgotten check out. Older is HR's. */
 const OPS_ATTENDANCE_UNCLOSED_DAYS = 7;
 
+/**
+ * Night shifts. A check in from noon on can still be open after midnight (17:00
+ * to 03:00): until it is this many hours old it is the shift in progress, not a
+ * forgotten day. A morning check in never runs over, so a forgotten check out
+ * from the day before is still asked about the usual way.
+ */
+const OPS_ATTENDANCE_NIGHT_FROM = '12:00';
+const OPS_ATTENDANCE_NIGHT_MAX_HOURS = 14;
+
 /** The attendance row for the day a moment falls on (default: now), or null. */
 function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null): ?array
 {
@@ -77,7 +86,32 @@ function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null):
     $stmt = $conn->prepare("SELECT * FROM attendance WHERE employee_id = ? AND work_date = ? LIMIT 1");
     $stmt->execute([$employeeId, $today]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ?: null;
+    // Nothing yet today: yesterday's night shift may still be going.
+    return $row ?: ops_attendance_night_open($conn, $employeeId, $at);
+}
+
+/**
+ * Yesterday's shift, if it is a night shift still in progress at $at: checked
+ * in from noon on, not checked out, undecided, and under the night limit.
+ */
+function ops_attendance_night_open(PDO $conn, int $employeeId, ?string $at = null): ?array
+{
+    $at = $at ?? date('Y-m-d H:i:s');
+    $yesterday = date('Y-m-d', strtotime(substr($at, 0, 10) . ' -1 day'));
+    $stmt = $conn->prepare("
+        SELECT * FROM attendance
+        WHERE employee_id = ? AND work_date = ?
+          AND check_in IS NOT NULL AND check_out IS NULL AND status = 'pending'
+        LIMIT 1
+    ");
+    $stmt->execute([$employeeId, $yesterday]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row || substr((string)$row['check_in'], 0, 5) < OPS_ATTENDANCE_NIGHT_FROM) {
+        return null;
+    }
+    $started = strtotime($yesterday . ' ' . $row['check_in']);
+    $nowTs = strtotime($at);
+    return ($started !== false && $nowTs - $started <= OPS_ATTENDANCE_NIGHT_MAX_HOURS * 3600) ? $row : null;
 }
 
 /**
@@ -89,11 +123,14 @@ function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null):
 function ops_attendance_unclosed(PDO $conn, int $employeeId, ?string $at = null): ?array
 {
     $today = substr($at ?? date('Y-m-d H:i:s'), 0, 10);
+    // A night shift still in progress is not a forgotten day: it closes with Check out.
+    $night = ops_attendance_night_open($conn, $employeeId, $at);
     $stmt = $conn->prepare("
         SELECT * FROM attendance
         WHERE employee_id = ? AND work_date < ? AND work_date >= ?
           AND check_in IS NOT NULL AND check_out IS NULL
           AND source = 'self' AND status = 'pending'
+          AND id <> ?
         ORDER BY work_date DESC
         LIMIT 1
     ");
@@ -101,6 +138,7 @@ function ops_attendance_unclosed(PDO $conn, int $employeeId, ?string $at = null)
         $employeeId,
         $today,
         date('Y-m-d', strtotime($today . ' -' . OPS_ATTENDANCE_UNCLOSED_DAYS . ' days')),
+        $night ? (int)$night['id'] : 0,
     ]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ?: null;
@@ -294,10 +332,16 @@ function ops_attendance_close_previous(PDO $conn, array $employee, int $userId, 
     }
 
     $checkIn = substr((string)$row['check_in'], 0, 5);
-    if ($time <= $checkIn) {
+    $leftTs = strtotime($workDate . ' ' . $time);
+    $inTs = strtotime($workDate . ' ' . $checkIn);
+    // A night shift (checked in from noon on) may end the next morning, within the night limit.
+    if ($time < $checkIn && $checkIn >= OPS_ATTENDANCE_NIGHT_FROM && $leftTs + 86400 - $inTs <= OPS_ATTENDANCE_NIGHT_MAX_HOURS * 3600) {
+        $leftTs += 86400;
+    }
+    if ($leftTs <= $inTs) {
         return ['ok' => false, 'error' => 'bad_time', 'message' => 'The time you left must be after your check in at ' . $checkIn . '.'];
     }
-    $hours = round((strtotime($workDate . ' ' . $time) - strtotime($workDate . ' ' . $checkIn)) / 3600, 2);
+    $hours = round(($leftTs - $inTs) / 3600, 2);
 
     $what = 'Check out time entered by staff on ' . date('j M', strtotime($at)) . ' (forgot to check out)';
     $notes = trim((string)($row['notes'] ?? ''));

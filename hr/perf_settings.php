@@ -193,7 +193,7 @@ echo hr_ui_page_header(
         ['label' => 'Performance', 'href' => 'performance.php?from=' . urlencode($fromStr) . '&to=' . urlencode($toStr)],
         ['label' => 'Settings'],
     ],
-    '<a class="btn btn-outline-secondary" href="performance.php?from=' . h($fromStr) . '&to=' . h($toStr) . '">Back to Performance</a>'
+    '<a class="btn btn-outline-secondary" href="performance.php?from=' . h($fromStr) . '&to=' . h($toStr) . '"><i class="bi bi-arrow-left me-1"></i>Back</a>'
 );
 ?>
 

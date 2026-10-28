@@ -18,7 +18,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $quota   = strlen($_POST['annual_quota_days'] ?? '') ? (float)$_POST['annual_quota_days'] : null;
     $attach  = isset($_POST['requires_attachment']) ? 1 : 0;
     $carry   = strlen($_POST['carryover_limit_days'] ?? '') ? (float)$_POST['carryover_limit_days'] : null;
-    $color   = trim($_POST['color_hex'] ?? '') ?: null;
+    // Colour picker value, or none when "No colour" is ticked; only #rrggbb is kept.
+    $color   = trim($_POST['color_hex'] ?? '');
+    $color   = (empty($_POST['color_none']) && preg_match('/^#[0-9a-fA-F]{6}$/', $color)) ? strtolower($color) : null;
 
     if ($name === '') {
         $err = 'Name is required.';
@@ -192,7 +194,18 @@ echo hr_ui_page_header(
           </div>
           <div class="col-md-2">
             <label class="form-label">Color</label>
-            <input class="form-control" name="color_hex" placeholder="#16a34a" value="<?= htmlspecialchars($edit['color_hex'] ?? '') ?>">
+            <?php $editColor = (string)($edit['color_hex'] ?? ''); ?>
+            <div class="d-flex align-items-center gap-2">
+              <input type="color" class="form-control form-control-color" name="color_hex" id="lt_color"
+                     value="<?= htmlspecialchars(preg_match('/^#[0-9a-fA-F]{6}$/', $editColor) ? $editColor : '#16a34a') ?>"
+                     title="Choose a colour" <?= $edit && $editColor === '' ? 'disabled' : '' ?>>
+              <div class="form-check mb-0">
+                <input class="form-check-input" type="checkbox" name="color_none" value="1" id="lt_color_none"
+                       <?= $edit && $editColor === '' ? 'checked' : '' ?>
+                       onchange="document.getElementById('lt_color').disabled = this.checked;">
+                <label class="form-check-label small" for="lt_color_none">No colour</label>
+              </div>
+            </div>
           </div>
           <div class="col-12 d-flex gap-4">
             <div class="form-check">
@@ -231,7 +244,15 @@ echo hr_ui_page_header(
             <td><?= $t['annual_quota_days'] ?? '—' ?></td>
             <td><?= $t['carryover_limit_days'] ?? '—' ?></td>
             <td><?= $t['requires_attachment'] ? 'Yes' : 'No' ?></td>
-            <td><?= htmlspecialchars($t['color_hex'] ?? '') ?></td>
+            <td>
+              <?php $tColor = (string)($t['color_hex'] ?? ''); ?>
+              <?php if (preg_match('/^#[0-9a-fA-F]{6}$/', $tColor)): ?>
+                <span class="d-inline-block rounded border align-middle me-1" style="width:18px;height:18px;background:<?= htmlspecialchars($tColor) ?>"></span>
+                <span class="small text-muted"><?= htmlspecialchars($tColor) ?></span>
+              <?php else: ?>
+                <span class="text-muted">—</span>
+              <?php endif; ?>
+            </td>
             <td class="text-end">
               <a class="btn btn-sm btn-outline-primary" href="?action=edit&id=<?= (int)$t['id'] ?>">Edit</a>
               <a class="btn btn-sm btn-outline-danger" href="?action=delete&id=<?= (int)$t['id'] ?>" onclick="return confirm('Delete this type?')">Delete</a>

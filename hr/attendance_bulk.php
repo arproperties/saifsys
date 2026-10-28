@@ -180,17 +180,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_apply'])) {
         }
     }
 
-    $calc_hours = static function ($in, $out) {
-        if (!$in || !$out) {
-            return null;
-        }
-        $a = strtotime("1970-01-01 $in UTC");
-        $b = strtotime("1970-01-01 $out UTC");
-        if ($a === false || $b === false || $b <= $a) {
-            return null;
-        }
-        return round(($b - $a) / 3600, 2);
-    };
+    // An Out before the In is the next morning (night shift).
+    $calc_hours = static fn($in, $out) => hr_attendance_hours($in, $out);
 
     if (!$flash_err) {
         $created = 0;
@@ -328,7 +319,7 @@ echo hr_ui_page_header(
         ['label' => 'Attendance', 'href' => $hrBase . '/attendance'],
         ['label' => 'Bulk Apply'],
     ],
-    '<a class="btn btn-outline-secondary btn-sm" href="attendance.php"><i data-lucide="arrow-left" style="width:14px;height:14px" class="me-1"></i>Back to list</a>'
+    '<a class="btn btn-outline-secondary" href="attendance.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
     . '<a class="btn btn-outline-secondary btn-sm" href="attendance_summary.php"><i data-lucide="calendar-range" style="width:14px;height:14px" class="me-1"></i>Monthly summary</a>'
 );
 ?>

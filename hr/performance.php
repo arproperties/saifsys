@@ -285,7 +285,7 @@ echo hr_ui_page_header(
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Performance'],
     ],
-    '<a class="btn btn-outline-secondary" href="dashboard">Back</a>'
+    '<a class="btn btn-outline-secondary" href="dashboard"><i class="bi bi-arrow-left me-1"></i>Back</a>'
     . ($view === 'cleaning'
         ? '<a class="btn btn-outline-primary" href="perf_settings?from=' . h($from->format('Y-m-d')) . '&to=' . h($to->format('Y-m-d')) . '">Targets & Capacity</a>'
         : '')

@@ -4,7 +4,15 @@
  *
  * Schedules are stored as day labels like "9:00 AM - 5:00 PM". These helpers
  * turn that into expected workdays/hours for attendance, leave, and payroll.
+ *
+ * From HR_SCHEDULE_WEEKLY_OFF_FROM on, the weekly off (hr_weekly_off.php) wins:
+ * on that day the schedule counts as Off whatever hours it holds, so payroll,
+ * reminders and the day-by-day view agree. Earlier months are left as they were.
  */
+
+require_once __DIR__ . '/hr_weekly_off.php';
+
+const HR_SCHEDULE_WEEKLY_OFF_FROM = '2026-11-01';
 
 function hr_schedule_day_columns(): array
 {
@@ -46,22 +54,53 @@ function hr_schedule_parse_hours(?string $value): float
         return max(0.0, round((float)$value, 2));
     }
 
-    $parts = preg_split('/\s*(?:-|–|—|\bto\b)\s*/i', $value);
-    if (!$parts || count($parts) < 2) {
-        return 0.0;
+    // One or more duties a day ("9:00 AM - 1:00 PM, 5:00 PM - 9:00 PM"): the hours add up.
+    $total = 0.0;
+    foreach (hr_schedule_ranges($value) as $r) {
+        $total += $r['hours'];
     }
+    return max(0.0, round($total, 2));
+}
 
-    $start = strtotime($parts[0]);
-    $end = strtotime($parts[1]);
-    if ($start === false || $end === false) {
-        return 0.0;
+/**
+ * One day's label split into its duties, in order. A duty that ends at or
+ * before it starts runs past midnight (17:00 - 02:00 is 9 hours).
+ *
+ * @return list<array{start:string, end:string, hours:float, overnight:bool}> times as H:i
+ */
+function hr_schedule_ranges(?string $value): array
+{
+    $value = trim((string)$value);
+    if ($value === '' || preg_match('/^(off|holiday|rest|none|n\/a)$/i', $value) || is_numeric($value)) {
+        return [];
     }
-
-    if ($end <= $start) {
-        $end += 86400;
+    $out = [];
+    foreach (preg_split('/\s*[,;]\s*/', $value) as $piece) {
+        $parts = preg_split('/\s*(?:-|–|—|\bto\b)\s*/i', $piece);
+        if (!$parts || count($parts) < 2) {
+            continue;
+        }
+        $start = strtotime($parts[0]);
+        $end = strtotime($parts[1]);
+        if ($start === false || $end === false) {
+            continue;
+        }
+        $overnight = $end <= $start;
+        $out[] = [
+            'start' => date('H:i', $start),
+            'end' => date('H:i', $end),
+            'hours' => round((($overnight ? $end + 86400 : $end) - $start) / 3600, 2),
+            'overnight' => $overnight,
+        ];
     }
+    return $out;
+}
 
-    return max(0.0, round(($end - $start) / 3600, 2));
+/** "17:00" as "5:00 PM" (how schedules are stored). */
+function hr_schedule_time_label(string $hm): string
+{
+    $t = strtotime('1970-01-01 ' . $hm);
+    return $t === false ? $hm : date('g:i A', $t);
 }
 
 function hr_schedule_rows(PDO $conn, int $employeeId, string $from, string $to): array
@@ -123,11 +162,22 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
     }
 
     $columns = hr_schedule_day_columns();
+    $companyId = null;
+    if ($rows && $to >= HR_SCHEDULE_WEEKLY_OFF_FROM) {
+        $st = $conn->prepare("SELECT company_id FROM employees WHERE id = ?");
+        $st->execute([$employeeId]);
+        $companyId = ($c = $st->fetchColumn()) ? (int)$c : null;
+    }
     for ($date = $start; $date <= $end; $date = $date->modify('+1 day')) {
         $ymd = $date->format('Y-m-d');
         $row = hr_schedule_row_for_date($rows, $ymd);
         $column = $columns[(int)$date->format('N')];
         $label = $row ? (string)($row[$column] ?? '') : '';
+        $weeklyOff = $row && $ymd >= HR_SCHEDULE_WEEKLY_OFF_FROM
+            && (int)$date->format('N') === hr_weekly_off_for_employee($conn, $employeeId, $companyId, $ymd);
+        if ($weeklyOff) {
+            $label = 'Off';
+        }
         $hours = hr_schedule_parse_hours($label);
         $isWorkday = $hours > 0;
 
@@ -142,6 +192,7 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
             'label' => $label,
             'expected_hours' => $hours,
             'is_workday' => $isWorkday,
+            'weekly_off' => $weeklyOff,
         ];
     }
 

@@ -59,7 +59,7 @@
     attendance: {
       checkIn: 'Check in',
       checkOut: 'Check out',
-      checkedInAt: function (time) { return 'Checked in at ' + time; },
+      checkedInAt: function (time, yesterday) { return (yesterday ? 'Checked in yesterday at ' : 'Checked in at ') + time; },
       dayDone: function (a, b, h) { return 'Today: ' + a + ' – ' + b + ' · ' + h; },
       checkOutTitle: 'Check out for today?',
       checkOutBody: 'This is your last entry today. You cannot check in again until tomorrow.',
@@ -994,7 +994,9 @@
     var el = document.getElementById('att-left');
     var time = String((el && el.value) || ui.leftAt || '').slice(0, 5);
     if (!/^\d\d:\d\d$/.test(time)) { S.toast(T.attendance.forgotPick); return; }
-    if (time <= open.check_in) { S.toast(T.attendance.forgotTooEarly(open.check_in)); return; }
+    // A night shift (checked in from noon on) may end the next morning; the server checks the limit.
+    var nextMorning = open.check_in >= '12:00' && time < open.check_in;
+    if (time <= open.check_in && !nextMorning) { S.toast(T.attendance.forgotTooEarly(open.check_in)); return; }
     ui.leftAt = '';
     cacheSet('attendance', Object.assign({}, data, { unclosed: null }));
     enqueue({ kind: 'attendance', jobId: 0, action: 'close-previous', workDate: open.work_date, time: time });
@@ -1459,9 +1461,9 @@
   // card hidden), 'ios-browser' (iPhone in Safari: must be on the Home Screen
   // first), 'denied', 'off', 'on'. "Not now" hides the card for 7 days.
   //
-  // Each company has its own time and switch; push/key returns this person's
-  // (cfg). The cards show that time, and none show while the company has
-  // reminders switched off.
+  // Each employee has their own time and switch (set by HR on their profile);
+  // push/key returns this person's (cfg). The cards show that time, and none
+  // show while HR has their reminders switched off.
   //
   // Signing out turns reminders off on this phone (it may be shared), but notes
   // who had them on. When one of those people signs in again and notifications
@@ -1476,7 +1478,7 @@
     return Array.isArray(list) ? list : [];
   }
 
-  /** This person's company's time and switch, fetched once per sign-in. */
+  /** This person's time and switch, fetched once per sign-in. */
   function reminderConfig() {
     if (reminder.cfg || reminder.cfgLoading) return;
     reminder.cfgLoading = true;
@@ -1629,7 +1631,7 @@
         esc(T.attendance.dayDone(data.check_in || '', data.check_out || '', hoursLabel(data.hours))) + '</span></div>';
     }
     if (data && data.state === 'checked_in') {
-      return '<div class="att"><span class="ok">' + icon('clock') + '</span><strong class="grow">' + esc(T.attendance.checkedInAt(data.check_in || '')) + '</strong>' +
+      return '<div class="att"><span class="ok">' + icon('clock') + '</span><strong class="grow">' + esc(T.attendance.checkedInAt(data.check_in || '', !!data.work_date && data.work_date < nowStamp().slice(0, 10))) + '</strong>' +
         '<button type="button" class="btn secondary auto" data-action="cleaning:check-out">' + esc(T.attendance.checkOut) + '</button></div>';
     }
     return '<div class="att">' + button(T.attendance.checkIn, 'cleaning:check-in', { icon: 'clock' }) + '</div>';

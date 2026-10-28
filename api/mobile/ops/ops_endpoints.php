@@ -520,13 +520,13 @@ function ops_api_resolve_places(PDO $conn, int $companyId, $input): array
 // GET ops/push/key, POST ops/push/subscribe and /unsubscribe
 // ---------------------------------------------------------------------------
 
-/** The public key the browser needs to subscribe, and this person's company's reminder time and switch. */
+/** The public key the browser needs to subscribe, and this person's reminder time and switch. */
 function ops_api_handle_push_key(PDO $conn, array $user): void
 {
     if (!ops_reminder_ready($conn)) {
         customer_api_send_ok(['enabled' => false]);
     }
-    $settings = ops_reminder_settings($conn, ops_reminder_user_company($conn, (int)$user['id']));
+    $settings = ops_reminder_settings($conn, ops_reminder_user_employee($conn, (int)$user['id']));
     customer_api_send_ok([
         'enabled' => $settings['enabled'],
         'time' => $settings['time'],

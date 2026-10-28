@@ -17,13 +17,8 @@ $me_id = $_SESSION['user']['id'] ?? null;
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 function safe_time($t){ return $t !== '' ? $t : null; }
 function calc_hours($in, $out){
-    if (!$in || !$out) return null;
-    // both "HH:MM" or "HH:MM:SS" are fine
-    $a = strtotime("1970-01-01 $in UTC");
-    $b = strtotime("1970-01-01 $out UTC");
-    if ($a===false || $b===false || $b <= $a) return null;
-    $diff = ($b - $a) / 3600.0;
-    return round($diff, 2);
+    // An Out before the In is the next morning (night shift).
+    return hr_attendance_hours($in, $out);
 }
 
 $attStatuses = hr_attendance_statuses();
@@ -325,11 +320,14 @@ $excusedReady = hr_attendance_status_supported($conn, 'excused_absent');
 // Page settings for shared layout
 $pageTitle = 'Attendance';
 $pageStyles = hr_attendance_status_css() . '
-.att-stat-card{display:block;height:100%;padding:.85rem 1rem;background:#fff;border:1px solid var(--hr-border);border-left:4px solid var(--att-stat);border-radius:12px;text-decoration:none;color:inherit;transition:box-shadow .15s,border-color .15s}
+.att-stat-card{display:block;height:100%;padding:.85rem 1rem;text-align:center;background:color-mix(in srgb, var(--att-stat) 12%, #fff);border:1px solid var(--hr-border);border-radius:12px;text-decoration:none;color:inherit;transition:box-shadow .15s,border-color .15s}
 .att-stat-card:hover{box-shadow:0 4px 14px rgba(0,0,0,.07);color:inherit}
 .att-stat-card.is-active{border-color:var(--att-stat);box-shadow:0 0 0 3px color-mix(in srgb, var(--att-stat) 18%, transparent)}
 .att-stat-label{font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--hr-text-muted)}
 .att-stat-num{font-size:1.6rem;font-weight:700;line-height:1.2;color:var(--att-stat)}
+.att-date-cell{--bs-table-bg:#f3f6fa}
+.att-status-cell .badge{font-size:.82rem;padding:.45em .8em;border-radius:6px}
+.att-company-cell{--bs-table-bg:#f7f5ef}
 ';
 ?>
 <?php require_once __DIR__ . '/includes/hr_layout_header.php'; ?>
@@ -342,9 +340,9 @@ echo hr_ui_page_header(
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Attendance'],
     ],
-    '<a class="btn btn-outline-secondary" href="../operation.php">Back</a>'
-    . '<a class="btn btn-outline-primary" href="attendance_bulk.php">Bulk Apply</a>'
-    . '<a class="btn btn-outline-primary" href="attendance_summary.php">Monthly Summary</a>'
+    '<a class="btn btn-outline-secondary" href="../operation.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
+    . '<a class="btn btn-primary" href="attendance_bulk.php"><i class="bi bi-ui-checks-grid me-1"></i>Bulk Apply</a>'
+    . '<a class="btn btn-success" href="attendance_summary.php"><i class="bi bi-table me-1"></i>Monthly Summary</a>'
 );
 ?>
 
@@ -518,6 +516,7 @@ echo hr_ui_page_header(
       <div class="col-lg-2">
         <label class="form-label">Out</label>
         <input type="time" name="check_out" class="form-control">
+        <div class="form-text">Earlier than In = next day.</div>
       </div>
       <div class="col-lg-2">
         <label class="form-label">Status</label>
@@ -595,12 +594,12 @@ echo hr_ui_page_header(
             ?>
             <tr>
               <td><?= $rowId ?></td>
-              <td><?= h($r['work_date']) ?></td>
-              <td><?= h($rowEmp) ?></td>
-              <td><?= h($r['company_name'] ?: '—') ?></td>
+              <td class="text-nowrap att-date-cell"><?= h(date('j M Y', strtotime($r['work_date']))) ?></td>
+              <td class="fw-semibold"><?= h($rowEmp) ?></td>
+              <td class="att-company-cell"><?= h($r['company_name'] ?: '—') ?></td>
               <td><?= h($r['check_in'] ?: '—') ?></td>
               <td>
-                <?= h($r['check_out']?: '—') ?>
+                <?= h($r['check_out']?: '—') ?><?php if (hr_attendance_is_overnight($r['check_in'], $r['check_out'])): ?> <span class="small text-muted" title="Next day">(+1)</span><?php endif; ?>
                 <?php
                   // Break columns only exist once migrations/hr_attendance_break.sql
                   // has run, so read them defensively. A break is recorded only —
@@ -619,8 +618,8 @@ echo hr_ui_page_header(
                   </div>
                 <?php endif; ?>
               </td>
-              <td><?= $r['hours']!==null ? number_format((float)$r['hours'],2) : '—' ?></td>
-              <td>
+              <td class="fw-bold"><?= $r['hours']!==null ? number_format((float)$r['hours'],2) : '—' ?></td>
+              <td class="att-status-cell">
                 <?= hr_attendance_status_badge_html($r['status']) ?>
                 <?php if ($r['status'] === 'absent' && strpos((string)($r['notes'] ?? ''), 'Worker Availability absent:') === 0): ?>
                   <span class="badge text-bg-info ms-1">From Operation</span>

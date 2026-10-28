@@ -187,6 +187,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
+    // Raised from the Leave Calendar (double-click on a day): go back there,
+    // to the request's month, with the result as a message.
+    if (isset($_POST['create']) && ($_POST['return_to'] ?? '') === 'calendar') {
+        $_SESSION['lc_flash'] = $err !== '' ? ['danger', $err] : ['success', $msg !== '' ? $msg : 'Leave request submitted.'];
+        $lcMonth = preg_match('/^(\d{4}-\d{2})-\d{2}$/', (string)($_POST['date_from'] ?? ''), $lcM) ? $lcM[1] : date('Y-m');
+        header('Location: leave_calendar.php?month=' . $lcMonth . '&show=pending');
+        exit;
+    }
+
     if ($can_manage_all && isset($_POST['change_status'])) {
         $id = (int)$_POST['id'];
         $new = $_POST['new_status'];
@@ -374,20 +383,34 @@ echo hr_ui_page_header(
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Leave'],
     ],
-    '<a href="leave_types.php" class="btn btn-outline-secondary">Leave Types</a>'
-    . '<a href="leave_balances.php" class="btn btn-outline-secondary">Balances</a>'
+    '<a href="leave_types.php" class="btn btn-primary"><i class="bi bi-tags me-1"></i>Leave Types</a>'
+    . '<a href="leave_balances.php" class="btn btn-success"><i class="bi bi-calculator me-1"></i>Balances</a>'
 );
 ?>
 
   <?php if ($err): ?><div class="alert alert-danger"><?= htmlspecialchars($err) ?></div><?php endif; ?>
   <?php if ($msg): ?><div class="alert alert-success"><?= htmlspecialchars($msg) ?></div><?php endif; ?>
 
-  <div class="hr-settings-card mb-4">
+  <?php
+    // Opened from the Leave Calendar by double-clicking a day: that day is
+    // filled in, and Submit goes back to the calendar.
+    $fromCalendar = ($_GET['from'] ?? '') === 'calendar';
+    $prefillDate = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($_GET['date'] ?? '')) && strtotime($_GET['date'])
+        ? (string)$_GET['date'] : '';
+  ?>
+  <div class="hr-settings-card mb-4" id="new-request">
     <div class="settings-header">New Request</div>
     <div class="card-body">
+      <?php if ($fromCalendar && $prefillDate !== ''): ?>
+        <div class="alert alert-info py-2 small d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-calendar-plus me-1"></i>Requesting leave for <strong><?= htmlspecialchars(date('D j M Y', strtotime($prefillDate))) ?></strong>, from the Leave calendar. Change the dates if needed.</span>
+          <a href="leave_calendar.php?month=<?= htmlspecialchars(substr($prefillDate, 0, 7)) ?>" class="ms-2">Back to calendar</a>
+        </div>
+      <?php endif; ?>
       <form method="post" enctype="multipart/form-data" class="row g-3">
         <?php csrf_field(); ?>
         <input type="hidden" name="create" value="1">
+        <?php if ($fromCalendar): ?><input type="hidden" name="return_to" value="calendar"><?php endif; ?>
         <?php if ($can_manage_all): ?>
         <div class="col-md-4">
           <label class="form-label">Employee *</label>
@@ -412,11 +435,11 @@ echo hr_ui_page_header(
         </div>
         <div class="col-md-2">
           <label class="form-label">From *</label>
-          <input type="date" name="date_from" class="form-control" required>
+          <input type="date" name="date_from" class="form-control" required value="<?= htmlspecialchars($prefillDate) ?>">
         </div>
         <div class="col-md-2">
           <label class="form-label">To *</label>
-          <input type="date" name="date_to" class="form-control" required>
+          <input type="date" name="date_to" class="form-control" required value="<?= htmlspecialchars($prefillDate) ?>">
         </div>
         <div class="col-md-6">
           <label class="form-label">Reason</label>

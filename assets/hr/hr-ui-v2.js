@@ -40,6 +40,18 @@
     });
   }
 
+  // Desktop: hide or show the menu; the choice is remembered in this browser.
+  var NAV_HIDDEN_KEY = 'hr.nav.hidden';
+  function initNavToggle() {
+    var root = document.documentElement;
+    document.querySelectorAll('[data-hr-nav-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var hidden = root.classList.toggle('hr-nav-hidden');
+        try { localStorage.setItem(NAV_HIDDEN_KEY, hidden ? '1' : '0'); } catch (e) {}
+      });
+    });
+  }
+
   // Collapsible menus: the one holding the current page starts open; the rest
   // remember whether HR left them open (localStorage).
   var NAV_OPEN_KEY = 'hr.nav.open';
@@ -158,6 +170,7 @@
     if (!document.body.classList.contains('hr-ui-v2')) return;
     initLucide();
     initMobileSidebar();
+    initNavToggle();
     initNavGroups();
     initNavSearch();
     initUnsavedForms();
