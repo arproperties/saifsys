@@ -520,6 +520,38 @@ function post_invoice_mode_receipt_to_accounting($paymentId, $companyId, $create
         $arCredit = round((float)($alloc['allocated_ar'] ?? 0), 2);
         $tenantCredit = round((float)($alloc['tenant_credit'] ?? 0), 2);
         $receiptAmount = round((float)$payment['amount'], 2);
+
+        // The deposit part already has its own journal (Dr Bank / Cr 2200, posted by
+        // re_sd_post_liability_for_receipt_allocation). Leave it out here, or the bank
+        // is debited twice and AR is credited for money that never was a receivable.
+        $depositPostedStmt = $conn->prepare("
+            SELECT COALESCE(SUM(jl.debit_amount), 0)
+            FROM re_journal_headers jh
+            JOIN re_journal_lines jl ON jl.journal_id = jh.id
+            JOIN re_chart_of_accounts a ON a.id = jl.account_id
+            WHERE jh.company_id = ? AND jh.reference_type = 'security_deposit_receipt' AND jh.reference_id = ?
+              AND jh.journal_type = 'deposit' AND jh.is_posted = 1 AND COALESCE(jh.is_reversed, 0) = 0
+              AND a.account_type = 'Asset'
+        ");
+        $depositPostedStmt->execute([$companyId, $paymentId]);
+        $depositPosted = round((float)$depositPostedStmt->fetchColumn(), 2);
+        if ($depositPosted > 0) {
+            $depositAllocStmt = $conn->prepare("
+                SELECT COALESCE(SUM(ra.amount_allocated), 0)
+                FROM re_receipt_allocations ra
+                JOIN re_obligations o ON o.id = ra.obligation_id AND o.company_id = ra.company_id
+                WHERE ra.company_id = ? AND ra.payment_id = ? AND ra.target_type = 'obligation'
+                  AND o.obligation_type = 'security_deposit'
+            ");
+            $depositAllocStmt->execute([$companyId, $paymentId]);
+            $depositPosted = min($depositPosted, round((float)$depositAllocStmt->fetchColumn(), 2));
+            $arCredit = round(max(0, $arCredit - $depositPosted), 2);
+            $receiptAmount = round(max(0, $receiptAmount - $depositPosted), 2);
+            if ($receiptAmount <= 0.005) {
+                // Deposit-only receipt: its deposit journal is the whole posting.
+                return ['success' => true, 'journal_id' => null, 'deposit_only' => true, 'error' => null];
+            }
+        }
         if ($tenantCredit > 0 && !$tenantAdvanceAccount) {
             return ['success' => false, 'journal_id' => null, 'error' => 'Deferred Revenue account (2410) not found'];
         }
