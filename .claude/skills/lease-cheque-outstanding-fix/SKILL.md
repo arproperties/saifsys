@@ -60,6 +60,11 @@ cheque number, cheque amount, receipt number and receipt amount. Keep the shape:
   second run changes nothing.
 - PART 3 selects the receipt with its cheque.
 - No `SELECT ROW_COUNT()`. phpMyAdmin shows 0 even when the update worked.
+- Warning (2026-10-26): phpMyAdmin can stop after PART 1's SELECT, so the UPDATE never runs
+  while PART 1 says "OK - will link". Always have him run PART 3 afterwards; if the link is
+  missing, give a one-statement `UPDATE ... JOIN` instead (see lease-rebuild-orphan-links-fix).
+- If the receipt already has a `cheque_id` that points at a deleted cheque, the schedule was
+  rebuilt: use the lease-rebuild-orphan-links-fix skill instead.
 
 ## 5. Prove it on local before handing over
 

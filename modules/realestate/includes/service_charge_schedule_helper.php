@@ -552,11 +552,15 @@ if (!function_exists('re_service_charge_schedule_adjustment_total')) {
         if (!re_service_charge_table_has_column($conn, 'apply_mode')) {
             return 0.0;
         }
-        // What went into the cheques: the bills linked to them, VAT included.
+        // What went into the cheques: the bills linked to them, VAT included. Only bills on a
+        // cheque row that still exists: a schedule rebuild deletes the old rows and leaves the
+        // bill pointing at a gone installment, which added the charge to Expected with no
+        // cheque carrying it (PARKPLAC-501-0001 showed a 3,150 parking "Difference").
         $stmt = $conn->prepare("
             SELECT COALESCE(SUM(bi.total_amount), 0)
             FROM re_billing_items bi
             JOIN re_service_charges sc ON sc.id = bi.service_charge_id AND sc.company_id = bi.company_id
+            JOIN re_lease_installments li ON li.id = bi.installment_id AND li.lease_id = bi.lease_id
             WHERE bi.company_id = ?
               AND bi.lease_id = ?
               AND bi.installment_id IS NOT NULL
