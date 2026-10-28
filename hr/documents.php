@@ -7,6 +7,7 @@ require_once __DIR__.'/../includes/audit_bridge.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_document_file_helper.php';
+require_once __DIR__ . '/includes/hr_required_docs.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 // --------- Helpers ----------
@@ -47,6 +48,17 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
             $_SESSION['flash_err'] = "Employee and document type are required.";
             header("Location: documents.php");
             exit;
+        }
+        // Passport, Visa, Labor Card, Contract and National ID need a date or N/A ticked.
+        $expiryNa = !empty($_POST['expiry_na']);
+        $expiryError = hr_required_docs_expiry_error('', $doc_type_id, $expires_at, $expiryNa);
+        if ($expiryError !== null) {
+            $_SESSION['flash_err'] = $expiryError;
+            header("Location: documents.php" . ($doc_id ? '?edit=' . $doc_id : ''));
+            exit;
+        }
+        if ($expiryNa) {
+            $expires_at = '';
         }
 
         // Pull employee_code for directory naming
@@ -340,8 +352,9 @@ $pageStyles = '
     .docs-notes { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .docs-actions { white-space: nowrap; }
 ';
+$pageScripts = hr_required_docs_expiry_field_js();
 if ($editDoc) {
-    $pageScripts = '<script>bootstrap.Modal.getOrCreateInstance(document.getElementById("docModal")).show();</script>';
+    $pageScripts .= '<script>bootstrap.Modal.getOrCreateInstance(document.getElementById("docModal")).show();</script>';
 }
 require_once __DIR__ . '/includes/hr_layout_header.php';
 
@@ -541,7 +554,7 @@ echo hr_ui_page_header(
       <div class="modal-body">
         <input type="hidden" name="action" value="save">
         <input type="hidden" name="doc_id" value="<?= $editDoc['id'] ?? 0 ?>">
-        <div class="row g-3">
+        <div class="row g-3" data-expiry-rule>
           <div class="col-md-6">
             <label class="form-label">Employee *</label>
             <select name="employee_id" class="form-select" required>
@@ -555,7 +568,7 @@ echo hr_ui_page_header(
           </div>
           <div class="col-md-6">
             <label class="form-label">Type *</label>
-            <select name="doc_type_id" class="form-select" required>
+            <select name="doc_type_id" class="form-select" required data-req-type>
               <option value="">-- Choose --</option>
               <?php foreach($types as $t): ?>
                 <option value="<?=$t['id']?>" <?= isset($editDoc['doc_type_id']) && $editDoc['doc_type_id']==$t['id']?'selected':'' ?>>
@@ -573,8 +586,14 @@ echo hr_ui_page_header(
             <input type="date" name="issued_at" class="form-control" value="<?=h($editDoc['issued_at'] ?? '')?>">
           </div>
           <div class="col-md-3">
-            <label class="form-label">Expires At</label>
-            <input type="date" name="expires_at" class="form-control" value="<?=h($editDoc['expires_at'] ?? '')?>">
+            <label class="form-label">Expiry Date<span class="text-danger d-none" data-req-only> *</span></label>
+            <input type="date" name="expires_at" class="form-control" value="<?=h($editDoc['expires_at'] ?? '')?>" data-req-expiry>
+            <?php // A saved document with no date was N/A, so it opens ticked and saves as before. ?>
+            <div class="form-check mt-1 d-none" data-req-only>
+              <input class="form-check-input" type="checkbox" name="expiry_na" value="1" id="docs_expiry_na" data-req-na
+                     <?= $editDoc && empty($editDoc['expires_at']) ? 'checked' : '' ?>>
+              <label class="form-check-label small" for="docs_expiry_na">No expiry date (N/A)</label>
+            </div>
           </div>
           <div class="col-12">
             <label class="form-label">Notes</label>
