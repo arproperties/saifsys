@@ -181,7 +181,7 @@ echo hr_ui_page_header(
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Payroll'],
     ],
-    '<a class="btn btn-outline-secondary" href="../operation.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
+    '<a class="btn btn-outline-secondary" href="../operation.php">Back</a>'
 );
 ?>
 

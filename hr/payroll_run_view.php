@@ -291,7 +291,7 @@ if (!empty($run['accounting_journal_id'])) {
 }
 $runDesc = implode(' · ', $metaParts);
 
-$runActions = '<a class="btn btn-outline-secondary" href="payroll_runs.php"><i class="bi bi-arrow-left me-1"></i>Back</a>';
+$runActions = '<a class="btn btn-outline-secondary" href="payroll_runs.php">Back</a>';
 if (in_array($status, ['open', 'draft'], true)) {
     $runActions .= ' <a class="btn btn-warning" href="payroll_run_build.php?id=' . (int)$run_id . '">Build / Post</a>';
 }
@@ -308,8 +308,7 @@ echo hr_ui_page_header(
         ['label' => 'Payroll Runs', 'href' => 'payroll_runs.php'],
         ['label' => 'Run #' . $run_id],
     ],
-    $runActions,
-    true // $runDesc is built above with every value escaped
+    $runActions
 );
 ?>
 
