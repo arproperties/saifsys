@@ -204,6 +204,22 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
     ];
 }
 
+/** Null when a leave request's dates are fine, else why not. */
+function hr_leave_dates_error(string $from, string $to): ?string
+{
+    $valid = static function (string $d): bool {
+        $dt = DateTimeImmutable::createFromFormat('!Y-m-d', $d);
+        return $dt !== false && $dt->format('Y-m-d') === $d;
+    };
+    if (!$valid($from) || !$valid($to)) {
+        return 'Choose valid From and To dates.';
+    }
+    if ($to < $from) {
+        return 'The To date cannot be before the From date.';
+    }
+    return null;
+}
+
 function hr_schedule_leave_days(PDO $conn, int $employeeId, string $from, string $to): int
 {
     // $summary = hr_schedule_summary($conn, $employeeId, $from, $to);

@@ -21,6 +21,7 @@ require_once __DIR__ . '/includes/hr_employee_bills.php';
 require_once __DIR__ . '/includes/hr_upload_guard.php';
 require_once __DIR__ . '/includes/hr_required_docs.php';
 require_once __DIR__ . '/includes/hr_shift_templates.php';
+require_once __DIR__ . '/includes/hr_comp_off.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
@@ -592,6 +593,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['leave_create'])) {
 
     if (!$leave_type_id || !$date_from || !$date_to) {
         $_SESSION['leave_err'] = 'Please fill all required fields for the leave request.';
+    } elseif (($dateErr = hr_leave_dates_error($date_from, $date_to)) !== null) {
+        $_SESSION['leave_err'] = $dateErr;
+    } elseif ($days <= 0) {
+        $_SESSION['leave_err'] = 'The leave must be at least one day.';
+    } elseif (($coErr = hr_comp_off_leave_error($conn, (int)$emp['id'], $leave_type_id, $date_from, (float)$days)) !== null) {
+        $_SESSION['leave_err'] = $coErr;
     } else {
         // attachment (optional)
         $attach_path = null;
@@ -724,10 +731,20 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['leave_change_status']))
             $q->execute([$id,$emp['id']]);
             $req = $q->fetch(PDO::FETCH_ASSOC);
             if (!$req) throw new Exception('Request not found');
+            if ($new === 'approved' && (hr_leave_dates_error((string)$req['date_from'], (string)$req['date_to']) !== null || (float)$req['days'] <= 0)) {
+                throw new Exception('Request #' . $id . ' has wrong dates (' . $req['date_from'] . ' → ' . $req['date_to'] . ', ' . (float)$req['days'] . ' days). Reject it and request again.');
+            }
+            if ($new === 'approved'
+                && ($coErr = hr_comp_off_leave_error($conn, (int)$emp['id'], (int)$req['leave_type_id'], (string)$req['date_from'], (float)$req['days'], $id)) !== null) {
+                throw new Exception($coErr);
+            }
             $u = $conn->prepare("UPDATE leave_requests SET status=?, approver_id=?, decided_at=NOW() WHERE id=?");
             $u->execute([$new, ($_SESSION['user']['id'] ?? null), $id]);
 
-            if ($new==='approved') {
+            if ($new === 'approved' && (int)$req['leave_type_id'] === hr_comp_off_type_id($conn)) {
+                // Comp off does not lapse: use the oldest days first.
+                hr_comp_off_take($conn, (int)$emp['id'], (float)$req['days'], (int)date('Y', strtotime($req['date_from'])));
+            } elseif ($new==='approved') {
                 $yr = (int)date('Y', strtotime($req['date_from']));
                 ensure_balance($conn, $emp['id'], (int)$req['leave_type_id'], $yr);
                 $b = $conn->prepare("UPDATE leave_balances
@@ -8010,6 +8027,19 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
     </form>
   </div>
 </div>
+<script>
+// Leave: To can't be before From.
+(function () {
+  var m = document.getElementById('leaveModal');
+  if (!m) return;
+  var from = m.querySelector('input[name="date_from"]'), to = m.querySelector('input[name="date_to"]');
+  if (!from || !to) return;
+  from.addEventListener('change', function () {
+    to.min = from.value;
+    if (to.value && to.value < from.value) to.value = from.value;
+  });
+})();
+</script>
 
 <!-- Request Cash Advance Modal (for employees) -->
 <?php if ($workerReadOnly): 

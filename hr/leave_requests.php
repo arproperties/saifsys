@@ -8,6 +8,7 @@ require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_schedule_helper.php';
 require_once __DIR__ . '/includes/hr_upload_guard.php';
+require_once __DIR__ . '/includes/hr_comp_off.php';
 
 require_login();
 
@@ -32,7 +33,7 @@ if (!is_null($uid)) {
 
 // what roles do I have?
 $roles = function_exists('current_user_roles')
-    ? current_user_roles()
+    ? current_user_roles($conn)
     : (isset($_SESSION['roles']) ? (array)$_SESSION['roles'] : []);
 
 // can I manage everyone?
@@ -61,10 +62,110 @@ function ensure_balance($conn, $emp_id, $type_id, $year) {
     }
 }
 
+// The employee behind this login, for self-service.
+$selfEmpId = 0;
+if ($uid) {
+    $stmt = $conn->prepare("SELECT id FROM employees WHERE user_id=? ORDER BY id LIMIT 1");
+    $stmt->execute([$uid]);
+    $selfEmpId = (int)($stmt->fetchColumn() ?: 0);
+}
+$compOffReady = hr_comp_off_ready($conn);
+
+// The comp off popup checks the date as it is picked.
+if (isset($_GET['comp_off_check'])) {
+    header('Content-Type: application/json');
+    $checkEmp = $can_manage_all ? (int)($_GET['employee_id'] ?? 0) : $selfEmpId;
+    echo json_encode($compOffReady
+        ? hr_comp_off_check($conn, $checkEmp, (string)($_GET['date'] ?? ''))
+        : ['ok' => false, 'lines' => [['ok' => false, 'text' => 'Comp off is not set up yet (run migrations/hr_comp_off.sql).']]]);
+    exit;
+}
+
 /* Create/Update status */
 $msg = $err = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
+
+    // Comp off: request a credit for a worked holiday or off day. Always pending;
+    // only approval below touches the leave balance.
+    if (isset($_POST['comp_off_create']) && $compOffReady) {
+        $coEmp = $can_manage_all ? (int)($_POST['employee_id'] ?? 0) : $selfEmpId;
+        $coDate = (string)($_POST['work_date'] ?? '');
+        $coDays = ($_POST['days'] ?? '1') === '0.5' ? 0.5 : 1.0;
+        [$coReason, $coReasonErr] = hr_comp_off_reason_text((string)($_POST['reason_type'] ?? 'holiday'), (string)($_POST['reason'] ?? ''));
+        $coReason = (string)$coReason;
+        $check = hr_comp_off_check($conn, $coEmp, $coDate);
+        // Total is worked out here from the two times, not taken from the form.
+        $coFrom = substr(trim((string)($_POST['time_from'] ?? '')), 0, 5);
+        $coTo = substr(trim((string)($_POST['time_to'] ?? '')), 0, 5);
+        $coHours = hr_comp_off_hours($coFrom, $coTo);
+        if ($coReasonErr !== null) {
+            $err = $coReasonErr;
+        } elseif ($coHours === null) {
+            $err = 'Give the time worked, from and to.';
+        } elseif (!$check['ok']) {
+            $last = end($check['lines']);
+            $err = $last ? $last['text'] : 'This day cannot earn comp off.';
+        } else {
+            $coCompany = $conn->prepare("SELECT company_id, full_name, employee_code FROM employees WHERE id=?");
+            $coCompany->execute([$coEmp]);
+            $coEmpRow = $coCompany->fetch(PDO::FETCH_ASSOC) ?: [];
+            $conn->prepare("INSERT INTO hr_comp_off_credits (employee_id, work_date, days, eligible_as, time_from, time_to, hours_worked, reason, status, requester_id, company_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)")
+                 ->execute([$coEmp, $coDate, $coDays, $check['eligible_as'], $coFrom, $coTo, $coHours, $coReason !== '' ? $coReason : null, $reqUserId, (int)($coEmpRow['company_id'] ?? 1)]);
+            $coId = (int)$conn->lastInsertId();
+            $msg = 'Comp off requested for ' . date('D j M Y', strtotime($coDate)) . '. It is added to the leave balance once approved.';
+            audit_bridge_hr_ops(
+                'comp_off_requested',
+                'hr_comp_off_credits',
+                $coId,
+                'Requested comp off for ' . ($coEmpRow['full_name'] ?? ('#' . $coEmp)) . ' (' . $coDate . ', ' . $coDays . ' day)',
+                isset($coEmpRow['company_id']) ? (int)$coEmpRow['company_id'] : null,
+                ['employee_id' => $coEmp, 'work_date' => $coDate, 'days' => $coDays, 'eligible_as' => $check['eligible_as'], 'time_from' => $coFrom, 'time_to' => $coTo, 'hours_worked' => $coHours, 'attendance_hours' => $check['hours'], 'reason' => $coReason !== '' ? $coReason : null],
+                'Comp off #' . $coId,
+                $uid ? (int)$uid : null
+            );
+            if (!empty($coEmpRow)) {
+                require_once __DIR__ . '/../includes/mailer.php';
+                $coName = htmlspecialchars($coEmpRow['full_name'] ?: $coEmpRow['employee_code']);
+                $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http')
+                    . "://{$_SERVER['HTTP_HOST']}" . (get_base_path() ? get_base_path() : '');
+                send_notification_to_owners_async($conn, "Comp Off Request - {$coName} (" . htmlspecialchars($coEmpRow['employee_code']) . ")",
+                    "<html><body style='font-family: Arial, sans-serif; color: #333;'>"
+                    . "<h2 style='color: #2c3e50;'>Comp Off Request</h2>"
+                    . "<p><strong>Employee:</strong> {$coName}</p>"
+                    . "<p><strong>Date worked:</strong> " . date('M d, Y', strtotime($coDate)) . " (" . htmlspecialchars(hr_comp_off_eligible_label($check['eligible_as'])) . ")</p>"
+                    . "<p><strong>Time worked:</strong> {$coFrom} – {$coTo} ({$coHours} h)</p>"
+                    . "<p><strong>Credit:</strong> {$coDays} day</p>"
+                    . ($coReason !== '' ? "<p><strong>Reason:</strong> " . htmlspecialchars($coReason) . "</p>" : '')
+                    . "<p><a href='{$baseUrl}/hr/leave_requests.php?status=pending'>Review request</a></p></body></html>");
+            }
+        }
+    }
+
+    if ($can_manage_all && isset($_POST['comp_off_decide']) && $compOffReady) {
+        $res = hr_comp_off_decide($conn, (int)($_POST['id'] ?? 0), (string)($_POST['new_status'] ?? ''), $reqUserId);
+        if ($res['ok']) {
+            $msg = $res['message'];
+            $r = $res['row'];
+            $coName = $conn->prepare("SELECT full_name, employee_code, company_id FROM employees WHERE id=?");
+            $coName->execute([(int)$r['employee_id']]);
+            $coEmpRow = $coName->fetch(PDO::FETCH_ASSOC) ?: [];
+            audit_bridge_hr_ops(
+                'comp_off_' . $r['status'],
+                'hr_comp_off_credits',
+                (int)$r['id'],
+                ucfirst($r['status']) . ' comp off #' . $r['id'] . ' for ' . ($coEmpRow['full_name'] ?? ('#' . $r['employee_id']))
+                    . ' (' . $r['work_date'] . ', ' . (float)$r['days'] . ' day)',
+                isset($coEmpRow['company_id']) ? (int)$coEmpRow['company_id'] : null,
+                ['status' => $r['status'], 'previous_status' => $r['previous_status'], 'employee_id' => (int)$r['employee_id'], 'work_date' => $r['work_date'], 'days' => (float)$r['days']],
+                'Comp off #' . $r['id'],
+                $uid ? (int)$uid : null
+            );
+        } else {
+            $err = $res['message'];
+        }
+    }
     if (isset($_POST['create'])) {
         $employee_id  = (int)($_POST['employee_id'] ?? 0);
         $leave_type_id= (int)($_POST['leave_type_id'] ?? 0);
@@ -83,6 +184,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (!$employee_id || !$leave_type_id || !$date_from || !$date_to) {
             $err = 'Please fill all required fields.';
+        } elseif (($dateErr = hr_leave_dates_error($date_from, $date_to)) !== null) {
+            $err = $dateErr;
+        } elseif ($days <= 0) {
+            $err = 'The leave must be at least one day.';
+        } elseif (($coErr = hr_comp_off_leave_error($conn, $employee_id, $leave_type_id, $date_from, (float)$days)) !== null) {
+            $err = $coErr;
         } else {
             // attachment
             $attach_path = null;
@@ -212,13 +319,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $req = $q->fetch(PDO::FETCH_ASSOC);
                 if (!$req) throw new Exception('Not found');
                 if ($req['status'] !== 'pending' && $new==='approved') throw new Exception('Already decided');
+                if ($new === 'approved' && (hr_leave_dates_error((string)$req['date_from'], (string)$req['date_to']) !== null || (float)$req['days'] <= 0)) {
+                    throw new Exception('Request #' . $id . ' has wrong dates (' . $req['date_from'] . ' → ' . $req['date_to'] . ', ' . (float)$req['days'] . ' days). Reject it and request again.');
+                }
+                if ($new === 'approved'
+                    && ($coErr = hr_comp_off_leave_error($conn, (int)$req['employee_id'], (int)$req['leave_type_id'], (string)$req['date_from'], (float)$req['days'], $id)) !== null) {
+                    throw new Exception($coErr);
+                }
 
                 // update
                 $u = $conn->prepare("UPDATE leave_requests SET status=?, approver_id=?, decided_at=NOW() WHERE id=?");
                 $u->execute([$new, $uid, $id]);
 
                 // update balance on approval
-                if ($new === 'approved') {
+                if ($new === 'approved' && (int)$req['leave_type_id'] === hr_comp_off_type_id($conn)) {
+                    // Comp off does not lapse: use the oldest days first.
+                    hr_comp_off_take($conn, (int)$req['employee_id'], (float)$req['days'], (int)date('Y', strtotime($req['date_from'])));
+                } elseif ($new === 'approved') {
                     $year = (int)date('Y', strtotime($req['date_from']));
                     ensure_balance($conn, $req['employee_id'], $req['leave_type_id'], $year);
                     $b = $conn->prepare("UPDATE leave_balances SET taken=taken+?, closing=(opening+accrued+carried)-(taken+0)
@@ -370,6 +487,41 @@ ORDER BY lr.created_at DESC
 $stmt->execute($prms);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+/* Comp off credits, same scope as the requests */
+$compOffRows = [];
+if ($compOffReady) {
+    $coWhere = [];
+    $coPrms = [];
+    if (!$can_manage_all) {
+        $coWhere[] = "co.employee_id=?"; $coPrms[] = $selfEmpId;
+    } else {
+        if ($emp_filter) { $coWhere[] = "co.employee_id=?"; $coPrms[] = $emp_filter; }
+        hr_add_company_where($coWhere, $coPrms, $selectedCompanyId, 'e.company_id');
+    }
+    if ($status_f !== '') { $coWhere[] = "co.status=?"; $coPrms[] = $status_f; }
+    $coStmt = $conn->prepare("
+        SELECT co.*, e.full_name, e.employee_code, c.name AS company_name
+        FROM hr_comp_off_credits co
+        JOIN employees e ON e.id = co.employee_id
+        LEFT JOIN companies c ON c.id = e.company_id
+        " . ($coWhere ? 'WHERE ' . implode(' AND ', $coWhere) : '') . "
+        ORDER BY co.created_at DESC
+        LIMIT 500
+    ");
+    $coStmt->execute($coPrms);
+    $compOffRows = $coStmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+// One list: leave requests and comp off credits, newest first. Credits show
+// unless another leave type is filtered.
+$listRows = array_map(fn($r) => ['kind' => 'leave'] + $r, $rows);
+if (!$type_filter || $type_filter === hr_comp_off_type_id($conn)) {
+    foreach ($compOffRows as $coRow) {
+        $listRows[] = ['kind' => 'credit'] + $coRow;
+    }
+    usort($listRows, fn($a, $b) => strcmp((string)$b['created_at'], (string)$a['created_at']));
+}
+
 // Page settings for shared layout
 $pageTitle = 'Leave';
 ?>
@@ -383,13 +535,21 @@ echo hr_ui_page_header(
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Leave'],
     ],
-    '<a href="leave_types.php" class="btn btn-primary"><i class="bi bi-tags me-1"></i>Leave Types</a>'
+    ($compOffReady && ($can_manage_all || $selfEmpId)
+        ? '<button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#compOffModal"><i class="bi bi-plus-lg me-1"></i>Comp off</button>'
+        : '')
+    . '<a href="leave_types.php" class="btn btn-primary"><i class="bi bi-tags me-1"></i>Leave Types</a>'
     . '<a href="leave_balances.php" class="btn btn-success"><i class="bi bi-calculator me-1"></i>Balances</a>'
 );
 ?>
 
   <?php if ($err): ?><div class="alert alert-danger"><?= htmlspecialchars($err) ?></div><?php endif; ?>
   <?php if ($msg): ?><div class="alert alert-success"><?= htmlspecialchars($msg) ?></div><?php endif; ?>
+  <?php
+    // HR: credits waiting, unless the list below is already showing exactly those.
+    $showingPendingCompOff = $status_f === 'pending' && $type_filter === hr_comp_off_type_id($conn);
+    if ($can_manage_all && !$showingPendingCompOff) echo hr_comp_off_pending_notice($conn, (int)$selectedCompanyId);
+  ?>
 
   <?php
     // Opened from the Leave Calendar by double-clicking a day: that day is
@@ -453,6 +613,17 @@ echo hr_ui_page_header(
           <button class="btn btn-primary">Submit</button>
         </div>
       </form>
+      <script>
+      // To can't be before From.
+      (function () {
+        var f = document.querySelector('#new-request form');
+        var from = f && f.querySelector('input[name="date_from"]'), to = f && f.querySelector('input[name="date_to"]');
+        if (!from || !to) return;
+        function sync() { to.min = from.value; if (to.value && to.value < from.value) to.value = from.value; }
+        from.addEventListener('change', sync);
+        sync();
+      })();
+      </script>
     </div>
   </div>
 
@@ -521,7 +692,39 @@ echo hr_ui_page_header(
           </tr>
         </thead>
         <tbody>
-          <?php foreach ($rows as $r): ?>
+          <?php foreach ($listRows as $r): ?>
+          <?php if ($r['kind'] === 'credit'): $co = $r; ?>
+            <tr>
+              <td class="text-nowrap" title="Comp off credit #<?= (int)$co['id'] ?>">CO-<?= (int)$co['id'] ?></td>
+              <td><?= htmlspecialchars($co['full_name']) . ' (' . htmlspecialchars($co['employee_code']) . ')' ?></td>
+              <td><?= htmlspecialchars($co['company_name'] ?: '—') ?></td>
+              <td>Comp Off</td>
+              <td><?= htmlspecialchars($co['work_date']) ?></td>
+              <td><?= number_format((float)$co['days'], 2) ?></td>
+              <td>
+                <?php $coCls = ['pending'=>'warning','approved'=>'success','rejected'=>'danger','cancelled'=>'secondary'][$co['status']] ?? 'secondary'; ?>
+                <span class="badge text-bg-<?= $coCls ?>"><?= htmlspecialchars($co['status']) ?></span>
+              </td>
+              <td>—</td>
+              <td class="hr-row-actions-cell">
+                <?php if ($can_manage_all && in_array($co['status'], ['pending', 'approved'], true)): ?>
+                <div class="hr-row-actions">
+                  <?php foreach ($co['status'] === 'pending' ? ['approved' => ['Approve', 'btn-success'], 'rejected' => ['Reject', 'btn-outline-danger']] : ['cancelled' => ['Cancel', 'btn-outline-secondary']] as $to => [$btnLabel, $btnCls]): ?>
+                  <form method="post" class="d-inline"<?= $to === 'cancelled' ? ' onsubmit="return confirm(\'Cancel this approved comp off? It is taken off the leave balance.\')"' : '' ?>>
+                    <?php csrf_field(); ?>
+                    <input type="hidden" name="comp_off_decide" value="1">
+                    <input type="hidden" name="id" value="<?= (int)$co['id'] ?>">
+                    <input type="hidden" name="new_status" value="<?= $to ?>">
+                    <button class="btn btn-sm <?= $btnCls ?>"><?= $btnLabel ?></button>
+                  </form>
+                  <?php endforeach; ?>
+                </div>
+                <?php else: ?>
+                  <span class="text-muted">—</span>
+                <?php endif; ?>
+              </td>
+            </tr>
+          <?php else: ?>
             <tr>
               <td><?= (int)$r['id'] ?></td>
               <td><?= htmlspecialchars($r['full_name']).' ('.htmlspecialchars($r['employee_code']).')' ?></td>
@@ -564,7 +767,8 @@ echo hr_ui_page_header(
                 <?php endif; ?>
               </td>
             </tr>
-          <?php endforeach; if (!$rows): ?>
+          <?php endif; ?>
+          <?php endforeach; if (!$listRows): ?>
             <tr><td colspan="9" class="text-center text-muted py-4">No requests found.</td></tr>
           <?php endif; ?>
         </tbody>
@@ -572,5 +776,151 @@ echo hr_ui_page_header(
     </div>
     </div>
   </div>
+
+  <?php if ($compOffReady && ($can_manage_all || $selfEmpId)): ?>
+  <div class="modal fade" id="compOffModal" tabindex="-1" aria-labelledby="compOffTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <form method="post" class="modal-content" id="compOffForm">
+        <?php csrf_field(); ?>
+        <input type="hidden" name="comp_off_create" value="1">
+        <div class="modal-header">
+          <h5 class="modal-title" id="compOffTitle">Request comp off</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="small text-muted">For a public holiday or an off day that was worked. HR approves it, then it is added to the Comp Off leave balance.</p>
+          <?php if ($can_manage_all): ?>
+          <div class="mb-3">
+            <label class="form-label">Employee *</label>
+            <select name="employee_id" class="form-select" data-co-emp required>
+              <option value="">-- Select --</option>
+              <?php foreach ($employees as $e): ?>
+                <option value="<?= (int)$e['id'] ?>"><?= htmlspecialchars($e['label']) ?><?= !empty($e['company_name']) ? ' - ' . htmlspecialchars($e['company_name']) : '' ?></option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+          <?php endif; ?>
+          <div class="mb-2">
+            <label class="form-label">Date worked *</label>
+            <input type="date" name="work_date" class="form-control" data-co-date max="<?= htmlspecialchars(hr_comp_off_today()) ?>" required>
+          </div>
+          <ul class="list-unstyled small mb-3" data-co-result aria-live="polite"></ul>
+          <div class="row g-2 mb-3">
+            <div class="col-4">
+              <label class="form-label" for="coFrom">From *</label>
+              <input type="time" name="time_from" id="coFrom" class="form-control" required data-co-from>
+            </div>
+            <div class="col-4">
+              <label class="form-label" for="coTo">To *</label>
+              <input type="time" name="time_to" id="coTo" class="form-control" required data-co-to>
+            </div>
+            <div class="col-4">
+              <label class="form-label" for="coTotal">Total</label>
+              <input type="text" id="coTotal" class="form-control bg-light" readonly tabindex="-1" data-co-total>
+            </div>
+            <div class="col-12 form-text mt-1">Filled in from attendance when there is one. An end before the start is the next morning.</div>
+          </div>
+          <div class="mb-3">
+            <div>
+              <label class="form-label d-block">Credit</label>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="days" id="coFull" value="1" checked>
+                <label class="form-check-label" for="coFull">Full day</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="days" id="coHalf" value="0.5">
+                <label class="form-check-label" for="coHalf">Half day</label>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Reason *</label>
+            <select name="reason_type" class="form-select" data-co-reason>
+              <?php foreach (hr_comp_off_reasons() as $rk => $rl): ?>
+                <option value="<?= htmlspecialchars($rk) ?>" <?= $rk === 'holiday' ? 'selected' : '' ?>><?= htmlspecialchars($rl) ?></option>
+              <?php endforeach; ?>
+            </select>
+            <input name="reason" class="form-control mt-2 d-none" maxlength="490" placeholder="Write the reason" data-co-other>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary" data-co-submit disabled>Submit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <script>
+  (function () {
+    var form = document.getElementById('compOffForm');
+    if (!form) return;
+    var emp = form.querySelector('[data-co-emp]'), date = form.querySelector('[data-co-date]');
+    var out = form.querySelector('[data-co-result]'), submit = form.querySelector('[data-co-submit]');
+    var reason = form.querySelector('[data-co-reason]'), other = form.querySelector('[data-co-other]');
+    var tFrom = form.querySelector('[data-co-from]'), tTo = form.querySelector('[data-co-to]'), total = form.querySelector('[data-co-total]');
+    var seq = 0, dateOk = false, reasonPicked = false;
+    // Total from the two times; an end before the start is the next morning.
+    function minutes() {
+      if (!tFrom.value || !tTo.value) return 0;
+      var a = tFrom.value.split(':'), b = tTo.value.split(':');
+      var m = (+b[0] * 60 + +b[1]) - (+a[0] * 60 + +a[1]);
+      return m < 0 ? m + 1440 : m;
+    }
+    function hoursOk() {
+      var m = minutes();
+      total.value = m ? (Math.floor(m / 60) + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '')) + (tTo.value < tFrom.value ? ' (+1)' : '') : '';
+      return m > 0;
+    }
+    // Others needs its own words; the other two speak for themselves.
+    function syncReason() {
+      var isOther = reason.value === 'other';
+      other.classList.toggle('d-none', !isOther);
+      other.required = isOther;
+      submit.disabled = !dateOk || !hoursOk() || (isOther && !other.value.trim());
+    }
+    reason.addEventListener('change', function () { reasonPicked = true; syncReason(); if (reason.value === 'other') other.focus(); });
+    other.addEventListener('input', syncReason);
+    tFrom.addEventListener('input', syncReason);
+    tTo.addEventListener('input', syncReason);
+    function line(ok, text, cls) {
+      var li = document.createElement('li');
+      li.className = 'mb-1 ' + (cls || (ok ? 'text-success' : 'text-danger'));
+      var i = document.createElement('i');
+      i.className = 'bi me-1 ' + (cls ? 'bi-exclamation-triangle' : (ok ? 'bi-check-circle-fill' : 'bi-x-circle-fill'));
+      li.appendChild(i);
+      li.appendChild(document.createTextNode(text));
+      out.appendChild(li);
+    }
+    function check() {
+      dateOk = false;
+      submit.disabled = true;
+      out.textContent = '';
+      if ((emp && !emp.value) || !date.value) return;
+      var my = ++seq;
+      var url = 'leave_requests.php?comp_off_check=1&date=' + encodeURIComponent(date.value) + (emp ? '&employee_id=' + encodeURIComponent(emp.value) : '');
+      fetch(url, {credentials: 'same-origin', headers: {'X-Requested-With': 'XMLHttpRequest'}})
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (my !== seq) return;
+          out.textContent = '';
+          (res.lines || []).forEach(function (l) { line(l.ok, l.text); });
+          if (res.warning) line(false, res.warning, 'text-warning-emphasis');
+          // Match the reason to the day unless one was picked by hand.
+          if (res.ok && !reasonPicked) reason.value = res.eligible_as === 'holiday' ? 'holiday' : 'off_day';
+          // The day's times from attendance, for a new date.
+          tFrom.value = res.ok && res.check_in ? res.check_in : '';
+          tTo.value = res.ok && res.check_out ? res.check_out : '';
+          dateOk = !!res.ok;
+          syncReason();
+        })
+        .catch(function () { if (my === seq) { out.textContent = ''; line(false, 'Could not check the date. Try again.'); } });
+    }
+    if (emp) emp.addEventListener('change', check);
+    date.addEventListener('change', check);
+    form.addEventListener('submit', function () { submit.disabled = true; });
+    document.getElementById('compOffModal').addEventListener('show.bs.modal', function () { check(); });
+  })();
+  </script>
+  <?php endif; ?>
 
 <?php require_once __DIR__ . '/includes/hr_layout_footer.php'; ?>
