@@ -47,6 +47,8 @@
  * entered with a check-in already on it is left as HR wrote it.
  */
 
+require_once dirname(__DIR__, 3) . '/hr/includes/hr_schedule_helper.php';
+
 /**
  * The employee record behind a signed-in user, or null.
  *
@@ -79,6 +81,13 @@ const OPS_ATTENDANCE_UNCLOSED_DAYS = 7;
 const OPS_ATTENDANCE_NIGHT_FROM = '12:00';
 const OPS_ATTENDANCE_NIGHT_MAX_HOURS = 14;
 
+/**
+ * Double duty (09:00 to 13:00 and 18:00 to 03:00) checks in in the morning, so
+ * the noon rule above does not see it. When the day's schedule ends after
+ * midnight, the shift stays open until that end plus these hours.
+ */
+const OPS_ATTENDANCE_SCHEDULED_GRACE_HOURS = 3;
+
 /** The attendance row for the day a moment falls on (default: now), or null. */
 function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null): ?array
 {
@@ -91,8 +100,26 @@ function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null):
 }
 
 /**
+ * When $day's scheduled work ends after midnight, that end as a timestamp on
+ * the next morning; otherwise null (no schedule, a day off, or a day shift).
+ */
+function ops_attendance_scheduled_overnight_end(PDO $conn, int $employeeId, string $day): ?int
+{
+    $summary = hr_schedule_summary($conn, $employeeId, $day, $day);
+    $ranges = hr_schedule_ranges($summary['days'][$day]['label'] ?? '');
+    $last = $ranges ? $ranges[count($ranges) - 1] : null;
+    if (!$last || !$last['overnight']) {
+        return null;
+    }
+    $end = strtotime($day . ' ' . $last['end'] . ' +1 day');
+    return $end === false ? null : $end;
+}
+
+/**
  * Yesterday's shift, if it is a night shift still in progress at $at: checked
- * in from noon on, not checked out, undecided, and under the night limit.
+ * in from noon on, not checked out, undecided, and under the night limit. A
+ * morning check in counts too when that day's schedule runs past midnight
+ * (double duty), until the scheduled end plus the grace hours.
  */
 function ops_attendance_night_open(PDO $conn, int $employeeId, ?string $at = null): ?array
 {
@@ -106,12 +133,20 @@ function ops_attendance_night_open(PDO $conn, int $employeeId, ?string $at = nul
     ");
     $stmt->execute([$employeeId, $yesterday]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$row || substr((string)$row['check_in'], 0, 5) < OPS_ATTENDANCE_NIGHT_FROM) {
+    if (!$row) {
         return null;
     }
     $started = strtotime($yesterday . ' ' . $row['check_in']);
     $nowTs = strtotime($at);
-    return ($started !== false && $nowTs - $started <= OPS_ATTENDANCE_NIGHT_MAX_HOURS * 3600) ? $row : null;
+    if ($started === false) {
+        return null;
+    }
+    if (substr((string)$row['check_in'], 0, 5) >= OPS_ATTENDANCE_NIGHT_FROM
+        && $nowTs - $started <= OPS_ATTENDANCE_NIGHT_MAX_HOURS * 3600) {
+        return $row;
+    }
+    $end = ops_attendance_scheduled_overnight_end($conn, $employeeId, $yesterday);
+    return ($end !== null && $nowTs <= $end + OPS_ATTENDANCE_SCHEDULED_GRACE_HOURS * 3600) ? $row : null;
 }
 
 /**

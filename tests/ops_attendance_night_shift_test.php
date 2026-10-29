@@ -111,6 +111,24 @@ try {
     check('reminder: shift over at 03:30', false, ops_reminder_still_on_duty($conn, $employee, $shift, new DateTimeImmutable('2031-10-07 03:30', $tz)));
     check('reminder: a morning check in is not this shift', false, ops_reminder_still_on_duty($conn, $employee, ['work_date' => '2031-10-06', 'check_in' => '08:00:00'], new DateTimeImmutable('2031-10-06 18:00', $tz)));
     check('reminder: Tuesday has no duty', false, ops_reminder_still_on_duty($conn, $employee, ['work_date' => '2031-10-07', 'check_in' => '17:05:00'], new DateTimeImmutable('2031-10-07 18:00', $tz)));
+
+    // 8. Double duty (Monday 09:00 to 13:00 and 18:00 to 03:00) checks in in the
+    //    morning and still checks out after midnight, by its schedule.
+    hr_weekly_off_save_employee($conn, $employeeId, 7, '2031-11-01');
+    $conn->prepare("INSERT INTO employee_work_schedules (employee_id, schedule_type, monday_hours, tuesday_hours, effective_from) VALUES (?, 'shift', '9:00 AM - 1:00 PM, 6:00 PM - 3:00 AM', '9:00 AM - 6:00 PM', '2031-11-01')")
+         ->execute([$employeeId]);
+    $double = $open('2031-11-03', '09:00:00');
+    check('double duty at 03:00: still Monday', '2031-11-03', ops_attendance_current($conn, $employeeId, '2031-11-04 03:00:00')['work_date'] ?? null);
+    check('double duty at 03:00: not a forgotten day', null, ops_attendance_unclosed($conn, $employeeId, '2031-11-04 03:00:00'));
+    $result = ops_attendance_check_out($conn, $employee, $userId, '2031-11-04 03:05:00');
+    check('double duty check out at 03:05: ok', true, $result['ok']);
+    check('double duty: 09:00 to 03:05 is 18.08 hours', '18.08', $rowById($double)['hours']);
+    check('double duty: no Tuesday row', 0, $rowsOn('2031-11-04'));
+    $left = $open('2031-11-10', '09:00:00');
+    check('double duty past 03:00 + 3 h: not current', null, ops_attendance_current($conn, $employeeId, '2031-11-11 06:30:00'));
+    check('double duty past 03:00 + 3 h: asked as forgotten', '2031-11-10', ops_attendance_unclosed($conn, $employeeId, '2031-11-11 06:30:00')['work_date'] ?? null);
+    $open('2031-11-04', '09:00:00');
+    check('day shift (Tuesday 09:00 to 18:00): not carried past midnight', null, ops_attendance_current($conn, $employeeId, '2031-11-05 02:00:00'));
 } finally {
     $conn->rollBack();
 }
