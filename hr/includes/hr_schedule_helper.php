@@ -5,9 +5,11 @@
  * Schedules are stored as day labels like "9:00 AM - 5:00 PM". These helpers
  * turn that into expected workdays/hours for attendance, leave, and payroll.
  *
- * From HR_SCHEDULE_WEEKLY_OFF_FROM on, the weekly off (hr_weekly_off.php) wins:
- * on that day the schedule counts as Off whatever hours it holds, so payroll,
- * reminders and the day-by-day view agree. Earlier months are left as they were.
+ * From HR_SCHEDULE_WEEKLY_OFF_FROM on, the weekly off (hr_weekly_off.php) wins
+ * for what is shown and reminded: on that day the schedule counts as Off
+ * whatever hours it holds, so the day-by-day view, the schedule cards and the
+ * reminders agree. Payroll does not use this: pay is worked out from the
+ * schedule as saved (hr_schedule_summary(..., false)), exactly as on main.
  */
 
 require_once __DIR__ . '/hr_weekly_off.php';
@@ -133,7 +135,12 @@ function hr_schedule_row_for_date(array $rows, string $date): ?array
     return null;
 }
 
-function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $to): array
+/**
+ * Expected days and hours per date. $applyWeeklyOff = false is the schedule as
+ * saved, with no weekly off on top: payroll, payslips and the absence
+ * deduction use that, so pay is worked out as it always was.
+ */
+function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $to, bool $applyWeeklyOff = true): array
 {
     $rows = hr_schedule_rows($conn, $employeeId, $from, $to);
     $days = [];
@@ -163,7 +170,7 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
 
     $columns = hr_schedule_day_columns();
     $companyId = null;
-    if ($rows && $to >= HR_SCHEDULE_WEEKLY_OFF_FROM) {
+    if ($applyWeeklyOff && $rows && $to >= HR_SCHEDULE_WEEKLY_OFF_FROM) {
         $st = $conn->prepare("SELECT company_id FROM employees WHERE id = ?");
         $st->execute([$employeeId]);
         $companyId = ($c = $st->fetchColumn()) ? (int)$c : null;
@@ -173,7 +180,7 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
         $row = hr_schedule_row_for_date($rows, $ymd);
         $column = $columns[(int)$date->format('N')];
         $label = $row ? (string)($row[$column] ?? '') : '';
-        $weeklyOff = $row && $ymd >= HR_SCHEDULE_WEEKLY_OFF_FROM
+        $weeklyOff = $applyWeeklyOff && $row && $ymd >= HR_SCHEDULE_WEEKLY_OFF_FROM
             && (int)$date->format('N') === hr_weekly_off_for_employee($conn, $employeeId, $companyId, $ymd);
         if ($weeklyOff) {
             $label = 'Off';
