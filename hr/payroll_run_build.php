@@ -67,7 +67,7 @@ $emps = $emps->fetchAll(PDO::FETCH_ASSOC);
 /* ---------------- Schedule expectations + attendance absences ---------------- */
 $scheduleByEmp = [];
 foreach ($emps as $employeeRow) {
-  $scheduleByEmp[(int)$employeeRow['id']] = hr_schedule_summary($conn, (int)$employeeRow['id'], $from, $to, false);
+  $scheduleByEmp[(int)$employeeRow['id']] = hr_schedule_summary($conn, (int)$employeeRow['id'], $from, $to);
 }
 
 // Unpaid absence days from attendance: full absent = 1.0, half = 0.5 (on_leave ignored).

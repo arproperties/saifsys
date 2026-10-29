@@ -170,7 +170,7 @@ function hr_attendance_daily_rows(PDO $conn, array $employees, int $year, int $m
         $m = $meta[$eid] ?? [];
         $joined = $valid($m['date_joined'] ?? null);
         $left = $valid($m['last_working_day'] ?? null) ?? $valid($m['exit_date'] ?? null);
-        $sched = hr_schedule_summary($conn, $eid, $from, $to);
+        $sched = hr_schedule_summary($conn, $eid, $from, $to, true);
         for ($d = new DateTimeImmutable($from); $d->format('Y-m-d') <= $to; $d = $d->modify('+1 day')) {
             $ymd = $d->format('Y-m-d');
             // The weekly off in force on that date (a change applies from the day it was made).

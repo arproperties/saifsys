@@ -3554,8 +3554,7 @@ try {
         $conn,
         (int)$emp['id'],
         $monthStart->format('Y-m-d'),
-        $monthEnd->format('Y-m-d'),
-        false // pay: the schedule as saved, no weekly off on top
+        $monthEnd->format('Y-m-d')
     );
 
     $absenceStmt = $conn->prepare("

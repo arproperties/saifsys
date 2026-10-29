@@ -105,7 +105,7 @@ function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null):
  */
 function ops_attendance_scheduled_overnight_end(PDO $conn, int $employeeId, string $day): ?int
 {
-    $summary = hr_schedule_summary($conn, $employeeId, $day, $day);
+    $summary = hr_schedule_summary($conn, $employeeId, $day, $day, true);
     $ranges = hr_schedule_ranges($summary['days'][$day]['label'] ?? '');
     $last = $ranges ? $ranges[count($ranges) - 1] : null;
     if (!$last || !$last['overnight']) {

@@ -5,11 +5,10 @@
  * Schedules are stored as day labels like "9:00 AM - 5:00 PM". These helpers
  * turn that into expected workdays/hours for attendance, leave, and payroll.
  *
- * From HR_SCHEDULE_WEEKLY_OFF_FROM on, the weekly off (hr_weekly_off.php) wins
- * for what is shown and reminded: on that day the schedule counts as Off
- * whatever hours it holds, so the day-by-day view, the schedule cards and the
- * reminders agree. Payroll does not use this: pay is worked out from the
- * schedule as saved (hr_schedule_summary(..., false)), exactly as on main.
+ * From HR_SCHEDULE_WEEKLY_OFF_FROM on, screens and reminders can show the
+ * weekly off (hr_weekly_off.php) as Off whatever hours the schedule holds
+ * (hr_schedule_summary(..., true)). Payroll does not: by default the summary is
+ * the schedule as saved, so pay is worked out exactly as before.
  */
 
 require_once __DIR__ . '/hr_weekly_off.php';
@@ -136,11 +135,11 @@ function hr_schedule_row_for_date(array $rows, string $date): ?array
 }
 
 /**
- * Expected days and hours per date. $applyWeeklyOff = false is the schedule as
- * saved, with no weekly off on top: payroll, payslips and the absence
- * deduction use that, so pay is worked out as it always was.
+ * Expected days and hours per date, from the schedule as saved; payroll,
+ * payslips and the absence deduction use this as it is. Screens and reminders
+ * pass $applyWeeklyOff = true to also show the weekly off as Off.
  */
-function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $to, bool $applyWeeklyOff = true): array
+function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $to, bool $applyWeeklyOff = false): array
 {
     $rows = hr_schedule_rows($conn, $employeeId, $from, $to);
     $days = [];

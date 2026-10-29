@@ -216,7 +216,7 @@ function ops_reminder_still_on_duty(PDO $conn, array $employee, array $row, Date
     }
     $day = (string)$row['work_date'];
     $tz = $now->getTimezone();
-    $summary = hr_schedule_summary($conn, (int)$employee['id'], $day, $day);
+    $summary = hr_schedule_summary($conn, (int)$employee['id'], $day, $day, true);
     $checkIn = new DateTimeImmutable($day . ' ' . $row['check_in'], $tz);
     // Checked in for one duty and never out: on duty until that duty, or a
     // later one the same day (double duty entered as one span), has ended.
@@ -260,7 +260,7 @@ function ops_reminder_is_workday(PDO $conn, array $employee, string $day): bool
     if ((int)$leave->fetchColumn() > 0) {
         return false;
     }
-    $sched = hr_schedule_summary($conn, (int)$employee['id'], $day, $day);
+    $sched = hr_schedule_summary($conn, (int)$employee['id'], $day, $day, true);
     if (!empty($sched['has_schedule']) && empty($sched['days'][$day]['is_workday'])) {
         return false;
     }

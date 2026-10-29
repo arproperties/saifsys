@@ -97,7 +97,7 @@ $absStmt = $conn->prepare("
     AND status = 'absent'
 ");
 $absStmt->execute([$row['employee_id'], $row['period_from'], $row['period_to']]);
-$scheduleSummary = hr_schedule_summary($conn, (int)$row['employee_id'], $row['period_from'], $row['period_to'], false);
+$scheduleSummary = hr_schedule_summary($conn, (int)$row['employee_id'], $row['period_from'], $row['period_to']);
 $absent_days = 0;
 foreach ($absStmt->fetchAll(PDO::FETCH_ASSOC) as $absenceRow) {
   $absenceDate = (string)($absenceRow['work_date'] ?? '');

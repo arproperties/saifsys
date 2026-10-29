@@ -164,7 +164,7 @@ function hr_comp_off_check(PDO $conn, int $employeeId, string $date): array
         $out['eligible_as'] = 'weekly_off';
         $out['lines'][] = ['ok' => true, 'text' => 'Weekly off (' . $d->format('l') . ')'];
     } else {
-        $sched = hr_schedule_summary($conn, $employeeId, $date, $date);
+        $sched = hr_schedule_summary($conn, $employeeId, $date, $date, true);
         if (!empty($sched['has_schedule']) && empty($sched['days'][$date]['is_workday'])) {
             $out['eligible_as'] = 'day_off';
             $out['lines'][] = ['ok' => true, 'text' => 'Day off on the work schedule'];
