@@ -2249,12 +2249,12 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['save_schedule']) && !$w
     // Stored the way schedules always were ("9:00 AM - 5:00 PM", duties joined by ", ").
     $dayValues = [];
     $schedErr = '';
-    // The weekly off day is always Off (it is changed with Weekly off, not here).
-    $schedWoDay = hr_weekly_off_for_employee($conn, (int)$emp['id'], isset($emp['company_id']) ? (int)$emp['company_id'] : null);
+    // Saved exactly as set here. The weekly off is not written into the schedule:
+    // screens show it, payroll reads the schedule as saved.
     foreach (hr_schedule_day_columns() as $num => $col) {
         $day = substr($col, 0, -6);
         $in = $_POST['sched'][$day] ?? [];
-        if (!empty($in['off']) || $num === $schedWoDay) {
+        if (!empty($in['off'])) {
             $dayValues[$day] = 'Off';
             continue;
         }
@@ -2321,7 +2321,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['save_schedule']) && !$w
 }
 // Copy this employee's current schedule to other active employees from a date
 // (Owner, Admin, HR). Each gets a new schedule row, so their old one stays as
-// history; their own weekly off day is stored as Off.
+// history. The schedule is copied as it is (the weekly off is not written in).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['copy_schedule']) && $canManageOpsPin) {
     csrf_verify();
     $back = 'Location: employee_view.php?id=' . urlencode($emp['id']) . '#tab-schedule';
@@ -2357,10 +2357,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['copy_schedule']) && $
         $conn->beginTransaction();
         foreach ($targets as $t) {
             $tCompany = $t['company_id'] !== null ? (int)$t['company_id'] : null;
-            $tOff = hr_weekly_off_for_employee($conn, (int)$t['id'], $tCompany, $copyFrom);
             $vals = [];
-            foreach (hr_schedule_day_columns() as $num => $col) {
-                $vals[] = $num === $tOff ? 'Off' : ($src[$col] ?? null);
+            foreach (hr_schedule_day_columns() as $col) {
+                $vals[] = $src[$col] ?? null;
             }
             $ins->execute(array_merge([(int)$t['id'], $src['schedule_type'] ?: 'regular'], $vals, [$copyFrom, $copyNote]));
             $saved[] = [$t, (int)$conn->lastInsertId(), $tCompany];
@@ -8426,10 +8425,9 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
         <?php endif; ?>
         <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-4 g-2 mb-3">
           <?php foreach (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as $sd):
-            // No schedule yet: start from the default, 09:00 – 18:00 on working days and the weekly off as Day off.
+            // What is saved. No schedule yet: 09:00 – 18:00, with the weekly off suggested as Day off (it can be changed).
             $sdWo = (int)date('N', strtotime($sd)) === $woDay;
-            $sdLabel = $sdWo ? 'Off'
-                : ($workSchedule ? (string)($workSchedule[$sd . '_hours'] ?? '') : '9:00 AM - 6:00 PM');
+            $sdLabel = $workSchedule ? (string)($workSchedule[$sd . '_hours'] ?? '') : ($sdWo ? 'Off' : '9:00 AM - 6:00 PM');
             $sdRanges = hr_schedule_ranges($sdLabel);
             $sdOff = !$sdRanges && preg_match('/^(off|holiday|rest|none|n\/a)$/i', trim($sdLabel));
             $sdFlex = !$sdRanges && !$sdOff && is_numeric(trim($sdLabel)) && (float)$sdLabel > 0;
@@ -8441,7 +8439,7 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
                   <span class="fw-bold"><?= ucfirst($sd) ?></span>
                   <span class="small fw-semibold text-muted" data-sched-hours></span>
                 </div>
-                <select class="form-select form-select-sm mb-2" data-tpl-day aria-label="<?= ucfirst($sd) ?> shift" <?= $sdWo ? 'disabled' : '' ?>></select>
+                <select class="form-select form-select-sm mb-2" data-tpl-day aria-label="<?= ucfirst($sd) ?> shift"></select>
                 <div class="sched-rows">
                   <?php foreach ($sdRanges as $r): ?>
                     <div class="sched-row">
@@ -8464,9 +8462,8 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
                 <div class="d-flex justify-content-between align-items-center mt-1">
                   <button type="button" class="btn btn-sm btn-outline-primary py-0 sched-add" data-sched-add>+ Add duty</button>
                   <div class="form-check m-0">
-                    <input class="form-check-input" type="checkbox" id="schedOff_<?= $sd ?>" name="sched[<?= $sd ?>][off]" value="1" <?= $sdOff ? 'checked' : '' ?> <?= $sdWo ? 'disabled' : '' ?> data-sched-off>
-                    <label class="form-check-label small" for="schedOff_<?= $sd ?>"><?= $sdWo ? 'Weekly off' : 'Day off' ?></label>
-                    <?php if ($sdWo): ?><input type="hidden" name="sched[<?= $sd ?>][off]" value="1"><?php endif; ?>
+                    <input class="form-check-input" type="checkbox" id="schedOff_<?= $sd ?>" name="sched[<?= $sd ?>][off]" value="1" <?= $sdOff ? 'checked' : '' ?> data-sched-off>
+                    <label class="form-check-label small" for="schedOff_<?= $sd ?>">Day off<?= $sdWo ? ' <span class="text-muted">(weekly off)</span>' : '' ?></label>
                   </div>
                 </div>
               </div>
@@ -8611,7 +8608,10 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
     if (!e.target.closest('[data-tpl-apply-all]')) return;
     var v = form.querySelector('[data-tpl-all]').value;
     if (v === '') return;
-    form.querySelectorAll('[data-sched-day]').forEach(function (card) { fillDay(card, picked(v)); });
+    form.querySelectorAll('[data-sched-day]').forEach(function (card) {
+      if (card.querySelector('[data-sched-off]').checked) return; // working days only
+      fillDay(card, picked(v));
+    });
     update(form);
   });
   var panel = form.querySelector('[data-tpl-panel]');
@@ -8740,7 +8740,6 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
       <div class="modal-body">
         <div class="p-2 mb-3 border rounded bg-light small">
           <strong>This schedule:</strong> <?= htmlspecialchars($cpLine($workSchedule)) ?>
-          <div class="text-muted mt-1">Each employee's own weekly off day is saved as Off.</div>
         </div>
         <div class="row g-2 mb-2">
           <div class="col-md-3"><input type="search" class="form-control form-control-sm" placeholder="Search name or code" data-cp-search></div>
