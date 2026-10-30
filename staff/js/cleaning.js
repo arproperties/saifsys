@@ -71,20 +71,25 @@
       forgotPick: 'Choose the time you left.',
       forgotTooEarly: function (time) { return 'The time you left must be after your check in at ' + time + '.'; },
     },
-    // The 18:00 reminder card (web push). Wording agreed with HR — keep in step with
-    // modules/operations/includes/ops_attendance_reminder.php.
-    // The time is the person's company's (HR → Reminders), e.g. "6 pm" or "5:30 pm".
+    // The check-out reminder (web push), in Settings. Off until the person turns it
+    // on and picks a time. Keep in step with modules/operations/includes/ops_attendance_reminder.php.
     reminders: {
-      offTitle: function (time) { return 'Get a reminder at ' + time; },
-      offBody: "We'll remind you if you forget to check in or check out.",
-      later: 'Not now',
-      turnOn: 'Turn on',
-      on: function (time) { return "Reminders are on. You'll hear from us at " + time + ' only if something is missing.'; },
+      title: 'Check-out reminder',
+      body: "At the time you choose, we'll remind you if you haven't checked out (or checked in).",
+      off: 'Off',
+      on: 'On',
+      timeLabel: 'Remind me at',
+      save: 'Save',
+      saving: 'Saving…',
+      savedOn: function (time) { return "Saved. We'll remind you at " + time + ' if something is missing.'; },
+      savedOff: 'Saved. Check-out reminder is off.',
+      pickTime: 'Choose a time for the reminder.',
       iosTitle: 'Add Staff to your Home Screen first',
-      iosBody: 'Tap Share, then "Add to Home Screen". Open Staff from the new icon and tap Turn on.',
+      iosBody: 'Tap Share, then "Add to Home Screen". Open Staff from the new icon and come back to Settings.',
+      unsupported: "This phone can't show reminders.",
       blockedTitle: 'Reminders are blocked on this phone',
       blockedBody: function (time) { return "Allow notifications for this site in your phone's settings to get the " + time + ' reminder.'; },
-      failed: 'Reminders could not be turned on. Try again in a moment.',
+      failed: 'The reminder could not be saved. Try again in a moment.',
     },
     requests: {
       title: 'Tenant requests',
@@ -1456,21 +1461,18 @@
 
   // --- Daily reminder (web push) ----------------------------------------------
   //
-  // The server sends it (ops_attendance_reminder.php); this only lets a phone
-  // say yes. States: 'unknown' until checked, 'unsupported' (no web push here —
-  // card hidden), 'ios-browser' (iPhone in Safari: must be on the Home Screen
-  // first), 'denied', 'off', 'on'. "Not now" hides the card for 7 days.
-  //
-  // Each employee has their own time and switch (set by HR on their profile);
-  // push/key returns this person's (cfg). The cards show that time, and none
-  // show while HR has their reminders switched off.
+  // The server sends it (ops_attendance_reminder.php). The person turns it on and
+  // picks the time in Settings (reminderSettings); HR can change the same setting on
+  // the employee profile. Off, with no time, until one of them does.
+  // Phone states: 'unknown' until checked, 'unsupported' (no web push here),
+  // 'ios-browser' (iPhone in Safari: must be on the Home Screen first), 'denied',
+  // 'off' (this phone not subscribed), 'on'.
   //
   // Signing out turns reminders off on this phone (it may be shared), but notes
   // who had them on. When one of those people signs in again and notifications
-  // are still allowed, they come back on by themselves; anyone else sees the card.
+  // are still allowed, they come back on by themselves.
 
-  var reminder = { state: 'unknown', busy: false, synced: false, cfg: null, cfgLoading: false };
-  var REMINDER_LATER_KEY = 'staff.reminder.later';
+  var reminder = { state: 'unknown', busy: false, synced: false, cfg: null, cfgLoading: false, edit: null };
   var REMINDER_OWNERS_KEY = 'staff.reminder.owners';
 
   function reminderOwners() {
@@ -1483,14 +1485,18 @@
     if (reminder.cfg || reminder.cfgLoading) return;
     reminder.cfgLoading = true;
     api('push/key', { background: true }).then(function (cfg) {
-      if (cfg) reminder.cfg = { enabled: !!cfg.enabled, time: cfg.time || '18:00' };
+      if (cfg) reminder.cfg = reminderCfg(cfg);
     }).catch(function () {}).then(function () { reminder.cfgLoading = false; S.render(); });
   }
 
+  function reminderCfg(cfg) {
+    return { available: cfg.available !== false, enabled: !!cfg.enabled, time: cfg.time || '', publicKey: cfg.public_key || '' };
+  }
+
   /** "18:00" -> "6 pm", "17:30" -> "5:30 pm". */
-  function reminderTime() {
-    var m = /^(\d{1,2}):(\d{2})$/.exec((reminder.cfg && reminder.cfg.time) || '18:00');
-    if (!m) return '6 pm';
+  function reminderTime(time) {
+    var m = /^(\d{1,2}):(\d{2})$/.exec(time !== undefined ? time : ((reminder.cfg && reminder.cfg.time) || ''));
+    if (!m) return '';
     var h = Number(m[1]), ampm = h < 12 ? 'am' : 'pm';
     h = h % 12 || 12;
     return h + (m[2] === '00' ? '' : ':' + m[2]) + ' ' + ampm;
@@ -1541,8 +1547,8 @@
   /** Subscribe this phone (permission already granted) and tell the server. */
   function reminderSubscribe() {
     return api('push/key').then(function (cfg) {
-      if (cfg) reminder.cfg = { enabled: !!cfg.enabled, time: cfg.time || '18:00' };
-      if (!cfg || !cfg.enabled || !cfg.public_key) throw new Error(T.reminders.failed);
+      if (cfg) reminder.cfg = reminderCfg(cfg);
+      if (!cfg || cfg.available === false || !cfg.public_key) throw new Error(T.reminders.failed);
       return navigator.serviceWorker.ready.then(function (reg) {
         return reg.pushManager.getSubscription().then(function (old) {
           return old || reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(cfg.public_key) });
@@ -1556,15 +1562,66 @@
     });
   }
 
-  function reminderOn() {
+  /** What Settings shows before Save: the saved choice, or the one being changed. */
+  function reminderEdit() {
+    if (!reminder.edit) {
+      var c = reminder.cfg || {};
+      reminder.edit = { on: !!c.enabled, time: c.time || '' };
+    }
+    return reminder.edit;
+  }
+
+  /**
+   * Save the Settings choice. Turning it on first asks the phone for permission and
+   * subscribes it, so a reminder is never "on" with nowhere to arrive.
+   */
+  function reminderSave() {
     if (reminder.busy) return;
+    var ed = reminderEdit();
+    var el = document.getElementById('rem-time');
+    var time = String((el && el.value) || ed.time || '').slice(0, 5);
+    if (ed.on && !/^\d{2}:\d{2}$/.test(time)) { S.toast(T.reminders.pickTime); return; }
     reminder.busy = true;
     S.render();
     var done = function () { reminder.busy = false; S.render(); };
-    Notification.requestPermission().then(function (perm) {
-      if (perm !== 'granted') { reminder.state = perm === 'denied' ? 'denied' : 'off'; return null; }
-      return reminderSubscribe().then(function () { S.toast(T.reminders.on(reminderTime())); });
-    }).catch(function () { S.toast(T.reminders.failed); }).then(done, done);
+    var ready = !ed.on ? Promise.resolve(true) : Notification.requestPermission().then(function (perm) {
+      if (perm !== 'granted') { reminder.state = perm === 'denied' ? 'denied' : 'off'; return false; }
+      return reminderSubscribe().then(function () { return true; });
+    });
+    ready.then(function (ok) {
+      if (!ok) return null;
+      return api('reminder/settings', { method: 'POST', body: { enabled: ed.on, time: time } }).then(function (saved) {
+        reminder.cfg = Object.assign({}, reminder.cfg || {}, { enabled: !!(saved && saved.enabled), time: (saved && saved.time) || time });
+        reminder.edit = null;
+        S.toast(reminder.cfg.enabled ? T.reminders.savedOn(reminderTime()) : T.reminders.savedOff);
+      });
+    }).catch(function (err) { S.toast((err && err.message) || T.reminders.failed); }).then(done, done);
+  }
+
+  /** Settings → Check-out reminder: Off / On and the time. */
+  function reminderSettings() {
+    if (!signedIn()) return '';
+    var c = reminder.cfg;
+    if (!c) { reminderConfig(); return ''; }
+    if (!c.available) return '';
+    var s = reminder.state;
+    var head = '<div class="h3">' + esc(T.reminders.title) + '</div><div class="small secondary mt-1">' + esc(T.reminders.body) + '</div>';
+    if (s === 'unsupported') return '<div class="card">' + head + '<div class="small mt-2">' + esc(T.reminders.unsupported) + '</div></div>';
+    if (s === 'ios-browser') {
+      return '<div class="card">' + head + '<div class="h3 mt-3">' + esc(T.reminders.iosTitle) + '</div><div class="small secondary mt-1">' + esc(T.reminders.iosBody) + '</div></div>';
+    }
+    var ed = reminderEdit();
+    var seg = function (on, label) {
+      return '<button type="button" class="seg-btn ' + (on ? 'ok' : 'na') + (ed.on === on ? ' on' : '') + '" data-action="cleaning:reminder-set" data-on="' + (on ? '1' : '0') + '">' + esc(label) + '</button>';
+    };
+    var blocked = s === 'denied'
+      ? '<div class="small mt-2" style="color:var(--danger)">' + esc(T.reminders.blockedBody(reminderTime(ed.time) || reminderTime())) + '</div>' : '';
+    return '<div class="card">' + head +
+      '<div class="seg mt-3">' + seg(false, T.reminders.off) + seg(true, T.reminders.on) + '</div>' +
+      (ed.on ? '<label class="small secondary mt-3" style="display:block" for="rem-time">' + esc(T.reminders.timeLabel) + '</label>' +
+        '<input type="time" class="field mt-1" id="rem-time" value="' + esc(ed.time) + '">' : '') +
+      blocked +
+      '<div class="mt-3">' + button(reminder.busy ? T.reminders.saving : T.reminders.save, 'cleaning:reminder-save', { loading: reminder.busy }) + '</div></div>';
   }
 
   /** On sign-out: this phone stops getting this person's reminders, and remembers they had them on. */
@@ -1578,31 +1635,17 @@
       }
       return api('push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint }, background: true })
         .catch(function () {}).then(function () { return sub.unsubscribe(); });
-    }).catch(function () {}).then(function () { reminder.state = 'unknown'; reminder.synced = false; reminder.cfg = null; });
+    }).catch(function () {}).then(function () { reminder.state = 'unknown'; reminder.synced = false; reminder.cfg = null; reminder.edit = null; });
   }
 
+  /**
+   * Main screen: nothing to offer (the reminder lives in Settings), only a warning
+   * when a reminder is on but this phone blocks notifications.
+   */
   function reminderCard() {
-    if (!signedIn()) return '';
-    // The company has reminders switched off: nothing to turn on.
-    if (reminder.cfg && !reminder.cfg.enabled) return '';
-    var s = reminder.state;
-    if (s === 'denied') {
-      return '<div class="card warn"><div class="row">' + icon('bell-off') +
-        '<div class="grow"><div class="h3">' + esc(T.reminders.blockedTitle) + '</div><div class="small mt-1">' + esc(T.reminders.blockedBody(reminderTime())) + '</div></div></div></div>';
-    }
-    var later = Number(S.readJson(REMINDER_LATER_KEY, 0)) || 0;
-    if (later > Date.now()) return '';
-    var notNow = '<button type="button" class="btn plain auto" data-action="cleaning:reminder-later">' + esc(T.reminders.later) + '</button>';
-    if (s === 'ios-browser') {
-      return '<div class="card info"><div class="row">' + icon('bell') +
-        '<div class="grow"><div class="h3">' + esc(T.reminders.iosTitle) + '</div><div class="small secondary mt-1">' + esc(T.reminders.iosBody) + '</div></div></div>' +
-        '<div class="mt-2">' + notNow + '</div></div>';
-    }
-    if (s !== 'off') return '';
-    return '<div class="card info"><div class="row">' + icon('bell') +
-      '<div class="grow"><div class="h3">' + esc(T.reminders.offTitle(reminderTime())) + '</div><div class="small secondary mt-1">' + esc(T.reminders.offBody) + '</div></div></div>' +
-      '<div class="row mt-3" style="justify-content:flex-end">' + notNow +
-      button(T.reminders.turnOn, 'cleaning:reminder-on', { variant: 'auto', loading: reminder.busy }) + '</div></div>';
+    if (!signedIn() || !reminder.cfg || !reminder.cfg.enabled || reminder.state !== 'denied') return '';
+    return '<div class="card warn"><div class="row">' + icon('bell-off') +
+      '<div class="grow"><div class="h3">' + esc(T.reminders.blockedTitle) + '</div><div class="small mt-1">' + esc(T.reminders.blockedBody(reminderTime())) + '</div></div></div></div>';
   }
 
   /** Check in / out. Shown on the main screen, not in the Cleaning list. */
@@ -2297,8 +2340,8 @@
       case 'new': ui.newJob = null; S.go({ app: 'cleaning', view: 'new', kind: el.getAttribute('data-kind') || undefined }); refreshScreen(); break;
       case 'check-in': checkInOut('check-in'); break;
       case 'close-previous': closePrevious(); break;
-      case 'reminder-on': reminderOn(); break;
-      case 'reminder-later': S.writeJson(REMINDER_LATER_KEY, Date.now() + 7 * 86400000); S.render(); break;
+      case 'reminder-set': reminderEdit().on = el.getAttribute('data-on') === '1'; S.render(); break;
+      case 'reminder-save': reminderSave(); break;
       case 'check-out':
         S.sheet({
           title: T.attendance.checkOutTitle, body: T.attendance.checkOutBody,
@@ -2506,6 +2549,8 @@
     var r = S.state.route;
     if (id === 'att-left') {
       ui.leftAt = e.target.value;
+    } else if (id === 'rem-time') {
+      reminderEdit().time = String(e.target.value || '').slice(0, 5);
     } else if (id === 'msg-input') {
       ui.draft = e.target.value;
       e.target.style.height = 'auto';
@@ -2593,6 +2638,7 @@
     onRefused: function () { authPaused = true; },
     attendanceBar: attendanceBar,
     reminderCard: reminderCard,
+    reminderSettings: reminderSettings,
     tileStatus: function (kind) {
       var counts = countsOf(cacheGet('jobs:today'), kind);
       return counts ? T.jobs.tileToday(counts.today || 0) : null;

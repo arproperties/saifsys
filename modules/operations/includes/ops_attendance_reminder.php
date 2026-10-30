@@ -1,9 +1,9 @@
 <?php
 /**
  * The daily attendance reminder for the staff app (/staff/), by web push.
- * Each employee has their own time and on/off switch, set by HR on the employee
- * profile (Overview → Mobile App PIN → Check-in reminders); on at 18:00 until
- * HR changes it.
+ * Each person sets their own time and switch in the staff app (Settings →
+ * Check-out reminder). Off until they turn it on and pick a time; there is no
+ * default time. HR sees the choice on the employee profile but does not set it.
  *
  * WHO GETS ONE
  * ------------
@@ -69,23 +69,29 @@ function ops_reminder_ready(PDO $conn): bool
 /**
  * One employee's reminder time (H:i, Dubai) and on/off switch, kept in
  * `settings` as attendance_reminder_time.e12 / attendance_reminder_enabled.e12.
- * Someone HR has not set is on at 18:00.
+ * Off, with no time, until the person turns it on in the staff app.
  */
 function ops_reminder_settings(PDO $conn, ?int $employeeId = null): array
 {
     $all = ops_reminder_settings_rows($conn);
-    $out = ['time' => '18:00', 'enabled' => true];
+    $out = ['time' => '', 'enabled' => false];
     if (!$employeeId) {
         return $out;
     }
     $time = (string)($all['attendance_reminder_time.e' . $employeeId] ?? '');
-    if (preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $time)) {
+    if (ops_reminder_time_ok($time)) {
         $out['time'] = $time;
     }
-    if (array_key_exists('attendance_reminder_enabled.e' . $employeeId, $all)) {
-        $out['enabled'] = !in_array(strtolower(trim((string)$all['attendance_reminder_enabled.e' . $employeeId])), ['0', 'off', 'no', 'false'], true);
-    }
+    // On only when they switched it on and there is a time to send at.
+    $out['enabled'] = $out['time'] !== ''
+        && in_array(strtolower(trim((string)($all['attendance_reminder_enabled.e' . $employeeId] ?? ''))), ['1', 'on', 'yes', 'true'], true);
     return $out;
+}
+
+/** "HH:MM", 24-hour. */
+function ops_reminder_time_ok(string $time): bool
+{
+    return (bool)preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $time);
 }
 
 /** Save one employee's reminder time and switch. */
@@ -216,7 +222,8 @@ function ops_reminder_still_on_duty(PDO $conn, array $employee, array $row, Date
     }
     $day = (string)$row['work_date'];
     $tz = $now->getTimezone();
-    $summary = hr_schedule_summary($conn, (int)$employee['id'], $day, $day, true);
+    // They checked in that day, so the weekly off does not apply: the schedule as saved.
+    $summary = hr_schedule_summary($conn, (int)$employee['id'], $day, $day);
     $checkIn = new DateTimeImmutable($day . ' ' . $row['check_in'], $tz);
     // Checked in for one duty and never out: on duty until that duty, or a
     // later one the same day (double duty entered as one span), has ended.
@@ -238,12 +245,16 @@ function ops_reminder_still_on_duty(PDO $conn, array $employee, array $row, Date
 /**
  * Whether today is a working day for the reminder: not the person's weekly off,
  * not a holiday, not approved leave, and not a day off where the person has a
- * work schedule.
+ * work schedule. A weekly off with attendance on it is worked, not off: someone
+ * who checked in on it still gets the check-out reminder.
  */
 function ops_reminder_is_workday(PDO $conn, array $employee, string $day): bool
 {
+    $att = $conn->prepare("SELECT COUNT(*) FROM attendance WHERE employee_id = ? AND work_date = ? AND check_in IS NOT NULL");
+    $att->execute([(int)$employee['id'], $day]);
+    $worked = (int)$att->fetchColumn() > 0;
     $weeklyOff = hr_weekly_off_for_employee($conn, (int)$employee['id'], isset($employee['company_id']) ? (int)$employee['company_id'] : null, $day);
-    if ((int)date('N', strtotime($day)) === $weeklyOff) {
+    if (!$worked && (int)date('N', strtotime($day)) === $weeklyOff) {
         return false;
     }
     $hol = $conn->prepare("
@@ -259,6 +270,9 @@ function ops_reminder_is_workday(PDO $conn, array $employee, string $day): bool
     $leave->execute([(int)$employee['id'], $day]);
     if ((int)$leave->fetchColumn() > 0) {
         return false;
+    }
+    if ($worked) {
+        return true;
     }
     $sched = hr_schedule_summary($conn, (int)$employee['id'], $day, $day, true);
     if (!empty($sched['has_schedule']) && empty($sched['days'][$day]['is_workday'])) {
@@ -297,7 +311,7 @@ function ops_reminder_run(PDO $conn, string $day, bool $dryRun = false, ?array $
         $report['considered']++;
         if (!$employee) { $skip('no employee record'); continue; }
         if (!in_array((string)$employee['status'], $current, true)) { $skip('not a current employee'); continue; }
-        if (!ops_reminder_settings($conn, (int)$employee['id'])['enabled']) { $skip('switched off by HR'); continue; }
+        if (!ops_reminder_settings($conn, (int)$employee['id'])['enabled']) { $skip('not turned on in the app'); continue; }
 
         $row = ops_attendance_current($conn, (int)$employee['id'], $day . ' 12:00:00');
         if ($row && !ops_attendance_status_is_open($row['status'] ?? null)) { $skip('day marked by HR'); continue; }

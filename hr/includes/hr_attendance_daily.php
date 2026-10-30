@@ -171,11 +171,13 @@ function hr_attendance_daily_rows(PDO $conn, array $employees, int $year, int $m
         $joined = $valid($m['date_joined'] ?? null);
         $left = $valid($m['last_working_day'] ?? null) ?? $valid($m['exit_date'] ?? null);
         $sched = hr_schedule_summary($conn, $eid, $from, $to, true);
+        $schedSaved = null; // the schedule as saved, for a weekly off that was worked
         for ($d = new DateTimeImmutable($from); $d->format('Y-m-d') <= $to; $d = $d->modify('+1 day')) {
             $ymd = $d->format('Y-m-d');
-            // The weekly off in force on that date (a change applies from the day it was made).
-            $isOff = (int)$d->format('N') === hr_weekly_off_for_employee($conn, $eid, isset($m['company_id']) ? (int)$m['company_id'] : null, $ymd);
             $a = $att[$eid][$ymd] ?? null;
+            // The weekly off in force on that date (a change applies from the day it was made).
+            // Only a day with no attendance is the weekly off: a day with attendance shows it.
+            $isOff = !$a && (int)$d->format('N') === hr_weekly_off_for_employee($conn, $eid, isset($m['company_id']) ? (int)$m['company_id'] : null, $ymd);
             $leave = null;
             foreach ($leaves[$eid] ?? [] as $l) {
                 if ($l['date_from'] <= $ymd && $l['date_to'] >= $ymd) { $leave = $l; break; }
@@ -210,6 +212,12 @@ function hr_attendance_daily_rows(PDO $conn, array $employees, int $year, int $m
                 $label = 'No record';
             }
             $sDay = $sched['days'][$ymd] ?? ['label' => '', 'expected_hours' => 0.0];
+            if ($a && !empty($sDay['weekly_off'])) {
+                $schedSaved ??= hr_schedule_summary($conn, $eid, $from, $to);
+                $sDay = $schedSaved['days'][$ymd] ?? $sDay;
+                // On screen every duty counts (the saved summary counts hours as payroll does).
+                $sDay['expected_hours'] = hr_schedule_parse_hours((string)($sDay['label'] ?? ''));
+            }
             $sHours = (float)$sDay['expected_hours'];
             $rows[] = [
                 'employee_id' => $eid,

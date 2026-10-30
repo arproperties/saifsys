@@ -3312,14 +3312,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_reminder']) && $
     $_SESSION['rem_err'] = 'Reminders are not set up on this server yet.';
   } elseif (!hr_employee_is_current_status($emp['status'] ?? null)) {
     $_SESSION['rem_err'] = 'Reminders are only for current employees.';
-  } elseif (!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $remTime)) {
-    $_SESSION['rem_err'] = 'Enter the time as HH:MM, for example 18:00.';
+  } elseif ($remEnabled && !ops_reminder_time_ok($remTime)) {
+    $_SESSION['rem_err'] = 'Choose a time for the reminder, for example 18:00.';
   } else {
     $remBefore = ops_reminder_settings($conn, (int)$emp['id']);
+    // Off with no time keeps the last one, so switching it on again starts from it.
+    $remTime = ops_reminder_time_ok($remTime) ? $remTime : $remBefore['time'];
     ops_reminder_save_settings($conn, (int)$emp['id'], $remEnabled, $remTime);
     $remUid = isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null;
     audit_bridge_hr_ops('attendance_reminder_settings_updated', 'employees', (int)$emp['id'],
-      'Check-in reminders for ' . ($emp['full_name'] ?? $emp['employee_code']) . ': ' . ($remEnabled ? 'on at ' . $remTime : 'off')
+      'Check-out reminder for ' . ($emp['full_name'] ?? $emp['employee_code']) . ': ' . ($remEnabled ? 'on at ' . $remTime : 'off')
         . ' (was ' . ($remBefore['enabled'] ? 'on at ' . $remBefore['time'] : 'off') . ')',
       isset($emp['company_id']) ? (int)$emp['company_id'] : null,
       ['employee_id' => (int)$emp['id'], 'before' => $remBefore, 'after' => ['time' => $remTime, 'enabled' => $remEnabled]],
@@ -4869,7 +4871,9 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 
                             <?php
                             /* Check-in reminders (web push, see ops_attendance_reminder.php).
-                               Owner, Admin and HR set the time and switch here; the phone
+                               Off until someone turns it on: the person in the staff app
+                               (Settings), or Owner, Admin and HR here. Both change the same
+                               setting. The phone
                                itself must still allow notifications in the staff app. */
                             $remReady   = ops_reminder_ready($conn);
                             $remCurrent = hr_employee_is_current_status($emp['status'] ?? null);
@@ -4879,7 +4883,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                             ?>
                             <hr class="my-3">
                             <div id="checkin-reminders">
-                                <div class="fw-semibold"><i class="bi bi-bell me-1"></i>Check-in reminders
+                                <div class="fw-semibold"><i class="bi bi-bell me-1"></i>Check-out reminder
                                     <?php if (!$remReady): ?>
                                         <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Not available yet</span>
                                     <?php elseif (!$remCurrent): ?>
@@ -4905,15 +4909,15 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                                 <input class="form-check-input" type="checkbox" role="switch" id="remEnabled" name="reminder_enabled" value="1" <?= $remSet['enabled'] ? 'checked' : '' ?>>
                                                 <label class="form-check-label small" for="remEnabled">On</label>
                                             </div>
-                                            <input type="time" name="reminder_time" class="form-control form-control-sm" style="width:auto" value="<?= htmlspecialchars($remSet['time']) ?>" required>
+                                            <input type="time" name="reminder_time" class="form-control form-control-sm" style="width:auto" value="<?= htmlspecialchars($remSet['time']) ?>">
                                             <button type="submit" class="btn btn-sm btn-primary">Save</button>
-                                            <span class="stat-meta">Dubai time</span>
+                                            <span class="stat-meta">Dubai time. The employee can also set this in the staff app (Settings).</span>
                                         </form>
                                     <?php endif; ?>
                                     <?php if (!$opsPinStatus): ?>
                                         <div class="stat-meta mt-1">Sent through the staff app, which needs a PIN to sign in.</div>
                                     <?php elseif (empty($remStatus['phones'])): ?>
-                                        <div class="stat-meta mt-1">No phone yet: it arrives once they tap <strong>Turn on</strong> in the staff app.</div>
+                                        <div class="stat-meta mt-1">No phone yet: it arrives once they turn the reminder on in the staff app (Settings).</div>
                                     <?php else: ?>
                                         <?php foreach ($remStatus['phones'] as $ph): ?>
                                             <div class="stat-meta mt-1">

@@ -174,6 +174,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_apply'])) {
         if ($mode === 'clock') {
             if ($status === 'approved' && (!$check_in || !$check_out)) {
                 $flash_err = 'For Approved status with clock mode, please set Check-in and Check-out (or switch to Fixed Hours).';
+            } elseif (hr_attendance_same_time($check_in, $check_out, $status)) {
+                $flash_err = 'Check-out cannot be the same time as check-in (' . substr($check_in, 0, 5) . ').';
             }
         } elseif ($status === 'approved' && ($fixed_hours === null || $fixed_hours <= 0)) {
             $flash_err = 'Please enter positive Fixed Hours.';

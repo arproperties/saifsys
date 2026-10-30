@@ -22,8 +22,18 @@ $companies = hr_active_companies($conn);
 $selectedCompanyId = $isHRManager ? hr_selected_company_id($conn, $companies) : (int)$currentCompanyId;
 // filters
 $q = trim($_GET['q'] ?? '');
-$group = $_GET['group'] ?? 'current';
+// Tabs: Active employees (default), Left employees and All. The status filter only
+// narrows inside the open tab.
+$group = in_array($_GET['group'] ?? '', ['left', 'all'], true) ? $_GET['group'] : 'current';
+$groupStatuses = match ($group) {
+  'left' => hr_employee_left_statuses(),
+  'all' => array_merge(hr_employee_current_statuses(), hr_employee_left_statuses()),
+  default => hr_employee_current_statuses(),
+};
 $status = $_GET['status'] ?? 'all';
+if (!in_array($status, $groupStatuses, true)) {
+  $status = 'all';
+}
 // Documents filter: one choice at a time, from the "Show" row above the table.
 $docsFilter = (string)($_GET['docs'] ?? '');
 if (!isset(HR_REQUIRED_DOC_FILTERS[$docsFilter]) && !isset(HR_REQUIRED_DOC_EXPIRY_FILTERS[$docsFilter])) {
@@ -40,6 +50,7 @@ $view = ($_GET['view'] ?? '') === 'company' ? 'company' : 'list';
 if ($view === 'company') {
   $q = '';
   $group = 'current';
+  $groupStatuses = hr_employee_current_statuses();
   $status = 'all';
   $docsFilter = '';
   $docType = '';
@@ -67,20 +78,28 @@ if ($q !== '') {
     $params[$qp] = "%{$q}%";
   }
 }
+// Each tab's count, over the company and search filters only.
+$tabCounts = [];
+foreach (['current' => hr_employee_current_statuses(), 'left' => hr_employee_left_statuses(),
+          'all' => array_merge(hr_employee_current_statuses(), hr_employee_left_statuses())] as $tabKey => $tabStatuses) {
+  $tabWhere = $where;
+  $tabParams = $params;
+  $tabWhere[] = "e.status IN (" . implode(',', array_map(fn($idx) => ':tab_status_' . $idx, array_keys($tabStatuses))) . ")";
+  foreach ($tabStatuses as $idx => $value) {
+    $tabParams[':tab_status_' . $idx] = $value;
+  }
+  $tabStmt = $conn->prepare("SELECT COUNT(*) FROM employees e WHERE " . implode(' AND ', $tabWhere));
+  $tabStmt->execute($tabParams);
+  $tabCounts[$tabKey] = (int)$tabStmt->fetchColumn();
+}
+
 if ($status !== 'all') {
   $where[] = "e.status = :status";
   $params[':status'] = $status;
-} elseif ($group === 'current') {
-  $currentStatuses = hr_employee_current_statuses();
-  $where[] = "e.status IN (" . implode(',', array_map(fn($idx) => ':current_status_' . $idx, array_keys($currentStatuses))) . ")";
-  foreach ($currentStatuses as $idx => $value) {
-    $params[':current_status_' . $idx] = $value;
-  }
-} elseif ($group === 'left') {
-  $leftStatuses = hr_employee_left_statuses();
-  $where[] = "e.status IN (" . implode(',', array_map(fn($idx) => ':left_status_' . $idx, array_keys($leftStatuses))) . ")";
-  foreach ($leftStatuses as $idx => $value) {
-    $params[':left_status_' . $idx] = $value;
+} else {
+  $where[] = "e.status IN (" . implode(',', array_map(fn($idx) => ':group_status_' . $idx, array_keys($groupStatuses))) . ")";
+  foreach ($groupStatuses as $idx => $value) {
+    $params[':group_status_' . $idx] = $value;
   }
 }
 
@@ -270,7 +289,6 @@ $pageHead = '<style>
   .hr-doc-reset { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
     border-radius: 4px; border: 1px solid #adb5bd; color: #495057; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.12); text-decoration: none; }
   .hr-doc-reset:hover { background: #f1f3f5; color: #212529; }
-  .hr-emp-count { font-size: .95rem; font-weight: 700; color: #fff; background: #495057; border-radius: 4px; padding: 3px 10px; }
   .hr-doc-type-select { width: auto; font-size: .78rem; padding-top: 1px; padding-bottom: 1px; text-transform: none; font-weight: 500; }
 </style>';
 // Breadcrumb lives in the top bar; the page header below keeps only the title.
@@ -309,7 +327,26 @@ echo hr_ui_page_header(
 );
 ?>
 
-  <div class="hr-filter-bar mb-3">
+  <?php if ($view === 'list'):
+    // A tab keeps the search and company, and starts again at page 1 with every status.
+    $tabLink = static function (string $tab): string {
+      $qs = array_intersect_key($_GET, array_flip(['q', 'company_id']));
+      $qs['group'] = $tab;
+      return '?' . http_build_query($qs);
+    };
+  ?>
+  <ul class="nav nav-tabs small mb-2">
+    <?php foreach (['current' => 'Active Employees', 'left' => 'Left Employees', 'all' => 'All'] as $tabKey => $tabLabel): ?>
+    <li class="nav-item">
+      <a class="nav-link py-1 px-3 <?= $group === $tabKey ? 'active' : '' ?>" href="<?= htmlspecialchars($tabLink($tabKey)) ?>">
+        <?= $tabLabel ?> <span class="badge rounded-pill text-bg-light border ms-1"><?= number_format($tabCounts[$tabKey]) ?></span>
+      </a>
+    </li>
+    <?php endforeach; ?>
+  </ul>
+  <?php endif; ?>
+
+  <div class="hr-filter-bar mb-2" style="padding:.6rem .75rem">
       <form class="row g-2">
         <?php if ($view === 'company'): ?>
         <input type="hidden" name="view" value="company">
@@ -345,17 +382,11 @@ echo hr_ui_page_header(
           </select>
         </div>
         <?php endif; ?>
-        <div class="col-md-2">
-          <select class="form-select" name="group">
-            <option value="current" <?= $group==='current'?'selected':'' ?>>Current workforce</option>
-            <option value="left" <?= $group==='left'?'selected':'' ?>>Left employees</option>
-            <option value="all" <?= $group==='all'?'selected':'' ?>>All records</option>
-          </select>
-        </div>
+        <input type="hidden" name="group" value="<?= htmlspecialchars($group) ?>">
         <div class="col-md-2">
           <select class="form-select" name="status">
             <option value="all" <?= $status==='all'?'selected':'' ?>>All statuses</option>
-            <?php foreach (hr_employee_status_options() as $statusKey => $statusLabel): ?>
+            <?php foreach (array_intersect_key(hr_employee_status_options(), array_flip($groupStatuses)) as $statusKey => $statusLabel): ?>
               <option value="<?= htmlspecialchars($statusKey) ?>" <?= $status===$statusKey?'selected':'' ?>>
                 <?= htmlspecialchars($statusLabel) ?>
               </option>
@@ -363,11 +394,24 @@ echo hr_ui_page_header(
           </select>
         </div>
         <?php endif; ?>
-        <div class="col-md-auto">
-          <button class="btn btn-primary px-3" type="submit"><i class="bi bi-funnel me-1"></i>Filter</button>
-        </div>
+        <?php // No Filter button: a dropdown applies when picked, the search on Enter or when leaving the box. ?>
+        <button type="submit" class="d-none" aria-hidden="true" tabindex="-1"></button>
       </form>
   </div>
+  <script>
+  (function () {
+    var form = document.currentScript.previousElementSibling.querySelector('form');
+    if (!form) return;
+    form.querySelectorAll('select').forEach(function (s) {
+      s.addEventListener('change', function () { form.submit(); });
+    });
+    var q = form.querySelector('input[name="q"]');
+    if (q) {
+      var start = q.value;
+      q.addEventListener('change', function () { if (q.value !== start) form.submit(); });
+    }
+  })();
+  </script>
 
   <div class="hr-settings-card">
     <div class="settings-header d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -377,10 +421,7 @@ echo hr_ui_page_header(
           <span class="small text-muted"><?= number_format(count($companyCards)) ?> compan<?= count($companyCards) === 1 ? 'y' : 'ies' ?> · <?= number_format($total) ?> employee<?= $total === 1 ? '' : 's' ?></span>
         <?php else: ?>
           <?php // With a document filter on: shown out of everyone the other filters leave. ?>
-          <span class="hr-emp-count"<?= $docsFilter !== '' ? ' title="Shown / total before the document filter"' : '' ?>>
-            <?= number_format($total) ?><?= $docsFilter !== '' ? ' / ' . number_format($docsCounts['']) : '' ?>
-            Employee<?= ($docsFilter !== '' ? $docsCounts[''] : $total) === 1 ? '' : 's' ?>
-          </span>
+          <span class="hr-emp-count small text-muted"<?= $docsFilter !== '' ? ' title="Shown / total before the document filter"' : '' ?>><?= number_format($total) ?><?= $docsFilter !== '' ? ' / ' . number_format($docsCounts['']) : '' ?> employee<?= ($docsFilter !== '' ? $docsCounts[''] : $total) === 1 ? '' : 's' ?></span>
         <?php endif; ?>
         <div class="btn-group btn-group-sm" role="group" aria-label="View">
           <a class="btn <?= $view === 'list' ? 'btn-secondary' : 'btn-outline-secondary' ?>"

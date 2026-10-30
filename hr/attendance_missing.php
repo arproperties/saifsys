@@ -67,14 +67,14 @@ $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $noCheckIn = [];
 $noCheckOut = [];
-$complete = 0;
-$excused = 0;
+$completeRows = [];
+$excusedRows = [];
 
 foreach ($rows as $r) {
     $attStatus = (string)($r['att_status'] ?? '');
     // HR has already said what the day is for this person — not a gap.
     if (in_array($attStatus, ['on_leave', 'absent', 'half', 'excused_absent'], true)) {
-        $excused++;
+        $excusedRows[] = $r;
         continue;
     }
     if (empty($r['check_in'])) {
@@ -82,9 +82,23 @@ foreach ($rows as $r) {
     } elseif (empty($r['check_out'])) {
         $noCheckOut[] = $r;
     } else {
-        $complete++;
+        $completeRows[] = $r;
     }
 }
+
+// A card picked: only its list. None picked: the two lists of gaps.
+$show = (string)($_GET['show'] ?? '');
+if (!in_array($show, ['no_in', 'no_out', 'complete', 'excused'], true)) {
+    $show = '';
+}
+$cardLink = static function (string $card) use ($day, $selectedCompanyId, $show): string {
+    $qs = ['day' => $day, 'company_id' => $selectedCompanyId];
+    if ($card !== $show) {
+        $qs['show'] = $card;
+    }
+    return 'attendance_missing.php?' . http_build_query($qs);
+};
+$attStatusLabels = ['on_leave' => 'On leave', 'absent' => 'Absent', 'half' => 'Half day', 'excused_absent' => 'Excused absence'];
 
 $pageTitle = 'Attendance — Missing';
 require_once __DIR__ . '/includes/hr_layout_header.php';
@@ -131,33 +145,82 @@ echo hr_ui_page_header(
   </form>
 </div>
 
+<style>
+  .att-miss-card { display: block; color: inherit; text-decoration: none; transition: box-shadow .15s, border-color .15s; }
+  .att-miss-card:hover { color: inherit; box-shadow: 0 .25rem .75rem rgba(0,0,0,.08); }
+  /* The HR card style uses !important, so the picked card must too. */
+  body.hr-ui-v2 .hr-settings-card.att-miss-card.active { border: 2px solid var(--hr-primary, #b8860b) !important; background: #fffaf0 !important; }
+</style>
 <div class="row g-3 mb-3">
+  <?php foreach ([
+      'no_in' => ['Not checked in', count($noCheckIn), 'text-danger'],
+      'no_out' => ['No check-out', count($noCheckOut), 'text-warning'],
+      'complete' => ['Complete', count($completeRows), 'text-success'],
+      'excused' => ['Leave / absent', count($excusedRows), 'text-muted'],
+  ] as $cardKey => [$cardLabel, $cardCount, $cardClass]): ?>
   <div class="col-md-3">
-    <div class="hr-settings-card"><div class="card-body">
-      <div class="text-muted small">Not checked in</div>
-      <div class="fs-3 fw-semibold text-danger"><?= count($noCheckIn) ?></div>
-    </div></div>
+    <a class="hr-settings-card att-miss-card <?= $show === $cardKey ? 'active' : '' ?>" href="<?= h($cardLink($cardKey)) ?>"
+       title="<?= $show === $cardKey ? 'Show all lists' : 'Show only: ' . h($cardLabel) ?>"><div class="card-body">
+      <div class="text-muted small"><?= h($cardLabel) ?><?php if ($show === $cardKey): ?> <i class="bi bi-x-circle ms-1"></i><?php endif; ?></div>
+      <div class="fs-3 fw-semibold <?= $cardClass ?>"><?= (int)$cardCount ?></div>
+    </div></a>
   </div>
-  <div class="col-md-3">
-    <div class="hr-settings-card"><div class="card-body">
-      <div class="text-muted small">No check-out</div>
-      <div class="fs-3 fw-semibold text-warning"><?= count($noCheckOut) ?></div>
-    </div></div>
-  </div>
-  <div class="col-md-3">
-    <div class="hr-settings-card"><div class="card-body">
-      <div class="text-muted small">Complete</div>
-      <div class="fs-3 fw-semibold text-success"><?= (int)$complete ?></div>
-    </div></div>
-  </div>
-  <div class="col-md-3">
-    <div class="hr-settings-card"><div class="card-body">
-      <div class="text-muted small">Leave / absent</div>
-      <div class="fs-3 fw-semibold text-muted"><?= (int)$excused ?></div>
-    </div></div>
-  </div>
+  <?php endforeach; ?>
 </div>
 
+<?php if ($show === 'complete'): ?>
+<div class="hr-settings-card mb-3">
+  <div class="settings-header">Complete — checked in and out</div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr><th>Employee</th><th>Company</th><th>In</th><th>Out</th><th>Hours</th><th>Recorded by</th></tr>
+      </thead>
+      <tbody>
+        <?php if (!$completeRows): ?>
+          <tr><td colspan="6" class="text-center text-muted py-4">Nobody has a complete day yet.</td></tr>
+        <?php else: foreach ($completeRows as $r): ?>
+          <tr>
+            <td><?= h($r['full_name']) ?> (<?= h($r['employee_code']) ?>)</td>
+            <td><?= h($r['company_name'] ?: '—') ?></td>
+            <td><?= h($r['check_in']) ?></td>
+            <td><?= h($r['check_out']) ?></td>
+            <td><?= $r['hours'] !== null ? h(number_format((float)$r['hours'], 2)) : '—' ?></td>
+            <td><?= ($r['source'] ?? '') === 'self' ? '<span class="badge text-bg-primary">Self</span>' : '<span class="text-muted small">HR</span>' ?></td>
+          </tr>
+        <?php endforeach; endif; ?>
+      </tbody>
+    </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php if ($show === 'excused'): ?>
+<div class="hr-settings-card mb-3">
+  <div class="settings-header">Leave / absent — marked by HR</div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr><th>Employee</th><th>Company</th><th>Marked as</th><th class="text-end">Action</th></tr>
+      </thead>
+      <tbody>
+        <?php if (!$excusedRows): ?>
+          <tr><td colspan="4" class="text-center text-muted py-4">Nobody is on leave or marked absent.</td></tr>
+        <?php else: foreach ($excusedRows as $r): ?>
+          <tr>
+            <td><?= h($r['full_name']) ?> (<?= h($r['employee_code']) ?>)</td>
+            <td><?= h($r['company_name'] ?: '—') ?></td>
+            <td><span class="badge text-bg-light text-dark border"><?= h($attStatusLabels[$r['att_status']] ?? $r['att_status']) ?></span></td>
+            <td class="text-end"><a class="btn btn-sm btn-outline-secondary" href="attendance_edit.php?id=<?= (int)$r['att_id'] ?>">Open</a></td>
+          </tr>
+        <?php endforeach; endif; ?>
+      </tbody>
+    </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php if ($show === '' || $show === 'no_out'): ?>
 <div class="hr-settings-card mb-3">
   <div class="settings-header">No check-out — checked in but never left</div>
   <div class="table-responsive">
@@ -185,7 +248,9 @@ echo hr_ui_page_header(
     </table>
   </div>
 </div>
+<?php endif; ?>
 
+<?php if ($show === '' || $show === 'no_in'): ?>
 <div class="hr-settings-card">
   <div class="settings-header">Not checked in at all</div>
   <div class="table-responsive">
@@ -213,5 +278,6 @@ echo hr_ui_page_header(
     </table>
   </div>
 </div>
+<?php endif; ?>
 
 <?php require_once __DIR__ . '/includes/hr_layout_footer.php'; ?>

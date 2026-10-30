@@ -524,14 +524,51 @@ function ops_api_resolve_places(PDO $conn, int $companyId, $input): array
 function ops_api_handle_push_key(PDO $conn, array $user): void
 {
     if (!ops_reminder_ready($conn)) {
-        customer_api_send_ok(['enabled' => false]);
+        customer_api_send_ok(['available' => false, 'enabled' => false, 'time' => '']);
     }
     $settings = ops_reminder_settings($conn, ops_reminder_user_employee($conn, (int)$user['id']));
     customer_api_send_ok([
+        'available' => true,
         'enabled' => $settings['enabled'],
         'time' => $settings['time'],
         'public_key' => web_push_vapid($conn)['public'],
     ]);
+}
+
+/**
+ * POST ops/reminder/settings {enabled, time}: the person turning their check-out
+ * reminder on at a time of their choosing, or off. The same setting HR can
+ * change on the employee profile.
+ */
+function ops_api_handle_reminder_settings(PDO $conn, array $user): void
+{
+    if (!ops_reminder_ready($conn)) {
+        customer_api_send_error('not_available', 'Reminders are not available yet.', 409);
+    }
+    $employeeId = ops_reminder_user_employee($conn, (int)$user['id']);
+    if (!$employeeId) {
+        customer_api_send_error('no_employee', 'You are not set up in HR yet. Ask HR.', 409);
+    }
+    $enabled = filter_var(ops_api_param('enabled', false), FILTER_VALIDATE_BOOLEAN);
+    $time = substr(trim((string)ops_api_param('time', '')), 0, 5);
+    if ($enabled && !ops_reminder_time_ok($time)) {
+        customer_api_send_error('bad_time', 'Choose a time for the reminder.', 422);
+    }
+    $before = ops_reminder_settings($conn, $employeeId);
+    // Turning it off keeps the last time, so turning it on again starts from it.
+    ops_reminder_save_settings($conn, $employeeId, $enabled, ops_reminder_time_ok($time) ? $time : $before['time']);
+    $after = ops_reminder_settings($conn, $employeeId);
+    if ($before !== $after) {
+        require_once dirname(__DIR__, 3) . '/includes/audit_bridge.php';
+        if (function_exists('audit_bridge_hr_ops')) {
+            audit_bridge_hr_ops('attendance_reminder_settings_updated', 'employees', $employeeId,
+                'Check-out reminder ' . ($after['enabled'] ? 'on at ' . $after['time'] : 'off') . ', set in the staff app'
+                    . ' (was ' . ($before['enabled'] ? 'on at ' . $before['time'] : 'off') . ')',
+                null, ['employee_id' => $employeeId, 'before' => $before, 'after' => $after],
+                'Employee #' . $employeeId, (int)$user['id']);
+        }
+    }
+    customer_api_send_ok(['enabled' => $after['enabled'], 'time' => $after['time']]);
 }
 
 /** One phone turning reminders on (or refreshing), or off. */

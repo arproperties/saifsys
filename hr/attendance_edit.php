@@ -73,6 +73,8 @@ if (hr_attendance_post_too_large()) {
         } elseif ($statusChanged && $notes === '') {
             // Same rule as the quick actions on the list page: no silent changes.
             $flash_err = 'Changing the status needs a reason in Notes.';
+        } elseif (hr_attendance_same_time($check_in, $check_out, $status)) {
+            $flash_err = 'Check-out cannot be the same time as check-in (' . substr($check_in, 0, 5) . ').';
         } else {
             // recalc hours (an Out before the In is the next morning)
             $hours = hr_attendance_hours($check_in, $check_out);

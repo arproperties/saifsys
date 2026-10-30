@@ -95,11 +95,15 @@ try {
     $late = $open('2031-09-01', '17:00:00');
     check('past the limit: not current', null, ops_attendance_current($conn, $employeeId, '2031-09-02 09:30:00'));
     check('past the limit: asked as forgotten', '2031-09-01', ops_attendance_unclosed($conn, $employeeId, '2031-09-02 09:30:00')['work_date'] ?? null);
-    $result = ops_attendance_close_previous($conn, $employee, $userId, '2031-09-01', '16:00', '2031-09-02 09:30:00');
-    check('left at 16:00 the next day is too long', 'bad_time', $result['error'] ?? null);
+    $result = ops_attendance_close_previous($conn, $employee, $userId, '2031-09-01', '17:00', '2031-09-02 09:30:00');
+    check('left at the check in time: refused', 'bad_time', $result['error'] ?? null);
     $result = ops_attendance_close_previous($conn, $employee, $userId, '2031-09-01', '03:00', '2031-09-02 09:30:00');
     check('left at 03:00 next morning: accepted', true, $result['ok']);
     check('left at 03:00 next morning: 10 hours', '10.00', $rowById($late)['hours']);
+    $long = $open('2031-09-08', '20:00:00');
+    $result = ops_attendance_close_previous($conn, $employee, $userId, '2031-09-08', '19:00', '2031-09-09 20:00:00');
+    check('left at 19:00 the next day: accepted', true, $result['ok']);
+    check('left at 19:00 the next day: 23 hours, waits for HR', ['23.00', 'pending'], [$rowById($long)['hours'], $rowById($long)['status']]);
 
     // 7. Reminders: a schedule of 17:00 to 03:00 means still at work at 18:00.
     $conn->prepare("INSERT INTO employee_work_schedules (employee_id, schedule_type, monday_hours, effective_from) VALUES (?, 'shift', '5:00 PM - 3:00 AM', '2031-01-01')")

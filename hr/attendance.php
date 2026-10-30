@@ -51,6 +51,8 @@ if (hr_attendance_post_too_large()) {
 
         if (!$employee_id || !$work_date) {
             $flash_err = 'Employee and Date are required.';
+        } elseif (hr_attendance_same_time($check_in, $check_out, $status)) {
+            $flash_err = 'Check-out cannot be the same time as check-in (' . substr($check_in, 0, 5) . ').';
         } else {
             $hours = calc_hours($check_in, $check_out);
             try {

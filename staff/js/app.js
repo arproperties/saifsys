@@ -142,6 +142,7 @@
       '<h1 class="h1 mt-2">' + esc(T.settings.title) + '</h1>' +
       '<div class="screen-body">' +
       '<div class="card"><div class="small muted">' + esc(T.settings.you) + '</div><div class="h3 mt-1">' + esc(s ? s.user.name : '') + '</div></div>' +
+      (S.hasApp('cleaning') && S.modules.cleaning && S.modules.cleaning.reminderSettings ? S.modules.cleaning.reminderSettings() : '') +
       '<div class="card kv"><span class="secondary">' + esc(T.settings.apps) + '</span><span>' + esc(names) + '</span></div>' +
       '<div class="card kv"><span class="secondary">' + esc(T.settings.version) + '</span><span>' + esc(S.CFG.version || '') + ' (web)</span></div>' +
       '</div>' +

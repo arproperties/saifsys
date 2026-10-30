@@ -64,6 +64,40 @@ function hr_schedule_parse_hours(?string $value): float
 }
 
 /**
+ * Hours as payroll counts them, exactly as on main: one "start - end" range only.
+ * A day with two duties ("9:00 AM - 1:00 PM, 6:00 PM - 3:00 AM") is 0 here, so it
+ * is not a working day for pay, as before. Screens use hr_schedule_parse_hours().
+ */
+function hr_schedule_payroll_hours(?string $value): float
+{
+    $value = trim((string)$value);
+    if ($value === '' || preg_match('/^(off|holiday|rest|none|n\/a)$/i', $value)) {
+        return 0.0;
+    }
+
+    if (is_numeric($value)) {
+        return max(0.0, round((float)$value, 2));
+    }
+
+    $parts = preg_split('/\s*(?:-|–|—|\bto\b)\s*/i', $value);
+    if (!$parts || count($parts) < 2) {
+        return 0.0;
+    }
+
+    $start = strtotime($parts[0]);
+    $end = strtotime($parts[1]);
+    if ($start === false || $end === false) {
+        return 0.0;
+    }
+
+    if ($end <= $start) {
+        $end += 86400;
+    }
+
+    return max(0.0, round(($end - $start) / 3600, 2));
+}
+
+/**
  * One day's label split into its duties, in order. A duty that ends at or
  * before it starts runs past midnight (17:00 - 02:00 is 9 hours).
  *
@@ -136,8 +170,10 @@ function hr_schedule_row_for_date(array $rows, string $date): ?array
 
 /**
  * Expected days and hours per date, from the schedule as saved; payroll,
- * payslips and the absence deduction use this as it is. Screens and reminders
- * pass $applyWeeklyOff = true to also show the weekly off as Off.
+ * payslips and the absence deduction use this as it is, with hours counted
+ * exactly as on main (hr_schedule_payroll_hours). Screens and reminders pass
+ * $applyWeeklyOff = true to also show the weekly off as Off and to count every
+ * duty of a double-duty day.
  */
 function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $to, bool $applyWeeklyOff = false): array
 {
@@ -184,7 +220,9 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
         if ($weeklyOff) {
             $label = 'Off';
         }
-        $hours = hr_schedule_parse_hours($label);
+        // As saved (payroll, payslips): hours counted exactly as on main.
+        // Screens and reminders: every duty of the day counts.
+        $hours = $applyWeeklyOff ? hr_schedule_parse_hours($label) : hr_schedule_payroll_hours($label);
         $isWorkday = $hours > 0;
 
         if ($isWorkday) {
