@@ -249,7 +249,22 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
             <div class="row mt-2">
                 <div class="col-12">
                     <strong>Reference:</strong><br>
-                    <code><?= h($journal['reference_type']) ?> #<?= (int)$journal['reference_id'] ?></code>
+                    <?php
+                    $refLinks = [
+                        'co_client_invoice'   => 'client_invoice_pdf.php?id=',
+                        'co_client_payment'   => 'client_payment_receipt.php?id=',
+                        'co_supplier_invoice' => 'supplier_invoice_view.php?id=',
+                        'co_supplier_payment' => 'supplier_payment_view.php?id=',
+                    ];
+                    $refHref = isset($refLinks[$journal['reference_type']])
+                        ? $refLinks[$journal['reference_type']] . (int)$journal['reference_id']
+                        : null;
+                    ?>
+                    <?php if ($refHref): ?>
+                        <a href="<?= h($refHref) ?>" target="_blank" title="Open referenced document"><code><?= h($journal['reference_type']) ?> #<?= (int)$journal['reference_id'] ?></code> <i class="bi bi-box-arrow-up-right small"></i></a>
+                    <?php else: ?>
+                        <code><?= h($journal['reference_type']) ?> #<?= (int)$journal['reference_id'] ?></code>
+                    <?php endif; ?>
                 </div>
             </div>
         <?php endif; ?>

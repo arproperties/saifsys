@@ -602,6 +602,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 // Sync re_lease_units for this lease
+                // Units on the lease before this save (to vacate the ones taken off)
+                $unitsBefore = function_exists('re_lease_unit_ids') ? re_lease_unit_ids($conn, (int)$leaseId) : [];
                 if (!empty($multiUnits)) {
                     // Delete existing unit rows (re-insert fresh)
                     $conn->prepare("DELETE FROM re_lease_units WHERE lease_id = ?")->execute([$leaseId]);
@@ -618,11 +620,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                 } else {
-                    // Single-unit lease: ensure re_lease_units has at least one row
+                    // Single-unit lease: only its unit stays linked (a lease switched from
+                    // Multiple Units to Single Unit drops the other units)
+                    $conn->prepare("DELETE FROM re_lease_units WHERE lease_id = ? AND unit_id <> ?")->execute([$leaseId, $unitId]);
                     $conn->prepare("
                         INSERT IGNORE INTO re_lease_units (company_id, lease_id, unit_id, annual_rent, sort_order)
                         VALUES (?, ?, ?, ?, 0)
                     ")->execute([$currentCompanyId, $leaseId, $unitId, $annualRent]);
+                    $conn->prepare("UPDATE re_lease_units SET annual_rent = ?, sort_order = 0 WHERE lease_id = ? AND unit_id = ?")
+                        ->execute([$annualRent, $leaseId, $unitId]);
+                }
+                // A unit taken off this lease is vacant again, unless another active lease holds it
+                $unitsNow = function_exists('re_lease_unit_ids') ? re_lease_unit_ids($conn, (int)$leaseId) : [];
+                $heldElsewhere = $conn->prepare("
+                    SELECT COUNT(*) FROM re_leases l2
+                    LEFT JOIN re_lease_units lu2 ON lu2.lease_id = l2.id
+                    WHERE l2.company_id = ? AND l2.id <> ? AND l2.status IN ('active', 'has_legal_case')
+                      AND " . re_lease_not_deleted_sql($conn, 'l2') . "
+                      AND (l2.unit_id = ? OR lu2.unit_id = ?)
+                ");
+                foreach (array_diff($unitsBefore, $unitsNow) as $freedUnit) {
+                    $heldElsewhere->execute([$currentCompanyId, $leaseId, $freedUnit, $freedUnit]);
+                    if ((int)$heldElsewhere->fetchColumn() === 0) {
+                        $conn->prepare("UPDATE re_units SET status = 'vacant' WHERE id = ? AND company_id = ? AND status = 'occupied'")
+                            ->execute([$freedUnit, $currentCompanyId]);
+                    }
+                }
+                if (array_diff($unitsBefore, $unitsNow)) {
+                    re_lease_lifecycle_audit('units_changed', (int)$leaseId, ['unit_ids' => array_values($unitsBefore)], ['unit_ids' => array_values($unitsNow)],
+                        'Units removed from the lease while editing: unit id(s) ' . implode(', ', array_diff($unitsBefore, $unitsNow)) . '.');
                 }
 
                 // Handle Fees Installment for existing leases (use same fees-to-first as computed above)

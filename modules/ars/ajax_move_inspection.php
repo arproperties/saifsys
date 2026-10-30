@@ -82,10 +82,13 @@ try {
                     $errors[] = $files['name'][$i] . ': ' . $res['error'];
                 }
             }
+            // "Photos taken" is ticked once a photo is saved
+            $ticked = $saved > 0 ? ars_move_inspection_sync_photo_items($conn, $inspectionId, $userId) : 0;
             // Success only when a file was really saved.
             echo json_encode([
                 'success' => $saved > 0,
                 'saved' => $saved,
+                'photo_item_ticked' => $ticked > 0,
                 'error' => $errors ? implode(' ', $errors) : null,
             ]);
             break;

@@ -531,6 +531,13 @@ if ($depositJournalIds) {
     }
 }
 
+// Move-In / Move-Out process: long stays (and units set to always use it); short stays use Check In / Check Out
+require_once __DIR__ . '/includes/ars_move_process.php';
+$ampIn = amp_ready($conn) ? amp_record($conn, $arsCompanyId, (int)$booking['id'], 'in') : null;
+$ampOut = amp_ready($conn) ? amp_record($conn, $arsCompanyId, (int)$booking['id'], 'out') : null;
+$ampRuleOn = amp_ready($conn) && amp_rule($conn, $arsCompanyId, $booking)['on'];
+$ampInOn = $ampRuleOn;
+$ampOutOn = $ampRuleOn;
 $nextStepTitle = '';
 $nextStepBody = '';
 $nextStepActions = '';
@@ -564,8 +571,12 @@ if ($booking['status'] === 'pending') {
         . '<button type="button" class="btn btn-outline-secondary btn-sm" onclick="openWorkspaceTab(\'documents\')"><i class="bi bi-journal-check me-1"></i>Accounting trail</button>';
 } elseif ($booking['status'] === 'confirmed' && $dueNow <= 0.009 && !$depositPendingCollect) {
     $nextStepTitle = 'Next: Check the guest in';
-    $nextStepBody = 'Stay balance and deposit are settled. Proceed with check-in when the guest arrives.';
-    $nextStepActions = '<button type="button" class="btn btn-ars btn-sm" onclick="bookingAction(\'checkin\')"><i class="bi bi-box-arrow-in-right me-1"></i>Check in</button>'
+    $nextStepBody = $ampInOn
+        ? 'Stay balance and deposit are settled. Open the Move-In when the guest arrives: the guest is checked in at Key Handover.'
+        : 'Stay balance and deposit are settled. Proceed with check-in when the guest arrives.';
+    $nextStepActions = ($ampInOn
+        ? '<a class="btn btn-ars btn-sm" href="move_in_view.php?booking_id=' . (int)$booking['id'] . '"><i class="bi bi-box-arrow-in-right me-1"></i>Move-In (check in)</a>'
+        : '<button type="button" class="btn btn-ars btn-sm" onclick="bookingAction(\'checkin\')"><i class="bi bi-box-arrow-in-right me-1"></i>Check in</button>')
         . '<button type="button" class="btn btn-outline-secondary btn-sm" onclick="openWorkspaceTab(\'documents\')"><i class="bi bi-journal-check me-1"></i>Accounting trail</button>';
 }
 ?>
@@ -593,22 +604,16 @@ if ($booking['status'] === 'pending') {
           <?php endif; ?>
         </div>
         <?php
-        require_once __DIR__ . '/includes/ars_move_inspection.php';
-        $moveInspections = ars_move_inspection_summary($conn, $arsCompanyId, [(int)$booking['id']]);
+        // Move-In / Move-Out process of the booking (check-in and check-out are done there)
+        $ampLabel = static fn(?array $r): string => !$r ? 'Not started' : ($r['status'] === 'completed' ? 'Completed' : 'In progress');
         ?>
         <div class="small mt-1 d-flex flex-wrap gap-3">
-          <?php foreach (['in', 'out'] as $moveType): ?>
-            <?php
-            $moveInsp = $moveInspections[(int)$booking['id'] . ':' . $moveType] ?? null;
-            if (!$moveInsp && !in_array($booking['status'], ars_move_inspection_allowed_statuses($moveType), true)) {
-                continue;
-            }
-            ?>
-            <a class="text-decoration-none" href="move_inspection.php?booking_id=<?= (int)$booking['id'] ?>&amp;type=<?= $moveType ?>">
-              <i class="bi bi-list-check me-1"></i><?= h(ars_move_inspection_type_label($moveType)) ?> inspection:
-              <span class="fw-semibold"><?= h(ars_move_inspection_summary_label($moveInsp)) ?></span>
-            </a>
-          <?php endforeach; ?>
+          <?php if ($ampIn || ($ampInOn && in_array($booking['status'], ['pending', 'confirmed'], true))): ?>
+            <a class="text-decoration-none" href="move_in_view.php?booking_id=<?= (int)$booking['id'] ?>"><i class="bi bi-box-arrow-in-right me-1"></i>Move-in: <span class="fw-semibold"><?= h($ampLabel($ampIn)) ?></span></a>
+          <?php endif; ?>
+          <?php if ($ampOut || ($ampOutOn && $booking['status'] === 'checked_in')): ?>
+            <a class="text-decoration-none" href="move_out_view.php?booking_id=<?= (int)$booking['id'] ?>"><i class="bi bi-box-arrow-right me-1"></i>Move-out: <span class="fw-semibold"><?= h($ampLabel($ampOut)) ?></span></a>
+          <?php endif; ?>
         </div>
       </div>
     </div>
@@ -621,13 +626,15 @@ if ($booking['status'] === 'pending') {
         <?php endif; ?>
       <?php endif; ?>
       <?php if ($booking['status'] === 'confirmed'): ?>
-        <button type="button" class="btn btn-warning btn-sm" onclick="bookingAction('checkin')"><i class="bi bi-box-arrow-in-right me-1"></i>Check In</button>
+        <?php if (!$ampInOn): ?><button type="button" class="btn btn-warning btn-sm" onclick="bookingAction('checkin')"><i class="bi bi-box-arrow-in-right me-1"></i>Check In</button><?php endif; ?>
       <?php endif; ?>
       <?php if ($booking['status'] === 'checked_in'): ?>
-        <button type="button" class="btn btn-info btn-sm text-white" data-ars-action="checkout"><i class="bi bi-box-arrow-right me-1"></i>Check Out</button>
+        <?php if ($ampOutOn): ?><a class="btn btn-info btn-sm text-white" href="move_out_view.php?booking_id=<?= (int)$booking['id'] ?>"><i class="bi bi-box-arrow-right me-1"></i>Move-Out</a><?php else: ?>
+        <button type="button" class="btn btn-info btn-sm text-white" data-ars-action="checkout"><i class="bi bi-box-arrow-right me-1"></i>Check Out</button><?php endif; ?>
       <?php endif; ?>
       <?php if ($booking['status'] === 'checked_out'): ?>
-        <button type="button" class="btn btn-primary btn-sm" onclick="bookingAction('complete')"><i class="bi bi-check2-all me-1"></i>Complete</button>
+        <?php if ($ampOutOn && !empty($ampOut) && $ampOut['status'] !== 'completed'): ?><a class="btn btn-primary btn-sm" href="move_out_view.php?booking_id=<?= (int)$booking['id'] ?>"><i class="bi bi-box-arrow-right me-1"></i>Finish Move-Out</a><?php else: ?>
+        <button type="button" class="btn btn-primary btn-sm" onclick="bookingAction('complete')"><i class="bi bi-check2-all me-1"></i>Complete</button><?php endif; ?>
       <?php endif; ?>
       <?php if (in_array($booking['status'], ['pending','confirmed'], true)): ?>
         <button type="button" class="btn btn-outline-danger btn-sm" onclick="if(confirm('Cancel this booking? If a revenue journal exists it will be reversed.')) bookingAction('cancel')"><i class="bi bi-x-circle me-1"></i>Cancel</button>
@@ -934,13 +941,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 <?php endif; ?>
                 <?php endif; ?>
                 <?php if ($booking['status'] === 'confirmed'): ?>
-                <button class="btn btn-warning btn-sm" onclick="bookingAction('checkin')"><i class="bi bi-box-arrow-in-right me-1"></i>Check In</button>
+                <?php if ($ampInOn): ?><a class="btn btn-warning btn-sm" href="move_in_view.php?booking_id=<?= (int)$booking['id'] ?>"><i class="bi bi-box-arrow-in-right me-1"></i>Move-In</a><?php else: ?>
+                <button class="btn btn-warning btn-sm" onclick="bookingAction('checkin')"><i class="bi bi-box-arrow-in-right me-1"></i>Check In</button><?php endif; ?>
                 <?php endif; ?>
                 <?php if ($booking['status'] === 'checked_in'): ?>
-                <button class="btn btn-info btn-sm text-white" data-ars-action="checkout"><i class="bi bi-box-arrow-right me-1"></i>Check Out</button>
+                <?php if ($ampOutOn): ?><a class="btn btn-info btn-sm text-white" href="move_out_view.php?booking_id=<?= (int)$booking['id'] ?>"><i class="bi bi-box-arrow-right me-1"></i>Move-Out</a><?php else: ?>
+                <button class="btn btn-info btn-sm text-white" data-ars-action="checkout"><i class="bi bi-box-arrow-right me-1"></i>Check Out</button><?php endif; ?>
                 <?php endif; ?>
                 <?php if ($booking['status'] === 'checked_out'): ?>
-                <button class="btn btn-primary btn-sm" onclick="bookingAction('complete')"><i class="bi bi-check2-all me-1"></i>Mark Complete</button>
+                <?php if ($ampOutOn && !empty($ampOut) && $ampOut['status'] !== 'completed'): ?><a class="btn btn-primary btn-sm" href="move_out_view.php?booking_id=<?= (int)$booking['id'] ?>"><i class="bi bi-box-arrow-right me-1"></i>Finish Move-Out</a><?php else: ?>
+                <button class="btn btn-primary btn-sm" onclick="bookingAction('complete')"><i class="bi bi-check2-all me-1"></i>Mark Complete</button><?php endif; ?>
                 <?php endif; ?>
                 <?php if (in_array($booking['status'], ['pending','confirmed'])): ?>
                 <button class="btn btn-outline-danger btn-sm" onclick="if(confirm('Cancel this booking?')) bookingAction('cancel')"><i class="bi bi-x-circle me-1"></i>Cancel</button>

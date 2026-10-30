@@ -586,10 +586,22 @@ function reverse_journal($journalId, $reason = '', $reversedBy = null, $reversal
         $stmt->execute([$result['journal_id'], $journalId]);
         
         accounting_audit_log($originalJournal['company_id'], 'reverse_journal', 'journal_header', $journalId, $reversedBy, 'Reversal: ' . $result['journal_id']);
+
+        // A reversed security deposit settlement journal puts the settlement back to
+        // draft (deductions, tenant refund and move-out follow), whichever page reversed it
+        $warning = null;
+        if (($originalJournal['reference_type'] ?? '') === 'security_deposit_settlement' && !empty($originalJournal['reference_id'])) {
+            require_once __DIR__ . '/../includes/security_deposit_helper.php';
+            $sync = re_sd_settlement_journal_reversed($conn, (int)$originalJournal['reference_id'], (int)$journalId, (int)$result['journal_id'], $reversedBy ? (int)$reversedBy : null, (string)$reason);
+            if (empty($sync['success'])) {
+                $warning = 'The journal was reversed, but the deposit settlement could not be set back to draft: ' . $sync['error'];
+            }
+        }
         return [
             'success' => true,
             'reversal_journal_id' => $result['journal_id'],
-            'error' => null
+            'error' => null,
+            'warning' => $warning,
         ];
         
     } catch (Exception $e) {

@@ -78,6 +78,24 @@ function ars_move_inspection_ensure_schema(PDO $conn): void {
             INDEX idx_ars_mip_inspection (inspection_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+    // Move-out: an item found damaged, linked to its row in Damages (ars_move_out_damages)
+    try {
+        if (!$conn->query("SHOW COLUMNS FROM ars_move_inspection_items LIKE 'is_damaged'")->fetch()) {
+            $conn->exec("ALTER TABLE ars_move_inspection_items ADD COLUMN is_damaged TINYINT(1) NOT NULL DEFAULT 0, ADD COLUMN damage_id INT NULL");
+        }
+    } catch (Throwable $e) {
+        error_log('ARS checklist damage columns: ' . $e->getMessage());
+    }
+    // Checklist sections (General Condition, Kitchen, ...): added to older installs
+    foreach (['ars_move_checklist_templates', 'ars_move_inspection_items'] as $t) {
+        try {
+            if (!$conn->query("SHOW COLUMNS FROM $t LIKE 'section_name'")->fetch()) {
+                $conn->exec("ALTER TABLE $t ADD COLUMN section_name VARCHAR(100) NULL AFTER " . ($t === 'ars_move_inspection_items' ? 'template_id' : 'move_type'));
+            }
+        } catch (Throwable $e) {
+            error_log('ARS checklist section column (' . $t . '): ' . $e->getMessage());
+        }
+    }
 }
 
 /** Dubai wall-clock time; the live database clock runs on UTC. */
@@ -99,7 +117,8 @@ function ars_move_inspection_nav_html(string $active): string {
         . ($on ? 'bg-ars-ink text-white' : 'text-ars-muted hover:text-ars-text');
     return '<div class="inline-flex flex-wrap gap-1 rounded-ars-lg border border-ars-border bg-ars-surface p-1 align-middle">'
         . '<a class="' . $class($active === 'list') . '" href="move_report.php">' . ars_ui_icon('list', ['class' => 'h-4 w-4']) . ' Move-in / Move-out list</a>'
-        . '<a class="' . $class($active === 'checklist') . '" href="move_checklist.php">' . ars_ui_icon('list-checks', ['class' => 'h-4 w-4']) . ' Checklist</a>'
+        . '<a class="' . $class($active === 'checklist') . '" href="move_inspection_template.php">' . ars_ui_icon('list-checks', ['class' => 'h-4 w-4']) . ' Inspection Template</a>'
+        . '<a class="' . $class($active === 'settings') . '" href="move_settings.php">' . ars_ui_icon('settings', ['class' => 'h-4 w-4']) . ' Settings</a>'
         . '</div>';
 }
 
@@ -111,33 +130,129 @@ function ars_move_inspection_allowed_statuses(string $type): array {
 }
 
 /**
- * Starting checklist for a company that has not set its own.
+ * Standard checklist (the company's Move-In / Move-Out Inspection Report): 10 sections
+ * for a furnished unit. Section 10, Inspection Remarks, is the inspection notes box.
+ * "(if any)" / "(if provided)" items are not required: tick them only when the unit has one.
  *
- * @return list<array{0:string,1:string,2:int}> name, description, required
+ * @return list<array{0:string,1:string,2:int}> section, item, required
  */
 function ars_move_inspection_default_items(string $type): array {
-    if ($type === 'out') {
-        return [
-            ['Keys / access cards returned', 'All keys, access cards and parking cards are back', 1],
-            ['Inventory checked', 'Furniture, linen, kitchen items and electronics are all there', 1],
-            ['Damages checked', 'Walls, furniture and fittings checked; write any damage in the remarks', 1],
-            ['AC and appliances working', 'AC, fridge, washing machine, TV and cooker switch on and work', 1],
-            ['Guest belongings cleared', 'Nothing left behind in rooms, cupboards or fridge', 1],
-            ['Unit photos taken', 'Photos of each room uploaded below', 0],
-        ];
-    }
-    return [
-        ['Guest ID / passport collected', 'ID copy is on the guest profile', 1],
-        ['Stay payment received', 'Amount due before arrival is paid', 1],
-        ['Security deposit received', 'Deposit collected, where the booking has one', 0],
-        ['Keys / access cards handed over', 'Guest has the keys, access cards and parking card', 1],
-        ['Unit clean and ready', 'Unit is clean, beds made, towels and supplies in place', 1],
-        ['AC and appliances working', 'AC, fridge, washing machine, TV and cooker switch on and work', 1],
-        ['Inventory checked', 'Furniture, linen, kitchen items and electronics are all there', 1],
-        ['House rules explained', 'Guest was told the house rules and check-out time', 0],
+    $out = $type === 'out';
+    $s = [
+        'General Condition' => [
+            ['Apartment is clean and in good condition', 1],
+            ['No major wall damage (holes, stains, etc.)', 1],
+            ['AC unit is cooling properly', 1],
+            ['AC thermostat working and functional', 1],
+            ['No foul odor; space is well-ventilated', 1],
+            ['Floors clean and undamaged', 1],
+            [$out ? 'All keys/remotes returned (main door, mailbox, parking, access cards)' : 'All keys/remotes handed over (main door, mailbox, parking, access cards)', 1],
+        ],
+        'Furniture & Fixtures' => [
+            ['All original furniture items present (as per inventory list)', 1],
+            ['Furniture is undamaged and in usable condition', 1],
+            ['No stains, tears, or burn marks on upholstery/fabric', 1],
+            ['All cabinets, drawers, and shelves intact and functional', 1],
+            ['Curtains/blinds present and undamaged', 1],
+            ['Light fixtures installed and not missing', 1],
+        ],
+        'Appliances' => [
+            ['Free-standing refrigerator clean and working/functional (if any)', 0],
+            ['Free-standing cooker range and hood clean and working/functional (if any)', 0],
+            ['Free-standing washing machine working/functional (if any)', 0],
+            ['Microwave/oven/stove clean and operational (if any)', 0],
+            ['TV (if provided) working with remote', 0],
+            ['Air-conditioning units cooling properly', 1],
+            ['Water heater working', 1],
+            ['All provided appliances accounted for and undamaged', 1],
+        ],
+        'Lighting & Electrical' => [
+            ['All light fixtures/bulbs functional', 1],
+            ['All power sockets tested and working', 1],
+            ['Switches and circuit breakers working properly', 1],
+            [$out ? 'Internet router/modem (if provided) returned and functioning' : 'Internet router/modem (if provided) in place and functioning', 0],
+        ],
+        'Kitchen' => [
+            ['Kitchenware (utensils, pans, dishes - if applicable) accounted for', 0],
+            ['Countertops, sink, and cabinets clean and undamaged', 1],
+            ['Exhaust/hood filter cleaned', 1],
+            ['Sink clean; no leaks; strainer clear', 1],
+            ['All cabinets clean and functional', 1],
+            ['Stove burners clean and undamaged', 1],
+        ],
+        'Unit' => [
+            ['Room clean and free of personal items', 1],
+            ['Walls clean; no holes, scratches, or stains', 1],
+            ['Floor clean and undamaged', 1],
+            ['Built-in wardrobe/cabinets clean and functional', 1],
+            ['Bedframe/mattress (if provided) clean and undamaged', 0],
+            ['Curtains/blinds clean and functional', 1],
+            ['Light fixtures working', 1],
+            ['AC unit cooling properly', 1],
+            ['AC thermostat working and functional', 1],
+            ['Windows and locks working', 1],
+            ['Drawers open/close properly', 1],
+        ],
+        'Bathroom' => [
+            ['Toilets flushed and clean', 1],
+            ['Bidet and bidet shower working, and fixtures in good condition', 1],
+            ['Sink, shower, and faucets functioning without leaks', 1],
+            ['Mirrors, shelves, and fixtures in good condition', 1],
+            ['No molds or water damage', 1],
+            ['Drains clear and not clogged', 1],
+            ['No foul odor; space is well-ventilated', 1],
+        ],
+        'Additional Areas' => [
+            ['Balcony/terrace cleaned, no debris (if any)', 0],
+            ['Windows and sliding doors clean and functional', 1],
+            ['Storage rooms/maid\'s room empty and clean (if any)', 0],
+            ['Parking slot clean (if applicable)', 0],
+        ],
+        'Final Walkthrough' => [
+            ['Walkthrough conducted with the guest and the maintenance service provider', 1],
+            ['Photos/videos taken of current condition', 1],
+        ],
     ];
+    $rows = [];
+    foreach ($s as $section => $items) {
+        foreach ($items as [$name, $req]) {
+            $rows[] = [$section, $name, $req];
+        }
+    }
+    return $rows;
 }
 
+/** Section names of the standard checklist, in order (for the settings page). */
+function ars_move_inspection_sections(): array {
+    return ['General Condition', 'Furniture & Fixtures', 'Appliances', 'Lighting & Electrical', 'Kitchen', 'Unit', 'Bathroom', 'Additional Areas', 'Final Walkthrough'];
+}
+
+/**
+ * Replace the company's checklist for one direction with the standard one. The old
+ * items are kept inactive (hidden); inspections already started keep their own items.
+ */
+function ars_move_inspection_apply_standard(PDO $conn, int $companyId, string $type): int {
+    ars_move_inspection_ensure_schema($conn);
+    $conn->beginTransaction();
+    try {
+        $conn->prepare("UPDATE ars_move_checklist_templates SET is_active = 0 WHERE company_id = ? AND move_type = ? AND is_active = 1")
+            ->execute([$companyId, $type]);
+        $ins = $conn->prepare("
+            INSERT INTO ars_move_checklist_templates
+                (company_id, move_type, section_name, item_name, item_description, is_required, display_order)
+            VALUES (?, ?, ?, ?, NULL, ?, ?)
+        ");
+        $rows = ars_move_inspection_default_items($type);
+        foreach ($rows as $i => [$section, $name, $req]) {
+            $ins->execute([$companyId, $type, $section, $name, $req, $i + 1]);
+        }
+        $conn->commit();
+        return count($rows);
+    } catch (Throwable $e) {
+        $conn->rollBack();
+        throw $e;
+    }
+}
 /**
  * Active checklist template for one direction; seeds the defaults the first time.
  *
@@ -150,11 +265,11 @@ function ars_move_inspection_templates(PDO $conn, int $companyId, string $type, 
     if ((int)$count->fetchColumn() === 0) {
         $ins = $conn->prepare("
             INSERT INTO ars_move_checklist_templates
-                (company_id, move_type, item_name, item_description, is_required, display_order)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (company_id, move_type, section_name, item_name, item_description, is_required, display_order)
+            VALUES (?, ?, ?, ?, NULL, ?, ?)
         ");
-        foreach (ars_move_inspection_default_items($type) as $i => $item) {
-            $ins->execute([$companyId, $type, $item[0], $item[1], $item[2], $i + 1]);
+        foreach (ars_move_inspection_default_items($type) as $i => [$section, $name, $req]) {
+            $ins->execute([$companyId, $type, $section, $name, $req, $i + 1]);
         }
     }
     $stmt = $conn->prepare("
@@ -202,12 +317,12 @@ function ars_move_inspection_get_or_create(PDO $conn, int $companyId, int $booki
             $inspectionId = (int)$conn->lastInsertId();
             $item = $conn->prepare("
                 INSERT INTO ars_move_inspection_items
-                    (company_id, inspection_id, template_id, item_name, item_description, is_required, display_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (company_id, inspection_id, template_id, section_name, item_name, item_description, is_required, display_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ");
             foreach ($templates as $i => $t) {
                 $item->execute([
-                    $companyId, $inspectionId, $t['id'], $t['item_name'], $t['item_description'],
+                    $companyId, $inspectionId, $t['id'], $t['section_name'] ?? null, $t['item_name'], $t['item_description'],
                     (int)$t['is_required'], (int)$t['display_order'] ?: ($i + 1),
                 ]);
             }
@@ -243,6 +358,15 @@ function ars_move_inspection_save_item(PDO $conn, array $inspection, int $itemId
         return ['success' => false, 'error' => 'This inspection is already completed.'];
     }
     $remarks = mb_substr(trim($remarks), 0, 1000);
+    // "Photos taken" can only be ticked once a photo is uploaded to this inspection
+    if ($completed) {
+        $it = $conn->prepare("SELECT item_name FROM ars_move_inspection_items WHERE id = ? AND inspection_id = ?");
+        $it->execute([$itemId, (int)$inspection['id']]);
+        $itemName = $it->fetchColumn();
+        if ($itemName !== false && ars_move_inspection_is_photo_item((string)$itemName) && ars_move_inspection_photo_count($conn, (int)$inspection['id']) === 0) {
+            return ['success' => false, 'error' => 'Upload at least one photo first (Photos, below the checklist); then tick this item.'];
+        }
+    }
     $stmt = $conn->prepare("
         UPDATE ars_move_inspection_items
         SET remarks = ?,
@@ -260,6 +384,31 @@ function ars_move_inspection_save_item(PDO $conn, array $inspection, int $itemId
     }
     $conn->prepare("UPDATE ars_move_inspections SET updated_at = NOW() WHERE id = ?")->execute([(int)$inspection['id']]);
     return ['success' => true, 'error' => null];
+}
+
+/** The checklist item that says photos were taken ("Photos/videos taken of current condition"). */
+function ars_move_inspection_is_photo_item(string $name): bool {
+    return stripos($name, 'photo') !== false;
+}
+
+/** Photos uploaded: "Photos taken" is ticked by itself (as in the Real Estate move-out). Returns items ticked. */
+function ars_move_inspection_sync_photo_items(PDO $conn, int $inspectionId, ?int $userId): int {
+    if (ars_move_inspection_photo_count($conn, $inspectionId) === 0) {
+        return 0;
+    }
+    $st = $conn->prepare("
+        UPDATE ars_move_inspection_items
+        SET is_completed = 1, completed_at = ?, completed_by = ?
+        WHERE inspection_id = ? AND is_completed = 0 AND item_name LIKE '%photo%'
+    ");
+    $st->execute([ars_move_inspection_now(), $userId, $inspectionId]);
+    return $st->rowCount();
+}
+
+function ars_move_inspection_photo_count(PDO $conn, int $inspectionId): int {
+    $st = $conn->prepare("SELECT COUNT(*) FROM ars_move_inspection_photos WHERE inspection_id = ?");
+    $st->execute([$inspectionId]);
+    return (int)$st->fetchColumn();
 }
 
 /** @return array{total:int,done:int,required_left:int} */
@@ -359,6 +508,42 @@ function ars_move_inspection_photo_mime_map(): array {
     ];
 }
 
+/** Formats accepted for new inspection photos (extension => MIME). Older PDF / GIF uploads still open. */
+function ars_move_inspection_photo_upload_types(): array {
+    return ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp'];
+}
+
+/**
+ * Re-save an uploaded image as a clean file of the same type (drops anything hidden in
+ * it, e.g. a script or the GPS location; JPEG photos are turned upright first).
+ * Returns false when GD cannot do it, so the checked original is kept.
+ */
+function ars_move_inspection_photo_reencode(string $src, string $dest, string $mime): bool {
+    $load = ['image/jpeg' => 'imagecreatefromjpeg', 'image/png' => 'imagecreatefrompng', 'image/webp' => 'imagecreatefromwebp'][$mime] ?? null;
+    $save = ['image/jpeg' => 'imagejpeg', 'image/png' => 'imagepng', 'image/webp' => 'imagewebp'][$mime] ?? null;
+    if (!$load || !$save || !function_exists($load) || !function_exists($save)) {
+        return false;
+    }
+    $img = @$load($src);
+    if (!$img) {
+        return false;
+    }
+    if ($mime === 'image/jpeg' && function_exists('exif_read_data')) {
+        $o = (int)(@exif_read_data($src)['Orientation'] ?? 1);
+        $deg = [3 => 180, 6 => -90, 8 => 90][$o] ?? 0;
+        if ($deg && ($rot = imagerotate($img, $deg, 0))) {
+            imagedestroy($img);
+            $img = $rot;
+        }
+    }
+    if ($mime === 'image/png') {
+        imagesavealpha($img, true);
+    }
+    $ok = $mime === 'image/jpeg' ? imagejpeg($img, $dest, 85) : ($mime === 'image/png' ? imagepng($img, $dest, 6) : imagewebp($img, $dest, 85));
+    imagedestroy($img);
+    return $ok && is_file($dest) && filesize($dest) > 0;
+}
+
 function ars_move_inspection_ensure_storage(string $dir): bool {
     $root = ars_move_inspection_storage_root();
     if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
@@ -409,17 +594,28 @@ function ars_move_inspection_photo_upload(PDO $conn, array $inspection, array $f
         return $fail('Each file must be 10 MB or smaller.');
     }
     $orig = (string)($file['name'] ?? 'photo');
-    $ext = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
-    $map = ars_move_inspection_photo_mime_map();
-    if (!isset($map[$ext])) {
-        return $fail('Only photos (JPG, PNG, WEBP, GIF) and PDF are allowed.');
+    $tmp = (string)($file['tmp_name'] ?? '');
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        return $fail('Upload failed. Please choose the photo again.');
     }
-    if (class_exists('finfo')) {
-        $mime = (string)(new finfo(FILEINFO_MIME_TYPE))->file((string)$file['tmp_name']);
-        $ok = $ext === 'pdf' ? $mime === 'application/pdf' : str_starts_with($mime, 'image/');
-        if ($mime !== '' && !$ok) {
-            return $fail('The file does not look like a ' . ($ext === 'pdf' ? 'PDF' : 'photo') . '.');
-        }
+    // 1. Extension: photos only
+    $ext = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
+    $types = ars_move_inspection_photo_upload_types();
+    if (!isset($types[$ext])) {
+        return $fail('Only photos are allowed: JPG, JPEG, PNG or WEBP.');
+    }
+    // 2. Content: the real file type must be the one its name says (not just "an image")
+    $mime = class_exists('finfo') ? (string)(new finfo(FILEINFO_MIME_TYPE))->file($tmp) : '';
+    if ($mime !== $types[$ext]) {
+        return $fail('The file is not a real ' . strtoupper($ext) . ' image' . ($mime !== '' ? ' (it is ' . $mime . ')' : '') . '.');
+    }
+    // 3. It must open as an image of a sensible size (also stops oversized "image bombs")
+    $info = @getimagesize($tmp);
+    if (!$info || ($info['mime'] ?? '') !== $types[$ext] || $info[0] < 1 || $info[1] < 1) {
+        return $fail('The file could not be read as an image.');
+    }
+    if ($info[0] * $info[1] > 50000000) {
+        return $fail('The image is too large (' . $info[0] . ' x ' . $info[1] . ' pixels). Please upload a smaller photo.');
     }
 
     $companyId = (int)$inspection['company_id'];
@@ -428,10 +624,15 @@ function ars_move_inspection_photo_upload(PDO $conn, array $inspection, array $f
     if (!ars_move_inspection_ensure_storage($dir)) {
         return $fail('Could not save the file. The uploads/ars_move_inspections folder is not writable.');
     }
-    $stored = bin2hex(random_bytes(16)) . '.' . $ext;
-    if (!move_uploaded_file((string)$file['tmp_name'], $dir . '/' . $stored)) {
+    $stored = bin2hex(random_bytes(16)) . '.' . ($ext === 'jpeg' ? 'jpg' : $ext);
+    $dest = $dir . '/' . $stored;
+    if (ars_move_inspection_photo_reencode($tmp, $dest, $types[$ext])) {
+        @unlink($tmp);
+        $size = (int)filesize($dest);
+    } elseif (!move_uploaded_file($tmp, $dest)) {
         return $fail('Could not save the uploaded file.');
     }
+    @chmod($dest, 0644);
     $safeOrig = substr(preg_replace('/[^\w.\- ()]+/u', '_', $orig) ?: 'photo.' . $ext, 0, 240);
     $caption = mb_substr(trim($caption), 0, 255);
     $conn->prepare("
@@ -486,6 +687,11 @@ function ars_move_inspection_photo_delete(PDO $conn, array $inspection, int $pho
     }
     $conn->prepare("DELETE FROM ars_move_inspection_photos WHERE id = ? AND inspection_id = ?")
         ->execute([$photoId, (int)$inspection['id']]);
+    // Last photo removed: "Photos taken" is no longer true
+    if (ars_move_inspection_photo_count($conn, (int)$inspection['id']) === 0) {
+        $conn->prepare("UPDATE ars_move_inspection_items SET is_completed = 0, completed_at = NULL, completed_by = NULL WHERE inspection_id = ? AND is_completed = 1 AND item_name LIKE '%photo%'")
+            ->execute([(int)$inspection['id']]);
+    }
     $abs = dirname(__DIR__, 3) . '/' . ltrim((string)$rel, '/');
     if (is_file($abs)) {
         @unlink($abs);

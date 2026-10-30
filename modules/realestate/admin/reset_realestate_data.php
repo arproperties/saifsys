@@ -152,10 +152,10 @@ function re_reset_steps(PDO $conn, int $companyId, array $opts): array {
             $add(true, 'Lease', $t, 'Delete renewal details', "SELECT COUNT(*) FROM {$t} WHERE workflow_id IN (SELECT id FROM re_lease_renewal_workflows WHERE lease_id IN ({$leaseIds}) OR new_lease_id IN ({$leaseIds}))", "DELETE FROM {$t} WHERE workflow_id IN (SELECT id FROM re_lease_renewal_workflows WHERE lease_id IN ({$leaseIds}) OR new_lease_id IN ({$leaseIds}))", [$companyId, $companyId, $companyId, $companyId]);
         }
         $add(true, 'Lease', 're_lease_renewal_workflows', 'Delete renewal workflows', "SELECT COUNT(*) FROM re_lease_renewal_workflows WHERE lease_id IN ({$leaseIds}) OR new_lease_id IN ({$leaseIds})", "DELETE FROM re_lease_renewal_workflows WHERE lease_id IN ({$leaseIds}) OR new_lease_id IN ({$leaseIds})", [$companyId, $companyId, $companyId, $companyId]);
-        foreach (['re_move_out_damages','re_move_out_photos'] as $t) {
+        foreach (['re_move_out_damages','re_move_out_photos','re_move_out_inspection_items','re_move_out_keys','re_move_out_charges','re_move_out_appointment_log'] as $t) {
             $add(true, 'Lease', $t, 'Delete move-out children', "SELECT COUNT(*) FROM {$t} WHERE move_out_id IN (SELECT id FROM re_move_outs WHERE company_id = ? AND lease_id IN ({$leaseIds}))", "DELETE FROM {$t} WHERE move_out_id IN (SELECT id FROM re_move_outs WHERE company_id = ? AND lease_id IN ({$leaseIds}))", [$companyId, $companyId]);
         }
-        foreach (['re_move_in_checklist_items','re_move_in_photos'] as $t) {
+        foreach (['re_move_in_checklist_items','re_move_in_photos','re_move_in_inspection_items','re_move_in_keys'] as $t) {
             $add(true, 'Lease', $t, 'Delete move-in children', "SELECT COUNT(*) FROM {$t} WHERE move_in_id IN (SELECT id FROM re_move_ins WHERE company_id = ? AND lease_id IN ({$leaseIds}))", "DELETE FROM {$t} WHERE move_in_id IN (SELECT id FROM re_move_ins WHERE company_id = ? AND lease_id IN ({$leaseIds}))", [$companyId, $companyId]);
         }
         foreach (['re_move_outs','re_move_out_notices','re_move_ins','re_move_operations','re_tenant_refunds','re_service_charges','re_billing_items','re_tenant_notifications','re_tenant_unit_history'] as $t) {

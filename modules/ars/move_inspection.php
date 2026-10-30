@@ -21,6 +21,9 @@ $userId = current_user_id();
 $bookingId = (int)($_GET['booking_id'] ?? 0);
 $type = ars_move_inspection_type($_GET['type'] ?? 'in');
 $isOut = $type === 'out';
+// The inspection is now a step of the Move-In / Move-Out process
+header('Location: ' . ($isOut ? 'move_out_view.php' : 'move_in_view.php') . '?booking_id=' . $bookingId . '#step-2');
+exit;
 $typeLabel = ars_move_inspection_type_label($type);
 
 $stmt = $conn->prepare("

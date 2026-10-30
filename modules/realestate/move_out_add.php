@@ -11,6 +11,8 @@ require_once __DIR__ . '/../../includes/branding.php';
 require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/csrf.php';
+require_once __DIR__ . '/includes/re_lease_picker.php';
+require_once __DIR__ . '/includes/lease_lifecycle_guard.php';
 
 require_login();
 require_module_access($conn, MODULE_REALESTATE);
@@ -43,23 +45,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         JOIN re_units u ON u.id = l.unit_id
         JOIN re_buildings b ON b.id = u.building_id
         JOIN re_tenants t ON t.id = l.tenant_id
-        WHERE l.id = ? AND l.company_id = ? AND l.status = 'active'
+        WHERE l.id = ? AND l.company_id = ? AND " . re_lease_not_deleted_sql($conn, 'l') . "
     ");
     $leaseCheck->execute([$leaseId, $currentCompanyId]);
     $lease = $leaseCheck->fetch(PDO::FETCH_ASSOC);
     
     if (!$lease) {
-        $_SESSION['error'] = 'Invalid or inactive lease selected.';
+        $_SESSION['error'] = 'Invalid lease selected.';
         header('Location: move_out_add.php');
         exit;
     }
     
-    // Check if move-out notice already exists for this lease
-    $existingCheck = $conn->prepare("
-        SELECT id FROM re_move_out_notices 
-        WHERE lease_id = ? AND status != 'cancelled'
+    // No move-out for a draft lease
+    if (($lease['status'] ?? '') === 'draft') {
+        $_SESSION['error'] = 'Lease ' . ($lease['lease_number'] ?: ('#' . $leaseId)) . ' is in Draft status. Activate the lease before creating a move-out.';
+        header('Location: move_out_add.php');
+        exit;
+    }
+
+    // Move-out is only allowed after a completed move-in
+    $moveInCheck = $conn->prepare("
+        SELECT id FROM re_move_ins WHERE lease_id = ? AND status = 'completed' LIMIT 1
     ");
-    $existingCheck->execute([$leaseId]);
+    $moveInCheck->execute([$leaseId]);
+    require_once __DIR__ . '/includes/move_in_chain_helper.php';
+    if (!$moveInCheck->fetch() && !re_move_in_carried_over($conn, (int)$currentCompanyId, (int)$leaseId)) {
+        $_SESSION['error'] = 'This lease has no completed move-in. Complete the move-in before creating a move-out.';
+        header('Location: move_out_add.php');
+        exit;
+    }
+    
+    // A renewed lease: the move-out belongs on the latest lease of the tenancy
+    if ($newer = re_move_out_superseded_by($conn, (int)$currentCompanyId, (int)$leaseId)) {
+        $_SESSION['error'] = 'Lease ' . ($lease['lease_number'] ?: ('#' . $leaseId)) . ' was renewed by lease ' . ($newer['lease_number'] ?: ('#' . $newer['id']))
+            . '. Create the move-out on that lease, the current one of this tenancy.';
+        header('Location: move_out_add.php');
+        exit;
+    }
+
+    // Check if a move-out notice or move-out record already exists for this lease
+    $existingCheck = $conn->prepare("
+        SELECT id FROM re_move_out_notices WHERE lease_id = ? AND status != 'cancelled'
+        UNION ALL
+        SELECT id FROM re_move_outs WHERE lease_id = ? AND status != 'cancelled'
+        LIMIT 1
+    ");
+    $existingCheck->execute([$leaseId, $leaseId]);
     if ($existingCheck->fetch()) {
         $_SESSION['error'] = 'A move-out notice already exists for this lease.';
         header('Location: move_out_add.php');
@@ -112,7 +143,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Get active leases without move-out notices
+// Get lease_id from GET parameter if provided (e.g. Move-Out button on lease view)
+$preSelectedLeaseId = !empty($_GET['lease_id']) ? (int)$_GET['lease_id'] : null;
+
+// All leases (any status). Leases that already have a move-out notice or
+// move-out record (anything but cancelled) are listed but disabled.
 $leases = $conn->prepare("
     SELECT 
         l.id,
@@ -121,37 +156,111 @@ $leases = $conn->prepare("
         l.end_date,
         l.monthly_rent,
         l.security_deposit,
+        l.status,
         u.unit_number,
         u.unit_type,
         b.name as building_name,
         t.first_name,
         t.last_name,
         t.phone,
-        t.email
+        t.email,
+        mo.id AS existing_id,
+        mo.status AS existing_status,
+        (SELECT COUNT(*) FROM re_move_out_notices mon
+         WHERE mon.lease_id = l.id AND mon.status != 'cancelled') AS notice_count,
+        EXISTS(SELECT 1 FROM re_move_ins mi
+               WHERE mi.lease_id = l.id AND mi.status = 'completed') AS has_completed_move_in
     FROM re_leases l
     JOIN re_units u ON u.id = l.unit_id
     JOIN re_buildings b ON b.id = u.building_id
     JOIN re_tenants t ON t.id = l.tenant_id
-    LEFT JOIN re_move_out_notices mon ON mon.lease_id = l.id AND mon.status != 'cancelled'
-    WHERE l.company_id = ? 
-    AND l.status = 'active'
-    AND mon.id IS NULL
-    ORDER BY l.end_date ASC, b.name, u.unit_number
+    LEFT JOIN re_move_outs mo ON mo.id = (
+        SELECT mo2.id FROM re_move_outs mo2
+        WHERE mo2.lease_id = l.id AND mo2.status != 'cancelled'
+        ORDER BY mo2.id DESC LIMIT 1
+    )
+    WHERE l.company_id = ? AND " . re_lease_not_deleted_sql($conn, 'l') . "
+      -- A draft is not listed while its unit has an active lease
+      AND NOT (l.status = 'draft' AND EXISTS (
+          SELECT 1 FROM re_leases la
+          WHERE la.unit_id = l.unit_id AND la.company_id = l.company_id AND la.id <> l.id
+            AND la.status IN ('active', 'has_legal_case') AND " . re_lease_not_deleted_sql($conn, 'la') . "
+      ))
+    ORDER BY (mo.id IS NOT NULL OR notice_count > 0 OR NOT has_completed_move_in OR l.status = 'draft'), l.end_date ASC, b.name, u.unit_number
 ");
 $leases->execute([$currentCompanyId]);
 $leases = $leases->fetchAll(PDO::FETCH_ASSOC);
+// Renewals count the move-in of the first lease (same tenant and unit)
+require_once __DIR__ . '/includes/move_in_chain_helper.php';
+$carriedMap = re_move_in_carried_over_map($conn, (int)$currentCompanyId);
+foreach ($leases as &$l) {
+    if (!(int)$l['has_completed_move_in'] && isset($carriedMap[(int)$l['id']])) {
+        $l['has_completed_move_in'] = 1;
+    }
+    if ($l['existing_id']) {
+        $l['blocked_reason'] = 'Move-out ' . re_lease_picker_status_label((string)$l['existing_status']);
+    } elseif ((int)$l['notice_count'] > 0) {
+        $l['blocked_reason'] = 'Move-out notice exists';
+    } elseif ($l['status'] === 'draft') {
+        $l['blocked_reason'] = 'Lease is Draft';
+    } elseif (!(int)$l['has_completed_move_in']) {
+        $l['blocked_reason'] = 'No completed move-in';
+    } else {
+        $l['blocked_reason'] = '';
+    }
+}
+unset($l);
+// Available leases first (renewals covered by an earlier move-in are available)
+usort($leases, static fn($a, $b) => ($a['blocked_reason'] !== '') <=> ($b['blocked_reason'] !== ''));
+
+// Opened from a lease (?lease_id=): fix the picker to that lease, no search.
+// Opened from the menu: searchable dropdown with quick filters.
+$lockedLease = null;
+$preselectMissing = false;
+$preselectBlocked = null;
+if ($preSelectedLeaseId) {
+    foreach ($leases as $l) {
+        if ((int)$l['id'] === $preSelectedLeaseId) {
+            if ($l['blocked_reason']) {
+                $preselectBlocked = $l;
+            } else {
+                $lockedLease = $l;
+            }
+            break;
+        }
+    }
+    $preselectMissing = !$lockedLease && !$preselectBlocked;
+}
+$preselectDraft = $preselectBlocked && $preselectBlocked['status'] === 'draft'
+    && !$preselectBlocked['existing_id'] && !(int)$preselectBlocked['notice_count'];
+// Expired and terminated leases are not listed (still opens when started from the lease itself)
+$leases = array_values(array_filter($leases, fn($l) => !in_array($l['status'], ['expired', 'terminated'], true)));
+$availableCount = count(array_filter($leases, fn($l) => !$l['blocked_reason']));
+$pickerLeases = $lockedLease ? [$lockedLease] : $leases;
 
 function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
 // Set page title and include layout
 $pageTitle = 'New Move-Out Notice';
+require_once __DIR__ . '/includes/re_move_ui.php';
+$pageStyles = ($pageStyles ?? '') . re_move_ui_css();
+if (!$lockedLease) {
+    $pageHead = re_lease_picker_head();
+}
 require_once __DIR__ . '/includes/re_layout_header.php';
 ?>
-        <div class="row">
-            <div class="col-md-8 mx-auto">
+<div class="rm-page">
+        <div class="rm-narrow">
+                <a href="move_out.php" class="rm-back"><i class="bi bi-arrow-left"></i> Move-Out Management</a>
+                <div class="rm-hero">
+                    <div>
+                        <h1><i class="bi bi-box-arrow-right"></i>New Move-Out Notice</h1>
+                        <div class="rm-sub">Record the tenant's or landlord's notice. Inspection and deposit settlement follow.</div>
+                    </div>
+                </div>
                 <div class="card">
                     <div class="card-header">
-                        <h4 class="mb-0"><i class="bi bi-box-arrow-right"></i> Create Move-Out Notice</h4>
+                        <h5><i class="bi bi-file-earmark-text me-1"></i> Notice details</h5>
                     </div>
                     <div class="card-body">
                         <?php if (isset($_SESSION['error'])): ?>
@@ -159,10 +268,42 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <?php unset($_SESSION['error']); ?>
                         <?php endif; ?>
                         
-                        <?php if (empty($leases)): ?>
+                        <?php if ($preselectDraft): ?>
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                Lease <strong><?= h($preselectBlocked['lease_number']) ?></strong> is in <strong>Draft</strong> status.
+                                Activate the lease before creating a move-out.
+                                <a href="lease_add.php?id=<?= (int)$preselectBlocked['id'] ?>" class="alert-link">Edit Lease</a>
+                            </div>
+                        <?php elseif ($preselectBlocked && !$preselectBlocked['existing_id'] && !(int)$preselectBlocked['notice_count']): ?>
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                Lease <strong><?= h($preselectBlocked['lease_number']) ?></strong> has no completed move-in.
+                                Complete the move-in before creating a move-out.
+                                <a href="move_in_add.php?lease_id=<?= (int)$preselectBlocked['id'] ?>" class="alert-link">Go to Move-In</a>
+                            </div>
+                        <?php elseif ($preselectBlocked): ?>
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                Lease <strong><?= h($preselectBlocked['lease_number']) ?></strong> already has a move-out
+                                (<?= h($preselectBlocked['blocked_reason']) ?>).
+                                <?php if ($preselectBlocked['existing_id']): ?>
+                                    <a href="move_out_view.php?id=<?= (int)$preselectBlocked['existing_id'] ?>" class="alert-link">View move-out</a>
+                                <?php else: ?>
+                                    <a href="move_out.php" class="alert-link">View move-outs</a>
+                                <?php endif; ?>
+                            </div>
+                        <?php elseif ($preselectMissing): ?>
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                The lease you opened was not found. Pick a lease below.
+                            </div>
+                        <?php endif; ?>
+
+                        <?php if (!$lockedLease && $availableCount === 0): ?>
                             <div class="alert alert-warning">
                                 <i class="bi bi-exclamation-triangle"></i> 
-                                No active leases available for move-out. All leases either have move-out notices or are inactive.
+                                No leases available for move-out. A lease needs a completed move-in and no existing move-out.
                             </div>
                             <a href="leases.php" class="btn btn-primary">View Leases</a>
                         <?php else: ?>
@@ -171,37 +312,49 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 
                                 <div class="mb-3">
                                     <label for="lease_id" class="form-label">Select Lease <span class="text-danger">*</span></label>
-                                    <select name="lease_id" id="lease_id" class="form-select" required>
+                                    <?php if ($lockedLease): ?>
+                                        <?= re_lease_picker_locked($lockedLease, 'move_out_add.php') ?>
+                                    <?php else: ?>
+                                        <?= re_lease_picker_filters($leases) ?>
+                                    <?php endif; ?>
+                                    <select name="lease_id" id="lease_id" class="<?= $lockedLease ? 'd-none' : 'form-select' ?>" required>
                                         <option value="">-- Select Lease --</option>
-                                        <?php foreach ($leases as $lease): ?>
+                                        <?php foreach ($pickerLeases as $lease): ?>
                                             <option value="<?= $lease['id'] ?>" 
+                                                    <?= $lockedLease ? 'selected' : '' ?>
+                                                    <?= $lease['blocked_reason'] === 'Lease is Draft' ? 'data-blocked="1"' : ($lease['blocked_reason'] ? 'disabled' : '') ?>
+                                                    data-lease-number="<?= h($lease['lease_number']) ?>"
                                                     data-tenant="<?= h($lease['first_name'] . ' ' . $lease['last_name']) ?>"
                                                     data-unit="<?= h($lease['building_name'] . ' - ' . $lease['unit_number']) ?>"
                                                     data-deposit="<?= number_format($lease['security_deposit'], 2) ?>"
-                                                    data-end-date="<?= $lease['end_date'] ?>">
+                                                    data-end-date="<?= $lease['end_date'] ?>"
+                                                    data-status="<?= h($lease['status']) ?>"
+                                                    data-building="<?= h($lease['building_name']) ?>"
+                                                    data-search="<?= h(re_lease_picker_search_text($lease)) ?>">
                                                 <?= h($lease['lease_number']) ?> - 
                                                 <?= h($lease['building_name']) ?> - 
                                                 <?= h($lease['unit_number']) ?> - 
                                                 <?= h($lease['first_name'] . ' ' . $lease['last_name']) ?>
+                                                [<?= h(re_lease_picker_status_label($lease['status'])) ?>]
+                                                <?= $lease['blocked_reason'] ? '— ' . h($lease['blocked_reason']) : '' ?>
                                             </option>
                                         <?php endforeach; ?>
                                     </select>
-                                    <div class="form-text">Only active leases without existing move-out notices are shown.</div>
+                                    <?php if (!$lockedLease): ?>
+                                        <div class="form-text"><span id="leaseFilterCount"></span> · Type in the box to search. Greyed-out leases have no completed move-in or already have a move-out. Draft leases cannot have a move-out.</div>
+                                    <?php endif; ?>
                                 </div>
                                 
                                 <div id="leaseDetails" class="card mb-3" style="display: none;">
                                     <div class="card-body">
-                                        <h6 class="card-title">Lease Details</h6>
-                                        <div class="row">
-                                            <div class="col-md-6">
-                                                <strong>Tenant:</strong> <span id="tenantName">-</span><br>
-                                                <strong>Unit:</strong> <span id="unitInfo">-</span><br>
-                                                <strong>Security Deposit:</strong> <span id="securityDeposit">-</span> AED
-                                            </div>
-                                            <div class="col-md-6">
-                                                <strong>Lease End:</strong> <span id="leaseEnd">-</span>
-                                            </div>
-                                        </div>
+                                        <p class="rm-section-title">Lease details</p>
+                                        <dl class="rm-dl">
+                                            <dt>Tenant</dt><dd id="tenantName">-</dd>
+                                            <dt>Unit</dt><dd id="unitInfo">-</dd>
+                                            <dt>Security Deposit</dt><dd><span id="securityDeposit">-</span> AED</dd>
+                                            <dt>Lease End</dt><dd id="leaseEnd">-</dd>
+                                            <dt>Status</dt><dd id="leaseStatus">-</dd>
+                                        </dl>
                                     </div>
                                 </div>
                                 
@@ -214,16 +367,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     </select>
                                 </div>
                                 
-                                <div class="mb-3">
+                                <div class="row g-3 mb-3">
+                                <div class="col-12 col-sm-6">
                                     <label for="notice_date" class="form-label">Notice Date <span class="text-danger">*</span></label>
                                     <input type="date" name="notice_date" id="notice_date" class="form-control" required>
                                     <div class="form-text">Date when the move-out notice was received/given.</div>
                                 </div>
                                 
-                                <div class="mb-3">
+                                <div class="col-12 col-sm-6">
                                     <label for="intended_move_out_date" class="form-label">Intended Move-Out Date <span class="text-danger">*</span></label>
                                     <input type="date" name="intended_move_out_date" id="intended_move_out_date" class="form-control" required>
                                     <div class="form-text">Expected date when tenant will vacate the unit.</div>
+                                </div>
                                 </div>
                                 
                                 <div class="mb-3">
@@ -245,8 +400,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     assess damages, calculate deposit deductions, and process the move-out.
                                 </div>
                                 
-                                <div class="d-flex justify-content-between">
-                                    <a href="move_out.php" class="btn btn-secondary">
+                                <div class="rm-form-actions">
+                                    <a href="move_out.php" class="btn btn-outline-secondary">
                                         <i class="bi bi-arrow-left"></i> Cancel
                                     </a>
                                     <button type="submit" class="btn btn-primary">
@@ -257,8 +412,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <?php endif; ?>
                     </div>
                 </div>
-            </div>
         </div>
+</div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -267,6 +422,14 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             const select = this;
             const option = select.options[select.selectedIndex];
             const detailsDiv = document.getElementById('leaseDetails');
+
+            // Draft lease: no move-out. Show the popup and clear the selection.
+            if (option && option.value && option.dataset.status === 'draft') {
+                showDraftLeasePopup(option.dataset.leaseNumber, option.value);
+                select.value = '';
+                select.dispatchEvent(new Event('change'));
+                return;
+            }
             
             if (select.value) {
                 document.getElementById('tenantName').textContent = option.dataset.tenant || '-';
@@ -274,11 +437,14 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 document.getElementById('securityDeposit').textContent = option.dataset.deposit || '-';
                 const endDate = option.dataset.endDate ? new Date(option.dataset.endDate).toLocaleDateString() : '-';
                 document.getElementById('leaseEnd').textContent = endDate;
+                document.getElementById('leaseStatus').textContent = option.dataset.status ? option.dataset.status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : '-';
                 detailsDiv.style.display = 'block';
                 
                 // Set default intended move-out date to lease end date if available
                 if (option.dataset.endDate) {
-                    document.getElementById('intended_move_out_date').value = option.dataset.endDate;
+                    // The date picker loads after this script: set the field directly until then
+                    const moDate = document.getElementById('intended_move_out_date');
+                    if (window.rmSetDate) { rmSetDate(moDate, option.dataset.endDate); } else { moDate.value = option.dataset.endDate; }
                 }
             } else {
                 detailsDiv.style.display = 'none';
@@ -287,7 +453,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
         
         // Set default notice date to today
         document.getElementById('notice_date').valueAsDate = new Date();
-    </script>
 
+        // Show details for a lease pre-selected via ?lease_id=
+        if (document.getElementById('lease_id').value) {
+            document.getElementById('lease_id').dispatchEvent(new Event('change'));
+        }
+    </script>
+    <?= re_lease_draft_popup() ?>
+    <?php if ($preselectDraft): ?>
+        <script>showDraftLeasePopup(<?= json_encode((string)$preselectBlocked['lease_number']) ?>, <?= (int)$preselectBlocked['id'] ?>);</script>
+    <?php endif; ?>
+    <?php if (!$lockedLease) echo re_lease_picker_script(); ?>
+
+<?= re_datepicker_assets() ?>
 <?php require_once __DIR__ . '/includes/re_layout_footer.php'; ?>
 

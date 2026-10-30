@@ -120,6 +120,15 @@ if (!function_exists('ars_shell_nav_items')) {
         }
 
         if ($hasCore || $hasOps) {
+            // Move-In / Move-Out: the list and every page of the process
+            $items[] = [
+                'id' => 'moves',
+                'label' => 'Move-In / Move-Out',
+                'icon' => 'door-open',
+                'href' => 'move_report.php',
+                'active' => $is(['move_report.php', 'move_in_view.php', 'move_out_view.php', 'move_inspection.php', 'move_checklist.php', 'move_inspection_template.php', 'move_settings.php']),
+                'visible' => true,
+            ];
             $items[] = [
                 'id' => 'bulk-email',
                 'label' => 'Bulk Email',
@@ -220,9 +229,6 @@ if (!function_exists('ars_shell_nav_items')) {
                 'active' => $is([
                     'reports.php',
                     'financial_reports.php',
-                    'move_report.php',
-                    'move_inspection.php',
-                    'move_checklist.php',
                     'financial_document_view.php',
                 ]),
                 'visible' => true,

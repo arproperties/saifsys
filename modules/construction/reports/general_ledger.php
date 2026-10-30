@@ -162,20 +162,80 @@ require_once __DIR__ . '/../includes/construction_layout_header.php';
     <div class="col-md-6"><div class="card card-round"><div class="card-body"><div class="text-muted">Closing Balance</div><h4><?= co_format_money($closing) ?></h4></div></div></div>
 </div>
 <div class="card card-round">
+    <div class="gl-toolbar no-print">
+        <div class="gl-search">
+            <i class="bi bi-search gl-search-icon"></i>
+            <input type="text" id="glSearch" placeholder="Search entries by supplier, journal, reference or amount" autocomplete="off" aria-label="Search ledger entries">
+            <button type="button" id="glSearchClear" class="gl-search-clear" aria-label="Clear search" hidden><i class="bi bi-x-lg"></i></button>
+        </div>
+        <span class="gl-count" id="glSearchCount"><?= count($entries) ?> entries</span>
+    </div>
     <div class="card-body p-0 table-responsive">
-        <table class="table table-sm mb-0">
+        <table class="table table-sm mb-0 gl-table">
             <thead class="table-light"><tr><th>Date</th><th>Journal</th><th>Reference</th><th>Description</th><th class="text-end">Qty</th><th class="text-end">Rate</th><th class="text-end">Debit</th><th class="text-end">Credit</th></tr></thead>
-            <tbody>
+            <tbody id="glRows">
             <?php foreach ($entries as $row): ?>
-                <tr><td><?= h($row['entry_date']) ?></td><td><?php if (!empty($row['journal_id'])): ?><a href="../journal_entry_view.php?id=<?= (int)$row['journal_id'] ?>"><?= h($row['journal_number']) ?></a><?php else: ?><?= h($row['journal_number']) ?><?php endif; ?></td><td><?= h($row['reference_type'] . ' #' . $row['reference_id']) ?></td><td><?= h($row['description'] ?: $row['journal_description']) ?></td><td class="text-end"><?= $row['qty'] !== null ? number_format($row['qty'], 2) : '-' ?></td><td class="text-end"><?= $row['rate'] !== null ? co_format_money($row['rate']) : '-' ?></td><td class="text-end"><?= (float)$row['debit_amount'] ? co_format_money($row['debit_amount']) : '-' ?></td><td class="text-end"><?= (float)$row['credit_amount'] ? co_format_money($row['credit_amount']) : '-' ?></td></tr>
+                <tr class="gl-row" data-debit="<?= (float)$row['debit_amount'] ?>" data-credit="<?= (float)$row['credit_amount'] ?>"<?= isset($row['qty']) ? ' data-qty="' . (float)$row['qty'] . '"' : '' ?>><td><?= h($row['entry_date']) ?></td><td><?php if (!empty($row['journal_id'])): ?><a href="../journal_entry_view.php?id=<?= (int)$row['journal_id'] ?>"><?= h($row['journal_number']) ?></a><?php else: ?><?= h($row['journal_number']) ?><?php endif; ?></td><td><?= h($row['reference_type'] . ' #' . $row['reference_id']) ?></td><td><?= h($row['description'] ?: $row['journal_description']) ?></td><td class="text-end"><?= $row['qty'] !== null ? number_format($row['qty'], 2) : '-' ?></td><td class="text-end"><?= $row['rate'] !== null ? co_format_money($row['rate']) : '-' ?></td><td class="text-end"><?= (float)$row['debit_amount'] ? co_format_money($row['debit_amount']) : '-' ?></td><td class="text-end"><?= (float)$row['credit_amount'] ? co_format_money($row['credit_amount']) : '-' ?></td></tr>
             <?php endforeach; ?>
+            <?php if ($entries): ?><tr id="glNoMatch" style="display:none"><td colspan="8" class="text-center text-muted py-4">No entries match your search.</td></tr><?php endif; ?>
             <?php if (!$entries): ?><tr><td colspan="8" class="text-center text-muted py-4">No ledger activity in this period.</td></tr><?php endif; ?>
             </tbody>
             <?php if ($entries): ?>
-            <tfoot class="table-light fw-bold"><tr><td colspan="4" class="text-end">Total</td><td class="text-end"><?= number_format($periodQty, 2) ?></td><td></td><td class="text-end"><?= co_format_money($periodDebit) ?></td><td class="text-end"><?= co_format_money($periodCredit) ?></td></tr></tfoot>
+            <tfoot class="table-light fw-bold"><tr><td colspan="4" class="text-end">Total</td><td class="text-end" id="glTotalQty"><?= number_format($periodQty, 2) ?></td><td></td><td class="text-end" id="glTotalDebit"><?= co_format_money($periodDebit) ?></td><td class="text-end" id="glTotalCredit"><?= co_format_money($periodCredit) ?></td></tr></tfoot>
             <?php endif; ?>
         </table>
     </div>
 </div>
+<style>
+.gl-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid #e9edf3; }
+.gl-search { position:relative; flex:1 1 320px; max-width:460px; }
+.gl-search-icon { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:#94a3b8; font-size:14px; pointer-events:none; transition:color .15s; }
+.gl-search input { width:100%; height:40px; padding:0 38px 0 40px; border:1px solid #dbe2ea; border-radius:10px; background:#f8fafc; font-size:14px; color:#1e293b; outline:none; transition:border-color .15s, box-shadow .15s, background .15s; }
+.gl-search input::placeholder { color:#94a3b8; }
+.gl-search input:hover { border-color:#c5d0dc; }
+.gl-search input:focus { background:#fff; border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
+.gl-search:focus-within .gl-search-icon { color:#2563eb; }
+.gl-search-clear { position:absolute; right:8px; top:50%; transform:translateY(-50%); width:24px; height:24px; display:flex; align-items:center; justify-content:center; border:0; border-radius:6px; background:transparent; color:#64748b; font-size:11px; cursor:pointer; }
+.gl-search-clear:hover { background:#eef2f7; color:#1e293b; }
+.gl-count { font-size:12.5px; font-weight:500; color:#475569; background:#f1f5f9; border:1px solid #e2e8f0; border-radius:999px; padding:5px 12px; white-space:nowrap; }
+.gl-count.is-filtered { color:#1d4ed8; background:#eff6ff; border-color:#bfdbfe; }
+.gl-table td:nth-child(1), .gl-table td:nth-child(2), .gl-table th { white-space:nowrap; }
+</style>
+<script>
+(function () {
+    var input = document.getElementById('glSearch');
+    var body = document.getElementById('glRows');
+    if (!input || !body) return;
+    var rows = Array.prototype.slice.call(body.querySelectorAll('tr.gl-row'));
+    var count = document.getElementById('glSearchCount');
+    var empty = document.getElementById('glNoMatch');
+    var clear = document.getElementById('glSearchClear');
+    clear.addEventListener('click', function () { input.value = ''; input.dispatchEvent(new Event('input')); input.focus(); });
+    input.addEventListener('keydown', function (e) { if (e.key === 'Escape' && input.value) { clear.click(); } });
+    var money = function (n) { return 'AED ' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); };
+    var setText = function (id, text) { var el = document.getElementById(id); if (el) el.textContent = text; };
+    input.addEventListener('input', function () {
+        var terms = input.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+        var shown = 0, qty = 0, debit = 0, credit = 0;
+        rows.forEach(function (tr) {
+            var text = tr.textContent.toLowerCase().replace(/,/g, '');
+            var match = terms.every(function (t) { return text.indexOf(t.replace(/,/g, '')) !== -1; });
+            tr.style.display = match ? '' : 'none';
+            if (!match) return;
+            shown++;
+            qty += parseFloat(tr.dataset.qty) || 0;
+            debit += parseFloat(tr.dataset.debit) || 0;
+            credit += parseFloat(tr.dataset.credit) || 0;
+        });
+        if (empty) empty.style.display = shown ? 'none' : '';
+        count.textContent = terms.length ? shown + ' of ' + rows.length + ' entries' : rows.length + ' entries';
+        count.classList.toggle('is-filtered', terms.length > 0);
+        clear.hidden = !input.value;
+        setText('glTotalQty', qty.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+        setText('glTotalDebit', money(debit));
+        setText('glTotalCredit', money(credit));
+    });
+})();
+</script>
 <?php endif; ?>
 <?php require_once __DIR__ . '/../includes/construction_layout_footer.php'; ?>
