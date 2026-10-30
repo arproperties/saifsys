@@ -710,27 +710,40 @@ body.hr-ui-v2 :focus-visible {
   outline-offset: 2px;
 }
 
-/* Desktop: the menu can be hidden to give the page the full width. */
-/* Close icon inside the menu; the open icon appears in the top bar once it is hidden. */
-body.hr-ui-v2 .hr-sidebar-brand:has(.hr-nav-close) { padding-right: 0.75rem; gap: 0.6rem; }
-body.hr-ui-v2 .hr-sidebar-brand:has(.hr-nav-close) h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-body.hr-ui-v2 .hr-nav-close {
-  margin-left: auto;
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--hr-border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--hr-text-muted);
-}
-body.hr-ui-v2 .hr-nav-close:hover { background: var(--hr-primary-soft, #f5efe0); color: var(--hr-text); }
-body.hr-ui-v2 .hr-nav-open { display: none; }
+/* Desktop: the menu button in the top bar shrinks the menu to icons only; the name shows on hover. */
 @media (min-width: 992px) {
-  html.hr-nav-hidden body.hr-ui-v2 .hr-sidebar { display: none; }
-  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-open { display: inline-flex; }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-sidebar {
+    width: 72px;
+    flex: 0 0 72px;
+    overflow-x: hidden;
+  }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-sidebar-brand {
+    justify-content: center;
+    padding: 0.85rem 0.5rem;
+  }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-sidebar-brand .min-w-0,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-search,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-label,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-chevron,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-link .scope-chip,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-collapsible > .hr-nav-sub,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-link > span:not(.nav-ico),
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-head > span:not(.nav-ico) { display: none; }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-group { padding: 0.15rem 0.5rem; }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-sidebar .mt-auto { padding: 0 0.5rem 0.75rem !important; }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-link,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-head {
+    justify-content: center;
+    padding: 0.4rem;
+  }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-link:hover { transform: none; }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-link .nav-ico,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-head .nav-ico { width: 34px; height: 34px; }
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-collapsible.has-active > .hr-nav-head .nav-ico,
+  html.hr-nav-hidden body.hr-ui-v2 .hr-nav-link.active .nav-ico {
+    background: var(--hr-primary);
+    color: #fff;
+  }
 }
 
 @media (max-width: 991px) {

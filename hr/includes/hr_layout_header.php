@@ -75,7 +75,7 @@ $logoSrc = function_exists('brand_logo_src') ? brand_logo_src($brand) : null;
   <title><?= hr_ui_h($pageTitle) ?> · HR | <?= hr_ui_h($brand['system_name'] ?? 'HeroSysgro') ?></title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <link href="<?= hr_ui_h($hrAssetBase) ?>/hr-ui-v2.css?v=20261028-3" rel="stylesheet">
+  <link href="<?= hr_ui_h($hrAssetBase) ?>/hr-ui-v2.css?v=20261030-1" rel="stylesheet">
   <script>try { if (localStorage.getItem('hr.nav.hidden') === '1') document.documentElement.classList.add('hr-nav-hidden'); } catch (e) {}</script>
   <?php if (!empty($pageStyles)): ?><style><?= $pageStyles ?></style><?php endif; ?>
   <?php if (!empty($pageHead)) {
@@ -103,10 +103,6 @@ if (is_file($asWidget)) { require $asWidget; }
         <h1>Human Resources</h1>
         <small>Control Center</small>
       </div>
-      <button type="button" class="hr-nav-close d-none d-lg-inline-flex" data-hr-nav-toggle
-              aria-controls="hr-sidebar" title="Hide menu" aria-label="Hide menu">
-        <i data-lucide="panel-left-close" style="width:18px;height:18px"></i>
-      </button>
     </div>
     <div class="hr-nav-search">
       <input type="search" id="hr-nav-search" class="form-control form-control-sm"
@@ -124,7 +120,7 @@ if (is_file($asWidget)) { require $asWidget; }
         <div class="hr-nav-group<?= $collapsible ? ' hr-nav-collapsible' . ($groupActive ? ' open has-active' : '') : '' ?>"
              <?= $collapsible ? 'data-nav-group="' . hr_ui_h($hrNavGroup['key'] ?? '') . '"' : '' ?>>
           <?php if ($collapsible): ?>
-            <button type="button" class="hr-nav-head" aria-expanded="<?= $groupActive ? 'true' : 'false' ?>" aria-controls="<?= hr_ui_h($groupId) ?>">
+            <button type="button" class="hr-nav-head" title="<?= hr_ui_h($hrNavGroup['label']) ?>" aria-expanded="<?= $groupActive ? 'true' : 'false' ?>" aria-controls="<?= hr_ui_h($groupId) ?>">
               <span class="nav-ico"><i data-lucide="<?= hr_ui_h($hrNavGroup['icon'] ?? 'folder') ?>" style="width:16px;height:16px"></i></span>
               <span class="text-truncate"><?= hr_ui_h($hrNavGroup['label']) ?></span>
               <i data-lucide="chevron-down" class="hr-nav-chevron" style="width:16px;height:16px"></i>
@@ -137,7 +133,7 @@ if (is_file($asWidget)) { require $asWidget; }
             $isActive = !empty($item['pages']) && in_array($currentPage, $item['pages'], true);
             ?>
             <a class="hr-nav-link<?= $collapsible ? ' hr-nav-sublink' : '' ?> <?= $isActive ? 'active' : '' ?>"
-               href="<?= hr_ui_h($item['href']) ?>"
+               href="<?= hr_ui_h($item['href']) ?>" title="<?= hr_ui_h($item['label']) ?>"
                data-label="<?= hr_ui_h($item['label'] . ' ' . $hrNavGroup['label']) ?>">
               <span class="nav-ico"><i data-lucide="<?= hr_ui_h($item['icon']) ?>" style="width:16px;height:16px"></i></span>
               <span class="text-truncate"><?= hr_ui_h($item['label']) ?></span>
@@ -149,13 +145,13 @@ if (is_file($asWidget)) { require $asWidget; }
     </nav>
     <div class="mt-auto px-3 pb-3">
       <?php if ($canSwitchModule): ?>
-        <a href="<?= hr_ui_h($appBase) ?>/select-module" class="hr-nav-link" data-label="Switch Module">
+        <a href="<?= hr_ui_h($appBase) ?>/select-module" class="hr-nav-link" title="Switch Module" data-label="Switch Module">
           <span class="nav-ico"><i data-lucide="layout-grid" style="width:16px;height:16px"></i></span>
           <span>Switch Module</span>
         </a>
       <?php endif; ?>
       <?php if (!$isWorkerNavigation && function_exists('has_role') && (has_role('Owner', $conn) || has_role('Admin', $conn))): ?>
-        <a href="<?= hr_ui_h($appBase) ?>/settings" class="hr-nav-link" data-label="Settings">
+        <a href="<?= hr_ui_h($appBase) ?>/settings" class="hr-nav-link" title="Settings" data-label="Settings">
           <span class="nav-ico"><i data-lucide="sliders-horizontal" style="width:16px;height:16px"></i></span>
           <span>Settings</span>
         </a>
@@ -168,9 +164,9 @@ if (is_file($asWidget)) { require $asWidget; }
       <button type="button" class="btn btn-outline-secondary btn-sm d-lg-none" id="hr-mobile-menu-btn" aria-label="Open menu">
         <i data-lucide="menu" style="width:18px;height:18px"></i>
       </button>
-      <button type="button" class="btn btn-outline-secondary btn-sm align-items-center hr-nav-open" data-hr-nav-toggle
-              aria-controls="hr-sidebar" title="Show menu" aria-label="Show menu">
-        <i data-lucide="panel-left-open" style="width:18px;height:18px"></i>
+      <button type="button" class="btn btn-outline-secondary btn-sm d-none d-lg-inline-flex align-items-center" data-hr-nav-toggle
+              aria-controls="hr-sidebar" title="Show / hide menu names" aria-label="Show or hide menu names">
+        <i data-lucide="menu" style="width:18px;height:18px"></i>
       </button>
       <div class="flex-grow-1 min-w-0">
         <div class="small text-muted text-uppercase fw-semibold" style="letter-spacing:.06em;font-size:.65rem">Human Resources</div>
