@@ -7,6 +7,8 @@ require_once __DIR__ . '/../includes/audit_bridge.php';
 require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
+require_once __DIR__ . '/includes/hr_attendance_daily.php';
+require_once __DIR__ . '/includes/hr_weekly_off_plans.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
@@ -23,6 +25,8 @@ function calc_hours($in, $out){
 
 $attStatuses = hr_attendance_statuses();
 $attStatusKeys = hr_attendance_status_keys();
+// Also shown for a day off with no attendance row (hr_attendance_off_days); Day Off is never saved.
+$attOffStatuses = ['weekly_off' => 'Weekly Off', 'day_off' => 'Day Off'];
 $attAccept = '.' . implode(',.', hr_attendance_attach_allowed_extensions());
 
 /* ---------- Quick Actions (POST) ---------- */
@@ -134,7 +138,7 @@ if (hr_attendance_post_too_large()) {
             $flash_err = 'Invalid status.';
         } elseif (!hr_attendance_status_supported($conn, $new)) {
             $flash_err = 'This database cannot store the ' . hr_attendance_status_label($new)
-                . ' status yet — run migrations/hr_attendance_excused_absent.sql first.';
+                . ' status yet — run migrations/' . ($new === 'weekly_off' ? 'hr_attendance_weekly_off.sql' : 'hr_attendance_excused_absent.sql') . ' first.';
         } elseif ($note === '') {
             $flash_err = 'A reason is required for every status change.';
         } else {
@@ -308,13 +312,42 @@ SELECT a.status, COUNT(*) AS n
 ");
 $cntStmt->execute($cardPrms);
 $statusCounts = $cntStmt->fetchAll(PDO::FETCH_KEY_PAIR);
-$stFiltered = ($st !== '' && in_array($st, $attStatusKeys, true));
-$statusCardColors = ['pending' => '#6c757d', 'approved' => '#198754', 'absent' => '#dc3545', 'half' => '#e0a800', 'on_leave' => '#0aa2c0', 'excused_absent' => '#fd7e14'];
+$stFiltered = ($st !== '' && (in_array($st, $attStatusKeys, true) || isset($attOffStatuses[$st])));
+
+// Days off with no attendance row join the list. They have no source, so a
+// "Recorded by" filter or a saved status leaves them out.
+$offRows = [];
+if (isset($attOffStatuses[$st]) && !in_array($st, $attStatusKeys, true)) {
+    $rows = [];
+}
+if ($src === '' && ($st === '' || isset($attOffStatuses[$st]))) {
+    $offAll = hr_attendance_off_days($conn, $emp ? [$emp] : array_column($employees, 'id'), (string)$df, (string)$dt);
+    foreach ($offAll as $o) {
+        $statusCounts[$o['status']] = ($statusCounts[$o['status']] ?? 0) + 1;
+        if ($st === '' || $o['status'] === $st) {
+            $offRows[] = $o;
+        }
+    }
+}
+if ($offRows) {
+    $offNames = [];
+    $offIds = implode(',', array_unique(array_column($offRows, 'employee_id')));
+    foreach ($conn->query("SELECT e.id, e.full_name, e.employee_code, c.name AS company_name FROM employees e
+        LEFT JOIN companies c ON c.id = e.company_id WHERE e.id IN ($offIds)") as $n) {
+        $offNames[(int)$n['id']] = $n;
+    }
+    foreach ($offRows as $o) {
+        $rows[] = $o + ($offNames[$o['employee_id']] ?? ['full_name' => '', 'employee_code' => '', 'company_name' => '']) + ['off' => true];
+    }
+    usort($rows, static fn($a, $b) => [$b['work_date'], $a['full_name']] <=> [$a['work_date'], $b['full_name']]);
+    $rows = array_slice($rows, 0, 500);
+}
+$statusCardColors = ['pending' => '#6c757d', 'approved' => '#198754', 'absent' => '#dc3545', 'half' => '#e0a800', 'on_leave' => '#0aa2c0', 'excused_absent' => '#fd7e14', 'weekly_off' => '#64748b', 'day_off' => '#7c6fb0'];
 $statusCardQuery = $_GET;
 unset($statusCardQuery['status']);
 
 // One query for every row's files rather than one per row.
-$attachmentsByRow = hr_attendance_attachments_map($conn, array_column($rows, 'id'));
+$attachmentsByRow = hr_attendance_attachments_map($conn, array_filter(array_column($rows, 'id')));
 
 $missingStatuses = hr_attendance_missing_statuses($conn);
 $excusedReady = hr_attendance_status_supported($conn, 'excused_absent');
@@ -330,6 +363,8 @@ $pageStyles = hr_attendance_status_css() . '
 .att-date-cell{--bs-table-bg:#f3f6fa}
 .att-status-cell .badge{font-size:.82rem;padding:.45em .8em;border-radius:6px}
 .att-company-cell{--bs-table-bg:#f7f5ef}
+.att-off-row td{color:var(--hr-text-muted)}
+.att-badge-dayoff{background:#7c6fb0;color:#fff}
 ';
 ?>
 <?php require_once __DIR__ . '/includes/hr_layout_header.php'; ?>
@@ -343,6 +378,7 @@ echo hr_ui_page_header(
         ['label' => 'Attendance'],
     ],
     '<a class="btn btn-outline-secondary" href="../operation.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
+    . (hr_weekly_off_plans_ready($conn) ? '<button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#woPlanModal"><i class="bi bi-calendar-plus me-1"></i>Add Weekly Off</button>' : '')
     . '<a class="btn btn-primary" href="attendance_bulk.php"><i class="bi bi-ui-checks-grid me-1"></i>Bulk Apply</a>'
     . '<a class="btn btn-success" href="attendance_summary.php"><i class="bi bi-table me-1"></i>Monthly Summary</a>'
 );
@@ -483,14 +519,14 @@ echo hr_ui_page_header(
   </script>
 
   <?php
-    // Closed until HR clicks +; reopened if the last Quick Add came back with an error.
-    $qaOpen = ($_POST['action'] ?? '') === 'quick_add' && $flash_err !== '';
+    // Open by default; HR can close it with -.
+    $qaOpen = true;
   ?>
   <div class="hr-settings-card mb-3">
     <div class="settings-header d-flex align-items-center justify-content-between" role="button"
          data-bs-toggle="collapse" data-bs-target="#quickAddBody" aria-expanded="<?= $qaOpen ? 'true' : 'false' ?>" aria-controls="quickAddBody">
       <span>Quick Add (single day)</span>
-      <button type="button" class="btn btn-sm btn-outline-secondary quick-add-toggle" aria-label="Open Quick Add" tabindex="-1">
+      <button type="button" class="btn btn-sm btn-outline-secondary quick-add-toggle" aria-label="Show or hide Quick Add" tabindex="-1">
         <i class="bi <?= $qaOpen ? 'bi-dash-lg' : 'bi-plus-lg' ?>"></i>
       </button>
     </div>
@@ -551,9 +587,20 @@ echo hr_ui_page_header(
   <div class="row g-2 mb-3">
     <?php foreach ($attStatuses as $k => $v): ?>
       <?php if (!hr_attendance_status_supported($conn, $k)) continue; ?>
-      <div class="col-6 col-md-4 col-xl-2">
+      <div class="col-6 col-md-3 col-xl">
         <a class="att-stat-card <?= ($stFiltered && $k === $st) ? 'is-active' : '' ?>" style="--att-stat:<?= h($statusCardColors[$k] ?? '#6c757d') ?>"
            href="?<?= h(http_build_query($statusCardQuery + ['status' => $k])) ?>">
+          <div class="att-stat-label"><?= h($v) ?></div>
+          <div class="att-stat-num"><?= number_format((int)($statusCounts[$k] ?? 0)) ?></div>
+        </a>
+      </div>
+    <?php endforeach; ?>
+    <?php foreach ($attOffStatuses as $k => $v): ?>
+      <?php if (isset($attStatuses[$k]) && hr_attendance_status_supported($conn, $k)) continue; ?>
+      <div class="col-6 col-md-3 col-xl">
+        <a class="att-stat-card <?= ($stFiltered && $k === $st) ? 'is-active' : '' ?>" style="--att-stat:<?= h($statusCardColors[$k]) ?>"
+           href="?<?= h(http_build_query($statusCardQuery + ['status' => $k])) ?>"
+           title="A day off with no attendance recorded. Shown here only; not saved.">
           <div class="att-stat-label"><?= h($v) ?></div>
           <div class="att-stat-num"><?= number_format((int)($statusCounts[$k] ?? 0)) ?></div>
         </a>
@@ -589,6 +636,24 @@ echo hr_ui_page_header(
           <?php if (!$rows): ?>
             <tr><td colspan="12" class="text-center text-muted py-4">No rows.</td></tr>
           <?php else: foreach ($rows as $r): ?>
+            <?php if (!empty($r['off'])): ?>
+            <tr class="att-off-row">
+              <td>—</td>
+              <td class="text-nowrap att-date-cell"><?= h(date('j M Y', strtotime($r['work_date']))) ?></td>
+              <td class="fw-semibold"><?= h($r['full_name'].' ('.$r['employee_code'].')') ?></td>
+              <td class="att-company-cell"><?= h($r['company_name'] ?: '—') ?></td>
+              <td>—</td>
+              <td>—</td>
+              <td>—</td>
+              <td class="att-status-cell">
+                <span class="badge <?= $r['status'] === 'weekly_off' ? 'hr-badge-weekly-off' : 'att-badge-dayoff' ?>"><?= h($attOffStatuses[$r['status']]) ?></span>
+              </td>
+              <td><span class="text-muted small"><?= $r['status'] === 'weekly_off' ? 'Weekly off' : 'Schedule' ?></span></td>
+              <td></td>
+              <td><span class="text-muted small">—</span></td>
+              <td class="att-actions-cell"></td>
+            </tr>
+            <?php continue; endif; ?>
             <?php
               $rowId    = (int)$r['id'];
               $rowEmp   = $r['full_name'].' ('.$r['employee_code'].')';
@@ -686,6 +751,13 @@ echo hr_ui_page_header(
                               data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">Excused Absent</button>
                     </li>
                     <?php endif; ?>
+                    <?php if (hr_attendance_status_supported($conn, 'weekly_off')): ?>
+                    <li class="px-3 py-1">
+                      <button type="button" class="btn btn-sm btn-outline-secondary w-100"
+                              data-att-change data-att-id="<?= $rowId ?>" data-att-to="weekly_off"
+                              data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">Weekly Off</button>
+                    </li>
+                    <?php endif; ?>
                     <?php if (hr_attendance_status_supported($conn, 'pending') && $r['status'] !== 'pending'): ?>
                     <li class="px-3 py-1">
                       <button type="button" class="btn btn-sm btn-outline-secondary w-100"
@@ -713,6 +785,8 @@ echo hr_ui_page_header(
     </div>
     </div>
   </div>
+
+  <?php if (hr_weekly_off_plans_ready($conn)) hr_weekly_off_plan_modal($conn, $employees, $selectedCompanyId); ?>
 
   <!-- Every status change goes through here: reason required, document optional. -->
   <div class="modal fade" id="attStatusModal" tabindex="-1" aria-hidden="true">

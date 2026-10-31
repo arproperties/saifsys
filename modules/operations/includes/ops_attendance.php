@@ -238,7 +238,7 @@ function ops_attendance_status_is_open(?string $status): bool
 
 function ops_attendance_status_words(string $status): string
 {
-    return ['absent' => 'absent', 'half' => 'a half day', 'on_leave' => 'leave', 'excused_absent' => 'an excused absence', 'pending' => 'not yet approved'][$status] ?? $status;
+    return ['absent' => 'absent', 'half' => 'a half day', 'on_leave' => 'leave', 'excused_absent' => 'an excused absence', 'weekly_off' => 'your weekly off', 'pending' => 'not yet approved'][$status] ?? $status;
 }
 
 /**

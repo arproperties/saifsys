@@ -43,6 +43,7 @@ function hr_attendance_statuses(): array {
         'half'           => 'Half Day',
         'on_leave'       => 'On Leave',
         'excused_absent' => 'Excused Absent',
+        'weekly_off'     => 'Weekly Off',
     ];
 }
 
@@ -103,6 +104,9 @@ function hr_attendance_status_badge_html(?string $status): string {
     if ($status === 'excused_absent') {
         return '<span class="badge hr-badge-excused">' . $label . '</span>';
     }
+    if ($status === 'weekly_off') {
+        return '<span class="badge hr-badge-weekly-off">' . $label . '</span>';
+    }
     $map = ['pending' => 'secondary', 'approved' => 'success', 'absent' => 'danger', 'half' => 'warning', 'on_leave' => 'info'];
     $cls = $map[$status] ?? 'secondary';
     return '<span class="badge text-bg-' . $cls . '">' . $label . '</span>';
@@ -112,6 +116,7 @@ function hr_attendance_status_badge_html(?string $status): string {
 function hr_attendance_status_css(): string {
     return '
 .hr-badge-excused { background-color:#fd7e14; color:#fff; }
+.hr-badge-weekly-off { background-color:#64748b; color:#fff; }
 .btn-hr-excused { background-color:#fd7e14; border-color:#fd7e14; color:#fff; }
 .btn-hr-excused:hover, .btn-hr-excused:focus { background-color:#e06c0c; border-color:#e06c0c; color:#fff; }
 .btn-outline-hr-excused { border-color:#fd7e14; color:#d9660b; }

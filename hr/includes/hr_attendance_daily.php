@@ -14,6 +14,7 @@
 require_once __DIR__ . '/../../includes/hr_attendance_attachments.php';
 require_once __DIR__ . '/hr_weekly_off.php';
 require_once __DIR__ . '/hr_schedule_helper.php';
+require_once __DIR__ . '/hr_weekly_off_plans.php';
 
 /** Minutes of grace before a check in counts as late or a check out as early. */
 const HR_ATT_GRACE_MINUTES = 15;
@@ -263,4 +264,90 @@ function hr_attendance_daily_totals(array $rows): array
     }
     $flags = array_filter(array_merge(['Late in' => 0, 'Early out' => 0, 'Short hours' => 0], $flags));
     return ['by' => $by, 'hours' => round($hours, 2), 'flags' => $flags];
+}
+
+/**
+ * Days off with no attendance row, for the Attendance list: the weekly off
+ * ('weekly_off': from Add Weekly Off on the Attendance page, or where HR has set
+ * one for the employee or company; the Sunday fallback is not shown) or a day
+ * the saved schedule has as Off
+ * ('day_off'). Days on
+ * approved leave, or before joining / after leaving, are left out. Only up to
+ * today, and at most a year back from the end date.
+ * Display only: nothing is written, so attendance and payroll are unchanged.
+ *
+ * @return list<array{employee_id:int, work_date:string, status:string}>
+ */
+function hr_attendance_off_days(PDO $conn, array $employeeIds, string $from, string $to): array
+{
+    $ids = array_values(array_filter(array_map('intval', $employeeIds)));
+    $to = min($to, date('Y-m-d'));
+    if (!$ids || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+        return [];
+    }
+    $from = max($from, date('Y-m-d', strtotime($to . ' -366 days')));
+    if ($from > $to) {
+        return [];
+    }
+    $in = implode(',', $ids);
+    $valid = static fn($v) => ($v && $v !== '0000-00-00') ? (string)$v : null;
+
+    $meta = [];
+    foreach ($conn->query("SELECT id, company_id, date_joined, exit_date, last_working_day FROM employees WHERE id IN ($in)") as $m) {
+        $meta[(int)$m['id']] = $m;
+    }
+    $taken = [];
+    $st = $conn->prepare("SELECT employee_id, work_date FROM attendance WHERE employee_id IN ($in) AND work_date BETWEEN ? AND ?");
+    $st->execute([$from, $to]);
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $taken[(int)$r['employee_id']][$r['work_date']] = true;
+    }
+    $leaves = [];
+    $st = $conn->prepare("SELECT employee_id, date_from, date_to FROM leave_requests
+        WHERE employee_id IN ($in) AND status = 'approved' AND date_from <= ? AND date_to >= ?");
+    $st->execute([$to, $from]);
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $l) {
+        $leaves[(int)$l['employee_id']][] = $l;
+    }
+
+    $plans = hr_weekly_off_plan_map($conn, $ids, $from, $to);
+
+    $out = [];
+    foreach ($ids as $eid) {
+        if (!isset($meta[$eid])) {
+            continue;
+        }
+        $m = $meta[$eid];
+        $companyId = isset($m['company_id']) ? (int)$m['company_id'] : null;
+        $joined = $valid($m['date_joined'] ?? null);
+        $left = $valid($m['last_working_day'] ?? null) ?? $valid($m['exit_date'] ?? null);
+        $sched = hr_schedule_summary($conn, $eid, $from, $to);
+        for ($d = new DateTimeImmutable($from); $d->format('Y-m-d') <= $to; $d = $d->modify('+1 day')) {
+            $ymd = $d->format('Y-m-d');
+            if (isset($taken[$eid][$ymd]) || ($joined && $ymd < $joined) || ($left && $ymd > $left)) {
+                continue;
+            }
+            foreach ($leaves[$eid] ?? [] as $l) {
+                if ($l['date_from'] <= $ymd && $l['date_to'] >= $ymd) {
+                    continue 2;
+                }
+            }
+            $setDay = hr_weekly_off_override($conn, $eid, $ymd)
+                ?? ($companyId ? (hr_weekly_off_entry_on(hr_weekly_off_history($conn, 'weekly_off.c' . $companyId), $ymd)['day'] ?? null) : null);
+            $dow = (int)$d->format('N');
+            $planned = false;
+            foreach ($plans[$eid] ?? [] as $pl) {
+                if ($pl['weekday'] === $dow && hr_weekly_off_plan_hits($pl, $ymd)) {
+                    $planned = true;
+                    break;
+                }
+            }
+            if ($planned || ($setDay !== null && $dow === $setDay)) {
+                $out[] = ['employee_id' => $eid, 'work_date' => $ymd, 'status' => 'weekly_off'];
+            } elseif (strcasecmp(trim((string)($sched['days'][$ymd]['label'] ?? '')), 'Off') === 0) {
+                $out[] = ['employee_id' => $eid, 'work_date' => $ymd, 'status' => 'day_off'];
+            }
+        }
+    }
+    return $out;
 }
