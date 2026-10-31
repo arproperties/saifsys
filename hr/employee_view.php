@@ -3621,6 +3621,174 @@ try {
     $attendanceRows = [];
 }
 
+// Attendance tab, Monthly summary: every month with attendance or leave, newest first,
+// each opening to its days. Left employees included — their months stay readable after they go.
+// Leave taken = days covered by an approved leave request, or marked "On leave" in
+// attendance; a day counts once, under its leave type.
+$attendanceMonths = [];
+$attendanceLeaveByType = [];
+$attendanceTotals = ['approved' => 0, 'pending' => 0, 'absent' => 0, 'half' => 0, 'leave' => 0, 'excused_absent' => 0, 'hours' => 0.0];
+try {
+    $attByDate = [];
+    $attMonthStmt = $conn->prepare("SELECT work_date, status, check_in, check_out, hours FROM attendance WHERE employee_id = ? ORDER BY work_date DESC, id DESC");
+    $attMonthStmt->execute([(int)$emp['id']]);
+    foreach ($attMonthStmt as $attRow) {
+        $attByDate[(string)$attRow['work_date']]['att'][] = $attRow;
+    }
+    $attLeaveStmt = $conn->prepare("
+        SELECT lr.date_from, lr.date_to, COALESCE(lt.name, 'Leave') AS type_name
+          FROM leave_requests lr
+          LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+         WHERE lr.employee_id = ? AND lr.status = 'approved' AND lr.date_to >= lr.date_from
+    ");
+    $attLeaveStmt->execute([(int)$emp['id']]);
+    foreach ($attLeaveStmt as $lv) {
+        $d = new DateTimeImmutable((string)$lv['date_from']);
+        $to = new DateTimeImmutable((string)$lv['date_to']);
+        for ($n = 0; $d <= $to && $n < 400; $d = $d->modify('+1 day'), $n++) {
+            $attByDate[$d->format('Y-m-d')]['leave'] = (string)$lv['type_name'];
+        }
+    }
+    krsort($attByDate);
+    foreach ($attByDate as $date => $day) {
+        $ym = substr($date, 0, 7);
+        if (!isset($attendanceMonths[$ym])) {
+            $attendanceMonths[$ym] = ['approved' => 0, 'pending' => 0, 'absent' => 0, 'half' => 0, 'leave' => 0, 'excused_absent' => 0, 'hours' => 0.0, 'days' => []];
+        }
+        $markedLeave = false;
+        foreach ($day['att'] ?? [] as $attRow) {
+            $attSt = strtolower((string)$attRow['status']);
+            if ($attSt === 'on_leave') {
+                $markedLeave = true;
+            } elseif (in_array($attSt, ['approved', 'pending', 'absent', 'half', 'excused_absent'], true)) {
+                $attendanceMonths[$ym][$attSt]++;
+                $attendanceTotals[$attSt]++;
+            }
+            $attendanceMonths[$ym]['hours'] += (float)($attRow['hours'] ?? 0);
+            $attendanceTotals['hours'] += (float)($attRow['hours'] ?? 0);
+        }
+        $leaveType = $day['leave'] ?? ($markedLeave ? 'On leave (marked in attendance)' : null);
+        if ($leaveType !== null) {
+            $attendanceMonths[$ym]['leave']++;
+            $attendanceTotals['leave']++;
+            $attendanceLeaveByType[$leaveType] = ($attendanceLeaveByType[$leaveType] ?? 0) + 1;
+        }
+        $attendanceMonths[$ym]['days'][] = ['date' => $date, 'att' => $day['att'] ?? [], 'leave' => $leaveType];
+    }
+    arsort($attendanceLeaveByType);
+} catch (Throwable $e) {
+    $attendanceMonths = [];
+    $attendanceLeaveByType = [];
+}
+
+// Download of that summary (?att_export=xlsx|csv): the monthly totals, leave by type, then every day.
+if (in_array($_GET['att_export'] ?? '', ['xlsx', 'csv'], true)) {
+    $attFmt = $_GET['att_export'];
+    $attTitle = 'Attendance — ' . ($emp['full_name'] ?? '') . ' (' . ($emp['employee_code'] ?? '') . ')';
+    $attSub = 'All months with attendance or leave · downloaded ' . date('j M Y');
+    $attStatus = static fn(string $s): string => ucfirst(str_replace('_', ' ', strtolower($s)));
+    $attHours = static fn(float $h): string => number_format($h, 2, '.', '');
+    $attSumCols = ['Month', 'Present', 'Pending', 'Absent', 'Half day', 'Leave taken', 'Excused', 'Hours'];
+    $attSumRows = [];
+    $attDayRows = [];
+    foreach ($attendanceMonths as $ym => $am) {
+        $label = date('F Y', strtotime($ym . '-01'));
+        $attSumRows[] = [$label, $am['approved'], $am['pending'], $am['absent'], $am['half'], $am['leave'], $am['excused_absent'], $attHours($am['hours'])];
+        foreach ($am['days'] as $ad) {
+            $date = date('D, j M Y', strtotime($ad['date']));
+            foreach ($ad['att'] ?: [null] as $i => $ar) {
+                $attDayRows[] = [$label, $date,
+                    $ar && $ar['check_in'] ? substr($ar['check_in'], 0, 5) : '',
+                    $ar && $ar['check_out'] ? substr($ar['check_out'], 0, 5) : '',
+                    $ar && $ar['hours'] !== null ? $attHours((float)$ar['hours']) : '',
+                    $ar ? $attStatus((string)$ar['status']) : 'On leave',
+                    $i === 0 ? (string)$ad['leave'] : ''];
+            }
+        }
+    }
+    $t = $attendanceTotals;
+    $attSumRows[] = ['Total', $t['approved'], $t['pending'], $t['absent'], $t['half'], $t['leave'], $t['excused_absent'], $attHours($t['hours'])];
+    $attTypeCols = ['Leave type', 'Days taken'];
+    $attTypeRows = [];
+    foreach ($attendanceLeaveByType as $type => $n) {
+        $attTypeRows[] = [$type, $n];
+    }
+    $attTypeRows[] = ['Total', $t['leave']];
+    $attDayCols = ['Month', 'Date', 'In', 'Out', 'Hours', 'Status', 'Leave'];
+    $attFile = 'attendance_' . preg_replace('/[^A-Za-z0-9_-]/', '', (string)($emp['employee_code'] ?? $emp['id'])) . '.' . $attFmt;
+    header('Content-Disposition: attachment; filename="' . $attFile . '"');
+    if ($attFmt === 'csv') {
+        header('Content-Type: text/csv; charset=utf-8');
+        $out = fopen('php://output', 'w');
+        fwrite($out, "\xEF\xBB\xBF"); // lets Excel read the CSV as UTF-8
+        fputcsv($out, [$attTitle]);
+        fputcsv($out, [$attSub]);
+        fputcsv($out, []);
+        fputcsv($out, ['Monthly summary']);
+        fputcsv($out, $attSumCols);
+        foreach ($attSumRows as $r) fputcsv($out, $r);
+        fputcsv($out, []);
+        fputcsv($out, ['Leave taken by type']);
+        fputcsv($out, $attTypeCols);
+        foreach ($attTypeRows as $r) fputcsv($out, $r);
+        fputcsv($out, []);
+        fputcsv($out, ['Day by day']);
+        fputcsv($out, $attDayCols);
+        foreach ($attDayRows as $r) fputcsv($out, $r);
+        fclose($out);
+        exit;
+    }
+    // Excel: a Summary sheet, then one sheet per month (its totals, leave by type, every day).
+    require_once __DIR__ . '/includes/hr_xlsx.php';
+    $head = static fn(array $cols): array => array_map(static fn($c) => [$c, 'head'], $cols);
+    $bold = static fn(array $row): array => array_map(static fn($c) => [$c, 'bold'], $row);
+    $num = static fn(array $r): array => array_map(static fn($v) => is_string($v) && is_numeric($v) ? (float)$v : $v, $r);
+    $summary = [[[$attTitle, 'title']], [$attSub], [], [['Monthly summary', 'bold']], $head($attSumCols)];
+    foreach ($attSumRows as $r) {
+        $summary[] = $r[0] === 'Total' ? $bold($num($r)) : $num($r);
+    }
+    $summary[] = [];
+    $summary[] = [['Leave taken by type', 'bold']];
+    $summary[] = $head($attTypeCols);
+    foreach ($attTypeRows as $r) {
+        $summary[] = $r[0] === 'Total' ? $bold($r) : $r;
+    }
+    $sheets = [['name' => 'Summary', 'widths' => [32, 10, 10, 10, 10, 12, 10, 10], 'rows' => $summary]];
+    foreach ($attendanceMonths as $ym => $am) {
+        $ts = strtotime($ym . '-01');
+        $rows = [[[$attTitle . ' — ' . date('F Y', $ts), 'title']], [], [['Totals', 'bold']],
+            ['Present', $am['approved']], ['Pending', $am['pending']], ['Absent', $am['absent']], ['Half day', $am['half']],
+            ['Leave taken', $am['leave']], ['Excused', $am['excused_absent']], ['Hours', round($am['hours'], 2)]];
+        $monthTypes = [];
+        foreach ($am['days'] as $ad) {
+            if ($ad['leave'] !== null) $monthTypes[$ad['leave']] = ($monthTypes[$ad['leave']] ?? 0) + 1;
+        }
+        if ($monthTypes) {
+            $rows[] = [];
+            $rows[] = [['Leave taken by type', 'bold']];
+            foreach ($monthTypes as $type => $n) $rows[] = [$type, $n];
+        }
+        $rows[] = [];
+        $rows[] = [['Day by day', 'bold']];
+        $rows[] = $head(['Date', 'In', 'Out', 'Hours', 'Status', 'Leave']);
+        foreach (array_reverse($am['days']) as $ad) { // 1st of the month first
+            foreach ($ad['att'] ?: [null] as $i => $ar) {
+                $row = [date('D, j M Y', strtotime($ad['date'])),
+                    $ar && $ar['check_in'] ? substr($ar['check_in'], 0, 5) : '',
+                    $ar && $ar['check_out'] ? substr($ar['check_out'], 0, 5) : '',
+                    $ar && $ar['hours'] !== null ? round((float)$ar['hours'], 2) : '',
+                    $ar ? $attStatus((string)$ar['status']) : 'On leave',
+                    $i === 0 ? (string)$ad['leave'] : ''];
+                // Absent days stand out: the whole row in red.
+                $rows[] = $ar && strtolower((string)$ar['status']) === 'absent'
+                    ? array_map(static fn($c) => [$c, 'red'], $row) : $row;
+            }
+        }
+        $sheets[] = ['name' => date('M Y', $ts), 'widths' => [20, 8, 8, 8, 14, 30], 'rows' => $rows];
+    }
+    hr_xlsx_send(preg_replace('/\.\w+$/', '.xlsx', $attFile), $sheets);
+}
+
 if ($workerId) {
     try {
         // Calculate hours with daily cap (exclude overtime) - group by day, cap, then sum
@@ -7277,6 +7445,109 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 
                           <!-- Attendance -->
                           <div class="tab-pane fade" id="tab-attendance">
+                            <div class="card mt-3">
+                              <div class="card-body">
+                                <div class="d-flex align-items-center mb-2">
+                                  <h6 class="mb-0">Monthly summary</h6>
+                                  <span class="ms-auto small text-muted me-2">All months with attendance or leave · click a month to see its days</span>
+                                  <?php if ($attendanceMonths): ?>
+                                    <a class="btn btn-sm btn-outline-success me-1" href="?<?= htmlspecialchars(http_build_query(['id' => $emp['id'], 'att_export' => 'xlsx'])) ?>"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a>
+                                    <a class="btn btn-sm btn-outline-secondary" href="?<?= htmlspecialchars(http_build_query(['id' => $emp['id'], 'att_export' => 'csv'])) ?>"><i class="bi bi-filetype-csv me-1"></i>CSV</a>
+                                  <?php endif; ?>
+                                </div>
+                                <?php if (!$attendanceMonths): ?>
+                                  <div class="text-muted small py-2">No attendance or leave recorded for this employee.</div>
+                                <?php else: ?>
+                                  <div class="table-responsive" style="max-height:460px;overflow-y:auto">
+                                    <table class="table table-sm align-middle mb-0">
+                                      <thead class="table-light" style="position:sticky;top:0;z-index:1">
+                                        <tr>
+                                          <th>Month</th>
+                                          <th class="text-end">Present</th>
+                                          <th class="text-end">Pending</th>
+                                          <th class="text-end">Absent</th>
+                                          <th class="text-end">Half day</th>
+                                          <th class="text-end">Leave taken</th>
+                                          <th class="text-end">Excused</th>
+                                          <th class="text-end">Hours</th>
+                                          <th></th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        <?php foreach ($attendanceMonths as $ym => $am):
+                                          $amId = 'att-month-' . str_replace('-', '', $ym);
+                                          $amTs = strtotime($ym . '-01');
+                                          $zero = static fn(int $n): string => $n > 0 ? (string)$n : '<span class="text-muted">0</span>';
+                                        ?>
+                                          <tr role="button" data-bs-toggle="collapse" data-bs-target="#<?= $amId ?>" aria-expanded="false" aria-controls="<?= $amId ?>">
+                                            <td class="fw-semibold"><i class="bi bi-chevron-down small me-1 text-muted"></i><?= htmlspecialchars(date('F Y', $amTs)) ?></td>
+                                            <td class="text-end"><?= $zero($am['approved']) ?></td>
+                                            <td class="text-end"><?= $zero($am['pending']) ?></td>
+                                            <td class="text-end"><?= $am['absent'] > 0 ? '<span class="text-danger fw-semibold">' . $am['absent'] . '</span>' : $zero(0) ?></td>
+                                            <td class="text-end"><?= $zero($am['half']) ?></td>
+                                            <td class="text-end"><?= $am['leave'] > 0 ? '<span class="text-info fw-semibold">' . $am['leave'] . '</span>' : $zero(0) ?></td>
+                                            <td class="text-end"><?= $zero($am['excused_absent']) ?></td>
+                                            <td class="text-end"><?= number_format($am['hours'], 2) ?></td>
+                                            <td class="text-end text-nowrap">
+                                              <?php if (!$isWorkerSelfService): ?>
+                                                <a class="small" onclick="event.stopPropagation()" href="attendance_summary.php?<?= htmlspecialchars(http_build_query([
+                                                    'tab' => 'daily', 'month' => (int)date('n', $amTs), 'year' => (int)date('Y', $amTs),
+                                                    'employee_id' => (int)$emp['id'], 'company_id' => (int)($emp['company_id'] ?? 0), 'include_left' => 1,
+                                                ])) ?>">Day by day</a>
+                                              <?php endif; ?>
+                                            </td>
+                                          </tr>
+                                          <tr class="collapse" id="<?= $amId ?>">
+                                            <td colspan="9" class="p-0">
+                                              <table class="table table-sm mb-0 small bg-light">
+                                                <thead><tr><th class="ps-4">Date</th><th>In</th><th>Out</th><th class="text-end">Hours</th><th>Status</th><th>Leave</th></tr></thead>
+                                                <tbody>
+                                                  <?php foreach ($am['days'] as $ad): foreach ($ad['att'] ?: [null] as $adI => $ar):
+                                                    $adSt = $ar ? strtolower((string)$ar['status']) : 'on_leave';
+                                                    $adBadge = ['approved'=>'success','pending'=>'secondary','absent'=>'danger','on_leave'=>'info','half'=>'primary','excused_absent'=>'warning'][$adSt] ?? 'secondary';
+                                                  ?>
+                                                    <tr<?= $adSt === 'absent' ? ' class="table-danger"' : '' ?>>
+                                                      <td class="ps-4"><?= htmlspecialchars(date('D, j M', strtotime($ad['date']))) ?></td>
+                                                      <td><?= $ar && $ar['check_in'] ? htmlspecialchars(substr($ar['check_in'], 0, 5)) : '—' ?></td>
+                                                      <td><?= $ar && $ar['check_out'] ? htmlspecialchars(substr($ar['check_out'], 0, 5)) : '—' ?></td>
+                                                      <td class="text-end"><?= $ar && $ar['hours'] !== null ? number_format((float)$ar['hours'], 2) : '—' ?></td>
+                                                      <td><span class="badge text-bg-<?= $adBadge ?>"><?= htmlspecialchars(ucfirst(str_replace('_', ' ', $adSt)) ?: 'Unknown') ?></span></td>
+                                                      <td><?= $adI === 0 && $ad['leave'] !== null ? htmlspecialchars($ad['leave']) : '' ?></td>
+                                                    </tr>
+                                                  <?php endforeach; endforeach; ?>
+                                                </tbody>
+                                              </table>
+                                            </td>
+                                          </tr>
+                                        <?php endforeach; ?>
+                                      </tbody>
+                                      <tfoot class="table-light" style="position:sticky;bottom:0">
+                                        <tr class="fw-semibold">
+                                          <td>Total</td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['approved'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['pending'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['absent'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['half'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['leave'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['excused_absent'] ?></td>
+                                          <td class="text-end"><?= number_format($attendanceTotals['hours'], 2) ?></td>
+                                          <td></td>
+                                        </tr>
+                                      </tfoot>
+                                    </table>
+                                  </div>
+                                  <?php if ($attendanceLeaveByType): ?>
+                                    <div class="small mt-2">
+                                      <span class="text-muted">Leave taken by type:</span>
+                                      <?php foreach ($attendanceLeaveByType as $lvType => $lvDays): ?>
+                                        <span class="badge text-bg-light border me-1"><?= htmlspecialchars($lvType) ?> · <?= (int)$lvDays ?> day<?= $lvDays == 1 ? '' : 's' ?></span>
+                                      <?php endforeach; ?>
+                                    </div>
+                                  <?php endif; ?>
+                                <?php endif; ?>
+                              </div>
+                            </div>
+
                             <div class="card mt-3">
                               <div class="card-body">
                                 <div class="d-flex align-items-center mb-3">
