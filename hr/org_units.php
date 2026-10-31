@@ -464,7 +464,7 @@ echo hr_ui_page_header(
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Organization'],
     ],
-    '<a href="../operation.php" class="btn btn-outline-secondary">Back</a>'
+    '<a href="../operation.php" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>'
 );
 ?>
 
@@ -544,10 +544,10 @@ echo hr_ui_page_header(
               <?php foreach($departments as $d): ?>
               <tr>
                 <td><?= htmlspecialchars($d['name']) ?></td>
-                <?php if (isset($d['code'])): ?><td><?= htmlspecialchars($d['code']) ?></td><?php endif; ?>
-                <?php if (isset($d['parent_id'])): ?><td><?= isset($dept_map[$d['parent_id']]) ? htmlspecialchars($dept_map[$d['parent_id']]) : '—' ?></td><?php endif; ?>
-                <?php if (isset($d['status'])): ?><td><span class="badge bg-<?= $d['status']==='active'?'success':'secondary' ?>"><?= htmlspecialchars($d['status']) ?></span></td><?php endif; ?>
-                <?php if (isset($d['created_at'])): ?><td><?= htmlspecialchars($d['created_at']) ?></td><?php endif; ?>
+                <?php if (array_key_exists('code', $d)): ?><td><?= (string)($d['code'] ?? '') !== '' ? htmlspecialchars($d['code']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('parent_id', $d)): ?><td><?= isset($dept_map[$d['parent_id']]) ? htmlspecialchars($dept_map[$d['parent_id']]) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('status', $d)): ?><td><span class="badge bg-<?= $d['status']==='active'?'success':'secondary' ?>"><?= htmlspecialchars($d['status'] ?? '—') ?></span></td><?php endif; ?>
+                <?php if (array_key_exists('created_at', $d)): ?><td><?= (string)($d['created_at'] ?? '') !== '' ? htmlspecialchars($d['created_at']) : '—' ?></td><?php endif; ?>
                 <td class="text-end">
                   <button class="btn btn-sm btn-outline-primary" onclick="fillDept(<?= (int)$d['id'] ?>)">Edit</button>
                   <form method="post" class="d-inline" onsubmit="return confirm('Delete this department?')">
@@ -687,12 +687,12 @@ echo hr_ui_page_header(
               <?php foreach($locations as $l): ?>
               <tr>
                 <td><?= htmlspecialchars($l['name']) ?></td>
-                <?php if (isset($l['code'])): ?><td><?= htmlspecialchars($l['code']) ?></td><?php endif; ?>
-                <?php if (isset($l['address'])): ?><td><?= htmlspecialchars($l['address']) ?></td><?php endif; ?>
-                <?php if (isset($l['city'])): ?><td><?= htmlspecialchars($l['city']) ?></td><?php endif; ?>
-                <?php if (isset($l['country'])): ?><td><?= htmlspecialchars($l['country']) ?></td><?php endif; ?>
-                <?php if (isset($l['status'])): ?><td><span class="badge bg-<?= $l['status']==='active'?'success':'secondary' ?>"><?= htmlspecialchars($l['status']) ?></span></td><?php endif; ?>
-                <?php if (isset($l['created_at'])): ?><td><?= htmlspecialchars($l['created_at']) ?></td><?php endif; ?>
+                <?php if (array_key_exists('code', $l)): ?><td><?= (string)($l['code'] ?? '') !== '' ? htmlspecialchars($l['code']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('address', $l)): ?><td><?= (string)($l['address'] ?? '') !== '' ? htmlspecialchars($l['address']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('city', $l)): ?><td><?= (string)($l['city'] ?? '') !== '' ? htmlspecialchars($l['city']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('country', $l)): ?><td><?= (string)($l['country'] ?? '') !== '' ? htmlspecialchars($l['country']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('status', $l)): ?><td><span class="badge bg-<?= $l['status']==='active'?'success':'secondary' ?>"><?= htmlspecialchars($l['status'] ?? '—') ?></span></td><?php endif; ?>
+                <?php if (array_key_exists('created_at', $l)): ?><td><?= (string)($l['created_at'] ?? '') !== '' ? htmlspecialchars($l['created_at']) : '—' ?></td><?php endif; ?>
                 <td class="text-end">
                   <button class="btn btn-sm btn-outline-primary" onclick="fillLoc(<?= (int)$l['id'] ?>)">Edit</button>
                   <form method="post" class="d-inline" onsubmit="return confirm('Delete this location?')">

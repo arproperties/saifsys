@@ -50,6 +50,43 @@ function hr_attendance_status_keys(): array {
     return array_keys(hr_attendance_statuses());
 }
 
+/**
+ * In and Out at the same minute on a worked day (approved or pending): not a day
+ * anyone worked, so never saved. Absent, half day and leave are left alone, so
+ * this can never hold up a status payroll reads.
+ */
+function hr_attendance_same_time(?string $in, ?string $out, ?string $status = null): bool {
+    if ($status !== null && !in_array($status, ['approved', 'pending'], true)) {
+        return false;
+    }
+    return $in && $out && substr($in, 0, 5) === substr($out, 0, 5);
+}
+
+/**
+ * Hours from In to Out ("H:i" or "H:i:s"). An Out at or before the In is the
+ * next morning: a night shift, 17:00 to 03:00, is 10 hours. Equal or missing
+ * times give null.
+ */
+function hr_attendance_hours(?string $in, ?string $out): ?float {
+    if (!$in || !$out) {
+        return null;
+    }
+    $a = strtotime('1970-01-01 ' . $in . ' UTC');
+    $b = strtotime('1970-01-01 ' . $out . ' UTC');
+    if ($a === false || $b === false || $a === $b) {
+        return null;
+    }
+    if ($b < $a) {
+        $b += 86400;
+    }
+    return round(($b - $a) / 3600, 2);
+}
+
+/** Whether the Out falls on the next day (an Out earlier than the In). */
+function hr_attendance_is_overnight(?string $in, ?string $out): bool {
+    return $in && $out && substr($out, 0, 5) < substr($in, 0, 5);
+}
+
 function hr_attendance_status_label(?string $status): string {
     $all = hr_attendance_statuses();
     $status = (string)$status;

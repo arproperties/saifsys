@@ -4,7 +4,16 @@
  *
  * Schedules are stored as day labels like "9:00 AM - 5:00 PM". These helpers
  * turn that into expected workdays/hours for attendance, leave, and payroll.
+ *
+ * From HR_SCHEDULE_WEEKLY_OFF_FROM on, screens and reminders can show the
+ * weekly off (hr_weekly_off.php) as Off whatever hours the schedule holds
+ * (hr_schedule_summary(..., true)). Payroll does not: by default the summary is
+ * the schedule as saved, so pay is worked out exactly as before.
  */
+
+require_once __DIR__ . '/hr_weekly_off.php';
+
+const HR_SCHEDULE_WEEKLY_OFF_FROM = '2026-11-01';
 
 function hr_schedule_day_columns(): array
 {
@@ -46,6 +55,30 @@ function hr_schedule_parse_hours(?string $value): float
         return max(0.0, round((float)$value, 2));
     }
 
+    // One or more duties a day ("9:00 AM - 1:00 PM, 5:00 PM - 9:00 PM"): the hours add up.
+    $total = 0.0;
+    foreach (hr_schedule_ranges($value) as $r) {
+        $total += $r['hours'];
+    }
+    return max(0.0, round($total, 2));
+}
+
+/**
+ * Hours as payroll counts them, exactly as on main: one "start - end" range only.
+ * A day with two duties ("9:00 AM - 1:00 PM, 6:00 PM - 3:00 AM") is 0 here, so it
+ * is not a working day for pay, as before. Screens use hr_schedule_parse_hours().
+ */
+function hr_schedule_payroll_hours(?string $value): float
+{
+    $value = trim((string)$value);
+    if ($value === '' || preg_match('/^(off|holiday|rest|none|n\/a)$/i', $value)) {
+        return 0.0;
+    }
+
+    if (is_numeric($value)) {
+        return max(0.0, round((float)$value, 2));
+    }
+
     $parts = preg_split('/\s*(?:-|–|—|\bto\b)\s*/i', $value);
     if (!$parts || count($parts) < 2) {
         return 0.0;
@@ -62,6 +95,47 @@ function hr_schedule_parse_hours(?string $value): float
     }
 
     return max(0.0, round(($end - $start) / 3600, 2));
+}
+
+/**
+ * One day's label split into its duties, in order. A duty that ends at or
+ * before it starts runs past midnight (17:00 - 02:00 is 9 hours).
+ *
+ * @return list<array{start:string, end:string, hours:float, overnight:bool}> times as H:i
+ */
+function hr_schedule_ranges(?string $value): array
+{
+    $value = trim((string)$value);
+    if ($value === '' || preg_match('/^(off|holiday|rest|none|n\/a)$/i', $value) || is_numeric($value)) {
+        return [];
+    }
+    $out = [];
+    foreach (preg_split('/\s*[,;]\s*/', $value) as $piece) {
+        $parts = preg_split('/\s*(?:-|–|—|\bto\b)\s*/i', $piece);
+        if (!$parts || count($parts) < 2) {
+            continue;
+        }
+        $start = strtotime($parts[0]);
+        $end = strtotime($parts[1]);
+        if ($start === false || $end === false) {
+            continue;
+        }
+        $overnight = $end <= $start;
+        $out[] = [
+            'start' => date('H:i', $start),
+            'end' => date('H:i', $end),
+            'hours' => round((($overnight ? $end + 86400 : $end) - $start) / 3600, 2),
+            'overnight' => $overnight,
+        ];
+    }
+    return $out;
+}
+
+/** "17:00" as "5:00 PM" (how schedules are stored). */
+function hr_schedule_time_label(string $hm): string
+{
+    $t = strtotime('1970-01-01 ' . $hm);
+    return $t === false ? $hm : date('g:i A', $t);
 }
 
 function hr_schedule_rows(PDO $conn, int $employeeId, string $from, string $to): array
@@ -94,7 +168,14 @@ function hr_schedule_row_for_date(array $rows, string $date): ?array
     return null;
 }
 
-function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $to): array
+/**
+ * Expected days and hours per date, from the schedule as saved; payroll,
+ * payslips and the absence deduction use this as it is, with hours counted
+ * exactly as on main (hr_schedule_payroll_hours). Screens and reminders pass
+ * $applyWeeklyOff = true to also show the weekly off as Off and to count every
+ * duty of a double-duty day.
+ */
+function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $to, bool $applyWeeklyOff = false): array
 {
     $rows = hr_schedule_rows($conn, $employeeId, $from, $to);
     $days = [];
@@ -123,12 +204,25 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
     }
 
     $columns = hr_schedule_day_columns();
+    $companyId = null;
+    if ($applyWeeklyOff && $rows && $to >= HR_SCHEDULE_WEEKLY_OFF_FROM) {
+        $st = $conn->prepare("SELECT company_id FROM employees WHERE id = ?");
+        $st->execute([$employeeId]);
+        $companyId = ($c = $st->fetchColumn()) ? (int)$c : null;
+    }
     for ($date = $start; $date <= $end; $date = $date->modify('+1 day')) {
         $ymd = $date->format('Y-m-d');
         $row = hr_schedule_row_for_date($rows, $ymd);
         $column = $columns[(int)$date->format('N')];
         $label = $row ? (string)($row[$column] ?? '') : '';
-        $hours = hr_schedule_parse_hours($label);
+        $weeklyOff = $applyWeeklyOff && $row && $ymd >= HR_SCHEDULE_WEEKLY_OFF_FROM
+            && (int)$date->format('N') === hr_weekly_off_for_employee($conn, $employeeId, $companyId, $ymd);
+        if ($weeklyOff) {
+            $label = 'Off';
+        }
+        // As saved (payroll, payslips): hours counted exactly as on main.
+        // Screens and reminders: every duty of the day counts.
+        $hours = $applyWeeklyOff ? hr_schedule_parse_hours($label) : hr_schedule_payroll_hours($label);
         $isWorkday = $hours > 0;
 
         if ($isWorkday) {
@@ -142,6 +236,7 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
             'label' => $label,
             'expected_hours' => $hours,
             'is_workday' => $isWorkday,
+            'weekly_off' => $weeklyOff,
         ];
     }
 
@@ -151,6 +246,22 @@ function hr_schedule_summary(PDO $conn, int $employeeId, string $from, string $t
         'expected_hours' => round($expectedHours, 2),
         'days' => $days,
     ];
+}
+
+/** Null when a leave request's dates are fine, else why not. */
+function hr_leave_dates_error(string $from, string $to): ?string
+{
+    $valid = static function (string $d): bool {
+        $dt = DateTimeImmutable::createFromFormat('!Y-m-d', $d);
+        return $dt !== false && $dt->format('Y-m-d') === $d;
+    };
+    if (!$valid($from) || !$valid($to)) {
+        return 'Choose valid From and To dates.';
+    }
+    if ($to < $from) {
+        return 'The To date cannot be before the From date.';
+    }
+    return null;
 }
 
 function hr_schedule_leave_days(PDO $conn, int $employeeId, string $from, string $to): int

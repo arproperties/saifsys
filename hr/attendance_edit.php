@@ -73,16 +73,11 @@ if (hr_attendance_post_too_large()) {
         } elseif ($statusChanged && $notes === '') {
             // Same rule as the quick actions on the list page: no silent changes.
             $flash_err = 'Changing the status needs a reason in Notes.';
+        } elseif (hr_attendance_same_time($check_in, $check_out, $status)) {
+            $flash_err = 'Check-out cannot be the same time as check-in (' . substr($check_in, 0, 5) . ').';
         } else {
-            // recalc hours
-            $hours = null;
-            if ($check_in && $check_out) {
-                $a = strtotime("1970-01-01 $check_in UTC");
-                $b = strtotime("1970-01-01 $check_out UTC");
-                if ($a!==false && $b!==false && $b > $a) {
-                    $hours = round(($b-$a)/3600, 2);
-                }
-            }
+            // recalc hours (an Out before the In is the next morning)
+            $hours = hr_attendance_hours($check_in, $check_out);
 
             try {
                 $notes = mb_substr($notes, 0, HR_ATTENDANCE_NOTE_MAX);
@@ -166,7 +161,7 @@ echo hr_ui_page_header(
         ['label' => 'Attendance', 'href' => 'attendance.php'],
         ['label' => 'Edit #' . (int)$row['id']],
     ],
-    '<a class="btn btn-outline-secondary" href="attendance.php">Back</a>'
+    '<a class="btn btn-outline-secondary" href="attendance.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
 );
 ?>
 
@@ -192,6 +187,7 @@ echo hr_ui_page_header(
         <div class="col-md-3">
           <label class="form-label">Check-out</label>
           <input type="time" name="check_out" class="form-control" value="<?= h($row['check_out']) ?>">
+          <div class="form-text">Earlier than check-in = next day (night shift).</div>
         </div>
         <div class="col-md-3">
           <label class="form-label">Status</label>

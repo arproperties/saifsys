@@ -8,6 +8,7 @@ require_once __DIR__ . '/../includes/audit_bridge.php';
 require_once __DIR__ . '/../lib/Guard.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_schedule_helper.php';
+require_once __DIR__ . '/includes/hr_weekly_off.php';
 require_once __DIR__ . '/includes/hr_document_file_helper.php';
 require_once __DIR__ . '/includes/hr_loans.php';
 require_once __DIR__ . '/includes/employee_view/load_employee.php';
@@ -19,6 +20,8 @@ require_once __DIR__ . '/includes/hr_fleet.php';
 require_once __DIR__ . '/includes/hr_employee_bills.php';
 require_once __DIR__ . '/includes/hr_upload_guard.php';
 require_once __DIR__ . '/includes/hr_required_docs.php';
+require_once __DIR__ . '/includes/hr_shift_templates.php';
+require_once __DIR__ . '/includes/hr_comp_off.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
@@ -93,8 +96,8 @@ if ($workerReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST') {
         'add_deduction', 'del_deduction',
         'add_history', 'del_history', 'add_note', 'del_note',
         'add_training', 'del_training', 'update_training_status',
-        'doc_action', 'delete_doc_id', 'leave_change_status', 'save_schedule',
-        'employee_avatar_upload', 'employee_avatar_delete', 'save_required_doc_reason',
+        'doc_action', 'delete_doc_id', 'leave_change_status', 'save_schedule', 'copy_schedule', 'shift_template_save', 'shift_template_delete',
+        'employee_avatar_upload', 'employee_avatar_delete', 'save_required_doc_reason', 'save_reminder', 'save_weekly_off',
     ];
     $postedKeys = array_keys($_POST);
     $isAllowedAction = array_intersect($postedKeys, $allowedActions)
@@ -590,6 +593,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['leave_create'])) {
 
     if (!$leave_type_id || !$date_from || !$date_to) {
         $_SESSION['leave_err'] = 'Please fill all required fields for the leave request.';
+    } elseif (($dateErr = hr_leave_dates_error($date_from, $date_to)) !== null) {
+        $_SESSION['leave_err'] = $dateErr;
+    } elseif ($days <= 0) {
+        $_SESSION['leave_err'] = 'The leave must be at least one day.';
+    } elseif (($coErr = hr_comp_off_leave_error($conn, (int)$emp['id'], $leave_type_id, $date_from, (float)$days)) !== null) {
+        $_SESSION['leave_err'] = $coErr;
     } else {
         // attachment (optional)
         $attach_path = null;
@@ -722,10 +731,20 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['leave_change_status']))
             $q->execute([$id,$emp['id']]);
             $req = $q->fetch(PDO::FETCH_ASSOC);
             if (!$req) throw new Exception('Request not found');
+            if ($new === 'approved' && (hr_leave_dates_error((string)$req['date_from'], (string)$req['date_to']) !== null || (float)$req['days'] <= 0)) {
+                throw new Exception('Request #' . $id . ' has wrong dates (' . $req['date_from'] . ' → ' . $req['date_to'] . ', ' . (float)$req['days'] . ' days). Reject it and request again.');
+            }
+            if ($new === 'approved'
+                && ($coErr = hr_comp_off_leave_error($conn, (int)$emp['id'], (int)$req['leave_type_id'], (string)$req['date_from'], (float)$req['days'], $id)) !== null) {
+                throw new Exception($coErr);
+            }
             $u = $conn->prepare("UPDATE leave_requests SET status=?, approver_id=?, decided_at=NOW() WHERE id=?");
             $u->execute([$new, ($_SESSION['user']['id'] ?? null), $id]);
 
-            if ($new==='approved') {
+            if ($new === 'approved' && (int)$req['leave_type_id'] === hr_comp_off_type_id($conn)) {
+                // Comp off does not lapse: use the oldest days first.
+                hr_comp_off_take($conn, (int)$emp['id'], (float)$req['days'], (int)date('Y', strtotime($req['date_from'])));
+            } elseif ($new==='approved') {
                 $yr = (int)date('Y', strtotime($req['date_from']));
                 ensure_balance($conn, $emp['id'], (int)$req['leave_type_id'], $yr);
                 $b = $conn->prepare("UPDATE leave_balances
@@ -2226,14 +2245,54 @@ unset($_SESSION['history_msg']);
 $schedule_msg = '';
 if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['save_schedule']) && !$workerReadOnly) {
     csrf_verify();
-    $schedule_type = $_POST['schedule_type'] ?? 'regular';
-    $monday = trim($_POST['monday_hours'] ?? '');
-    $tuesday = trim($_POST['tuesday_hours'] ?? '');
-    $wednesday = trim($_POST['wednesday_hours'] ?? '');
-    $thursday = trim($_POST['thursday_hours'] ?? '');
-    $friday = trim($_POST['friday_hours'] ?? '');
-    $saturday = trim($_POST['saturday_hours'] ?? '');
-    $sunday = trim($_POST['sunday_hours'] ?? '');
+    // Each day comes from the card editor: duties as start/end time pairs, or Day off.
+    // Stored the way schedules always were ("9:00 AM - 5:00 PM", duties joined by ", ").
+    $dayValues = [];
+    $schedErr = '';
+    // Saved exactly as set here. The weekly off is not written into the schedule:
+    // screens show it, payroll reads the schedule as saved.
+    foreach (hr_schedule_day_columns() as $num => $col) {
+        $day = substr($col, 0, -6);
+        $in = $_POST['sched'][$day] ?? [];
+        if (!empty($in['off'])) {
+            $dayValues[$day] = 'Off';
+            continue;
+        }
+        // Flexible: hours any time, stored as the plain number of hours.
+        if (isset($in['flex'])) {
+            $flexHours = hr_flex_hours($in['flex']);
+            if ($flexHours === null) {
+                $schedErr = ucfirst($day) . ': give the flexible hours, from 0.5 to 24.';
+                break;
+            }
+            $dayValues[$day] = hr_flex_hours_label($flexHours);
+            continue;
+        }
+        $pairs = [];
+        $starts = (array)($in['start'] ?? []);
+        $ends = (array)($in['end'] ?? []);
+        foreach ($starts as $i => $st) {
+            $st = substr(trim((string)$st), 0, 5);
+            $en = substr(trim((string)($ends[$i] ?? '')), 0, 5);
+            if ($st === '' && $en === '') {
+                continue;
+            }
+            if (!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $st) || !preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $en) || $st === $en) {
+                $schedErr = ucfirst($day) . ': give each duty a start and an end time.';
+                break 2;
+            }
+            $pairs[] = hr_schedule_time_label($st) . ' - ' . hr_schedule_time_label($en);
+        }
+        $dayValues[$day] = $pairs ? implode(', ', $pairs) : '';
+    }
+    if ($schedErr !== '') {
+        $_SESSION['schedule_msg'] = $schedErr . ' Nothing was saved.';
+        header('Location: employee_view.php?id=' . urlencode($emp['id']) . '#tab-schedule');
+        exit;
+    }
+    $schedule_type = hr_schedule_type_for($dayValues);
+    ['monday' => $monday, 'tuesday' => $tuesday, 'wednesday' => $wednesday, 'thursday' => $thursday,
+     'friday' => $friday, 'saturday' => $saturday, 'sunday' => $sunday] = $dayValues;
     $effective_from = $_POST['effective_from'] ?: date('Y-m-d');
     $effective_to = $_POST['effective_to'] ?: null;
     $notes = trim($_POST['notes'] ?? '');
@@ -2260,8 +2319,150 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['save_schedule']) && !$w
     header('Location: employee_view.php?id=' . urlencode($emp['id']) . '#tab-schedule');
     exit;
 }
+// Copy this employee's current schedule to other active employees from a date
+// (Owner, Admin, HR). Each gets a new schedule row, so their old one stays as
+// history. The schedule is copied as it is (the weekly off is not written in).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['copy_schedule']) && $canManageOpsPin) {
+    csrf_verify();
+    $back = 'Location: employee_view.php?id=' . urlencode($emp['id']) . '#tab-schedule';
+    $src = $conn->prepare("SELECT * FROM employee_work_schedules WHERE employee_id = ? AND (effective_to IS NULL OR effective_to >= CURDATE()) ORDER BY effective_from DESC, id DESC LIMIT 1");
+    $src->execute([(int)$emp['id']]);
+    $src = $src->fetch(PDO::FETCH_ASSOC);
+    $copyIds = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['copy_to'] ?? [])), static fn($i) => $i > 0 && $i !== (int)$emp['id'])));
+    $copyFrom = (string)($_POST['copy_from'] ?? '');
+    $copyDate = DateTime::createFromFormat('!Y-m-d', $copyFrom);
+    if (!$copyDate || $copyDate->format('Y-m-d') !== $copyFrom) {
+        $copyFrom = date('Y-m-d');
+    }
+    if (!$src) {
+        $_SESSION['schedule_msg'] = 'This employee has no schedule to copy. Nothing was saved.';
+        header($back);
+        exit;
+    }
+    $targets = [];
+    if ($copyIds) {
+        $st = $conn->prepare("SELECT id, company_id, full_name, employee_code FROM employees WHERE status = 'active' AND id IN (" . implode(',', array_fill(0, count($copyIds), '?')) . ")");
+        $st->execute($copyIds);
+        $targets = $st->fetchAll(PDO::FETCH_ASSOC);
+    }
+    if (!$targets) {
+        $_SESSION['schedule_msg'] = 'Pick at least one active employee. Nothing was saved.';
+        header($back);
+        exit;
+    }
+    $ins = $conn->prepare("INSERT INTO employee_work_schedules (employee_id, schedule_type, monday_hours, tuesday_hours, wednesday_hours, thursday_hours, friday_hours, saturday_hours, sunday_hours, effective_from, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+    $copyNote = 'Copied from ' . ($emp['full_name'] ?? $emp['employee_code']);
+    $saved = [];
+    try {
+        $conn->beginTransaction();
+        foreach ($targets as $t) {
+            $tCompany = $t['company_id'] !== null ? (int)$t['company_id'] : null;
+            $vals = [];
+            foreach (hr_schedule_day_columns() as $col) {
+                $vals[] = $src[$col] ?? null;
+            }
+            $ins->execute(array_merge([(int)$t['id'], $src['schedule_type'] ?: 'regular'], $vals, [$copyFrom, $copyNote]));
+            $saved[] = [$t, (int)$conn->lastInsertId(), $tCompany];
+        }
+        $conn->commit();
+    } catch (Throwable $e) {
+        if ($conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        error_log('copy_schedule: ' . $e->getMessage());
+        $_SESSION['schedule_msg'] = 'The schedule could not be copied. Nothing was saved.';
+        header($back);
+        exit;
+    }
+    foreach ($saved as [$t, $schedId, $tCompany]) {
+        audit_bridge_hr_ops(
+            'schedule_updated',
+            'employee_work_schedules',
+            $schedId,
+            'Work schedule for ' . ($t['full_name'] ?: $t['employee_code']) . ' copied from ' . ($emp['full_name'] ?? $emp['employee_code']) . ' (from ' . $copyFrom . ')',
+            $tCompany,
+            ['employee_id' => (int)$t['id'], 'copied_from_employee_id' => (int)$emp['id'], 'source_schedule_id' => (int)$src['id'], 'effective_from' => $copyFrom],
+            'Schedule #' . $schedId,
+            isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
+        );
+    }
+    $_SESSION['schedule_msg'] = 'Schedule applied to ' . count($saved) . ' employee' . (count($saved) === 1 ? '' : 's') . ' from ' . date('j M Y', strtotime($copyFrom)) . '.';
+    header($back);
+    exit;
+}
+// Shift templates for the schedule editor (Owner, Admin, HR). Saved from inside
+// the editor, so the answer is JSON: the new list, or an error.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['shift_template_save']) || isset($_POST['shift_template_delete'])) && $canManageOpsPin) {
+    csrf_verify();
+    header('Content-Type: application/json');
+    $tplId = (int)($_POST['template_id'] ?? 0);
+    $tplOut = ['ok' => false];
+    if (isset($_POST['shift_template_delete'])) {
+        $tplOld = hr_shift_templates($conn)[$tplId] ?? null;
+        if ($tplOld && hr_shift_template_delete($conn, $tplId)) {
+            $tplOut['ok'] = true;
+            audit_bridge_hr_ops('shift_template_deleted', 'settings', $tplId, 'Deleted shift "' . $tplOld['name'] . '"', null,
+                ['template_id' => $tplId, 'name' => $tplOld['name']], 'Shift ' . $tplOld['name'],
+                isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null);
+        } else {
+            $tplOut['error'] = 'That shift no longer exists.';
+        }
+    } else {
+        $tplCheck = hr_shift_template_validate($_POST['name'] ?? '', $_POST['start'] ?? [], $_POST['end'] ?? [], $_POST['flex'] ?? null);
+        if (is_string($tplCheck)) {
+            $tplOut['error'] = $tplCheck;
+        } else {
+            [$tplName, $tplDuties, $tplFlex] = $tplCheck;
+            $tplSaved = hr_shift_template_save($conn, $tplId > 0 ? $tplId : null, $tplName, $tplDuties, $tplFlex);
+            if (is_string($tplSaved)) {
+                $tplOut['error'] = $tplSaved;
+            } else {
+                $tplOut['ok'] = true;
+                $tplOut['id'] = $tplSaved;
+                audit_bridge_hr_ops('shift_template_saved', 'settings', $tplSaved,
+                    ($tplId > 0 ? 'Changed' : 'Added') . ' shift "' . $tplName . '" (' . ($tplFlex ? 'flexible, ' . hr_flex_hours_label($tplFlex) . ' h' : hr_shift_template_label(['duties' => $tplDuties])) . ')', null,
+                    ['template_id' => $tplSaved, 'name' => $tplName, 'duties' => $tplDuties, 'flex' => $tplFlex], 'Shift ' . $tplName,
+                    isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null);
+            }
+        }
+    }
+    $tplOut['templates'] = hr_shift_templates_for_js($conn);
+    echo json_encode($tplOut);
+    exit;
+}
 $schedule_msg = $_SESSION['schedule_msg'] ?? '';
 unset($_SESSION['schedule_msg']);
+
+// Weekly off: this employee's own day, or back to the company's (Owner, Admin, HR).
+// The schedule counts it as Off (hr_schedule_helper.php), so payroll follows it too.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_weekly_off']) && $canManageOpsPin) {
+    csrf_verify();
+    $woRaw = trim((string)($_POST['weekly_off'] ?? ''));
+    $woDay = $woRaw === '' ? null : hr_weekly_off_valid_day($woRaw);
+    if ($woRaw !== '' && $woDay === null) {
+        $_SESSION['schedule_msg'] = 'Pick a day for the weekly off.';
+    } else {
+        $woNames = hr_weekly_off_day_names();
+        $woCompany = isset($emp['company_id']) ? (int)$emp['company_id'] : null;
+        $woBefore = hr_weekly_off_override($conn, (int)$emp['id']);
+        hr_weekly_off_save_employee($conn, (int)$emp['id'], $woDay);
+        $woNow = hr_weekly_off_for_employee($conn, (int)$emp['id'], $woCompany);
+        $woUid = isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null;
+        audit_bridge_hr_ops('weekly_off_updated', 'employees', (int)$emp['id'],
+            'Weekly off for ' . ($emp['full_name'] ?? $emp['employee_code']) . ': '
+                . ($woDay === null ? 'company default (' . $woNames[$woNow] . ')' : $woNames[$woDay])
+                . ' (was ' . ($woBefore === null ? 'company default' : $woNames[$woBefore]) . ')',
+            $woCompany, ['employee_id' => (int)$emp['id'], 'before' => $woBefore, 'after' => $woDay],
+            'Employee #' . (int)$emp['id'], $woUid);
+        $_SESSION['schedule_msg'] = 'Weekly off saved: ' . $woNames[$woNow] . ($woDay === null ? ' (company default)' : '') . ', from today.';
+    }
+    header('Location: employee_view.php?id=' . urlencode($employee_id) . '#tab-schedule');
+    exit;
+}
+$woCompanyDay = hr_weekly_off_company($conn, isset($emp['company_id']) ? (int)$emp['company_id'] : null);
+$woOwnDay = hr_weekly_off_override($conn, (int)$emp['id']);
+$woDay = $woOwnDay ?? $woCompanyDay;
+$woDayNames = hr_weekly_off_day_names();
 
 
 /* ------------------------------------
@@ -2677,7 +2878,7 @@ $workSchedule = $conn->prepare("
   SELECT * FROM employee_work_schedules 
   WHERE employee_id = ? 
     AND (effective_to IS NULL OR effective_to >= CURDATE())
-  ORDER BY effective_from DESC
+  ORDER BY effective_from DESC, id DESC
   LIMIT 1
 ");
 $workSchedule->execute([$emp['id']]);
@@ -3098,6 +3299,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_required_doc_rea
   exit;
 }
 
+// Check-in reminder: on/off and time for this employee (Owner, Admin, HR; current employees only).
+$rem_msg = $_SESSION['rem_msg'] ?? '';
+$rem_err = $_SESSION['rem_err'] ?? '';
+unset($_SESSION['rem_msg'], $_SESSION['rem_err']);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_reminder']) && $canManageOpsPin) {
+  csrf_verify();
+  $remEnabled = !empty($_POST['reminder_enabled']);
+  // <input type="time"> sends HH:MM, or HH:MM:SS on some browsers.
+  $remTime = substr(trim((string)($_POST['reminder_time'] ?? '')), 0, 5);
+  if (!ops_reminder_ready($conn)) {
+    $_SESSION['rem_err'] = 'Reminders are not set up on this server yet.';
+  } elseif (!hr_employee_is_current_status($emp['status'] ?? null)) {
+    $_SESSION['rem_err'] = 'Reminders are only for current employees.';
+  } elseif ($remEnabled && !ops_reminder_time_ok($remTime)) {
+    $_SESSION['rem_err'] = 'Choose a time for the reminder, for example 18:00.';
+  } else {
+    $remBefore = ops_reminder_settings($conn, (int)$emp['id']);
+    // Off with no time keeps the last one, so switching it on again starts from it.
+    $remTime = ops_reminder_time_ok($remTime) ? $remTime : $remBefore['time'];
+    ops_reminder_save_settings($conn, (int)$emp['id'], $remEnabled, $remTime);
+    $remUid = isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null;
+    audit_bridge_hr_ops('attendance_reminder_settings_updated', 'employees', (int)$emp['id'],
+      'Check-out reminder for ' . ($emp['full_name'] ?? $emp['employee_code']) . ': ' . ($remEnabled ? 'on at ' . $remTime : 'off')
+        . ' (was ' . ($remBefore['enabled'] ? 'on at ' . $remBefore['time'] : 'off') . ')',
+      isset($emp['company_id']) ? (int)$emp['company_id'] : null,
+      ['employee_id' => (int)$emp['id'], 'before' => $remBefore, 'after' => ['time' => $remTime, 'enabled' => $remEnabled]],
+      'Employee #' . (int)$emp['id'], $remUid);
+    $_SESSION['rem_msg'] = $remEnabled ? 'Saved: reminder at ' . $remTime . ' (Dubai time).' : 'Saved: reminders switched off.';
+  }
+  header('Location: employee_view.php?id=' . urlencode($employee_id) . '#tab-overview');
+  exit;
+}
+
 $requiredDocs = hr_required_docs_status($conn, (int)$emp['id']);
 $requiredDocsPresent = count(array_filter($requiredDocs, static fn($r) => $r['present']));
 // Expiry of each uploaded one (same rules as the Employees list): valid / expiring / expired.
@@ -3385,6 +3619,174 @@ try {
     }
 } catch (Throwable $e) {
     $attendanceRows = [];
+}
+
+// Attendance tab, Monthly summary: every month with attendance or leave, newest first,
+// each opening to its days. Left employees included — their months stay readable after they go.
+// Leave taken = days covered by an approved leave request, or marked "On leave" in
+// attendance; a day counts once, under its leave type.
+$attendanceMonths = [];
+$attendanceLeaveByType = [];
+$attendanceTotals = ['approved' => 0, 'pending' => 0, 'absent' => 0, 'half' => 0, 'leave' => 0, 'excused_absent' => 0, 'hours' => 0.0];
+try {
+    $attByDate = [];
+    $attMonthStmt = $conn->prepare("SELECT work_date, status, check_in, check_out, hours FROM attendance WHERE employee_id = ? ORDER BY work_date DESC, id DESC");
+    $attMonthStmt->execute([(int)$emp['id']]);
+    foreach ($attMonthStmt as $attRow) {
+        $attByDate[(string)$attRow['work_date']]['att'][] = $attRow;
+    }
+    $attLeaveStmt = $conn->prepare("
+        SELECT lr.date_from, lr.date_to, COALESCE(lt.name, 'Leave') AS type_name
+          FROM leave_requests lr
+          LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+         WHERE lr.employee_id = ? AND lr.status = 'approved' AND lr.date_to >= lr.date_from
+    ");
+    $attLeaveStmt->execute([(int)$emp['id']]);
+    foreach ($attLeaveStmt as $lv) {
+        $d = new DateTimeImmutable((string)$lv['date_from']);
+        $to = new DateTimeImmutable((string)$lv['date_to']);
+        for ($n = 0; $d <= $to && $n < 400; $d = $d->modify('+1 day'), $n++) {
+            $attByDate[$d->format('Y-m-d')]['leave'] = (string)$lv['type_name'];
+        }
+    }
+    krsort($attByDate);
+    foreach ($attByDate as $date => $day) {
+        $ym = substr($date, 0, 7);
+        if (!isset($attendanceMonths[$ym])) {
+            $attendanceMonths[$ym] = ['approved' => 0, 'pending' => 0, 'absent' => 0, 'half' => 0, 'leave' => 0, 'excused_absent' => 0, 'hours' => 0.0, 'days' => []];
+        }
+        $markedLeave = false;
+        foreach ($day['att'] ?? [] as $attRow) {
+            $attSt = strtolower((string)$attRow['status']);
+            if ($attSt === 'on_leave') {
+                $markedLeave = true;
+            } elseif (in_array($attSt, ['approved', 'pending', 'absent', 'half', 'excused_absent'], true)) {
+                $attendanceMonths[$ym][$attSt]++;
+                $attendanceTotals[$attSt]++;
+            }
+            $attendanceMonths[$ym]['hours'] += (float)($attRow['hours'] ?? 0);
+            $attendanceTotals['hours'] += (float)($attRow['hours'] ?? 0);
+        }
+        $leaveType = $day['leave'] ?? ($markedLeave ? 'On leave (marked in attendance)' : null);
+        if ($leaveType !== null) {
+            $attendanceMonths[$ym]['leave']++;
+            $attendanceTotals['leave']++;
+            $attendanceLeaveByType[$leaveType] = ($attendanceLeaveByType[$leaveType] ?? 0) + 1;
+        }
+        $attendanceMonths[$ym]['days'][] = ['date' => $date, 'att' => $day['att'] ?? [], 'leave' => $leaveType];
+    }
+    arsort($attendanceLeaveByType);
+} catch (Throwable $e) {
+    $attendanceMonths = [];
+    $attendanceLeaveByType = [];
+}
+
+// Download of that summary (?att_export=xlsx|csv): the monthly totals, leave by type, then every day.
+if (in_array($_GET['att_export'] ?? '', ['xlsx', 'csv'], true)) {
+    $attFmt = $_GET['att_export'];
+    $attTitle = 'Attendance — ' . ($emp['full_name'] ?? '') . ' (' . ($emp['employee_code'] ?? '') . ')';
+    $attSub = 'All months with attendance or leave · downloaded ' . date('j M Y');
+    $attStatus = static fn(string $s): string => ucfirst(str_replace('_', ' ', strtolower($s)));
+    $attHours = static fn(float $h): string => number_format($h, 2, '.', '');
+    $attSumCols = ['Month', 'Present', 'Pending', 'Absent', 'Half day', 'Leave taken', 'Excused', 'Hours'];
+    $attSumRows = [];
+    $attDayRows = [];
+    foreach ($attendanceMonths as $ym => $am) {
+        $label = date('F Y', strtotime($ym . '-01'));
+        $attSumRows[] = [$label, $am['approved'], $am['pending'], $am['absent'], $am['half'], $am['leave'], $am['excused_absent'], $attHours($am['hours'])];
+        foreach ($am['days'] as $ad) {
+            $date = date('D, j M Y', strtotime($ad['date']));
+            foreach ($ad['att'] ?: [null] as $i => $ar) {
+                $attDayRows[] = [$label, $date,
+                    $ar && $ar['check_in'] ? substr($ar['check_in'], 0, 5) : '',
+                    $ar && $ar['check_out'] ? substr($ar['check_out'], 0, 5) : '',
+                    $ar && $ar['hours'] !== null ? $attHours((float)$ar['hours']) : '',
+                    $ar ? $attStatus((string)$ar['status']) : 'On leave',
+                    $i === 0 ? (string)$ad['leave'] : ''];
+            }
+        }
+    }
+    $t = $attendanceTotals;
+    $attSumRows[] = ['Total', $t['approved'], $t['pending'], $t['absent'], $t['half'], $t['leave'], $t['excused_absent'], $attHours($t['hours'])];
+    $attTypeCols = ['Leave type', 'Days taken'];
+    $attTypeRows = [];
+    foreach ($attendanceLeaveByType as $type => $n) {
+        $attTypeRows[] = [$type, $n];
+    }
+    $attTypeRows[] = ['Total', $t['leave']];
+    $attDayCols = ['Month', 'Date', 'In', 'Out', 'Hours', 'Status', 'Leave'];
+    $attFile = 'attendance_' . preg_replace('/[^A-Za-z0-9_-]/', '', (string)($emp['employee_code'] ?? $emp['id'])) . '.' . $attFmt;
+    header('Content-Disposition: attachment; filename="' . $attFile . '"');
+    if ($attFmt === 'csv') {
+        header('Content-Type: text/csv; charset=utf-8');
+        $out = fopen('php://output', 'w');
+        fwrite($out, "\xEF\xBB\xBF"); // lets Excel read the CSV as UTF-8
+        fputcsv($out, [$attTitle]);
+        fputcsv($out, [$attSub]);
+        fputcsv($out, []);
+        fputcsv($out, ['Monthly summary']);
+        fputcsv($out, $attSumCols);
+        foreach ($attSumRows as $r) fputcsv($out, $r);
+        fputcsv($out, []);
+        fputcsv($out, ['Leave taken by type']);
+        fputcsv($out, $attTypeCols);
+        foreach ($attTypeRows as $r) fputcsv($out, $r);
+        fputcsv($out, []);
+        fputcsv($out, ['Day by day']);
+        fputcsv($out, $attDayCols);
+        foreach ($attDayRows as $r) fputcsv($out, $r);
+        fclose($out);
+        exit;
+    }
+    // Excel: a Summary sheet, then one sheet per month (its totals, leave by type, every day).
+    require_once __DIR__ . '/includes/hr_xlsx.php';
+    $head = static fn(array $cols): array => array_map(static fn($c) => [$c, 'head'], $cols);
+    $bold = static fn(array $row): array => array_map(static fn($c) => [$c, 'bold'], $row);
+    $num = static fn(array $r): array => array_map(static fn($v) => is_string($v) && is_numeric($v) ? (float)$v : $v, $r);
+    $summary = [[[$attTitle, 'title']], [$attSub], [], [['Monthly summary', 'bold']], $head($attSumCols)];
+    foreach ($attSumRows as $r) {
+        $summary[] = $r[0] === 'Total' ? $bold($num($r)) : $num($r);
+    }
+    $summary[] = [];
+    $summary[] = [['Leave taken by type', 'bold']];
+    $summary[] = $head($attTypeCols);
+    foreach ($attTypeRows as $r) {
+        $summary[] = $r[0] === 'Total' ? $bold($r) : $r;
+    }
+    $sheets = [['name' => 'Summary', 'widths' => [32, 10, 10, 10, 10, 12, 10, 10], 'rows' => $summary]];
+    foreach ($attendanceMonths as $ym => $am) {
+        $ts = strtotime($ym . '-01');
+        $rows = [[[$attTitle . ' — ' . date('F Y', $ts), 'title']], [], [['Totals', 'bold']],
+            ['Present', $am['approved']], ['Pending', $am['pending']], ['Absent', $am['absent']], ['Half day', $am['half']],
+            ['Leave taken', $am['leave']], ['Excused', $am['excused_absent']], ['Hours', round($am['hours'], 2)]];
+        $monthTypes = [];
+        foreach ($am['days'] as $ad) {
+            if ($ad['leave'] !== null) $monthTypes[$ad['leave']] = ($monthTypes[$ad['leave']] ?? 0) + 1;
+        }
+        if ($monthTypes) {
+            $rows[] = [];
+            $rows[] = [['Leave taken by type', 'bold']];
+            foreach ($monthTypes as $type => $n) $rows[] = [$type, $n];
+        }
+        $rows[] = [];
+        $rows[] = [['Day by day', 'bold']];
+        $rows[] = $head(['Date', 'In', 'Out', 'Hours', 'Status', 'Leave']);
+        foreach (array_reverse($am['days']) as $ad) { // 1st of the month first
+            foreach ($ad['att'] ?: [null] as $i => $ar) {
+                $row = [date('D, j M Y', strtotime($ad['date'])),
+                    $ar && $ar['check_in'] ? substr($ar['check_in'], 0, 5) : '',
+                    $ar && $ar['check_out'] ? substr($ar['check_out'], 0, 5) : '',
+                    $ar && $ar['hours'] !== null ? round((float)$ar['hours'], 2) : '',
+                    $ar ? $attStatus((string)$ar['status']) : 'On leave',
+                    $i === 0 ? (string)$ad['leave'] : ''];
+                // Absent days stand out: the whole row in red.
+                $rows[] = $ar && strtolower((string)$ar['status']) === 'absent'
+                    ? array_map(static fn($c) => [$c, 'red'], $row) : $row;
+            }
+        }
+        $sheets[] = ['name' => date('M Y', $ts), 'widths' => [20, 8, 8, 8, 14, 30], 'rows' => $rows];
+    }
+    hr_xlsx_send(preg_replace('/\.\w+$/', '.xlsx', $attFile), $sheets);
 }
 
 if ($workerId) {
@@ -3691,14 +4093,18 @@ try {
     $topWorkers = [];
 }
 
+// The top bar stays in view while scrolling, so it names the employee: "Name (E00072)".
+$empTitle = trim((string)($emp['full_name'] ?? ''));
+$empTitle = ($empTitle !== '' ? $empTitle : 'Employee profile')
+    . (!empty($emp['employee_code']) ? ' (' . $emp['employee_code'] . ')' : '');
+// The browser tab keeps a plain title; only the top bar names the employee.
 $pageTitle = 'Employee profile';
-// Breadcrumb in the top bar; the profile card below carries the name as the title.
 // Workers on their own profile cannot open the HR list, so they keep the plain title.
 if (!$isWorkerSelfService) {
     $hrTopbarCrumbs = [
         ['label' => 'HR', 'href' => 'dashboard'],
         ['label' => 'Employees', 'href' => 'employees'],
-        ['label' => 'Profile'],
+        ['label' => $empTitle],
     ];
 }
 $pageStyles = <<<'HR_EMP_VIEW_CSS'
@@ -4459,8 +4865,9 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         </span>
                                         <?php if (!$workerReadOnly): ?>
                                             <button type="button" class="btn btn-sm <?= $rExpired ? 'btn-danger' : 'btn-outline-primary' ?>" data-bs-toggle="modal" data-bs-target="#docModal"
+                                                    title="Adds the renewed <?= htmlspecialchars($rLabel) ?> as a new copy. The current one stays on file."
                                                     onclick="newDoc(); document.getElementById('doc_type').value = <?= htmlspecialchars(json_encode($rType), ENT_QUOTES) ?>; if (window.hrExpiryRuleSync) hrExpiryRuleSync();">
-                                                <i class="bi bi-upload me-1"></i>Upload new
+                                                <i class="bi bi-plus-lg me-1"></i>Add renewed <?= htmlspecialchars($rLabel) ?>
                                             </button>
                                         <?php endif; ?>
                                     </div>
@@ -4632,39 +5039,61 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 
                             <?php
                             /* Check-in reminders (web push, see ops_attendance_reminder.php).
-                               Read-only: staff turn them on themselves in the staff app. */
-                            $remReady  = ops_reminder_ready($conn);
-                            $remStatus = ($remReady && $opsPinUserId > 0) ? ops_reminder_status($conn, $opsPinUserId) : null;
-                            $remKinds  = ['not_checked_in' => 'Attendance not recorded', 'no_check_out' => 'Check-out missing'];
+                               Off until someone turns it on: the person in the staff app
+                               (Settings), or Owner, Admin and HR here. Both change the same
+                               setting. The phone
+                               itself must still allow notifications in the staff app. */
+                            $remReady   = ops_reminder_ready($conn);
+                            $remCurrent = hr_employee_is_current_status($emp['status'] ?? null);
+                            $remSet     = ops_reminder_settings($conn, (int)$emp['id']);
+                            $remStatus  = ($remReady && $opsPinUserId > 0) ? ops_reminder_status($conn, $opsPinUserId) : null;
+                            $remKinds   = ['not_checked_in' => 'Attendance not recorded', 'no_check_out' => 'Check-out missing'];
                             ?>
                             <hr class="my-3">
-                            <div>
-                                <div class="fw-semibold"><i class="bi bi-bell me-1"></i>Check-in reminders
+                            <div id="checkin-reminders">
+                                <div class="fw-semibold"><i class="bi bi-bell me-1"></i>Check-out reminder
                                     <?php if (!$remReady): ?>
                                         <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Not available yet</span>
-                                    <?php elseif (!$opsPinStatus): ?>
-                                        <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Needs a PIN first</span>
-                                    <?php elseif ($remStatus['phones']): ?>
-                                        <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1">
-                                            On · <?= count($remStatus['phones']) ?> phone<?= count($remStatus['phones']) === 1 ? '' : 's' ?>
-                                        </span>
+                                    <?php elseif (!$remCurrent): ?>
+                                        <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Not a current employee</span>
+                                    <?php elseif ($remSet['enabled']): ?>
+                                        <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1">On at <?= htmlspecialchars($remSet['time']) ?></span>
                                     <?php else: ?>
                                         <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Off</span>
                                     <?php endif; ?>
                                 </div>
+                                <?php if ($rem_msg !== ''): ?><div class="small text-success mt-1"><?= htmlspecialchars($rem_msg) ?></div><?php endif; ?>
+                                <?php if ($rem_err !== ''): ?><div class="small text-danger mt-1"><?= htmlspecialchars($rem_err) ?></div><?php endif; ?>
                                 <?php if (!$remReady): ?>
                                     <div class="stat-meta">Reminders are not set up on this server yet.</div>
-                                <?php elseif (!$opsPinStatus): ?>
-                                    <div class="stat-meta">Reminders come through the staff app, which needs a PIN to sign in.</div>
-                                <?php elseif (!$remStatus['phones']): ?>
-                                    <div class="stat-meta">Not turned on. Staff turn this on with <strong>Turn on</strong> on the staff app's home screen.</div>
+                                <?php elseif (!$remCurrent): ?>
+                                    <div class="stat-meta">Reminders are only sent to current employees.</div>
                                 <?php else: ?>
-                                    <?php foreach ($remStatus['phones'] as $ph): ?>
-                                        <div class="stat-meta">
-                                            <?= htmlspecialchars($ph['device']) ?>
-                                            <?php if ($ph['last_seen']): ?> · last opened <?= htmlspecialchars(date('j M', strtotime((string)$ph['last_seen']))) ?><?php endif; ?>
-                                        </div>
-                                    <?php endforeach; ?>
+                                    <?php if ($canManageOpsPin): ?>
+                                        <form method="post" class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="save_reminder" value="1">
+                                            <div class="form-check form-switch m-0">
+                                                <input class="form-check-input" type="checkbox" role="switch" id="remEnabled" name="reminder_enabled" value="1" <?= $remSet['enabled'] ? 'checked' : '' ?>>
+                                                <label class="form-check-label small" for="remEnabled">On</label>
+                                            </div>
+                                            <input type="time" name="reminder_time" class="form-control form-control-sm" style="width:auto" value="<?= htmlspecialchars($remSet['time']) ?>">
+                                            <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                                            <span class="stat-meta">Dubai time. The employee can also set this in the staff app (Settings).</span>
+                                        </form>
+                                    <?php endif; ?>
+                                    <?php if (!$opsPinStatus): ?>
+                                        <div class="stat-meta mt-1">Sent through the staff app, which needs a PIN to sign in.</div>
+                                    <?php elseif (empty($remStatus['phones'])): ?>
+                                        <div class="stat-meta mt-1">No phone yet: it arrives once they turn the reminder on in the staff app (Settings).</div>
+                                    <?php else: ?>
+                                        <?php foreach ($remStatus['phones'] as $ph): ?>
+                                            <div class="stat-meta mt-1">
+                                                Phone: <?= htmlspecialchars($ph['device']) ?>
+                                                <?php if ($ph['last_seen']): ?> · last opened <?= htmlspecialchars(date('j M', strtotime((string)$ph['last_seen']))) ?><?php endif; ?>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
                                 <?php endif; ?>
                                 <?php if ($remStatus && $remStatus['last']): $rl = $remStatus['last']; ?>
                                     <div class="stat-meta mt-1">
@@ -4927,13 +5356,312 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
         <div class="tab-pane fade" id="tab-docs">
             <div class="d-flex justify-content-between align-items-center mt-3">
                 <h6 class="mb-0">Documents</h6>
-                <?php if (!$workerReadOnly): ?>
-                <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#docModal" onclick="newDoc()">+ Add Document</button>
-                <?php else: ?>
-                    <span class="text-muted small">View only</span>
-                <?php endif; ?>
+                <div class="d-flex align-items-center gap-2">
+                    <div class="btn-group btn-group-sm dv-view-toggle" role="group" aria-label="Documents view">
+                        <button type="button" class="btn btn-outline-secondary active" data-dv-view="cards"><i class="bi bi-grid-3x2-gap me-1"></i>Cards</button>
+                        <button type="button" class="btn btn-outline-secondary" data-dv-view="list"><i class="bi bi-list-ul me-1"></i>List</button>
+                    </div>
+                    <?php if (!$workerReadOnly): ?>
+                    <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#docModal" onclick="newDoc()">+ Add Document</button>
+                    <?php else: ?>
+                        <span class="text-muted small">View only</span>
+                    <?php endif; ?>
+                </div>
             </div>
 
+            <?php
+            /* Documents as cards: the five required types first (always shown,
+               missing ones as dashed cards), then any other documents. Copies of a
+               type sit together (an ID's front and back). Copies replaced by a
+               newer dated one go under "Previous copies". Status uses the same
+               rules as the Employees list and the Overview card. */
+            $dvTypeNames = [];
+            try {
+                foreach ($conn->query("SELECT id, name FROM document_types") as $dvT) {
+                    $dvTypeNames[(int)$dvT['id']] = (string)$dvT['name'];
+                }
+            } catch (Throwable $e) {
+                $dvTypeNames = [];
+            }
+            $dvIdToReq = array_flip(HR_REQUIRED_DOC_TYPES);
+            $dvGroups = [];                       // key => list of docs (newest first)
+            foreach (array_keys(HR_REQUIRED_DOC_TYPES) as $dvReq) { $dvGroups[$dvReq] = []; }
+            foreach ($docs as $d) {
+                $dvName = trim((string)$d['doc_type']);
+                if (!isset(HR_REQUIRED_DOC_TYPES[$dvName]) && isset($dvIdToReq[(int)($d['doc_type_id'] ?? 0)])) {
+                    $dvName = $dvIdToReq[(int)$d['doc_type_id']];
+                }
+                if ($dvName === '') {
+                    $dvName = $dvTypeNames[(int)($d['doc_type_id'] ?? 0)] ?? 'Other';
+                }
+                $dvGroups[$dvName][] = $d;
+            }
+            // Upload order, so a front comes before its back and page 1 before page 2.
+            foreach ($dvGroups as &$dvList) {
+                usort($dvList, static fn($a, $b) => strcmp((string)$a['created_at'], (string)$b['created_at']) ?: ((int)$a['id'] <=> (int)$b['id']));
+            }
+            unset($dvList);
+            $dvToday = date('Y-m-d');
+            $dvSoon  = date('Y-m-d', strtotime('+' . HR_REQUIRED_DOC_EXPIRING_DAYS . ' days'));
+            $dvState = static function (?string $exp) use ($dvToday, $dvSoon): string {
+                if (!$exp || $exp === '0000-00-00') return 'valid';
+                return $exp < $dvToday ? 'expired' : ($exp <= $dvSoon ? 'expiring' : 'valid');
+            };
+            $dvDate = static fn(?string $v) => ($v && $v !== '0000-00-00') ? date('j M Y', strtotime($v)) : '';
+            $dvStatusChip = static function (string $state, ?string $exp) use ($dvDate): string {
+                $exp = ($exp && $exp !== '0000-00-00') ? $exp : null;
+                if ($state === 'expired') {
+                    return '<span class="dv-status dv-expired"><i class="bi bi-exclamation-triangle-fill"></i> EXPIRED ' . htmlspecialchars($dvDate($exp)) . '</span>';
+                }
+                if ($state === 'expiring') {
+                    $n = (int)(new DateTime('today'))->diff(new DateTime($exp))->format('%r%a');
+                    return '<span class="dv-status dv-expiring"><i class="bi bi-clock-history"></i> Expires in ' . ($n === 0 ? 'today' : $n . ' day' . ($n === 1 ? '' : 's')) . '</span>';
+                }
+                return '<span class="dv-status dv-valid"><i class="bi bi-check-circle-fill"></i> ' . ($exp ? 'Valid till ' . htmlspecialchars($dvDate($exp)) : 'Uploaded') . '</span>';
+            };
+            $dvIsImage = static fn(array $d) => in_array(strtolower(pathinfo((string)($d['file_path'] ?? ''), PATHINFO_EXTENSION)), ['jpg', 'jpeg', 'png', 'webp', 'gif'], true);
+            ?>
+
+            <style>
+              .dv-section-title { font-size: .74rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #6b7280; margin: 14px 0 8px; }
+              /* ID-card face: landscape, light, a coloured edge with a barcode strip,
+                 label/value lines on the left, the scan as the photo on the right, and
+                 the document number along the bottom like a card number. */
+              .dv-id { position: relative; display: flex; height: 100%; border-radius: 12px; overflow: hidden; background: #fff; border: 1px solid #dbe2ea; box-shadow: 0 2px 6px rgba(15, 23, 42, .07); }
+              .dv-id-edge { flex: 0 0 18px; background: color-mix(in srgb, var(--t) 18%, #eef2f6); border-right: 1px solid #e2e8f0; position: relative; }
+              .dv-id-edge::after { content: ""; position: absolute; inset: 12px 4px; background: repeating-linear-gradient(to bottom, rgba(51,65,85,.28) 0 2px, transparent 2px 4px, rgba(51,65,85,.28) 4px 5px, transparent 5px 8px, rgba(51,65,85,.28) 8px 11px, transparent 11px 13px); }
+              .dv-id-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 8px 12px 8px; }
+              .dv-id-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: -8px -12px 8px; padding: 6px 12px; background: color-mix(in srgb, var(--t) 7%, #f1f5f9); border-bottom: 1px solid #e2e8f0; }
+              .dv-id-type { display: inline-flex; align-items: center; gap: 6px; color: #334155; font-weight: 700; letter-spacing: .1em; font-size: .78rem; text-transform: uppercase; }
+              .dv-id-mid { display: flex; gap: 12px; flex: 1 1 auto; }
+              .dv-id-lines { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; align-content: start; }
+              .dv-id-lines > .dv-wide { grid-column: 1 / -1; }
+              .dv-id-lines strong.dv-id-note { font-weight: 500; font-size: .78rem; color: #334155; }
+              .dv-id-lines label { display: block; font-size: .58rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #64748b; margin: 0; }
+              .dv-id-lines strong { display: block; font-size: .82rem; color: #0f172a; line-height: 1.2; word-break: break-word; }
+              .dv-id-lines strong.dv-id-no { font-size: .9rem; font-weight: 800; letter-spacing: .03em; }
+              .dv-id-photo { flex: 0 0 auto; width: 70px; height: 84px; padding: 0; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; overflow: hidden; display: flex; align-items: center; justify-content: center; cursor: zoom-in; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+              .dv-id-photo img { width: 100%; height: 100%; object-fit: cover; }
+              .dv-id-photo .dv-ph { display: flex; flex-direction: column; align-items: center; color: #64748b; font-size: 1.5rem; line-height: 1.1; text-align: center; }
+              .dv-id-photo .dv-ph small { font-size: .56rem; margin-top: 2px; }
+              .dv-id-photo .bi-file-earmark-pdf { color: #dc3545; }
+              .dv-id-photo.dv-id-photo-empty { cursor: default; border-style: dashed; background: transparent; box-shadow: none; }
+              .dv-chip { font-size: .66rem; font-weight: 700; padding: 2px 7px; border-radius: 4px; white-space: nowrap; letter-spacing: .02em; }
+              .dv-id-type i { color: #64748b; }
+              .dv-chip-valid { background: #f0f5f2; color: #2f6b4f; }
+              .dv-chip-expiring { background: #fbf5e4; color: #7a5a00; }
+              .dv-chip-expired { background: #fdecee; color: #b02a37; }
+              .dv-id.dv-id-expired { border-color: #f1aeb5; }
+              .dv-id-foot { margin-top: 8px; padding-top: 6px; border-top: 1px dashed #dbe2ea; }
+              .dv-id-foot .dv-files { margin-top: 0; }
+              /* Files of the document, under the card. */
+              .dv-files { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+              .dv-file { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; font-size: .74rem; }
+              .dv-file-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #334155; cursor: zoom-in; }
+              .dv-file-name.dv-nofile { cursor: default; color: #94a3b8; }
+              .dv-file-name i { margin-right: 4px; }
+              .dv-file.dv-file-prev { background: #f8fafc; }
+              .dv-file.dv-file-prev .dv-file-name { color: #94a3b8; }
+              .dv-actions { display: flex; flex-wrap: nowrap; gap: 3px; flex: 0 0 auto; }
+              .dv-btn { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; white-space: nowrap; font-size: .66rem; font-weight: 600; line-height: 1.5; border-radius: 4px; border: 1px solid; background: #fff; text-decoration: none; cursor: pointer; }
+              .dv-btn i { font-size: .68rem; }
+              .dv-btn-open { color: #475569; border-color: #cbd5e1; }
+              .dv-btn-open:hover { background: #f1f5f9; color: #1e293b; }
+              .dv-btn-edit { color: #1d4ed8; border-color: #93c5fd; }
+              .dv-btn-edit:hover { background: #eff6ff; }
+              .dv-btn-delete { color: #b91c1c; border-color: #fca5a5; }
+              .dv-btn-delete:hover { background: #fef2f2; }
+              .dv-prev summary { font-size: .72rem; color: #2563eb; cursor: pointer; margin-top: 4px; }
+              .dv-view-toggle .btn { font-size: .78rem; }
+            </style>
+
+            <?php
+            // Colour and icon of each document type.
+            $dvTheme = static function (string $type): array {
+                $themes = [
+                    'Passport'    => ['#1e3a5f', 'bi-passport'],
+                    'Visa'        => ['#6d28d9', 'bi-airplane'],
+                    'LaborCard'   => ['#9a4d0b', 'bi-person-badge'],
+                    'Contract'    => ['#334155', 'bi-file-earmark-text'],
+                    'National ID' => ['#9f1239', 'bi-person-vcard'],
+                ];
+                return $themes[$type] ?? ['#475569', 'bi-file-earmark'];
+            };
+            // Status text, shared by the card strip and the list pill.
+            $dvStatusText = static function (string $state, ?string $exp): string {
+                $exp = ($exp && $exp !== '0000-00-00') ? $exp : null;
+                $date = $exp ? date('j M Y', strtotime($exp)) : '';
+                if ($state === 'expired') return 'Expired · ' . $date;
+                if ($state === 'expiring') {
+                    $n = (int)(new DateTime('today'))->diff(new DateTime($exp))->format('%r%a');
+                    return 'Expires ' . ($n === 0 ? 'today' : 'in ' . $n . ' day' . ($n === 1 ? '' : 's')) . ' · ' . $date;
+                }
+                return $exp ? 'Valid till ' . $date : 'Uploaded · no expiry date';
+            };
+            $dvStatusIcon = ['valid' => 'bi-check-circle-fill', 'expiring' => 'bi-clock-history', 'expired' => 'bi-exclamation-triangle-fill'];
+            // Copies of a required type: the one that decides the expiry is the newest
+            // with a date (same rule as the list); copies uploaded more than a day before
+            // it were replaced, ones from the same upload (a back side) stay with it.
+            $dvSplit = static function (array $list): array {
+                $main = null;
+                foreach ($list as $d) {
+                    if ($d['expires_at'] && $d['expires_at'] !== '0000-00-00') { $main = $d; }
+                }
+                $main = $main ?? end($list);
+                $cutoff = strtotime((string)$main['created_at']) - 86400;
+                $current = [];
+                $previous = [];
+                foreach ($list as $d) {
+                    if (strtotime((string)$d['created_at']) < $cutoff) { $previous[] = $d; } else { $current[] = $d; }
+                }
+                return [$main, $current, $previous];
+            };
+            $dvOthers = array_diff_key($dvGroups, HR_REQUIRED_DOC_TYPES);
+            ?>
+
+            <!-- Cards view -->
+            <?php
+            // The scan shown as the card's photo (click to preview).
+            $dvPhoto = static function (?array $d) use ($dvIsImage): string {
+                $url = ($d && !empty($d['file_path'])) ? hr_document_file_url($d['file_path']) : '';
+                if ($url === '') {
+                    return '<div class="dv-id-photo dv-id-photo-empty"><span class="dv-ph"><i class="bi bi-person-bounding-box"></i><small>No file</small></span></div>';
+                }
+                $isImg = $dvIsImage($d);
+                $title = htmlspecialchars(($d['doc_type'] ?: 'Document') . ($d['doc_number'] ? ' · ' . $d['doc_number'] : ''));
+                $inner = $isImg
+                    ? '<img src="' . htmlspecialchars($url) . '" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{className:\'dv-ph\',innerHTML:\'<i class=&quot;bi bi-file-earmark-image&quot;></i><small>No preview</small>\'}))">'
+                    : '<span class="dv-ph"><i class="bi bi-file-earmark-pdf"></i><small>PDF</small></span>';
+                return '<button type="button" class="dv-id-photo" data-dv-preview="' . htmlspecialchars($url) . '" data-dv-kind="' . ($isImg ? 'image' : 'pdf') . '" data-dv-title="' . $title . '" title="Click to preview">' . $inner . '</button>';
+            };
+            // One file of the document: its name (click to preview) and Open / Edit / Delete.
+            $dvFileRow = static function (array $d, bool $workerReadOnly, bool $isPrev = false) use ($dvIsImage, $dvDate): string {
+                $url = !empty($d['file_path']) ? hr_document_file_url($d['file_path']) : '';
+                $isImg = $url !== '' && $dvIsImage($d);
+                $name = trim((string)($d['notes'] ?? '')) !== '' ? (string)$d['notes'] : ('Added ' . $dvDate(substr((string)$d['created_at'], 0, 10)));
+                $icon = $url === '' ? 'bi-file-earmark' : ($isImg ? 'bi-file-earmark-image' : 'bi-file-earmark-pdf text-danger');
+                ob_start(); ?>
+                <div class="dv-file<?= $isPrev ? ' dv-file-prev' : '' ?>">
+                    <?php if ($url !== ''): ?>
+                        <span class="dv-file-name" data-dv-preview="<?= htmlspecialchars($url) ?>" data-dv-kind="<?= $isImg ? 'image' : 'pdf' ?>"
+                              data-dv-title="<?= htmlspecialchars(($d['doc_type'] ?: 'Document') . ($d['doc_number'] ? ' · ' . $d['doc_number'] : '')) ?>" title="<?= htmlspecialchars($name) ?> — click to preview"><i class="bi <?= $icon ?>"></i><?= htmlspecialchars($name) ?></span>
+                    <?php else: ?>
+                        <span class="dv-file-name dv-nofile"><i class="bi <?= $icon ?>"></i><?= htmlspecialchars($name) ?> · no file</span>
+                    <?php endif; ?>
+                    <div class="dv-actions">
+                        <?php if ($url !== ''): ?>
+                            <a class="dv-btn dv-btn-open" href="<?= htmlspecialchars($url) ?>" target="_blank" title="Open in a new tab"><i class="bi bi-box-arrow-up-right"></i>Open</a>
+                        <?php endif; ?>
+                        <?php if (!$workerReadOnly): ?>
+                            <button type="button" class="dv-btn dv-btn-edit" data-bs-toggle="modal" data-bs-target="#docModal" title="Edit this document"
+                                    onclick='editDoc(<?= json_encode($d, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>)'><i class="bi bi-pencil"></i>Edit</button>
+                            <form method="post" class="d-inline m-0" onsubmit="return confirm('Delete this document?')">
+                                <?php csrf_field(); ?>
+                                <input type="hidden" name="delete_doc_id" value="<?= (int)$d['id'] ?>">
+                                <button class="dv-btn dv-btn-delete" title="Delete this document"><i class="bi bi-trash"></i>Delete</button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php return (string)ob_get_clean();
+            };
+            $dvChip = static function (string $state, ?string $exp) use ($dvStatusText, $dvStatusIcon): string {
+                return '<span class="dv-chip dv-chip-' . $state . '"><i class="bi ' . $dvStatusIcon[$state] . ' me-1"></i>' . htmlspecialchars($dvStatusText($state, $exp)) . '</span>';
+            };
+            ?>
+            <div id="dvCards">
+            <div class="dv-section-title">Required documents</div>
+            <?php $dvUploaded = array_filter(array_keys(HR_REQUIRED_DOC_TYPES), static fn($t) => !empty($dvGroups[$t])); ?>
+            <?php if (!$dvUploaded): ?>
+                <div class="text-muted small">No required documents uploaded yet.</div>
+            <?php endif; ?>
+            <div class="row g-3">
+                <?php foreach ($dvUploaded as $dvReq):
+                    $dvList = $dvGroups[$dvReq];
+                    $dvLabel = HR_REQUIRED_DOC_LABELS[$dvReq];
+                    $dvCell = $requiredDocsExpiry[$dvReq] ?? null;
+                    [$dvColor, $dvIcon] = $dvTheme($dvReq);
+                    [$dvMain, $dvCurrent, $dvPrevious] = $dvSplit($dvList);
+                    $dvDecide = $dvCell['expires_at'] ?? null;
+                    $dvSt = $dvCell['state'] ?? 'valid';
+                ?>
+                    <div class="col-md-6 col-xl-4">
+                        <div class="dv-id<?= $dvSt === 'expired' ? ' dv-id-expired' : '' ?>" style="--t: <?= $dvColor ?>">
+                            <div class="dv-id-edge"></div>
+                            <div class="dv-id-main">
+                                <div class="dv-id-top">
+                                    <span class="dv-id-type"><i class="bi <?= $dvIcon ?>"></i><?= htmlspecialchars($dvLabel) ?></span>
+                                    <?= $dvChip($dvSt, $dvDecide) ?>
+                                </div>
+                                <div class="dv-id-mid">
+                                    <div class="dv-id-lines">
+                                        <div class="dv-wide"><label>Document No.</label><strong class="dv-id-no"><?= !empty($dvMain['doc_number']) ? htmlspecialchars($dvMain['doc_number']) : '—' ?></strong></div>
+                                        <div><label>Issued</label><strong><?= $dvDate($dvMain['issued_at'] ?? null) !== '' ? htmlspecialchars($dvDate($dvMain['issued_at'])) : '—' ?></strong></div>
+                                        <div><label>Expires</label><strong><?= $dvDecide ? htmlspecialchars($dvDate($dvDecide)) : '—' ?></strong></div>
+                                        <?php $dvNotes = array_unique(array_filter(array_map(static fn($c) => trim((string)($c['notes'] ?? '')), $dvCurrent), 'strlen')); ?>
+                                        <?php if ($dvNotes): ?><div class="dv-wide"><label>Note</label><strong class="dv-id-note"><?= htmlspecialchars(implode(' · ', $dvNotes)) ?></strong></div><?php endif; ?>
+                                    </div>
+                                    <?= $dvPhoto($dvCurrent[0] ?? $dvMain) ?>
+                                </div>
+                                <div class="dv-id-foot">
+                                    <div class="dv-files">
+                                        <?php foreach ($dvCurrent as $d) { echo $dvFileRow($d, $workerReadOnly); } ?>
+                                    </div>
+                                    <?php if ($dvPrevious): ?>
+                                        <details class="dv-prev">
+                                            <summary>Previous copies (<?= count($dvPrevious) ?>)</summary>
+                                            <div class="dv-files">
+                                                <?php foreach ($dvPrevious as $d) { echo $dvFileRow($d, $workerReadOnly, true); } ?>
+                                            </div>
+                                        </details>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="dv-section-title mt-4">Other documents</div>
+            <?php if (!$dvOthers): ?>
+                <div class="text-muted small">No other documents.</div>
+            <?php else: ?>
+            <div class="row g-3">
+                <?php foreach ($dvOthers as $dvName => $dvList):
+                    [$dvColor, $dvIcon] = $dvTheme((string)$dvName);
+                    foreach ($dvList as $d):
+                        $dExp = ($d['expires_at'] && $d['expires_at'] !== '0000-00-00') ? $d['expires_at'] : null;
+                        $dSt = $dvState($dExp); ?>
+                    <div class="col-md-6 col-xl-4">
+                        <div class="dv-id<?= $dSt === 'expired' ? ' dv-id-expired' : '' ?>" style="--t: <?= $dvColor ?>">
+                            <div class="dv-id-edge"></div>
+                            <div class="dv-id-main">
+                                <div class="dv-id-top">
+                                    <span class="dv-id-type"><i class="bi <?= $dvIcon ?>"></i><?= htmlspecialchars($dvName) ?></span>
+                                    <?= $dvChip($dSt, $dExp) ?>
+                                </div>
+                                <div class="dv-id-mid">
+                                    <div class="dv-id-lines">
+                                        <div class="dv-wide"><label>Document No.</label><strong class="dv-id-no"><?= !empty($d['doc_number']) ? htmlspecialchars($d['doc_number']) : '—' ?></strong></div>
+                                        <div><label>Issued</label><strong><?= $dvDate($d['issued_at'] ?? null) !== '' ? htmlspecialchars($dvDate($d['issued_at'])) : '—' ?></strong></div>
+                                        <div><label>Expires</label><strong><?= $dExp ? htmlspecialchars($dvDate($dExp)) : '—' ?></strong></div>
+                                        <?php if (trim((string)($d['notes'] ?? '')) !== ''): ?><div class="dv-wide"><label>Note</label><strong class="dv-id-note"><?= htmlspecialchars($d['notes']) ?></strong></div><?php endif; ?>
+                                    </div>
+                                    <?= $dvPhoto($d) ?>
+                                </div>
+                                <div class="dv-id-foot">
+                                    <div class="dv-files"><?= $dvFileRow($d, $workerReadOnly) ?></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                <?php endforeach; endforeach; ?>
+            </div>
+            <?php endif; ?>
+            </div>
+
+            <!-- List view: the original documents table, unchanged -->
+            <div id="dvList" class="d-none">
             <div class="table-responsive mt-2">
                 <table class="table table-bordered align-middle">
                     <thead class="table-light">
@@ -4984,6 +5712,26 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                     <?php endforeach; endif; ?>
                     </tbody>
                 </table>
+            </div>
+            </div>
+
+            <!-- Preview of a document -->
+            <div class="modal fade" id="dvPreviewModal" tabindex="-1" aria-hidden="true">
+                <div class="modal-dialog modal-xl modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h6 class="modal-title" id="dvPreviewTitle">Document</h6>
+                            <div class="btn-group btn-group-sm ms-3 d-none" id="dvPreviewNav">
+                                <button type="button" class="btn btn-outline-secondary" id="dvPreviewPrev" title="Previous file"><i class="bi bi-chevron-left"></i></button>
+                                <span class="btn btn-outline-secondary disabled text-dark fw-semibold" id="dvPreviewCount">1 of 2</span>
+                                <button type="button" class="btn btn-outline-secondary" id="dvPreviewNext" title="Next file"><i class="bi bi-chevron-right"></i></button>
+                            </div>
+                            <a href="#" target="_blank" class="btn btn-sm btn-outline-secondary ms-auto me-2" id="dvPreviewOpen"><i class="bi bi-box-arrow-up-right me-1"></i>Open in new tab</a>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body text-center p-2" id="dvPreviewBody" style="min-height:60vh"></div>
+                    </div>
+                </div>
             </div>
 
             <?php if ($errors): ?>
@@ -6699,6 +7447,109 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                           <div class="tab-pane fade" id="tab-attendance">
                             <div class="card mt-3">
                               <div class="card-body">
+                                <div class="d-flex align-items-center mb-2">
+                                  <h6 class="mb-0">Monthly summary</h6>
+                                  <span class="ms-auto small text-muted me-2">All months with attendance or leave · click a month to see its days</span>
+                                  <?php if ($attendanceMonths): ?>
+                                    <a class="btn btn-sm btn-outline-success me-1" href="?<?= htmlspecialchars(http_build_query(['id' => $emp['id'], 'att_export' => 'xlsx'])) ?>"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a>
+                                    <a class="btn btn-sm btn-outline-secondary" href="?<?= htmlspecialchars(http_build_query(['id' => $emp['id'], 'att_export' => 'csv'])) ?>"><i class="bi bi-filetype-csv me-1"></i>CSV</a>
+                                  <?php endif; ?>
+                                </div>
+                                <?php if (!$attendanceMonths): ?>
+                                  <div class="text-muted small py-2">No attendance or leave recorded for this employee.</div>
+                                <?php else: ?>
+                                  <div class="table-responsive" style="max-height:460px;overflow-y:auto">
+                                    <table class="table table-sm align-middle mb-0">
+                                      <thead class="table-light" style="position:sticky;top:0;z-index:1">
+                                        <tr>
+                                          <th>Month</th>
+                                          <th class="text-end">Present</th>
+                                          <th class="text-end">Pending</th>
+                                          <th class="text-end">Absent</th>
+                                          <th class="text-end">Half day</th>
+                                          <th class="text-end">Leave taken</th>
+                                          <th class="text-end">Excused</th>
+                                          <th class="text-end">Hours</th>
+                                          <th></th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        <?php foreach ($attendanceMonths as $ym => $am):
+                                          $amId = 'att-month-' . str_replace('-', '', $ym);
+                                          $amTs = strtotime($ym . '-01');
+                                          $zero = static fn(int $n): string => $n > 0 ? (string)$n : '<span class="text-muted">0</span>';
+                                        ?>
+                                          <tr role="button" data-bs-toggle="collapse" data-bs-target="#<?= $amId ?>" aria-expanded="false" aria-controls="<?= $amId ?>">
+                                            <td class="fw-semibold"><i class="bi bi-chevron-down small me-1 text-muted"></i><?= htmlspecialchars(date('F Y', $amTs)) ?></td>
+                                            <td class="text-end"><?= $zero($am['approved']) ?></td>
+                                            <td class="text-end"><?= $zero($am['pending']) ?></td>
+                                            <td class="text-end"><?= $am['absent'] > 0 ? '<span class="text-danger fw-semibold">' . $am['absent'] . '</span>' : $zero(0) ?></td>
+                                            <td class="text-end"><?= $zero($am['half']) ?></td>
+                                            <td class="text-end"><?= $am['leave'] > 0 ? '<span class="text-info fw-semibold">' . $am['leave'] . '</span>' : $zero(0) ?></td>
+                                            <td class="text-end"><?= $zero($am['excused_absent']) ?></td>
+                                            <td class="text-end"><?= number_format($am['hours'], 2) ?></td>
+                                            <td class="text-end text-nowrap">
+                                              <?php if (!$isWorkerSelfService): ?>
+                                                <a class="small" onclick="event.stopPropagation()" href="attendance_summary.php?<?= htmlspecialchars(http_build_query([
+                                                    'tab' => 'daily', 'month' => (int)date('n', $amTs), 'year' => (int)date('Y', $amTs),
+                                                    'employee_id' => (int)$emp['id'], 'company_id' => (int)($emp['company_id'] ?? 0), 'include_left' => 1,
+                                                ])) ?>">Day by day</a>
+                                              <?php endif; ?>
+                                            </td>
+                                          </tr>
+                                          <tr class="collapse" id="<?= $amId ?>">
+                                            <td colspan="9" class="p-0">
+                                              <table class="table table-sm mb-0 small bg-light">
+                                                <thead><tr><th class="ps-4">Date</th><th>In</th><th>Out</th><th class="text-end">Hours</th><th>Status</th><th>Leave</th></tr></thead>
+                                                <tbody>
+                                                  <?php foreach ($am['days'] as $ad): foreach ($ad['att'] ?: [null] as $adI => $ar):
+                                                    $adSt = $ar ? strtolower((string)$ar['status']) : 'on_leave';
+                                                    $adBadge = ['approved'=>'success','pending'=>'secondary','absent'=>'danger','on_leave'=>'info','half'=>'primary','excused_absent'=>'warning'][$adSt] ?? 'secondary';
+                                                  ?>
+                                                    <tr<?= $adSt === 'absent' ? ' class="table-danger"' : '' ?>>
+                                                      <td class="ps-4"><?= htmlspecialchars(date('D, j M', strtotime($ad['date']))) ?></td>
+                                                      <td><?= $ar && $ar['check_in'] ? htmlspecialchars(substr($ar['check_in'], 0, 5)) : '—' ?></td>
+                                                      <td><?= $ar && $ar['check_out'] ? htmlspecialchars(substr($ar['check_out'], 0, 5)) : '—' ?></td>
+                                                      <td class="text-end"><?= $ar && $ar['hours'] !== null ? number_format((float)$ar['hours'], 2) : '—' ?></td>
+                                                      <td><span class="badge text-bg-<?= $adBadge ?>"><?= htmlspecialchars(ucfirst(str_replace('_', ' ', $adSt)) ?: 'Unknown') ?></span></td>
+                                                      <td><?= $adI === 0 && $ad['leave'] !== null ? htmlspecialchars($ad['leave']) : '' ?></td>
+                                                    </tr>
+                                                  <?php endforeach; endforeach; ?>
+                                                </tbody>
+                                              </table>
+                                            </td>
+                                          </tr>
+                                        <?php endforeach; ?>
+                                      </tbody>
+                                      <tfoot class="table-light" style="position:sticky;bottom:0">
+                                        <tr class="fw-semibold">
+                                          <td>Total</td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['approved'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['pending'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['absent'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['half'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['leave'] ?></td>
+                                          <td class="text-end"><?= (int)$attendanceTotals['excused_absent'] ?></td>
+                                          <td class="text-end"><?= number_format($attendanceTotals['hours'], 2) ?></td>
+                                          <td></td>
+                                        </tr>
+                                      </tfoot>
+                                    </table>
+                                  </div>
+                                  <?php if ($attendanceLeaveByType): ?>
+                                    <div class="small mt-2">
+                                      <span class="text-muted">Leave taken by type:</span>
+                                      <?php foreach ($attendanceLeaveByType as $lvType => $lvDays): ?>
+                                        <span class="badge text-bg-light border me-1"><?= htmlspecialchars($lvType) ?> · <?= (int)$lvDays ?> day<?= $lvDays == 1 ? '' : 's' ?></span>
+                                      <?php endforeach; ?>
+                                    </div>
+                                  <?php endif; ?>
+                                <?php endif; ?>
+                              </div>
+                            </div>
+
+                            <div class="card mt-3">
+                              <div class="card-body">
                                 <div class="d-flex align-items-center mb-3">
                                   <h6 class="mb-0">Attendance (current month)</h6>
                                   <span class="ms-auto small text-muted">
@@ -7048,48 +7899,142 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 
                           <!-- Work Schedule -->
                           <div class="tab-pane fade" id="tab-schedule">
+                            <?php
+                            // Work schedule as one card per weekday (duties, hours, weekly off).
+                            $schedDays = ['monday' => 1, 'tuesday' => 2, 'wednesday' => 3, 'thursday' => 4, 'friday' => 5, 'saturday' => 6, 'sunday' => 7];
+                            $schedWeekHours = 0.0;
+                            $schedWorkDays = 0;
+                            $schedErrMsg = $schedule_msg !== '' && strpos($schedule_msg, 'Nothing was saved') !== false;
+                            ?>
+                            <style>
+                              .sched-card { border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; height: 100%; display: flex; flex-direction: column; }
+                              .sched-card .sched-day { font-weight: 700; font-size: .8rem; letter-spacing: .06em; text-transform: uppercase; color: #6b7280; padding: 8px 12px 0; }
+                              .sched-card .sched-body { padding: 6px 12px; flex: 1 1 auto; }
+                              .sched-card .sched-duty { font-weight: 600; font-size: .95rem; color: #111827; white-space: nowrap; }
+                              .sched-card .sched-plus { font-size: .72rem; color: #6b7280; font-weight: 600; }
+                              .sched-card .sched-foot { border-top: 1px solid #f1f2f4; padding: 6px 12px; font-size: .78rem; color: #4b5563; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+                              .sched-card .sched-tag { background: #eef2ff; color: #3730a3; border-radius: 4px; padding: 0 6px; font-weight: 600; font-size: .7rem; }
+                              .sched-card .sched-tag.night { background: #1f2937; color: #fff; }
+                              .sched-card.sched-rest { background: #f3f4f6; }
+                              .sched-card.sched-rest .sched-body { display: flex; align-items: center; justify-content: center; color: #6b7280; font-weight: 600; }
+                              .sched-card.sched-unset .sched-body { color: #9ca3af; font-style: italic; }
+                              .sched-card.sched-default { border-style: dashed; }
+                              .sched-edit .sched-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+                              .sched-edit .sched-row input[type=time] { width: 100%; min-width: 0; font-size: .85rem; padding: .2rem .35rem; }
+                              .sched-edit .sched-next { font-size: .7rem; color: #6b7280; min-height: 1em; }
+                              .sched-edit .sched-card.is-off .sched-rows, .sched-edit .sched-card.is-off .sched-add { display: none; }
+                              .sched-card .sched-day { display: flex; justify-content: space-between; align-items: center; }
+                              .sched-card .sched-day-edit { border: 0; background: transparent; color: #9ca3af; padding: 0 2px; line-height: 1; }
+                              .sched-card .sched-day-edit:hover { color: #b8860b; }
+                              .sched-edit.one-day .sched-daycol:not(.is-picked), .sched-edit.one-day .sched-totalcol { display: none; }
+                              .sched-edit:not(.one-day) [data-sched-all] { display: none; }
+                              .sched-edit.one-day [data-tpl-allwrap] { display: none !important; }
+                              .sched-edit .sched-card:not(.is-flex) [data-sched-flexwrap], .sched-edit .sched-card.is-off [data-sched-flexwrap],
+                              .sched-edit .sched-card.is-flex .sched-rows, .sched-edit .sched-card.is-flex .sched-add { display: none; }
+                              [data-tpl-panel].is-flex [data-tpl-dutycol], [data-tpl-panel]:not(.is-flex) [data-tpl-flexhours] { display: none !important; }
+                            </style>
                             <div class="card mt-3">
                               <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-center mb-3">
-                                  <h6 class="mb-0">Work Schedule</h6>
+                                <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                                  <div>
+                                    <h6 class="mb-0">Work Schedule</h6>
+                                    <?php if ($workSchedule): ?>
+                                      <div class="small text-muted mt-1">
+                                        From <?= htmlspecialchars(date('j M Y', strtotime($workSchedule['effective_from']))) ?>
+                                        <?= $workSchedule['effective_to'] ? '→ ' . htmlspecialchars(date('j M Y', strtotime($workSchedule['effective_to']))) : '(ongoing)' ?>
+                                        · <?= htmlspecialchars(ucwords(str_replace('_', ' ', (string)$workSchedule['schedule_type']))) ?>
+                                      </div>
+                                    <?php endif; ?>
+                                  </div>
                                   <?php if (!$workerReadOnly): ?>
-                                  <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#scheduleModal">+ Set Schedule</button>
+                                    <div class="d-flex flex-wrap gap-2">
+                                      <?php if ($canManageOpsPin && $workSchedule): ?>
+                                        <button class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#copyScheduleModal">
+                                          <i class="bi bi-people me-1"></i>Copy to others
+                                        </button>
+                                      <?php endif; ?>
+                                      <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#scheduleModal" data-sched-open="">
+                                        <i class="bi bi-pencil me-1"></i><?= $workSchedule ? 'Edit schedule' : 'Set schedule' ?>
+                                      </button>
+                                    </div>
                                   <?php endif; ?>
                                 </div>
-                                <?php if($schedule_msg): ?><div class="alert alert-success py-2"><?= htmlspecialchars($schedule_msg) ?></div><?php endif; ?>
-                                <?php if($workSchedule): ?>
-                                  <div class="row g-3">
-                                    <div class="col-md-12">
-                                      <div class="card bg-light">
-                                        <div class="card-body">
-                                          <h6 class="card-title">Current Schedule</h6>
-                                          <div class="row">
-                                            <div class="col-md-3 mb-2"><strong>Monday:</strong> <?= htmlspecialchars($workSchedule['monday_hours'] ?: '—') ?></div>
-                                            <div class="col-md-3 mb-2"><strong>Tuesday:</strong> <?= htmlspecialchars($workSchedule['tuesday_hours'] ?: '—') ?></div>
-                                            <div class="col-md-3 mb-2"><strong>Wednesday:</strong> <?= htmlspecialchars($workSchedule['wednesday_hours'] ?: '—') ?></div>
-                                            <div class="col-md-3 mb-2"><strong>Thursday:</strong> <?= htmlspecialchars($workSchedule['thursday_hours'] ?: '—') ?></div>
-                                            <div class="col-md-3 mb-2"><strong>Friday:</strong> <?= htmlspecialchars($workSchedule['friday_hours'] ?: '—') ?></div>
-                                            <div class="col-md-3 mb-2"><strong>Saturday:</strong> <?= htmlspecialchars($workSchedule['saturday_hours'] ?: '—') ?></div>
-                                            <div class="col-md-3 mb-2"><strong>Sunday:</strong> <?= htmlspecialchars($workSchedule['sunday_hours'] ?: '—') ?></div>
-                                          </div>
-                                          <?php if ($workSchedule['notes']): ?>
-                                            <div class="mt-2"><strong>Notes:</strong> <?= nl2br(htmlspecialchars($workSchedule['notes'])) ?></div>
+                                <?php if($schedule_msg): ?><div class="alert <?= $schedErrMsg ? 'alert-danger' : 'alert-success' ?> py-2"><?= htmlspecialchars($schedule_msg) ?></div><?php endif; ?>
+                                <div class="d-flex flex-wrap align-items-center gap-2 mb-3 p-2 border rounded bg-light">
+                                  <strong><i class="bi bi-calendar-x me-1"></i>Weekly off:</strong>
+                                  <span><?= htmlspecialchars($woDayNames[$woDay]) ?></span>
+                                  <span class="small text-muted"><?= $woOwnDay === null ? '(company default)' : '(set for this employee; company: ' . htmlspecialchars($woDayNames[$woCompanyDay]) . ')' ?></span>
+                                  <?php if ($canManageOpsPin): ?>
+                                    <form method="post" class="d-flex align-items-center gap-2 ms-md-auto">
+                                      <?php csrf_field(); ?>
+                                      <input type="hidden" name="save_weekly_off" value="1">
+                                      <select name="weekly_off" class="form-select form-select-sm w-auto" aria-label="Weekly off">
+                                        <option value="" <?= $woOwnDay === null ? 'selected' : '' ?>>Company default (<?= htmlspecialchars($woDayNames[$woCompanyDay]) ?>)</option>
+                                        <?php foreach ($woDayNames as $woNum => $woName): ?>
+                                          <option value="<?= $woNum ?>" <?= $woOwnDay === $woNum ? 'selected' : '' ?>><?= $woName ?></option>
+                                        <?php endforeach; ?>
+                                      </select>
+                                      <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                                    </form>
+                                  <?php endif; ?>
+                                </div>
+
+                                <div class="row row-cols-2 row-cols-md-4 row-cols-xl-7 g-2">
+                                  <?php foreach ($schedDays as $sd => $sdNum):
+                                    $sdLabel = $woDay === $sdNum ? 'Off'
+                                        : ($workSchedule ? (string)($workSchedule[$sd . '_hours'] ?? '') : '9:00 AM - 6:00 PM');
+                                    $sdRanges = hr_schedule_ranges($sdLabel);
+                                    $sdHours = hr_schedule_parse_hours($sdLabel);
+                                    $sdIsWo = $woDay === $sdNum;
+                                    $sdNight = (bool)array_filter($sdRanges, static fn($r) => $r['overnight']);
+                                    if ($sdHours > 0) { $schedWeekHours += $sdHours; $schedWorkDays++; }
+                                    $sdFlex = !$sdRanges && $sdHours > 0;
+                                    $sdClass = ($sdRanges || $sdFlex ? '' : ($sdIsWo || trim($sdLabel) !== '' ? 'sched-rest' : 'sched-unset')) . ($workSchedule ? '' : ' sched-default');
+                                  ?>
+                                    <div class="col">
+                                      <div class="sched-card <?= $sdClass ?>">
+                                        <div class="sched-day">
+                                          <span><?= ucfirst(substr($sd, 0, 3)) ?></span>
+                                          <?php if (!$workerReadOnly): ?>
+                                            <button type="button" class="sched-day-edit" data-bs-toggle="modal" data-bs-target="#scheduleModal" data-sched-open="<?= $sd ?>" title="Edit <?= ucfirst($sd) ?>" aria-label="Edit <?= ucfirst($sd) ?>"><i class="bi bi-pencil"></i></button>
                                           <?php endif; ?>
-                                          <div class="small text-muted mt-2">
-                                            Effective from: <?= htmlspecialchars($workSchedule['effective_from']) ?>
-                                            <?php if ($workSchedule['effective_to']): ?>
-                                              → <?= htmlspecialchars($workSchedule['effective_to']) ?>
-                                            <?php else: ?>
-                                              (ongoing)
-                                            <?php endif; ?>
-                                          </div>
                                         </div>
+                                        <div class="sched-body">
+                                          <?php if ($sdRanges): ?>
+                                            <?php foreach ($sdRanges as $r): ?>
+                                              <div class="sched-duty"><?= htmlspecialchars($r['start']) ?> – <?= htmlspecialchars($r['end']) ?><?php if ($r['overnight']): ?> <span class="sched-plus">(+1)</span><?php endif; ?></div>
+                                            <?php endforeach; ?>
+                                          <?php elseif ($sdFlex): ?>
+                                            <div class="sched-duty">Any time</div>
+                                          <?php elseif ($sdIsWo): ?>
+                                            Weekly off
+                                          <?php elseif ($workSchedule && trim($sdLabel) !== ''): ?>
+                                            Day off
+                                          <?php else: ?>
+                                            Not set
+                                          <?php endif; ?>
+                                        </div>
+                                        <?php if ($sdRanges || $sdFlex): ?>
+                                          <div class="sched-foot">
+                                            <span><?= rtrim(rtrim(number_format($sdHours, 2), '0'), '.') ?> h</span>
+                                            <?php if (count($sdRanges) > 1): ?><span class="sched-tag"><?= count($sdRanges) ?> duties</span><?php endif; ?>
+                                            <?php if ($sdNight): ?><span class="sched-tag night">night</span><?php endif; ?>
+                                            <?php if ($sdFlex): ?><span class="sched-tag">flexible</span><?php endif; ?>
+                                            <?php if (!$workSchedule): ?><span class="sched-tag" style="background:#fff7e6;color:#9a6700">default</span><?php endif; ?>
+                                          </div>
+                                        <?php endif; ?>
                                       </div>
                                     </div>
-                                  </div>
-                                <?php else: ?>
-                                  <div class="text-center text-muted py-3">No work schedule set.</div>
-                                <?php endif; ?>
+                                  <?php endforeach; ?>
+                                </div>
+                                <div class="d-flex flex-wrap justify-content-between gap-2 mt-2 small text-muted">
+                                  <span><?= $workSchedule && $workSchedule['notes'] ? 'Notes: ' . htmlspecialchars($workSchedule['notes']) : '' ?></span>
+                                  <?php if ($workSchedule): ?>
+                                    <span>Week total: <strong class="text-dark"><?= rtrim(rtrim(number_format($schedWeekHours, 2), '0'), '.') ?> h</strong> · <?= $schedWorkDays ?> working day<?= $schedWorkDays === 1 ? '' : 's' ?></span>
+                                  <?php else: ?>
+                                    <span>Default schedule (not saved yet): <strong class="text-dark"><?= rtrim(rtrim(number_format($schedWeekHours, 2), '0'), '.') ?> h</strong> · <?= $schedWorkDays ?> working days. Click <strong>Set schedule</strong> to save or change it.</span>
+                                  <?php endif; ?>
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -7356,6 +8301,19 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
     </form>
   </div>
 </div>
+<script>
+// Leave: To can't be before From.
+(function () {
+  var m = document.getElementById('leaveModal');
+  if (!m) return;
+  var from = m.querySelector('input[name="date_from"]'), to = m.querySelector('input[name="date_to"]');
+  if (!from || !to) return;
+  from.addEventListener('change', function () {
+    to.min = from.value;
+    if (to.value && to.value < from.value) to.value = from.value;
+  });
+})();
+</script>
 
 <!-- Request Cash Advance Modal (for employees) -->
 <?php if ($workerReadOnly): 
@@ -7682,76 +8640,464 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
 <!-- Work Schedule Modal -->
 <?php if (!$workerReadOnly): ?>
 <div class="modal fade" id="scheduleModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <form class="modal-content" method="post">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <form class="modal-content sched-edit" method="post" data-tpl="<?= htmlspecialchars(json_encode(hr_shift_templates_for_js($conn))) ?>">
       <?php csrf_field(); ?>
       <div class="modal-header">
-        <h5 class="modal-title">Set Work Schedule</h5>
+        <h5 class="modal-title" data-sched-title data-all="<?= $workSchedule ? 'Edit work schedule' : 'Set work schedule' ?>"><?= $workSchedule ? 'Edit work schedule' : 'Set work schedule' ?></h5>
+        <button type="button" class="btn btn-sm btn-link ms-2" data-sched-all>Show all days</button>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
         <input type="hidden" name="save_schedule" value="1">
-        <div class="mb-3">
-          <label class="form-label">Schedule Type</label>
-          <select name="schedule_type" class="form-select">
-            <option value="regular">Regular</option>
-            <option value="shift">Shift</option>
-            <option value="flexible">Flexible</option>
-            <option value="part_time">Part Time</option>
-          </select>
+        <div class="small text-muted mb-2">Add one or more duties for each day, or pick a saved shift. A duty that ends earlier than it starts runs into the next day (e.g. 17:00 – 02:00).</div>
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+          <span class="d-flex flex-wrap align-items-center gap-2" data-tpl-allwrap>
+            <span class="small fw-semibold">Shift for all working days:</span>
+            <select class="form-select form-select-sm w-auto" data-tpl-all aria-label="Shift for all working days"></select>
+            <button type="button" class="btn btn-sm btn-outline-primary" data-tpl-apply-all>Apply</button>
+          </span>
+          <?php if ($canManageOpsPin): ?>
+            <button type="button" class="btn btn-sm btn-link ms-auto" data-tpl-manage><i class="bi bi-sliders me-1"></i>Manage shifts</button>
+          <?php endif; ?>
         </div>
-        <div class="row">
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Monday</label>
-            <input type="text" name="monday_hours" class="form-control" placeholder="e.g. 9:00 AM - 5:00 PM">
+        <?php if ($canManageOpsPin): ?>
+          <div class="border rounded p-2 mb-3 bg-light" data-tpl-panel hidden>
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <strong class="small">Saved shifts</strong>
+              <button type="button" class="btn-close btn-sm" data-tpl-close aria-label="Close"></button>
+            </div>
+            <table class="table table-sm align-middle mb-2 small"><tbody data-tpl-list></tbody></table>
+            <div class="row g-2 align-items-end">
+              <div class="col-md-3">
+                <label class="form-label small mb-1" data-tpl-formtitle>New shift</label>
+                <input type="text" class="form-control form-control-sm" maxlength="40" placeholder="Name, e.g. Night" data-tpl-name>
+              </div>
+              <div class="col-6 col-md-2" data-tpl-flexhours>
+                <label class="form-label small mb-1">Hours, any time</label>
+                <input type="number" class="form-control form-control-sm" min="0.5" max="24" step="0.5" value="8" data-tpl-flexin aria-label="Flexible hours">
+              </div>
+              <?php for ($tplI = 0; $tplI < HR_SHIFT_TEMPLATE_MAX_DUTIES; $tplI++): ?>
+                <div class="col-6 col-md-2" data-tpl-dutycol>
+                  <label class="form-label small mb-1">Duty <?= $tplI + 1 ?><?= $tplI ? ' (optional)' : '' ?></label>
+                  <div class="d-flex gap-1">
+                    <input type="time" class="form-control form-control-sm" data-tpl-start aria-label="Duty <?= $tplI + 1 ?> start">
+                    <input type="time" class="form-control form-control-sm" data-tpl-end aria-label="Duty <?= $tplI + 1 ?> end">
+                  </div>
+                </div>
+              <?php endfor; ?>
+              <div class="col-md-3 d-flex gap-2">
+                <button type="button" class="btn btn-sm btn-primary" data-tpl-save>Save shift</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-tpl-new>Clear</button>
+              </div>
+            </div>
+            <div class="form-check small mt-2 mb-0">
+              <input class="form-check-input" type="checkbox" id="tplFlex" data-tpl-flex>
+              <label class="form-check-label" for="tplFlex">Flexible: a number of hours, any time (no start and end)</label>
+            </div>
+            <div class="small text-danger mt-1" data-tpl-err></div>
           </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Tuesday</label>
-            <input type="text" name="tuesday_hours" class="form-control" placeholder="e.g. 9:00 AM - 5:00 PM">
-          </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Wednesday</label>
-            <input type="text" name="wednesday_hours" class="form-control" placeholder="e.g. 9:00 AM - 5:00 PM">
-          </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Thursday</label>
-            <input type="text" name="thursday_hours" class="form-control" placeholder="e.g. 9:00 AM - 5:00 PM">
-          </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Friday</label>
-            <input type="text" name="friday_hours" class="form-control" placeholder="e.g. 9:00 AM - 5:00 PM">
-          </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Saturday</label>
-            <input type="text" name="saturday_hours" class="form-control" placeholder="e.g. Off or 9:00 AM - 1:00 PM">
-          </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Sunday</label>
-            <input type="text" name="sunday_hours" class="form-control" placeholder="e.g. Off or 9:00 AM - 1:00 PM">
+        <?php endif; ?>
+        <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-4 g-2 mb-3">
+          <?php foreach (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as $sd):
+            // What is saved. No schedule yet: 09:00 – 18:00, with the weekly off suggested as Day off (it can be changed).
+            $sdWo = (int)date('N', strtotime($sd)) === $woDay;
+            $sdLabel = $workSchedule ? (string)($workSchedule[$sd . '_hours'] ?? '') : ($sdWo ? 'Off' : '9:00 AM - 6:00 PM');
+            $sdRanges = hr_schedule_ranges($sdLabel);
+            $sdOff = !$sdRanges && preg_match('/^(off|holiday|rest|none|n\/a)$/i', trim($sdLabel));
+            $sdFlex = !$sdRanges && !$sdOff && is_numeric(trim($sdLabel)) && (float)$sdLabel > 0;
+            if (!$sdRanges && !$sdOff) { $sdRanges = [['start' => '', 'end' => '']]; }
+          ?>
+            <div class="col sched-daycol" data-sched-col="<?= $sd ?>">
+              <div class="sched-card p-2 <?= $sdOff ? 'is-off' : '' ?> <?= $sdFlex ? 'is-flex' : '' ?>" data-sched-day="<?= $sd ?>">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <span class="fw-bold"><?= ucfirst($sd) ?></span>
+                  <span class="small fw-semibold text-muted" data-sched-hours></span>
+                </div>
+                <select class="form-select form-select-sm mb-2" data-tpl-day aria-label="<?= ucfirst($sd) ?> shift"></select>
+                <div class="sched-rows">
+                  <?php foreach ($sdRanges as $r): ?>
+                    <div class="sched-row">
+                      <input type="time" class="form-control" name="sched[<?= $sd ?>][start][]" value="<?= htmlspecialchars($r['start']) ?>" aria-label="<?= ucfirst($sd) ?> start">
+                      <span>–</span>
+                      <input type="time" class="form-control" name="sched[<?= $sd ?>][end][]" value="<?= htmlspecialchars($r['end']) ?>" aria-label="<?= ucfirst($sd) ?> end">
+                      <button type="button" class="btn btn-sm btn-link text-danger px-1" data-sched-remove title="Remove this duty">✕</button>
+                    </div>
+                  <?php endforeach; ?>
+                </div>
+                <div data-sched-flexwrap>
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="small">Flexible, any time:</span>
+                    <input type="number" class="form-control form-control-sm" style="width: 5.5rem;" min="0.5" max="24" step="0.5" name="sched[<?= $sd ?>][flex]" value="<?= $sdFlex ? htmlspecialchars(trim($sdLabel)) : '8' ?>" aria-label="<?= ucfirst($sd) ?> flexible hours" data-sched-flex <?= $sdFlex ? '' : 'disabled' ?>>
+                    <span class="small">h</span>
+                  </div>
+                  <button type="button" class="btn btn-sm btn-link px-0" data-sched-unflex>Use start and end times</button>
+                </div>
+                <div class="sched-next" data-sched-next></div>
+                <div class="d-flex justify-content-between align-items-center mt-1">
+                  <button type="button" class="btn btn-sm btn-outline-primary py-0 sched-add" data-sched-add>+ Add duty</button>
+                  <div class="form-check m-0">
+                    <input class="form-check-input" type="checkbox" id="schedOff_<?= $sd ?>" name="sched[<?= $sd ?>][off]" value="1" <?= $sdOff ? 'checked' : '' ?> data-sched-off>
+                    <label class="form-check-label small" for="schedOff_<?= $sd ?>">Day off<?= $sdWo ? ' <span class="text-muted">(weekly off)</span>' : '' ?></label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <?php endforeach; ?>
+          <div class="col sched-totalcol">
+            <div class="sched-card p-2 justify-content-center text-center bg-light">
+              <div class="small text-muted">Week total</div>
+              <div class="fs-4 fw-bold" data-sched-total>0 h</div>
+            </div>
           </div>
         </div>
-        <div class="row">
-          <div class="col-md-6 mb-3">
-            <label class="form-label">Effective From</label>
+        <div class="row g-2">
+          <div class="col-md-4">
+            <label class="form-label">Effective from</label>
             <input type="date" name="effective_from" class="form-control" value="<?= date('Y-m-d') ?>" required>
           </div>
-          <div class="col-md-6 mb-3">
-            <label class="form-label">Effective To (optional)</label>
+          <div class="col-md-4">
+            <label class="form-label">Effective to (optional)</label>
             <input type="date" name="effective_to" class="form-control">
           </div>
+          <div class="col-md-4">
+            <label class="form-label">Notes</label>
+            <input type="text" name="notes" class="form-control" value="<?= htmlspecialchars((string)($workSchedule['notes'] ?? '')) ?>">
+          </div>
         </div>
-        <div class="mb-3">
-          <label class="form-label">Notes</label>
-          <textarea name="notes" class="form-control" rows="2"></textarea>
-        </div>
+        <div class="small text-muted mt-2">Saving starts this schedule from the "Effective from" date; earlier dates keep the schedule they had. The type (regular, shift, part time, flexible) is set from the days.</div>
       </div>
       <div class="modal-footer">
-        <button type="submit" class="btn btn-primary">Save Schedule</button>
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save schedule</button>
       </div>
     </form>
   </div>
 </div>
+<script>
+(function () {
+  // Schedule editor: add/remove duties, Day off, and live hours (overnight counts into the next day).
+  function minutes(v) { var m = /^(\d{2}):(\d{2})$/.exec(v || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; }
+  function fmt(h) { return (Math.round(h * 100) / 100).toString() + ' h'; }
+  function update(form) {
+    var total = 0;
+    form.querySelectorAll('[data-sched-day]').forEach(function (card) {
+      var off = card.querySelector('[data-sched-off]').checked, hours = 0, night = false;
+      card.classList.toggle('is-off', off);
+      if (!off && card.classList.contains('is-flex')) {
+        hours = parseFloat(card.querySelector('[data-sched-flex]').value) || 0;
+      } else if (!off) {
+        card.querySelectorAll('.sched-row').forEach(function (row) {
+          var t = row.querySelectorAll('input[type=time]'), a = minutes(t[0].value), b = minutes(t[1].value);
+          if (a === null || b === null || a === b) return;
+          if (b < a) { night = true; b += 1440; }
+          hours += (b - a) / 60;
+        });
+      }
+      total += hours;
+      card.querySelector('[data-sched-hours]').textContent = off ? 'Day off' : (hours ? fmt(hours) : '');
+      card.querySelector('[data-sched-next]').textContent = night ? '(+1) runs into the next day' : '';
+    });
+    form.querySelector('[data-sched-total]').textContent = fmt(total);
+  }
+  var form = document.querySelector('form.sched-edit');
+  if (!form) return;
+  // A day's pencil shows only that day (the other days are still saved as they are).
+  function show(day) {
+    var title = form.querySelector('[data-sched-title]');
+    form.classList.toggle('one-day', !!day);
+    form.querySelectorAll('[data-sched-col]').forEach(function (c) { c.classList.toggle('is-picked', c.dataset.schedCol === day); });
+    title.textContent = day ? 'Edit ' + day.charAt(0).toUpperCase() + day.slice(1) : title.dataset.all;
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-sched-open]');
+    if (b) show(b.dataset.schedOpen);
+    if (e.target.closest('[data-sched-all]')) show('');
+  });
+  form.addEventListener('input', function () { update(form); });
+  form.addEventListener('change', function () { update(form); });
+  form.addEventListener('click', function (e) {
+    var add = e.target.closest('[data-sched-add]'), rem = e.target.closest('[data-sched-remove]');
+    if (add) {
+      var rows = add.closest('[data-sched-day]').querySelector('.sched-rows');
+      var copy = rows.querySelector('.sched-row').cloneNode(true);
+      copy.querySelectorAll('input').forEach(function (i) { i.value = ''; });
+      rows.appendChild(copy);
+      copy.querySelector('input').focus();
+    }
+    if (rem) {
+      var all = rem.closest('.sched-rows').querySelectorAll('.sched-row');
+      if (all.length > 1) { rem.closest('.sched-row').remove(); }
+      else { rem.closest('.sched-row').querySelectorAll('input').forEach(function (i) { i.value = ''; }); }
+    }
+    if (add || rem) update(form);
+  });
+  // Shift templates: a pick fills a day's duties; Apply fills every working day
+  // (the weekly off stays locked); Manage shifts saves templates without leaving.
+  var tpls = JSON.parse(form.dataset.tpl || '[]');
+  function setFlex(card, on, hours) {
+    var input = card.querySelector('[data-sched-flex]');
+    card.classList.toggle('is-flex', on);
+    input.disabled = !on;
+    if (on && hours) input.value = hours;
+  }
+  function fillDay(card, t) {
+    var off = card.querySelector('[data-sched-off]');
+    if (off.disabled) return;
+    off.checked = !t;
+    if (t) setFlex(card, !!t.flex, t.flex);
+    var duties = t && !t.flex ? t.duties : null;
+    if (duties) {
+      var rows = card.querySelector('.sched-rows'), first = rows.querySelector('.sched-row');
+      rows.querySelectorAll('.sched-row').forEach(function (r) { if (r !== first) r.remove(); });
+      duties.forEach(function (d, i) {
+        var row = i ? first.cloneNode(true) : first;
+        var t = row.querySelectorAll('input[type=time]');
+        t[0].value = d[0]; t[1].value = d[1];
+        if (i) rows.appendChild(row);
+      });
+    }
+  }
+  function options(sel, first) {
+    sel.innerHTML = '';
+    sel.appendChild(new Option(first, ''));
+    tpls.forEach(function (t) { sel.appendChild(new Option(t.name + ' · ' + t.label.replace(/:00 /g, ' '), String(t.id))); });
+    sel.appendChild(new Option('Day off', 'off'));
+  }
+  function picked(v) { return v === 'off' ? null : tpls.filter(function (t) { return String(t.id) === v; })[0] || null; }
+  function renderPickers() {
+    form.querySelectorAll('[data-tpl-day]').forEach(function (s) { options(s, 'Shift…'); });
+    var all = form.querySelector('[data-tpl-all]');
+    if (all) options(all, 'Pick a shift');
+  }
+  form.addEventListener('change', function (e) {
+    var s = e.target.closest('[data-tpl-day]');
+    if (!s || s.value === '') return;
+    fillDay(s.closest('[data-sched-day]'), picked(s.value));
+    s.value = '';
+    update(form);
+  });
+  form.addEventListener('click', function (e) {
+    var u = e.target.closest('[data-sched-unflex]');
+    if (u) { setFlex(u.closest('[data-sched-day]'), false); update(form); }
+    if (!e.target.closest('[data-tpl-apply-all]')) return;
+    var v = form.querySelector('[data-tpl-all]').value;
+    if (v === '') return;
+    form.querySelectorAll('[data-sched-day]').forEach(function (card) {
+      if (card.querySelector('[data-sched-off]').checked) return; // working days only
+      fillDay(card, picked(v));
+    });
+    update(form);
+  });
+  var panel = form.querySelector('[data-tpl-panel]');
+  if (panel) {
+    var err = panel.querySelector('[data-tpl-err]'), editId = 0;
+    var nameIn = panel.querySelector('[data-tpl-name]'), starts = panel.querySelectorAll('[data-tpl-start]'), ends = panel.querySelectorAll('[data-tpl-end]');
+    var flexBox = panel.querySelector('[data-tpl-flex]'), flexIn = panel.querySelector('[data-tpl-flexin]');
+    flexBox.addEventListener('change', function () { panel.classList.toggle('is-flex', flexBox.checked); });
+    function edit(t) {
+      editId = t ? t.id : 0;
+      panel.querySelector('[data-tpl-formtitle]').textContent = t ? 'Edit "' + t.name + '"' : 'New shift';
+      nameIn.value = t ? t.name : '';
+      starts.forEach(function (s, i) { s.value = t && t.duties[i] ? t.duties[i][0] : ''; ends[i].value = t && t.duties[i] ? t.duties[i][1] : ''; });
+      flexBox.checked = !!(t && t.flex);
+      flexIn.value = t && t.flex ? t.flex : 8;
+      panel.classList.toggle('is-flex', flexBox.checked);
+      err.textContent = '';
+    }
+    function renderList() {
+      var body = panel.querySelector('[data-tpl-list]');
+      body.innerHTML = '';
+      if (!tpls.length) { body.innerHTML = '<tr><td class="text-muted">No saved shifts.</td></tr>'; }
+      tpls.forEach(function (t) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td class="fw-semibold"></td><td></td><td class="text-muted"></td><td class="text-end text-nowrap">'
+          + '<button type="button" class="btn btn-sm btn-link py-0" data-tpl-edit>Edit</button>'
+          + '<button type="button" class="btn btn-sm btn-link text-danger py-0" data-tpl-del>Delete</button></td>';
+        tr.children[0].textContent = t.name;
+        tr.children[1].textContent = t.label;
+        tr.children[2].textContent = fmt(t.hours);
+        tr.querySelector('[data-tpl-edit]').addEventListener('click', function () { edit(t); nameIn.focus(); });
+        tr.querySelector('[data-tpl-del]').addEventListener('click', function () {
+          if (confirm('Delete the shift "' + t.name + '"? Saved schedules keep their times.')) send({ shift_template_delete: '1', template_id: t.id });
+        });
+        body.appendChild(tr);
+      });
+    }
+    function send(data, extra) {
+      var fd = new FormData();
+      fd.append('_csrf', form.querySelector('input[name=_csrf]').value);
+      Object.keys(data).forEach(function (k) { fd.append(k, data[k]); });
+      (extra || []).forEach(function (p) { fd.append(p[0], p[1]); });
+      err.textContent = '';
+      fetch(location.pathname + location.search, { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (res.templates) { tpls = res.templates; renderList(); renderPickers(); }
+          if (res.ok) { edit(null); } else { err.textContent = res.error || 'Not saved.'; }
+        })
+        .catch(function () { err.textContent = 'Not saved. Check your connection and try again.'; });
+    }
+    form.querySelector('[data-tpl-manage]').addEventListener('click', function () { panel.hidden = !panel.hidden; if (!panel.hidden) renderList(); });
+    panel.querySelector('[data-tpl-close]').addEventListener('click', function () { panel.hidden = true; });
+    panel.querySelector('[data-tpl-new]').addEventListener('click', function () { edit(null); });
+    panel.querySelector('[data-tpl-save]').addEventListener('click', function () {
+      var extra = [];
+      if (flexBox.checked) { extra.push(['flex', flexIn.value]); }
+      else { starts.forEach(function (s, i) { extra.push(['start[]', s.value]); extra.push(['end[]', ends[i].value]); }); }
+      send({ shift_template_save: '1', template_id: editId, name: nameIn.value }, extra);
+    });
+    // Enter in the panel must not save the whole schedule.
+    panel.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); panel.querySelector('[data-tpl-save]').click(); } });
+  }
+  renderPickers();
+  update(form);
+})();
+</script>
+<?php endif; ?>
+
+<!-- Copy schedule to others -->
+<?php if ($canManageOpsPin && $workSchedule):
+  $cpRows = $conn->query("
+    SELECT e.id, e.employee_code, e.full_name, c.name AS company, d.name AS dept, l.name AS loc
+    FROM employees e
+    LEFT JOIN companies c ON c.id = e.company_id
+    LEFT JOIN departments d ON d.id = e.department_id
+    LEFT JOIN locations l ON l.id = e.location_id
+    WHERE e.status = 'active' AND e.id <> " . (int)$emp['id'] . "
+    ORDER BY c.name, e.full_name
+  ")->fetchAll(PDO::FETCH_ASSOC);
+  // Each one's schedule today, newest first, for the one-line "now" column.
+  $cpNow = [];
+  foreach ($conn->query("
+    SELECT * FROM employee_work_schedules
+    WHERE effective_from <= CURDATE() AND (effective_to IS NULL OR effective_to >= CURDATE())
+    ORDER BY employee_id, effective_from DESC, id DESC
+  ") as $r) {
+      $cpNow[(int)$r['employee_id']] ??= $r;
+  }
+  // "Mon–Sat 9:00 AM - 6:00 PM · Sun Off": runs of days with the same hours.
+  $cpLine = static function (?array $r): string {
+      if (!$r) {
+          return 'No schedule';
+      }
+      $runs = [];
+      foreach (hr_schedule_day_columns() as $col) {
+          $label = trim((string)($r[$col] ?? '')) ?: 'Off';
+          if (is_numeric($label) && (float)$label > 0) {
+              $label = 'Flexible ' . $label . ' h';
+          }
+          $day = ucfirst(substr($col, 0, 3));
+          $last = count($runs) - 1;
+          if ($last >= 0 && $runs[$last][2] === $label) {
+              $runs[$last][1] = $day;
+          } else {
+              $runs[] = [$day, $day, $label];
+          }
+      }
+      return implode(' · ', array_map(static fn($x) => ($x[0] === $x[1] ? $x[0] : $x[0] . '–' . $x[1]) . ' ' . $x[2], $runs));
+  };
+  $cpOpts = static function (string $key) use ($cpRows): array {
+      $v = array_unique(array_filter(array_map(static fn($r) => (string)($r[$key] ?? ''), $cpRows), 'strlen'));
+      sort($v);
+      return $v;
+  };
+?>
+<div class="modal fade" id="copyScheduleModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <form class="modal-content" method="post" data-copy-sched>
+      <?php csrf_field(); ?>
+      <input type="hidden" name="copy_schedule" value="1">
+      <div class="modal-header">
+        <h5 class="modal-title">Copy schedule to others</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="p-2 mb-3 border rounded bg-light small">
+          <strong>This schedule:</strong> <?= htmlspecialchars($cpLine($workSchedule)) ?>
+        </div>
+        <div class="row g-2 mb-2">
+          <div class="col-md-3"><input type="search" class="form-control form-control-sm" placeholder="Search name or code" data-cp-search></div>
+          <?php foreach (['company' => 'All companies', 'dept' => 'All departments', 'loc' => 'All locations'] as $cpKey => $cpAll): ?>
+            <div class="col-md-3">
+              <select class="form-select form-select-sm" data-cp-filter="<?= $cpKey ?>">
+                <option value=""><?= $cpAll ?></option>
+                <?php foreach ($cpOpts($cpKey) as $cpV): ?><option value="<?= htmlspecialchars($cpV) ?>"><?= htmlspecialchars($cpV) ?></option><?php endforeach; ?>
+              </select>
+            </div>
+          <?php endforeach; ?>
+        </div>
+        <div class="table-responsive border rounded" style="max-height: 50vh;">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light" style="position: sticky; top: 0;">
+              <tr>
+                <th style="width: 2rem;"><input type="checkbox" class="form-check-input" data-cp-all title="Select all shown" aria-label="Select all shown"></th>
+                <th>Employee</th><th>Company</th><th>Department</th><th>Location</th><th>Schedule now</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($cpRows as $r): ?>
+                <tr data-cp-row data-company="<?= htmlspecialchars((string)$r['company']) ?>" data-dept="<?= htmlspecialchars((string)$r['dept']) ?>" data-loc="<?= htmlspecialchars((string)$r['loc']) ?>" data-text="<?= htmlspecialchars(strtolower($r['full_name'] . ' ' . $r['employee_code'])) ?>">
+                  <td><input type="checkbox" class="form-check-input" name="copy_to[]" value="<?= (int)$r['id'] ?>" id="cp<?= (int)$r['id'] ?>"></td>
+                  <td><label for="cp<?= (int)$r['id'] ?>" class="fw-semibold mb-0"><?= htmlspecialchars((string)$r['full_name']) ?></label> <span class="text-muted small"><?= htmlspecialchars((string)$r['employee_code']) ?></span></td>
+                  <td class="small"><?= htmlspecialchars((string)$r['company']) ?></td>
+                  <td class="small"><?= htmlspecialchars((string)$r['dept']) ?></td>
+                  <td class="small"><?= htmlspecialchars((string)$r['loc']) ?></td>
+                  <td class="small text-muted"><?= htmlspecialchars($cpLine($cpNow[(int)$r['id']] ?? null)) ?></td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <div class="row g-2 mt-2 align-items-end">
+          <div class="col-md-3">
+            <label class="form-label small mb-1">Start date</label>
+            <input type="date" name="copy_from" class="form-control form-control-sm" value="<?= date('Y-m-d') ?>" required>
+          </div>
+          <div class="col-md-9 small text-muted">Applies from this date; earlier dates keep each employee's old schedule.</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-cp-submit disabled>Apply to 0 employees</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+(function () {
+  // Copy schedule: filter the list, select all shown, count on the button.
+  var form = document.querySelector('[data-copy-sched]');
+  if (!form) return;
+  var rows = Array.prototype.slice.call(form.querySelectorAll('[data-cp-row]'));
+  var search = form.querySelector('[data-cp-search]'), all = form.querySelector('[data-cp-all]'), btn = form.querySelector('[data-cp-submit]');
+  var filters = Array.prototype.slice.call(form.querySelectorAll('[data-cp-filter]'));
+  function shown() { return rows.filter(function (r) { return !r.hidden; }); }
+  function count() {
+    var n = form.querySelectorAll('input[name="copy_to[]"]:checked').length;
+    btn.textContent = 'Apply to ' + n + ' employee' + (n === 1 ? '' : 's');
+    btn.disabled = n === 0;
+    var s = shown();
+    all.checked = s.length > 0 && s.every(function (r) { return r.querySelector('input').checked; });
+  }
+  function filter() {
+    var q = search.value.trim().toLowerCase();
+    rows.forEach(function (r) {
+      r.hidden = (q !== '' && r.dataset.text.indexOf(q) === -1)
+        || filters.some(function (f) { return f.value !== '' && r.dataset[f.dataset.cpFilter] !== f.value; });
+    });
+    count();
+  }
+  search.addEventListener('input', filter);
+  filters.forEach(function (f) { f.addEventListener('change', filter); });
+  all.addEventListener('change', function () { shown().forEach(function (r) { r.querySelector('input').checked = all.checked; }); count(); });
+  form.addEventListener('change', function (e) { if (e.target.name === 'copy_to[]') count(); });
+  form.addEventListener('submit', function (e) {
+    var n = form.querySelectorAll('input[name="copy_to[]"]:checked').length;
+    if (!n || !confirm('Apply this schedule to ' + n + ' employee' + (n === 1 ? '' : 's') + '?')) e.preventDefault();
+  });
+})();
+</script>
 <?php endif; ?>
 
 </div>
@@ -8042,4 +9388,89 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 HR_EMP_VIEW_JS;
 $pageScripts .= hr_required_docs_expiry_field_js();
+// Documents tab: click a thumbnail to preview the file (image or PDF) in a pop-up.
+$pageScripts .= <<<'HR_DV_JS'
+<script>
+// The files shown together: the current files of the card, or the previous
+// copies when one of those was clicked. The pop-up steps through them (1 of 2).
+var dvSet = [], dvAt = 0;
+function dvFilesFor(t) {
+  var scope = t.closest('details.dv-prev') || t.closest('.dv-id');
+  if (!scope) return [t];
+  var rows = scope.matches('details') ? scope.querySelectorAll('.dv-file-name[data-dv-preview]')
+                                      : scope.querySelectorAll('.dv-id-foot > .dv-files .dv-file-name[data-dv-preview]');
+  return rows.length ? Array.prototype.slice.call(rows) : [t];
+}
+function dvShow(i) {
+  dvAt = (i + dvSet.length) % dvSet.length;
+  var t = dvSet[dvAt], url = t.getAttribute('data-dv-preview'), body = document.getElementById('dvPreviewBody');
+  var name = t.classList.contains('dv-file-name') ? t.textContent.trim() : '';
+  document.getElementById('dvPreviewTitle').textContent = (t.getAttribute('data-dv-title') || 'Document') + (name ? ' — ' + name : '');
+  document.getElementById('dvPreviewOpen').href = url;
+  document.getElementById('dvPreviewNav').classList.toggle('d-none', dvSet.length < 2);
+  document.getElementById('dvPreviewCount').textContent = (dvAt + 1) + ' of ' + dvSet.length;
+  body.innerHTML = '';
+  if (t.getAttribute('data-dv-kind') === 'image') {
+    var img = document.createElement('img');
+    img.src = url; img.alt = ''; img.style.maxWidth = '100%'; img.style.maxHeight = '75vh';
+    img.onerror = function () { if (img.parentNode === body) body.innerHTML = '<p class="text-muted py-5">The file could not be loaded here. Try "Open in new tab".</p>'; };
+    body.appendChild(img);
+  } else {
+    var f = document.createElement('iframe');
+    f.src = url; f.style.width = '100%'; f.style.height = '75vh'; f.style.border = '0';
+    body.appendChild(f);
+  }
+}
+function dvOpenPreview(t) {
+  dvSet = dvFilesFor(t);
+  var url = t.getAttribute('data-dv-preview'), start = 0;
+  dvSet.forEach(function (r, i) { if (r === t) start = i; });
+  if (dvSet[start] !== t) dvSet.forEach(function (r, i) { if (r.getAttribute('data-dv-preview') === url) start = i; });
+  dvShow(start);
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('dvPreviewModal')).show();
+}
+document.addEventListener('click', function (e) {
+  if (e.target.closest('#dvPreviewPrev')) { dvShow(dvAt - 1); return; }
+  if (e.target.closest('#dvPreviewNext')) { dvShow(dvAt + 1); return; }
+  var t = e.target.closest('[data-dv-preview]');
+  if (t) dvOpenPreview(t);
+});
+document.addEventListener('keydown', function (e) {
+  if (dvSet.length < 2 || !document.getElementById('dvPreviewModal').classList.contains('show')) return;
+  if (e.key === 'ArrowLeft') dvShow(dvAt - 1);
+  if (e.key === 'ArrowRight') dvShow(dvAt + 1);
+});
+// Double-click anywhere on a card (not on its buttons) opens the card's files.
+document.addEventListener('dblclick', function (e) {
+  var card = e.target.closest('.dv-id');
+  if (!card || e.target.closest('a, button, form, [data-dv-preview], details')) return;
+  var t = card.querySelector('[data-dv-preview]');
+  if (t) { window.getSelection && window.getSelection().removeAllRanges(); dvOpenPreview(t); }
+});
+// Documents: Cards | List. The choice is remembered in this browser.
+(function () {
+  var KEY = 'hr.docsView';
+  function show(view) {
+    var cards = document.getElementById('dvCards'), list = document.getElementById('dvList');
+    if (!cards || !list) return;
+    var isList = view === 'list';
+    cards.classList.toggle('d-none', isList);
+    list.classList.toggle('d-none', !isList);
+    document.querySelectorAll('[data-dv-view]').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-dv-view') === (isList ? 'list' : 'cards')); });
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-dv-view]');
+    if (!b) return;
+    var view = b.getAttribute('data-dv-view');
+    try { localStorage.setItem(KEY, view); } catch (err) {}
+    show(view);
+  });
+  document.addEventListener('DOMContentLoaded', function () {
+    var saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (err) {}
+    show(saved === 'list' ? 'list' : 'cards');
+  });
+})();
+</script>
+HR_DV_JS;
 require_once __DIR__ . '/includes/hr_layout_footer.php';

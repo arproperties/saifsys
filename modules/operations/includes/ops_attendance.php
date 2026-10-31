@@ -47,6 +47,8 @@
  * entered with a check-in already on it is left as HR wrote it.
  */
 
+require_once dirname(__DIR__, 3) . '/hr/includes/hr_schedule_helper.php';
+
 /**
  * The employee record behind a signed-in user, or null.
  *
@@ -70,6 +72,30 @@ function ops_attendance_employee(PDO $conn, int $userId): ?array
 /** How many days back the app asks about a forgotten check out. Older is HR's. */
 const OPS_ATTENDANCE_UNCLOSED_DAYS = 7;
 
+/**
+ * Night shifts. A check in from noon on can still be open after midnight (17:00
+ * to 03:00): until it is this many hours old it is the shift in progress, not a
+ * forgotten day. A morning check in never runs over, so a forgotten check out
+ * from the day before is still asked about the usual way.
+ */
+const OPS_ATTENDANCE_NIGHT_FROM = '12:00';
+const OPS_ATTENDANCE_NIGHT_MAX_HOURS = 14;
+
+/**
+ * A forgotten check out of a night shift: the time they say they left may be
+ * up to this many hours after the check in. Longer than the limit above on
+ * purpose: this is a time typed in, and the day still waits for HR, whereas a
+ * Check out tap approves itself.
+ */
+const OPS_ATTENDANCE_FORGOT_MAX_HOURS = 24;
+
+/**
+ * Double duty (09:00 to 13:00 and 18:00 to 03:00) checks in in the morning, so
+ * the noon rule above does not see it. When the day's schedule ends after
+ * midnight, the shift stays open until that end plus these hours.
+ */
+const OPS_ATTENDANCE_SCHEDULED_GRACE_HOURS = 3;
+
 /** The attendance row for the day a moment falls on (default: now), or null. */
 function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null): ?array
 {
@@ -77,7 +103,60 @@ function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null):
     $stmt = $conn->prepare("SELECT * FROM attendance WHERE employee_id = ? AND work_date = ? LIMIT 1");
     $stmt->execute([$employeeId, $today]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ?: null;
+    // Nothing yet today: yesterday's night shift may still be going.
+    return $row ?: ops_attendance_night_open($conn, $employeeId, $at);
+}
+
+/**
+ * When $day's scheduled work ends after midnight, that end as a timestamp on
+ * the next morning; otherwise null (no schedule, a day off, or a day shift).
+ */
+function ops_attendance_scheduled_overnight_end(PDO $conn, int $employeeId, string $day): ?int
+{
+    // Asked about a day they checked in on, so the weekly off does not apply:
+    // the schedule as saved.
+    $summary = hr_schedule_summary($conn, $employeeId, $day, $day);
+    $ranges = hr_schedule_ranges($summary['days'][$day]['label'] ?? '');
+    $last = $ranges ? $ranges[count($ranges) - 1] : null;
+    if (!$last || !$last['overnight']) {
+        return null;
+    }
+    $end = strtotime($day . ' ' . $last['end'] . ' +1 day');
+    return $end === false ? null : $end;
+}
+
+/**
+ * Yesterday's shift, if it is a night shift still in progress at $at: checked
+ * in from noon on, not checked out, undecided, and under the night limit. A
+ * morning check in counts too when that day's schedule runs past midnight
+ * (double duty), until the scheduled end plus the grace hours.
+ */
+function ops_attendance_night_open(PDO $conn, int $employeeId, ?string $at = null): ?array
+{
+    $at = $at ?? date('Y-m-d H:i:s');
+    $yesterday = date('Y-m-d', strtotime(substr($at, 0, 10) . ' -1 day'));
+    $stmt = $conn->prepare("
+        SELECT * FROM attendance
+        WHERE employee_id = ? AND work_date = ?
+          AND check_in IS NOT NULL AND check_out IS NULL AND status = 'pending'
+        LIMIT 1
+    ");
+    $stmt->execute([$employeeId, $yesterday]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return null;
+    }
+    $started = strtotime($yesterday . ' ' . $row['check_in']);
+    $nowTs = strtotime($at);
+    if ($started === false) {
+        return null;
+    }
+    if (substr((string)$row['check_in'], 0, 5) >= OPS_ATTENDANCE_NIGHT_FROM
+        && $nowTs - $started <= OPS_ATTENDANCE_NIGHT_MAX_HOURS * 3600) {
+        return $row;
+    }
+    $end = ops_attendance_scheduled_overnight_end($conn, $employeeId, $yesterday);
+    return ($end !== null && $nowTs <= $end + OPS_ATTENDANCE_SCHEDULED_GRACE_HOURS * 3600) ? $row : null;
 }
 
 /**
@@ -89,11 +168,14 @@ function ops_attendance_current(PDO $conn, int $employeeId, ?string $at = null):
 function ops_attendance_unclosed(PDO $conn, int $employeeId, ?string $at = null): ?array
 {
     $today = substr($at ?? date('Y-m-d H:i:s'), 0, 10);
+    // A night shift still in progress is not a forgotten day: it closes with Check out.
+    $night = ops_attendance_night_open($conn, $employeeId, $at);
     $stmt = $conn->prepare("
         SELECT * FROM attendance
         WHERE employee_id = ? AND work_date < ? AND work_date >= ?
           AND check_in IS NOT NULL AND check_out IS NULL
           AND source = 'self' AND status = 'pending'
+          AND id <> ?
         ORDER BY work_date DESC
         LIMIT 1
     ");
@@ -101,6 +183,7 @@ function ops_attendance_unclosed(PDO $conn, int $employeeId, ?string $at = null)
         $employeeId,
         $today,
         date('Y-m-d', strtotime($today . ' -' . OPS_ATTENDANCE_UNCLOSED_DAYS . ' days')),
+        $night ? (int)$night['id'] : 0,
     ]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ?: null;
@@ -241,6 +324,11 @@ function ops_attendance_check_out(PDO $conn, array $employee, int $userId, ?stri
     $in = strtotime($row['work_date'] . ' ' . $row['check_in']);
     // Never before the check in it closes.
     $outTs = max((int)strtotime(date('Y-m-d H:i:00', strtotime($at))), (int)$in);
+    // The same minute as the check in (a double tap, or a phone clock behind) is not a day's work.
+    if (date('H:i', $outTs) === substr((string)$row['check_in'], 0, 5)) {
+        return ['ok' => false, 'error' => 'same_time',
+                'message' => 'You checked in at ' . substr((string)$row['check_in'], 0, 5) . '. Check out cannot be at the same time — try again in a minute.'];
+    }
     $hours = $in !== false ? round(max(0, $outTs - $in) / 3600, 2) : null;
     // A check out closes a complete day, so it approves itself (pending only;
     // anything HR already set is left alone).
@@ -294,10 +382,16 @@ function ops_attendance_close_previous(PDO $conn, array $employee, int $userId, 
     }
 
     $checkIn = substr((string)$row['check_in'], 0, 5);
-    if ($time <= $checkIn) {
+    $leftTs = strtotime($workDate . ' ' . $time);
+    $inTs = strtotime($workDate . ' ' . $checkIn);
+    // A night shift (checked in from noon on) may end the next day, within the forgotten limit.
+    if ($time < $checkIn && $checkIn >= OPS_ATTENDANCE_NIGHT_FROM && $leftTs + 86400 - $inTs <= OPS_ATTENDANCE_FORGOT_MAX_HOURS * 3600) {
+        $leftTs += 86400;
+    }
+    if ($leftTs <= $inTs) {
         return ['ok' => false, 'error' => 'bad_time', 'message' => 'The time you left must be after your check in at ' . $checkIn . '.'];
     }
-    $hours = round((strtotime($workDate . ' ' . $time) - strtotime($workDate . ' ' . $checkIn)) / 3600, 2);
+    $hours = round(($leftTs - $inTs) / 3600, 2);
 
     $what = 'Check out time entered by staff on ' . date('j M', strtotime($at)) . ' (forgot to check out)';
     $notes = trim((string)($row['notes'] ?? ''));
