@@ -24,7 +24,9 @@
  *
  *   ?module=legal&action=at_risk&days=30
  *        leases that may need a legal case: a cheque bounced or escalated to legal and not
- *        replaced, or rent overdue more than `days` (1-365). Up to 40, worst first.
+ *        replaced, or rent overdue more than `days` (1-365). Every one, worst first (Reem pages
+ *        them). Test leases are left out, as on saifsys's own Leases page: a building named
+ *        "... test building ..." or a lease number starting TESTDEV-.
  *
  * Left out on purpose: ID, passport and visa numbers, bank account details, documents.
  * Money comes from modules/realestate/includes/lease_financial_summary_service.php and
@@ -385,13 +387,13 @@ if ($action === 'at_risk') {
 
     // Candidates cheaply first: a bounced or escalated cheque, or a charge unpaid since before the cutoff.
     $ids = [];
-    foreach (jarvis_legal_all($conn, "SELECT DISTINCT lease_id FROM re_post_dated_cheques WHERE status IN ('bounced', 'legal_escalated') LIMIT 200") as $r) {
+    foreach (jarvis_legal_all($conn, "SELECT DISTINCT lease_id FROM re_post_dated_cheques WHERE status IN ('bounced', 'legal_escalated') LIMIT 2000") as $r) {
         $ids[(int)$r['lease_id']] = true;
     }
-    foreach (jarvis_legal_all($conn, "SELECT DISTINCT lease_id FROM re_invoices WHERE status <> 'cancelled' AND outstanding_amount > 0.005 AND due_date < ? LIMIT 300", [$cutoff]) as $r) {
+    foreach (jarvis_legal_all($conn, "SELECT DISTINCT lease_id FROM re_invoices WHERE status <> 'cancelled' AND outstanding_amount > 0.005 AND due_date < ? LIMIT 2000", [$cutoff]) as $r) {
         $ids[(int)$r['lease_id']] = true;
     }
-    foreach (jarvis_legal_all($conn, "SELECT DISTINCT lease_id FROM re_lease_installments WHERE status IN ('pending', 'overdue') AND installment_date < ? LIMIT 300", [$cutoff]) as $r) {
+    foreach (jarvis_legal_all($conn, "SELECT DISTINCT lease_id FROM re_lease_installments WHERE status IN ('pending', 'overdue') AND installment_date < ? LIMIT 2000", [$cutoff]) as $r) {
         $ids[(int)$r['lease_id']] = true;
     }
     [$in, $params] = jarvis_legal_in(array_keys($ids));
@@ -404,7 +406,8 @@ if ($action === 'at_risk') {
         JOIN re_units u ON u.id = l.unit_id
         JOIN re_buildings b ON b.id = u.building_id
         JOIN re_tenants t ON t.id = l.tenant_id
-        WHERE l.id IN ($in) AND l.status IN ('active', 'expired', 'terminated', 'has_legal_case')", $params);
+        WHERE l.id IN ($in) AND l.status IN ('active', 'expired', 'terminated', 'has_legal_case')
+          AND b.name NOT LIKE '%test building%' AND COALESCE(l.lease_number, '') NOT LIKE 'TESTDEV-%'", $params);
 
     $out = [];
     foreach ($leases as $r) {
@@ -429,7 +432,7 @@ if ($action === 'at_risk') {
         ];
     }
     usort($out, static fn($a, $b) => [$b['bounced'] > 0, $b['overdue'] + $b['bounced_amount']] <=> [$a['bounced'] > 0, $a['overdue'] + $a['bounced_amount']]);
-    jarvis_api_send(['ok' => true, 'days' => $days, 'leases' => array_slice($out, 0, 40)]);
+    jarvis_api_send(['ok' => true, 'days' => $days, 'leases' => $out]);
 }
 
 jarvis_api_error('not_found', 'Unknown Legal action.', 404);
