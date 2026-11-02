@@ -77,7 +77,9 @@ if ($action === 'renewals_due') {
                t.first_name, t.last_name, t.company_name, LOWER(TRIM(t.email)) AS email,
                (SELECT rw.status FROM re_lease_renewal_workflows rw
                  WHERE rw.lease_id = l.id AND rw.status NOT IN ('rejected', 'cancelled')
-                 ORDER BY rw.id DESC LIMIT 1) AS saifsys_renewal
+                 ORDER BY rw.id DESC LIMIT 1) AS saifsys_renewal,
+               (SELECT rw.status FROM re_lease_renewal_workflows rw
+                 WHERE rw.lease_id = l.id ORDER BY rw.id DESC LIMIT 1) AS saifsys_last
         FROM re_leases l
         JOIN re_units u ON u.id = l.unit_id
         JOIN re_buildings b ON b.id = u.building_id
@@ -109,6 +111,8 @@ if ($action === 'renewals_due') {
             'payment_method' => (string)($r['payment_method'] ?? ''),
             'ejari' => (string)($r['ejari_registration_number'] ?? ''),
             'saifsys_renewal' => $r['saifsys_renewal'] !== null ? (string)$r['saifsys_renewal'] : null,
+            // Staff rejected the renewal (the tenant is leaving): Reem lists it apart, not as not started.
+            'saifsys_rejected' => $r['saifsys_renewal'] === null && $r['saifsys_last'] === 'rejected',
         ], $st->fetchAll(PDO::FETCH_ASSOC)),
     ]);
 }
