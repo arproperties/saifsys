@@ -25,8 +25,8 @@ function calc_hours($in, $out){
 
 $attStatuses = hr_attendance_statuses();
 $attStatusKeys = hr_attendance_status_keys();
-// Also shown for a day off with no attendance row (hr_attendance_off_days); Day Off is never saved.
-$attOffStatuses = ['weekly_off' => 'Weekly Off', 'day_off' => 'Day Off'];
+// Also shown for a weekly off added with Add Weekly Off and nothing recorded (hr_attendance_off_days).
+$attOffStatuses = ['weekly_off' => 'Weekly Off'];
 $attAccept = '.' . implode(',.', hr_attendance_attach_allowed_extensions());
 
 /* ---------- Quick Actions (POST) ---------- */
@@ -342,7 +342,7 @@ if ($offRows) {
     usort($rows, static fn($a, $b) => [$b['work_date'], $a['full_name']] <=> [$a['work_date'], $b['full_name']]);
     $rows = array_slice($rows, 0, 500);
 }
-$statusCardColors = ['pending' => '#6c757d', 'approved' => '#198754', 'absent' => '#dc3545', 'half' => '#e0a800', 'on_leave' => '#0aa2c0', 'excused_absent' => '#fd7e14', 'weekly_off' => '#64748b', 'day_off' => '#7c6fb0'];
+$statusCardColors = ['pending' => '#6c757d', 'approved' => '#198754', 'absent' => '#dc3545', 'half' => '#e0a800', 'on_leave' => '#0aa2c0', 'excused_absent' => '#fd7e14', 'weekly_off' => '#64748b'];
 $statusCardQuery = $_GET;
 unset($statusCardQuery['status']);
 
@@ -364,7 +364,6 @@ $pageStyles = hr_attendance_status_css() . '
 .att-status-cell .badge{font-size:.82rem;padding:.45em .8em;border-radius:6px}
 .att-company-cell{--bs-table-bg:#f7f5ef}
 .att-off-row td{color:var(--hr-text-muted)}
-.att-badge-dayoff{background:#7c6fb0;color:#fff}
 ';
 ?>
 <?php require_once __DIR__ . '/includes/hr_layout_header.php'; ?>
@@ -646,9 +645,9 @@ echo hr_ui_page_header(
               <td>—</td>
               <td>—</td>
               <td class="att-status-cell">
-                <span class="badge <?= $r['status'] === 'weekly_off' ? 'hr-badge-weekly-off' : 'att-badge-dayoff' ?>"><?= h($attOffStatuses[$r['status']]) ?></span>
+                <span class="badge hr-badge-weekly-off"><?= h($attOffStatuses[$r['status']]) ?></span>
               </td>
-              <td><span class="text-muted small"><?= $r['status'] === 'weekly_off' ? 'Weekly off' : 'Schedule' ?></span></td>
+              <td><span class="text-muted small">Weekly off</span></td>
               <td></td>
               <td><span class="text-muted small">—</span></td>
               <td class="att-actions-cell"></td>

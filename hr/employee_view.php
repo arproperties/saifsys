@@ -9,6 +9,7 @@ require_once __DIR__ . '/../lib/Guard.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_schedule_helper.php';
 require_once __DIR__ . '/includes/hr_weekly_off.php';
+require_once __DIR__ . '/includes/hr_weekly_off_plans.php';
 require_once __DIR__ . '/includes/hr_document_file_helper.php';
 require_once __DIR__ . '/includes/hr_loans.php';
 require_once __DIR__ . '/includes/employee_view/load_employee.php';
@@ -7978,6 +7979,18 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     </form>
                                   <?php endif; ?>
                                 </div>
+                                <?php $woPlans = hr_weekly_off_plans_for_employee($conn, (int)$emp['id']); ?>
+                                <?php if ($woPlans): ?>
+                                  <div class="alert alert-info py-2 small mb-3">
+                                    <?php foreach ($woPlans as $woPlan): $woEvery = max(1, (int)$woPlan['repeat_weeks']); ?>
+                                      <div>
+                                        <i class="bi bi-info-circle me-1"></i>Weekly off of <strong><?= htmlspecialchars($woDayNames[(int)$woPlan['weekday']] ?? '') ?></strong><?= $woEvery > 1 ? ' (every ' . $woEvery . ' weeks)' : '' ?>
+                                        from <?= htmlspecialchars(date('j M Y', strtotime($woPlan['date_from']))) ?> to <?= htmlspecialchars(date('j M Y', strtotime($woPlan['date_to']))) ?>
+                                        is set from the Attendance module.
+                                      </div>
+                                    <?php endforeach; ?>
+                                  </div>
+                                <?php endif; ?>
 
                                 <div class="row row-cols-2 row-cols-md-4 row-cols-xl-7 g-2">
                                   <?php foreach ($schedDays as $sd => $sdNum):

@@ -267,13 +267,11 @@ function hr_attendance_daily_totals(array $rows): array
 }
 
 /**
- * Days off with no attendance row, for the Attendance list: the weekly off
- * ('weekly_off': from Add Weekly Off on the Attendance page, or where HR has set
- * one for the employee or company; the Sunday fallback is not shown) or a day
- * the saved schedule has as Off
- * ('day_off'). Days on
- * approved leave, or before joining / after leaving, are left out. Only up to
- * today, and at most a year back from the end date.
+ * Weekly off days with no attendance row, for the Attendance list: only what
+ * was added with Add Weekly Off on the Attendance page (hr_weekly_off_plans.php);
+ * schedules and the weekly off settings are not used here. Days on approved
+ * leave, or before joining / after leaving, are left out. Only up to today, and
+ * at most a year back from the end date.
  * Display only: nothing is written, so attendance and payroll are unchanged.
  *
  * @return list<array{employee_id:int, work_date:string, status:string}>
@@ -317,11 +315,12 @@ function hr_attendance_off_days(PDO $conn, array $employeeIds, string $from, str
         if (!isset($meta[$eid])) {
             continue;
         }
+        if (empty($plans[$eid])) {
+            continue;
+        }
         $m = $meta[$eid];
-        $companyId = isset($m['company_id']) ? (int)$m['company_id'] : null;
         $joined = $valid($m['date_joined'] ?? null);
         $left = $valid($m['last_working_day'] ?? null) ?? $valid($m['exit_date'] ?? null);
-        $sched = hr_schedule_summary($conn, $eid, $from, $to);
         for ($d = new DateTimeImmutable($from); $d->format('Y-m-d') <= $to; $d = $d->modify('+1 day')) {
             $ymd = $d->format('Y-m-d');
             if (isset($taken[$eid][$ymd]) || ($joined && $ymd < $joined) || ($left && $ymd > $left)) {
@@ -332,20 +331,12 @@ function hr_attendance_off_days(PDO $conn, array $employeeIds, string $from, str
                     continue 2;
                 }
             }
-            $setDay = hr_weekly_off_override($conn, $eid, $ymd)
-                ?? ($companyId ? (hr_weekly_off_entry_on(hr_weekly_off_history($conn, 'weekly_off.c' . $companyId), $ymd)['day'] ?? null) : null);
             $dow = (int)$d->format('N');
-            $planned = false;
             foreach ($plans[$eid] ?? [] as $pl) {
                 if ($pl['weekday'] === $dow && hr_weekly_off_plan_hits($pl, $ymd)) {
-                    $planned = true;
+                    $out[] = ['employee_id' => $eid, 'work_date' => $ymd, 'status' => 'weekly_off'];
                     break;
                 }
-            }
-            if ($planned || ($setDay !== null && $dow === $setDay)) {
-                $out[] = ['employee_id' => $eid, 'work_date' => $ymd, 'status' => 'weekly_off'];
-            } elseif (strcasecmp(trim((string)($sched['days'][$ymd]['label'] ?? '')), 'Off') === 0) {
-                $out[] = ['employee_id' => $eid, 'work_date' => $ymd, 'status' => 'day_off'];
             }
         }
     }

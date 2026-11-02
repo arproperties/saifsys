@@ -145,6 +145,24 @@ function hr_weekly_off_plan_remove_employee(PDO $conn, int $planId, int $employe
 }
 
 /**
+ * One employee's groups that have not ended by $onOrAfter (today when not
+ * given), soonest first: list of ['weekday', 'repeat_weeks', 'date_from', 'date_to'].
+ * For the note on the profile's Schedule tab.
+ */
+function hr_weekly_off_plans_for_employee(PDO $conn, int $employeeId, ?string $onOrAfter = null): array
+{
+    if (!hr_weekly_off_plans_ready($conn)) {
+        return [];
+    }
+    $st = $conn->prepare("SELECT w.weekday, w.repeat_weeks, w.date_from, w.date_to
+        FROM hr_weekly_off_plans w JOIN hr_weekly_off_plan_employees pe ON pe.plan_id = w.id
+        WHERE pe.employee_id = ? AND w.date_to >= ?
+        ORDER BY w.date_from, w.id");
+    $st->execute([$employeeId, $onOrAfter ?? date('Y-m-d')]);
+    return $st->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
  * The weekdays planned for each employee, for a date range:
  * [employee_id => list of ['weekday', 'date_from', 'date_to']].
  */
