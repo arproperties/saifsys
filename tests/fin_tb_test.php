@@ -68,6 +68,7 @@ if (count($companies) < 2) {
 
 $conn->beginTransaction();
 try {
+    fin_test_clear_extras($conn, $a, $b);
     $conn->prepare("DELETE FROM fin_ledger_entries WHERE company_id IN (?, ?)")->execute([$a, $b]);
     $conn->prepare("DELETE FROM fin_vouchers WHERE company_id IN (?, ?)")->execute([$a, $b]);
     $conn->prepare("UPDATE fin_coa_accounts SET parent_id = NULL WHERE company_id IN (?, ?)")->execute([$a, $b]);

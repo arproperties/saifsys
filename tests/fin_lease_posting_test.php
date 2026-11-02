@@ -108,6 +108,7 @@ if (!$a || !$b) {
 
 $conn->beginTransaction();
 try {
+    fin_test_clear_extras($conn, $a, $b);
     $conn->prepare("DELETE FROM fin_ledger_entries WHERE company_id IN (?, ?)")->execute([$a, $b]);
     $conn->prepare("DELETE FROM fin_voucher_history WHERE company_id IN (?, ?)")->execute([$a, $b]);
     $conn->prepare("DELETE FROM fin_vouchers WHERE company_id IN (?, ?)")->execute([$a, $b]);
