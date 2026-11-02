@@ -99,6 +99,12 @@ function amp_page_css(): string
 .rm-page .amp-item:hover .amp-dmg-btn { opacity: 1; }
 .amp-item .form-check-input { width: 1.3rem; height: 1.3rem; margin-top: .1rem; }
 .amp-photo img { width: 100%; height: 110px; object-fit: cover; border-radius: 8px; border: 1px solid var(--rm-border); }
+.amp-video video { width: 100%; height: 170px; background: #000; border-radius: 8px; border: 1px solid var(--rm-border); }
+.amp-vbtn { position: relative; overflow: hidden; }
+.amp-vbtn .amp-vbar { position: absolute; top: 0; bottom: 0; left: 0; width: 0; background: rgba(13,110,253,.22); transition: width .25s ease; }
+.amp-vbtn .amp-vlbl { position: relative; }
+.amp-vbtn.is-up { opacity: 1; font-weight: 600; }
+.amp-vbtn.is-up .amp-vbar { background: linear-gradient(90deg, rgba(13,110,253,.25), rgba(13,110,253,.4)); }
 .amp-facts { display: flex; flex-wrap: wrap; gap: .4rem 1.6rem; font-size: .9rem; }
 .amp-facts .k { color: var(--rm-muted); font-size: .78rem; display: block; }
 .amp-row { display: flex; gap: .75rem; align-items: flex-start; padding: .8rem 0; border-top: 1px dashed var(--rm-border); }
@@ -142,6 +148,7 @@ function amp_inspection_section(PDO $conn, int $companyId, int $bookingId, strin
     }
     $items = ars_move_inspection_items($conn, (int)$insp['id']);
     $photos = ars_move_inspection_photos($conn, (int)$insp['id']);
+    $videos = ars_move_inspection_videos($conn, (int)$insp['id']);
     $damageCosts = [];
     if ($type === 'out') {
         $dc = $conn->prepare("SELECT d.id, d.cost FROM ars_move_out_damages d JOIN ars_move_inspection_items i ON i.damage_id = d.id WHERE i.inspection_id = ?");
@@ -181,13 +188,13 @@ function amp_inspection_section(PDO $conn, int $companyId, int $bookingId, strin
             // Move-out: an item can be marked Damaged (recorded in Damages & Charges)
             $dmg = $type === 'out' && !empty($it['is_damaged']);
             $dmgCost = $dmg ? ($damageCosts[(int)$it['damage_id']] ?? false) : false;
-            // "Photos taken": only once a photo is uploaded
-            $needPhoto = !$done && ars_move_inspection_is_photo_item((string)$it['item_name']) && !$photos && !(int)$it['is_completed'];
+            // "Photos taken": only once a photo or video is uploaded
+            $needPhoto = !$done && ars_move_inspection_is_photo_item((string)$it['item_name']) && !$photos && !$videos && !(int)$it['is_completed'];
             $h .= '<div class="amp-item ' . ($it['is_completed'] ? 'is-done ' : '') . ($dmg ? 'is-damaged' : '') . '" data-item-id="' . (int)$it['id'] . '"' . (ars_move_inspection_is_photo_item((string)$it['item_name']) ? ' data-photo="1"' : '') . '>'
                 . '<div class="form-check d-flex gap-2 align-items-start mb-0"><input class="form-check-input flex-shrink-0 amp-check" type="checkbox" id="ai' . (int)$it['id'] . '" '
                 . ($it['is_completed'] ? 'checked ' : '') . ($done || $needPhoto || $dmg ? 'disabled' : '') . '>'
                 . '<label class="form-check-label flex-grow-1" for="ai' . (int)$it['id'] . '">' . $e($it['item_name'])
-                . ($needPhoto ? ' <a href="#ampPhotos" class="badge text-bg-warning text-decoration-none fw-normal"><i class="bi bi-camera"></i> Upload photos first</a>' : '')
+                . ($needPhoto ? ' <a href="#ampPhotos" class="badge text-bg-warning text-decoration-none fw-normal"><i class="bi bi-camera"></i> Upload a photo or video first</a>' : '')
                 . (!$it['is_required'] ? ' <span class="badge text-bg-light border fw-normal">Optional</span>' : '')
                 . (!empty($it['item_description']) ? '<span class="d-block small text-muted">' . $e($it['item_description']) . '</span>' : '') . '</label>'
                 . ($dmg ? ' <span class="badge text-bg-danger fw-normal"><i class="bi bi-exclamation-triangle"></i> Damaged · ' . ($dmgCost === false || $dmgCost === null ? 'not costed' : number_format((float)$dmgCost, 2) . ' AED') . '</span>' : '')
@@ -216,6 +223,25 @@ function amp_inspection_section(PDO $conn, int $companyId, int $bookingId, strin
         $h .= '<form id="ampPhotoForm" class="row g-2 align-items-end mt-1"><div class="col-md-5"><input class="form-control form-control-sm" type="file" name="photos[]" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple required><div class="form-text">JPG, JPEG, PNG or WEBP · max 10 MB each</div></div>'
             . '<div class="col-md-5"><input class="form-control form-control-sm" type="text" name="caption" maxlength="255" placeholder="Room / note, e.g. Bedroom wall"></div>'
             . '<div class="col-md-2"><button class="btn btn-sm btn-outline-primary w-100" type="submit"><i class="bi bi-upload me-1"></i>Upload</button></div></form>';
+    }
+
+    // Videos (uploaded in chunks with a progress bar, see amp_page_js)
+    $h .= '<div class="mt-3 fw-semibold small" id="ampVideos"><i class="bi bi-camera-video me-1"></i>Videos (' . count($videos) . ')</div><div class="row g-2 mt-1">';
+    foreach ($videos as $v) {
+        $src = 'move_inspection_video.php?id=' . (int)$v['id'];
+        $h .= '<div class="col-12 col-sm-6 col-md-4 amp-photo amp-video"><video src="' . $src . '" controls preload="metadata" playsinline></video>'
+            . '<div class="d-flex justify-content-between align-items-start gap-1 mt-1"><span class="small text-muted text-truncate" title="' . $e($v['original_name']) . '">' . $e($v['caption'] ?: $v['original_name'])
+            . ' · ' . $e(ars_move_inspection_video_size_label((int)$v['file_size'])) . '</span><span class="d-flex gap-2 flex-shrink-0">'
+            . '<a href="' . $src . '&amp;download=1" class="small" title="Download"><i class="bi bi-download"></i></a>'
+            . (!$done ? '<button type="button" class="btn btn-link btn-sm text-danger p-0 amp-video-del" data-video-id="' . (int)$v['id'] . '" title="Remove"><i class="bi bi-trash"></i></button>' : '')
+            . '</span></div></div>';
+    }
+    $h .= '</div>';
+    if (!$done) {
+        $h .= '<form id="ampVideoForm" class="row g-2 align-items-end mt-1" data-max="' . ARS_MOVE_VIDEO_MAX_BYTES . '"><div class="col-md-5"><input class="form-control form-control-sm" type="file" name="video" accept=".mp4,.mov,.m4v,.3gp,.webm,video/mp4,video/quicktime,video/x-m4v,video/3gpp,video/webm" multiple required><div class="form-text">MP4, MOV, M4V, 3GP or WEBM · max ' . (int)(ARS_MOVE_VIDEO_MAX_BYTES / 1048576) . ' MB each</div></div>'
+            . '<div class="col-md-5"><input class="form-control form-control-sm" type="text" name="caption" maxlength="255" placeholder="Room / note, e.g. Walk-through of the unit"></div>'
+            . '<div class="col-md-2"><button class="btn btn-sm btn-outline-primary w-100 amp-vbtn" type="submit"><span class="amp-vbar" role="progressbar" aria-label="Video upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></span><span class="amp-vlbl"><i class="bi bi-camera-video me-1"></i>Upload video</span></button></div>'
+            . '<div class="col-12 small d-none" id="ampVideoStatus"><span class="amp-vtext"></span> <button type="button" class="btn btn-link btn-sm p-0 text-danger amp-vcancel">Cancel upload</button></div></form>';
     }
 
     // Finish
@@ -491,7 +517,7 @@ document.querySelectorAll(".amp-item").forEach(row => {
     // "Photos taken" needs a photo on this inspection (also checked by the server)
     const noPhoto = () => row.dataset.photo === "1" && check.checked && !document.querySelector(".amp-photo");
     const refuse = msg => { check.checked = false; row.classList.remove("is-done"); recount(); if (msg) alert(msg); };
-    const photoMsg = "Upload at least one photo first (Photos, below the checklist); then tick this item.";
+    const photoMsg = "Upload at least one photo or video first (below the checklist); then tick this item.";
     row.ampSave = () => noPhoto() ? (refuse(), Promise.reject(new Error(photoMsg))) : save().then(recount, e => { refuse(); throw e; });
     const ro = row.querySelector(".amp-rem-open"); if (ro) ro.addEventListener("click", () => { rem.hidden = false; ro.remove(); rem.focus(); });
     check.addEventListener("change", () => {
@@ -513,12 +539,12 @@ document.querySelectorAll(".amp-sec-all").forEach(btn => btn.addEventListener("c
     const all = [...btn.closest("[data-sec]").querySelectorAll(".amp-item")].filter(r => { const c = r.querySelector(".amp-check"); return !c.checked && !c.disabled; });
     const rows = all.filter(r => hasPhoto || r.dataset.photo !== "1");
     const skipped = all.length - rows.length;
-    if (!rows.length) { if (skipped) alert("Upload at least one photo first (Photos, below the checklist); then tick the photos item."); return; }
+    if (!rows.length) { if (skipped) alert("Upload at least one photo or video first (below the checklist); then tick the photos item."); return; }
     btn.disabled = true;
     const errors = [];
     rows.reduce((p, r) => p.then(() => { r.querySelector(".amp-check").checked = true; return r.ampSave().catch(e => { errors.push(e.message); }); }), Promise.resolve())
         .then(() => {
-            if (skipped) errors.push("The photos item is not ticked: upload at least one photo first (Photos, below the checklist).");
+            if (skipped) errors.push("The photos item is not ticked: upload at least one photo or video first (below the checklist).");
             if (errors.length) alert([...new Set(errors)].join("\n"));
         })
         .finally(() => { btn.disabled = false; });
@@ -539,6 +565,108 @@ if (ampPhotoForm) ampPhotoForm.addEventListener("submit", e => {
 document.querySelectorAll(".amp-photo-del").forEach(b => b.addEventListener("click", () => {
     if (!confirm("Remove this photo?")) return;
     ampFetch("ajax_move_inspection.php", { action: "delete_photo", photo_id: b.dataset.photoId }).then(d => { if (!d.success) throw new Error(d.error || "Could not remove"); ampReload(); }).catch(e => alert(e.message));
+}));
+// Videos: sent in chunks (init, chunk..., finish) so any size up to the limit uploads, with progress in the button
+const ampVideoForm = document.getElementById("ampVideoForm");
+if (ampVideoForm) {
+    const vMax = +ampVideoForm.dataset.max, vInput = ampVideoForm.querySelector("input[type=file]");
+    const vBtn = ampVideoForm.querySelector(".amp-vbtn"), vBar = vBtn.querySelector(".amp-vbar"), vLbl = vBtn.querySelector(".amp-vlbl");
+    const vStatus = document.getElementById("ampVideoStatus"), vText = vStatus.querySelector(".amp-vtext"), vCancelBtn = vStatus.querySelector(".amp-vcancel");
+    const vSize = n => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+    const vSleep = ms => new Promise(r => setTimeout(r, ms));
+    const vExt = /\.(mp4|mov|m4v|3gp|webm)$/i;
+    let vBusy = false, vCancelled = false, vXhrNow = null, vToken = null;
+    const vPaint = (pct, label, text) => {
+        pct = Math.max(0, Math.min(100, pct));
+        vBar.style.width = pct + "%"; vBar.setAttribute("aria-valuenow", String(Math.round(pct)));
+        vLbl.textContent = label; if (text !== undefined) vText.textContent = text;
+    };
+    const vReset = () => {
+        vBusy = false; vXhrNow = null; vToken = null;
+        vBtn.disabled = false; vBtn.classList.remove("is-up"); vInput.disabled = false;
+        vBar.style.width = "0"; vLbl.innerHTML = "<i class=\"bi bi-camera-video me-1\"></i>Upload video"; vStatus.classList.add("d-none");
+    };
+    window.addEventListener("beforeunload", e => { if (vBusy) { e.preventDefault(); e.returnValue = ""; } });
+    // One chunk through XHR (fetch cannot report upload progress); resolves with the JSON reply, rejects on network error
+    const vSend = (fd, onProgress) => new Promise((resolve, reject) => {
+        fd.append("_csrf", ampCtx.csrf); fd.append("booking_id", ampCtx.booking); fd.append("type", ampCtx.type);
+        const x = new XMLHttpRequest(); vXhrNow = x;
+        x.open("POST", "ajax_move_inspection.php"); x.timeout = 180000; x.withCredentials = true;
+        x.upload.onprogress = ev => { if (ev.lengthComputable) onProgress(ev.loaded / ev.total); };
+        x.onload = () => { try { resolve(JSON.parse(x.responseText)); } catch (e) { reject(new Error("Server error (" + x.status + ")")); } };
+        x.onerror = () => reject(new Error("Network error"));
+        x.ontimeout = () => reject(new Error("The server took too long to answer"));
+        x.onabort = () => reject(new Error("cancelled"));
+        x.send(fd);
+    });
+    const vUpload = async (file, caption, n, total) => {
+        const tag = total > 1 ? " (" + n + " of " + total + ")" : "";
+        const init = await ampFetch("ajax_move_inspection.php", { action: "video_init", name: file.name, size: file.size, caption: caption });
+        if (!init.success) throw new Error(init.error || "Could not start the upload");
+        vToken = init.token;
+        const cs = +init.chunk_size;
+        let offset = 0, fails = 0;
+        while (offset < file.size) {
+            if (vCancelled) throw new Error("cancelled");
+            const fd = new FormData();
+            fd.append("action", "video_chunk"); fd.append("token", vToken); fd.append("offset", String(offset));
+            fd.append("chunk", file.slice(offset, Math.min(offset + cs, file.size)), "chunk.bin");
+            let r = null;
+            try {
+                r = await vSend(fd, p => { const done = offset + p * Math.min(cs, file.size - offset); vPaint(done / file.size * 100, Math.floor(done / file.size * 100) + "%", "Uploading " + file.name + tag + ": " + vSize(done) + " of " + vSize(file.size)); });
+            } catch (e) { if (vCancelled) throw e; }
+            if (r && r.success) { offset = +r.received; fails = 0; continue; }
+            if (r && !r.resume) throw new Error(r.error || "Upload failed");
+            // Lost connection or a part to resend: wait, then continue from what the server has
+            if (++fails > 6) throw new Error("The connection keeps failing. Check the internet connection and upload the video again.");
+            if (r && typeof r.received === "number") offset = r.received;
+            vPaint(offset / file.size * 100, "Retrying…", "Connection problem, retrying (" + fails + " of 6)…");
+            await vSleep(1500 * fails);
+        }
+        if (vCancelled) throw new Error("cancelled");
+        vPaint(100, "Checking…", "Checking " + file.name + tag + "…");
+        let fin;
+        try { fin = await ampFetch("ajax_move_inspection.php", { action: "video_finish", token: vToken }); }
+        catch (e) { throw new Error("The connection dropped while saving " + file.name + ". Reload the page to see whether it was added."); }
+        vToken = null;
+        if (!fin.success) throw new Error(fin.error || "The video was not saved");
+    };
+    vCancelBtn.addEventListener("click", () => {
+        if (!vBusy || !confirm("Cancel the video upload?")) return;
+        vCancelled = true;
+        if (vXhrNow) vXhrNow.abort();
+    });
+    ampVideoForm.addEventListener("submit", async e => {
+        e.preventDefault();
+        if (vBusy) return;
+        const files = [...vInput.files];
+        if (!files.length) { alert("Choose a video first."); return; }
+        // Checked again on the server (type, real content and size)
+        const bad = files.filter(f => !vExt.test(f.name) || (f.type && f.type.indexOf("video/") !== 0 && f.type !== "application/octet-stream"));
+        if (bad.length) { alert("Only videos (MP4, MOV, M4V, 3GP or WEBM) can be uploaded:\n" + bad.map(f => "• " + f.name).join("\n")); return; }
+        const big = files.filter(f => f.size > vMax), empty = files.filter(f => f.size === 0);
+        if (big.length) { alert("Each video must be " + vSize(vMax) + " or smaller:\n" + big.map(f => "• " + f.name + " (" + vSize(f.size) + ")").join("\n")); return; }
+        if (empty.length) { alert("These files are empty:\n" + empty.map(f => "• " + f.name).join("\n")); return; }
+        vBusy = true; vCancelled = false;
+        vBtn.disabled = true; vBtn.classList.add("is-up"); vInput.disabled = true; vStatus.classList.remove("d-none");
+        const caption = ampVideoForm.caption.value;
+        let saved = 0; const errors = [];
+        for (let i = 0; i < files.length && !vCancelled; i++) {
+            vPaint(0, "0%", "Starting " + files[i].name + "…");
+            try { await vUpload(files[i], caption, i + 1, files.length); saved++; }
+            catch (err) { if (err.message !== "cancelled") errors.push(files[i].name + ": " + err.message); }
+            if (vCancelled && vToken) { await ampFetch("ajax_move_inspection.php", { action: "video_cancel", token: vToken }).catch(() => {}); }
+        }
+        vBusy = false;
+        if (errors.length) alert((saved ? saved + " video(s) uploaded. " : "") + "Not uploaded:\n" + errors.join("\n"));
+        if (saved) { ampReload(); return; }
+        vReset();
+        if (vCancelled) vInput.value = "";
+    });
+}
+document.querySelectorAll(".amp-video-del").forEach(b => b.addEventListener("click", () => {
+    if (!confirm("Remove this video?")) return;
+    ampFetch("ajax_move_inspection.php", { action: "delete_video", video_id: b.dataset.videoId }).then(d => { if (!d.success) throw new Error(d.error || "Could not remove"); ampReload(); }).catch(e => alert(e.message));
 }));
 const ampInspBtn = document.getElementById("ampInspComplete");
 if (ampInspBtn) ampInspBtn.addEventListener("click", () => {

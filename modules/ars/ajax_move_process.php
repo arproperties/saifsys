@@ -205,8 +205,14 @@ try {
                 if ((string)($rec['key_handover_date'] ?: $booking['check_in']) > amp_today()) {
                     $reply(false, 'The move-in date (' . date('d M Y', strtotime($rec['key_handover_date'] ?: $booking['check_in'])) . ') is in the future. Hand the keys over on that day, or change the move-in date.');
                 }
-                if (!amp_keys_summary(amp_keys($conn, $arsCompanyId, $bookingId))['rows']) {
-                    $reply(false, 'Enter at least one key or access card handed over (quantity above 0).');
+                // Quantity 0 is allowed (e.g. access code only, no physical key), but something must be recorded
+                $keyRows = amp_keys($conn, $arsCompanyId, $bookingId);
+                $handedSomething = amp_keys_summary($keyRows)['rows'] > 0;
+                foreach ($keyRows as $k) {
+                    $handedSomething = $handedSomething || trim((string)$k['card_numbers']) !== '';
+                }
+                if (!$handedSomething) {
+                    $reply(false, 'Enter a quantity, or the access code / card no. in the Card / Key No. column (quantity can stay 0 when there is no physical key).');
                 }
                 $upd('keys_handed_over = 1, keys_handed_over_at = NOW(), keys_handed_over_by = ?', [$userId]);
                 amp_log($conn, $arsCompanyId, $booking, 'move_in_keys', 'Keys & access handed over', '', $userId);

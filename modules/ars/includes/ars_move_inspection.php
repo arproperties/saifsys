@@ -78,6 +78,23 @@ function ars_move_inspection_ensure_schema(PDO $conn): void {
             INDEX idx_ars_mip_inspection (inspection_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+    // Videos of the unit's condition, next to the photos (uploaded in chunks, see "videos" below)
+    $conn->exec("
+        CREATE TABLE IF NOT EXISTS ars_move_inspection_videos (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            company_id INT NOT NULL,
+            inspection_id INT UNSIGNED NOT NULL,
+            original_name VARCHAR(255) NOT NULL,
+            stored_name VARCHAR(255) NOT NULL,
+            relative_path VARCHAR(500) NOT NULL,
+            file_size BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            mime_type VARCHAR(100) NULL,
+            caption VARCHAR(255) NULL,
+            uploaded_by INT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_ars_miv_inspection (inspection_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
     // Move-out: an item found damaged, linked to its row in Damages (ars_move_out_damages)
     try {
         if (!$conn->query("SHOW COLUMNS FROM ars_move_inspection_items LIKE 'is_damaged'")->fetch()) {
@@ -364,7 +381,7 @@ function ars_move_inspection_save_item(PDO $conn, array $inspection, int $itemId
         $it->execute([$itemId, (int)$inspection['id']]);
         $itemName = $it->fetchColumn();
         if ($itemName !== false && ars_move_inspection_is_photo_item((string)$itemName) && ars_move_inspection_photo_count($conn, (int)$inspection['id']) === 0) {
-            return ['success' => false, 'error' => 'Upload at least one photo first (Photos, below the checklist); then tick this item.'];
+            return ['success' => false, 'error' => 'Upload at least one photo or video first (below the checklist); then tick this item.'];
         }
     }
     $stmt = $conn->prepare("
@@ -405,9 +422,11 @@ function ars_move_inspection_sync_photo_items(PDO $conn, int $inspectionId, ?int
     return $st->rowCount();
 }
 
+/** Photos plus videos: either one counts for "Photos/videos taken". */
 function ars_move_inspection_photo_count(PDO $conn, int $inspectionId): int {
-    $st = $conn->prepare("SELECT COUNT(*) FROM ars_move_inspection_photos WHERE inspection_id = ?");
-    $st->execute([$inspectionId]);
+    ars_move_inspection_ensure_schema($conn);
+    $st = $conn->prepare("SELECT (SELECT COUNT(*) FROM ars_move_inspection_photos WHERE inspection_id = ?) + (SELECT COUNT(*) FROM ars_move_inspection_videos WHERE inspection_id = ?)");
+    $st->execute([$inspectionId, $inspectionId]);
     return (int)$st->fetchColumn();
 }
 
@@ -688,6 +707,357 @@ function ars_move_inspection_photo_delete(PDO $conn, array $inspection, int $pho
     $conn->prepare("DELETE FROM ars_move_inspection_photos WHERE id = ? AND inspection_id = ?")
         ->execute([$photoId, (int)$inspection['id']]);
     // Last photo removed: "Photos taken" is no longer true
+    if (ars_move_inspection_photo_count($conn, (int)$inspection['id']) === 0) {
+        $conn->prepare("UPDATE ars_move_inspection_items SET is_completed = 0, completed_at = NULL, completed_by = NULL WHERE inspection_id = ? AND is_completed = 1 AND item_name LIKE '%photo%'")
+            ->execute([(int)$inspection['id']]);
+    }
+    $abs = dirname(__DIR__, 3) . '/' . ltrim((string)$rel, '/');
+    if (is_file($abs)) {
+        @unlink($abs);
+    }
+    return ['success' => true, 'error' => null];
+}
+
+// ---------------------------------------------------------------- videos
+// A video is sent in small chunks (each well under upload_max_filesize / post_max_size),
+// so a large phone video uploads on any server and the page can show real progress.
+// init -> chunk (repeated, in order) -> finish; the file is only listed once finish
+// has checked the whole file. Unfinished uploads sit in _tmp and are swept after 12 hours.
+
+const ARS_MOVE_VIDEO_MAX_BYTES = 200 * 1024 * 1024;
+const ARS_MOVE_VIDEO_MAX_PER_INSPECTION = 10;
+
+/**
+ * Accepted video formats: ext => [MIME types the file content may be detected as, MIME to serve].
+ * MP4 / MOV / M4V / 3GP are the same container family, so detection can name any of them.
+ */
+function ars_move_inspection_video_types(): array {
+    $iso = ['video/mp4', 'video/x-m4v', 'video/quicktime', 'video/3gpp', 'video/3gpp2', 'application/mp4'];
+    return [
+        'mp4' => [$iso, 'video/mp4'],
+        'm4v' => [$iso, 'video/mp4'],
+        // H.264 .mov files play in Chrome / Edge only when served as MP4
+        'mov' => [$iso, 'video/mp4'],
+        '3gp' => [$iso, 'video/3gpp'],
+        'webm' => [['video/webm', 'video/x-matroska'], 'video/webm'],
+    ];
+}
+
+/** The file's first bytes must be a real video container of that kind (not just a renamed file). */
+function ars_move_inspection_video_signature_ok(string $head, string $ext): bool {
+    if (strlen($head) < 12) {
+        return false;
+    }
+    if ($ext === 'webm') {
+        return substr($head, 0, 4) === "\x1A\x45\xDF\xA3";
+    }
+    $box = substr($head, 4, 4);
+    // Older QuickTime files can start with a moov / mdat / wide atom instead of ftyp
+    return $box === 'ftyp' || ($ext === 'mov' && in_array($box, ['moov', 'mdat', 'wide', 'free', 'skip', 'pnot'], true));
+}
+
+function ars_move_inspection_ini_bytes(string $key): int {
+    $v = trim((string)ini_get($key));
+    if ($v === '' || $v === '-1' || $v === '0') {
+        return PHP_INT_MAX;
+    }
+    $n = (int)$v;
+    switch (strtolower(substr($v, -1))) {
+        case 'g': $n *= 1024;
+        // no break
+        case 'm': $n *= 1024;
+        // no break
+        case 'k': $n *= 1024;
+    }
+    return $n > 0 ? $n : PHP_INT_MAX;
+}
+
+/** Chunk size: 2 MB, or less when the server's upload limits are smaller. */
+function ars_move_inspection_video_chunk_size(): int {
+    $limit = min(ars_move_inspection_ini_bytes('upload_max_filesize'), ars_move_inspection_ini_bytes('post_max_size')) - 64 * 1024;
+    return max(256 * 1024, min(2 * 1024 * 1024, $limit));
+}
+
+function ars_move_inspection_video_tmp_dir(): string {
+    return ars_move_inspection_storage_root() . '/_tmp';
+}
+
+function ars_move_inspection_video_size_label(int $bytes): string {
+    return $bytes >= 1048576 ? round($bytes / 1048576, 1) . ' MB' : max(1, (int)round($bytes / 1024)) . ' KB';
+}
+
+/** @return list<array<string,mixed>> */
+function ars_move_inspection_videos(PDO $conn, int $inspectionId): array {
+    ars_move_inspection_ensure_schema($conn);
+    $stmt = $conn->prepare("
+        SELECT v.id, v.original_name, v.file_size, v.caption, v.created_at, u.fullname AS uploaded_by_name
+        FROM ars_move_inspection_videos v
+        LEFT JOIN `user` u ON u.id = v.uploaded_by
+        WHERE v.inspection_id = ?
+        ORDER BY v.id
+    ");
+    $stmt->execute([$inspectionId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/** Remove upload sessions left unfinished (closed tab, lost connection) for more than 12 hours. */
+function ars_move_inspection_video_sweep(): void {
+    foreach (glob(ars_move_inspection_video_tmp_dir() . '/*.json') ?: [] as $meta) {
+        if (@filemtime($meta) < time() - 12 * 3600) {
+            @unlink(substr($meta, 0, -5) . '.part');
+            @unlink($meta);
+        }
+    }
+}
+
+/**
+ * Load an upload session and check it belongs to this inspection and user.
+ * @return array{0:?array,1:?string,2:string} [meta, error, part path]
+ */
+function ars_move_inspection_video_session(array $inspection, string $token, ?int $userId): array {
+    if (!preg_match('/^[a-f0-9]{32}$/', $token)) {
+        return [null, 'Invalid upload. Please choose the video again.', ''];
+    }
+    $base = ars_move_inspection_video_tmp_dir() . '/' . $token;
+    $meta = is_file($base . '.json') ? json_decode((string)file_get_contents($base . '.json'), true) : null;
+    if (!is_array($meta) || !is_file($base . '.part')) {
+        return [null, 'This upload has expired. Please upload the video again.', ''];
+    }
+    if ((int)$meta['company_id'] !== (int)$inspection['company_id'] || (int)$meta['inspection_id'] !== (int)$inspection['id'] || (int)$meta['user_id'] !== (int)$userId) {
+        return [null, 'This upload belongs to another inspection. Please upload the video again.', ''];
+    }
+    return [$meta, null, $base . '.part'];
+}
+
+function ars_move_inspection_video_discard(string $token): void {
+    if (preg_match('/^[a-f0-9]{32}$/', $token)) {
+        $base = ars_move_inspection_video_tmp_dir() . '/' . $token;
+        @unlink($base . '.part');
+        @unlink($base . '.json');
+    }
+}
+
+/** Start an upload: checks the name, type and size before any byte is sent. */
+function ars_move_inspection_video_init(PDO $conn, array $inspection, string $name, int $size, string $caption, ?int $userId): array {
+    $fail = static fn(string $m): array => ['success' => false, 'error' => $m];
+    if (($inspection['status'] ?? '') === 'completed') {
+        return $fail('This inspection is completed; videos cannot be added.');
+    }
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if (!isset(ars_move_inspection_video_types()[$ext])) {
+        return $fail('Only videos are allowed: MP4, MOV, M4V, 3GP or WEBM.');
+    }
+    if ($size <= 0) {
+        return $fail('The video file is empty.');
+    }
+    if ($size > ARS_MOVE_VIDEO_MAX_BYTES) {
+        return $fail('The video is ' . ars_move_inspection_video_size_label($size) . '. The maximum is ' . ars_move_inspection_video_size_label(ARS_MOVE_VIDEO_MAX_BYTES) . '; trim it or record a shorter video.');
+    }
+    $st = $conn->prepare("SELECT COUNT(*) FROM ars_move_inspection_videos WHERE inspection_id = ?");
+    $st->execute([(int)$inspection['id']]);
+    if ((int)$st->fetchColumn() >= ARS_MOVE_VIDEO_MAX_PER_INSPECTION) {
+        return $fail('An inspection can have at most ' . ARS_MOVE_VIDEO_MAX_PER_INSPECTION . ' videos. Remove one to add another.');
+    }
+    $tmp = ars_move_inspection_video_tmp_dir();
+    if (!ars_move_inspection_ensure_storage($tmp)) {
+        return $fail('Could not save the video. The uploads/ars_move_inspections folder is not writable.');
+    }
+    ars_move_inspection_video_sweep();
+    $free = @disk_free_space($tmp);
+    if ($free !== false && $free < $size + 100 * 1024 * 1024) {
+        return $fail('Not enough space on the server for this video. Please contact the administrator.');
+    }
+    $token = bin2hex(random_bytes(16));
+    $meta = [
+        'company_id' => (int)$inspection['company_id'],
+        'inspection_id' => (int)$inspection['id'],
+        'user_id' => (int)$userId,
+        'name' => substr(preg_replace('/[^\w.\- ()]+/u', '_', $name) ?: 'video.' . $ext, 0, 240),
+        'ext' => $ext,
+        'size' => $size,
+        'caption' => mb_substr(trim($caption), 0, 255),
+    ];
+    if (file_put_contents($tmp . '/' . $token . '.part', '') === false || file_put_contents($tmp . '/' . $token . '.json', json_encode($meta)) === false) {
+        ars_move_inspection_video_discard($token);
+        return $fail('Could not start the upload on the server.');
+    }
+    return ['success' => true, 'error' => null, 'token' => $token, 'chunk_size' => ars_move_inspection_video_chunk_size()];
+}
+
+/**
+ * Add one chunk at $offset. A chunk the server already has (a retry after a lost reply)
+ * is skipped, so resending is always safe. 'received' tells the page where to continue.
+ */
+function ars_move_inspection_video_chunk(array $inspection, string $token, int $offset, array $file, ?int $userId): array {
+    [$meta, $err, $part] = ars_move_inspection_video_session($inspection, $token, $userId);
+    if (!$meta) {
+        return ['success' => false, 'error' => $err];
+    }
+    clearstatcache(true, $part);
+    $have = (int)filesize($part);
+    if ($offset < $have) {
+        return ['success' => true, 'error' => null, 'received' => $have];
+    }
+    if ($offset > $have) {
+        return ['success' => false, 'error' => 'A part of the video was lost on the way. Resuming…', 'received' => $have, 'resume' => true];
+    }
+    if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file((string)($file['tmp_name'] ?? ''))) {
+        return ['success' => false, 'error' => 'A part of the video did not arrive (error ' . (int)($file['error'] ?? 0) . '). Retrying…', 'received' => $have, 'resume' => true];
+    }
+    $len = (int)filesize((string)$file['tmp_name']);
+    if ($len <= 0 || $len > ars_move_inspection_video_chunk_size() || $offset + $len > (int)$meta['size']) {
+        ars_move_inspection_video_discard($token);
+        return ['success' => false, 'error' => 'The video data does not match the file that was chosen. Please upload it again.'];
+    }
+    $in = fopen((string)$file['tmp_name'], 'rb');
+    if ($offset === 0) {
+        // First chunk: stop at once when the file is not really a video
+        $head = (string)fread($in, 16);
+        if (!ars_move_inspection_video_signature_ok($head, (string)$meta['ext'])) {
+            fclose($in);
+            ars_move_inspection_video_discard($token);
+            return ['success' => false, 'error' => 'The file is not a real ' . strtoupper((string)$meta['ext']) . ' video. Only MP4, MOV, M4V, 3GP or WEBM videos are allowed.'];
+        }
+        rewind($in);
+    }
+    $out = fopen($part, 'ab');
+    if (!$out || !flock($out, LOCK_EX)) {
+        fclose($in);
+        return ['success' => false, 'error' => 'The server is busy. Retrying…', 'received' => $have, 'resume' => true];
+    }
+    clearstatcache(true, $part);
+    $have = (int)filesize($part);
+    if ($have !== $offset) {
+        // Another request wrote meanwhile (double send): report where the file is now
+        flock($out, LOCK_UN);
+        fclose($out);
+        fclose($in);
+        return ['success' => $have > $offset, 'error' => $have > $offset ? null : 'Resuming…', 'received' => $have, 'resume' => $have < $offset];
+    }
+    $copied = stream_copy_to_stream($in, $out);
+    fflush($out);
+    flock($out, LOCK_UN);
+    fclose($out);
+    fclose($in);
+    @touch(substr($part, 0, -5) . '.json');
+    clearstatcache(true, $part);
+    $now = (int)filesize($part);
+    if ($copied !== $len || $now !== $offset + $len) {
+        // Partial write (e.g. disk full): cut back to the last good byte so a retry can continue
+        $fh = fopen($part, 'r+');
+        if ($fh) {
+            ftruncate($fh, $offset);
+            fclose($fh);
+        }
+        return ['success' => false, 'error' => 'Could not write the video on the server. Retrying…', 'received' => $offset, 'resume' => true];
+    }
+    return ['success' => true, 'error' => null, 'received' => $now];
+}
+
+/** All chunks are in: check the whole file once more, then list it on the inspection. */
+function ars_move_inspection_video_finish(PDO $conn, array $inspection, string $token, ?int $userId): array {
+    $fail = static function (string $m) use ($token): array {
+        ars_move_inspection_video_discard($token);
+        return ['success' => false, 'error' => $m, 'id' => null];
+    };
+    [$meta, $err, $part] = ars_move_inspection_video_session($inspection, $token, $userId);
+    if (!$meta) {
+        return ['success' => false, 'error' => $err, 'id' => null];
+    }
+    if (($inspection['status'] ?? '') === 'completed') {
+        return $fail('This inspection was completed while the video was uploading; it was not added.');
+    }
+    clearstatcache(true, $part);
+    $size = (int)filesize($part);
+    if ($size !== (int)$meta['size']) {
+        return ['success' => false, 'error' => 'The upload is not complete yet (' . ars_move_inspection_video_size_label($size) . ' of ' . ars_move_inspection_video_size_label((int)$meta['size']) . ').', 'id' => null, 'received' => $size, 'resume' => true];
+    }
+    $ext = (string)$meta['ext'];
+    [$allowed, $serveMime] = ars_move_inspection_video_types()[$ext];
+    $fh = fopen($part, 'rb');
+    $head = $fh ? (string)fread($fh, 16) : '';
+    if ($fh) {
+        fclose($fh);
+    }
+    if (!ars_move_inspection_video_signature_ok($head, $ext)) {
+        return $fail('The file is not a real ' . strtoupper($ext) . ' video.');
+    }
+    $mime = class_exists('finfo') ? (string)(new finfo(FILEINFO_MIME_TYPE))->file($part) : '';
+    if ($mime !== '' && !in_array($mime, $allowed, true)) {
+        return $fail('The file is not a real ' . strtoupper($ext) . ' video (it is ' . $mime . ').');
+    }
+    $st = $conn->prepare("SELECT COUNT(*) FROM ars_move_inspection_videos WHERE inspection_id = ?");
+    $st->execute([(int)$inspection['id']]);
+    if ((int)$st->fetchColumn() >= ARS_MOVE_VIDEO_MAX_PER_INSPECTION) {
+        return $fail('An inspection can have at most ' . ARS_MOVE_VIDEO_MAX_PER_INSPECTION . ' videos.');
+    }
+    $companyId = (int)$inspection['company_id'];
+    $inspectionId = (int)$inspection['id'];
+    $dir = ars_move_inspection_storage_root() . '/' . $companyId . '/' . $inspectionId;
+    if (!ars_move_inspection_ensure_storage($dir)) {
+        return $fail('Could not save the video. The uploads/ars_move_inspections folder is not writable.');
+    }
+    $stored = bin2hex(random_bytes(16)) . '.' . $ext;
+    if (!@rename($part, $dir . '/' . $stored)) {
+        return $fail('Could not save the uploaded video.');
+    }
+    @chmod($dir . '/' . $stored, 0644);
+    @unlink(ars_move_inspection_video_tmp_dir() . '/' . $token . '.json');
+    $conn->prepare("
+        INSERT INTO ars_move_inspection_videos
+            (company_id, inspection_id, original_name, stored_name, relative_path, file_size, mime_type, caption, uploaded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ")->execute([
+        $companyId, $inspectionId, (string)$meta['name'], $stored,
+        'uploads/ars_move_inspections/' . $companyId . '/' . $inspectionId . '/' . $stored,
+        $size, $serveMime, $meta['caption'] !== '' ? $meta['caption'] : null, $userId,
+    ]);
+    $videoId = (int)$conn->lastInsertId();
+    $conn->prepare("UPDATE ars_move_inspections SET updated_at = NOW() WHERE id = ?")->execute([$inspectionId]);
+    return ['success' => true, 'error' => null, 'id' => $videoId];
+}
+
+/**
+ * @return array{success:bool,error:?string,path:?string,filename:?string,mime:?string}
+ */
+function ars_move_inspection_video_resolve(PDO $conn, int $companyId, int $videoId): array {
+    ars_move_inspection_ensure_schema($conn);
+    $fail = static fn(string $m): array => ['success' => false, 'error' => $m, 'path' => null, 'filename' => null, 'mime' => null];
+    $stmt = $conn->prepare("SELECT * FROM ars_move_inspection_videos WHERE id = ? AND company_id = ? LIMIT 1");
+    $stmt->execute([$videoId, $companyId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return $fail('Video not found.');
+    }
+    $abs = dirname(__DIR__, 3) . '/' . ltrim((string)$row['relative_path'], '/');
+    if (!is_file($abs)) {
+        return $fail('Video file missing on disk.');
+    }
+    // Serve type comes from the stored extension, never from what the browser sent.
+    $ext = strtolower(pathinfo((string)$row['stored_name'], PATHINFO_EXTENSION));
+    return [
+        'success' => true,
+        'error' => null,
+        'path' => $abs,
+        'filename' => (string)$row['original_name'],
+        'mime' => ars_move_inspection_video_types()[$ext][1] ?? 'application/octet-stream',
+    ];
+}
+
+/** @return array{success:bool,error:?string} */
+function ars_move_inspection_video_delete(PDO $conn, array $inspection, int $videoId): array {
+    if (($inspection['status'] ?? '') === 'completed') {
+        return ['success' => false, 'error' => 'This inspection is completed; its videos cannot be removed.'];
+    }
+    $stmt = $conn->prepare("SELECT relative_path FROM ars_move_inspection_videos WHERE id = ? AND inspection_id = ?");
+    $stmt->execute([$videoId, (int)$inspection['id']]);
+    $rel = $stmt->fetchColumn();
+    if ($rel === false) {
+        return ['success' => false, 'error' => 'Video not found.'];
+    }
+    $conn->prepare("DELETE FROM ars_move_inspection_videos WHERE id = ? AND inspection_id = ?")
+        ->execute([$videoId, (int)$inspection['id']]);
+    // Last photo / video removed: "Photos taken" is no longer true
     if (ars_move_inspection_photo_count($conn, (int)$inspection['id']) === 0) {
         $conn->prepare("UPDATE ars_move_inspection_items SET is_completed = 0, completed_at = NULL, completed_by = NULL WHERE inspection_id = ? AND is_completed = 1 AND item_name LIKE '%photo%'")
             ->execute([(int)$inspection['id']]);
