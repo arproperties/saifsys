@@ -5,6 +5,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/../includes/audit_bridge.php';
 require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
+require_once __DIR__ . '/includes/hr_attendance_cameras.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
@@ -73,16 +74,11 @@ if (hr_attendance_post_too_large()) {
         } elseif ($statusChanged && $notes === '') {
             // Same rule as the quick actions on the list page: no silent changes.
             $flash_err = 'Changing the status needs a reason in Notes.';
+        } elseif (hr_attendance_same_time($check_in, $check_out, $status)) {
+            $flash_err = 'Check-out cannot be the same time as check-in (' . substr($check_in, 0, 5) . ').';
         } else {
-            // recalc hours
-            $hours = null;
-            if ($check_in && $check_out) {
-                $a = strtotime("1970-01-01 $check_in UTC");
-                $b = strtotime("1970-01-01 $check_out UTC");
-                if ($a!==false && $b!==false && $b > $a) {
-                    $hours = round(($b-$a)/3600, 2);
-                }
-            }
+            // recalc hours (an Out before the In is the next morning)
+            $hours = hr_attendance_hours($check_in, $check_out);
 
             try {
                 $notes = mb_substr($notes, 0, HR_ATTENDANCE_NOTE_MAX);
@@ -166,7 +162,7 @@ echo hr_ui_page_header(
         ['label' => 'Attendance', 'href' => 'attendance.php'],
         ['label' => 'Edit #' . (int)$row['id']],
     ],
-    '<a class="btn btn-outline-secondary" href="attendance.php">Back</a>'
+    '<a class="btn btn-outline-secondary" href="attendance.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
 );
 ?>
 
@@ -192,6 +188,7 @@ echo hr_ui_page_header(
         <div class="col-md-3">
           <label class="form-label">Check-out</label>
           <input type="time" name="check_out" class="form-control" value="<?= h($row['check_out']) ?>">
+          <div class="form-text">Earlier than check-in = next day (night shift).</div>
         </div>
         <div class="col-md-3">
           <label class="form-label">Status</label>
@@ -222,6 +219,31 @@ echo hr_ui_page_header(
       </form>
     </div>
   </div>
+
+  <?php
+    // Camera arrival / departure photos: the HR role only.
+    $camPhotos = has_role('HR', $conn) ? hr_camera_photos_for((int)$row['id']) : ['in' => false, 'out' => false];
+  ?>
+  <?php if ($camPhotos['in'] || $camPhotos['out']): ?>
+  <div class="hr-settings-card mt-3">
+    <div class="settings-header">Camera photos</div>
+    <div class="card-body">
+      <div class="row g-3">
+        <?php foreach (['in' => 'Check-in', 'out' => 'Check-out'] as $k => $label): ?>
+          <div class="col-sm-6 text-center">
+            <div class="fw-semibold mb-2"><?= $label ?></div>
+            <?php if ($camPhotos[$k]): ?>
+              <img src="attendance_camera_photo.php?id=<?= (int)$row['id'] ?>&amp;which=<?= $k ?>&amp;t=<?= time() ?>"
+                   class="img-fluid rounded border" style="max-height:320px" alt="<?= $label ?> photo">
+            <?php else: ?>
+              <div class="text-muted small py-5 border rounded">No photo</div>
+            <?php endif; ?>
+          </div>
+        <?php endforeach; ?>
+      </div>
+    </div>
+  </div>
+  <?php endif; ?>
 
   <div class="hr-settings-card mt-3">
     <div class="settings-header">Attachments</div>

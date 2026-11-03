@@ -5,6 +5,7 @@
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/../includes/audit_bridge.php';
+require_once __DIR__ . '/includes/hr_comp_off.php';
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
 
 // roles
@@ -197,6 +198,7 @@ echo hr_ui_page_header(
 
   <?php if ($err): ?><div class="alert alert-danger"><?= htmlspecialchars($err) ?></div><?php endif; ?>
   <?php if ($msg): ?><div class="alert alert-success"><?= htmlspecialchars($msg) ?></div><?php endif; ?>
+  <?= hr_comp_off_pending_notice($conn) ?>
 
   <div class="hr-filter-bar mb-3">
     <form class="row g-2" method="get">

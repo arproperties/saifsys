@@ -43,11 +43,49 @@ function hr_attendance_statuses(): array {
         'half'           => 'Half Day',
         'on_leave'       => 'On Leave',
         'excused_absent' => 'Excused Absent',
+        'weekly_off'     => 'Weekly Off',
     ];
 }
 
 function hr_attendance_status_keys(): array {
     return array_keys(hr_attendance_statuses());
+}
+
+/**
+ * In and Out at the same minute on a worked day (approved or pending): not a day
+ * anyone worked, so never saved. Absent, half day and leave are left alone, so
+ * this can never hold up a status payroll reads.
+ */
+function hr_attendance_same_time(?string $in, ?string $out, ?string $status = null): bool {
+    if ($status !== null && !in_array($status, ['approved', 'pending'], true)) {
+        return false;
+    }
+    return $in && $out && substr($in, 0, 5) === substr($out, 0, 5);
+}
+
+/**
+ * Hours from In to Out ("H:i" or "H:i:s"). An Out at or before the In is the
+ * next morning: a night shift, 17:00 to 03:00, is 10 hours. Equal or missing
+ * times give null.
+ */
+function hr_attendance_hours(?string $in, ?string $out): ?float {
+    if (!$in || !$out) {
+        return null;
+    }
+    $a = strtotime('1970-01-01 ' . $in . ' UTC');
+    $b = strtotime('1970-01-01 ' . $out . ' UTC');
+    if ($a === false || $b === false || $a === $b) {
+        return null;
+    }
+    if ($b < $a) {
+        $b += 86400;
+    }
+    return round(($b - $a) / 3600, 2);
+}
+
+/** Whether the Out falls on the next day (an Out earlier than the In). */
+function hr_attendance_is_overnight(?string $in, ?string $out): bool {
+    return $in && $out && substr($out, 0, 5) < substr($in, 0, 5);
 }
 
 function hr_attendance_status_label(?string $status): string {
@@ -66,6 +104,9 @@ function hr_attendance_status_badge_html(?string $status): string {
     if ($status === 'excused_absent') {
         return '<span class="badge hr-badge-excused">' . $label . '</span>';
     }
+    if ($status === 'weekly_off') {
+        return '<span class="badge hr-badge-weekly-off">' . $label . '</span>';
+    }
     $map = ['pending' => 'secondary', 'approved' => 'success', 'absent' => 'danger', 'half' => 'warning', 'on_leave' => 'info'];
     $cls = $map[$status] ?? 'secondary';
     return '<span class="badge text-bg-' . $cls . '">' . $label . '</span>';
@@ -75,6 +116,7 @@ function hr_attendance_status_badge_html(?string $status): string {
 function hr_attendance_status_css(): string {
     return '
 .hr-badge-excused { background-color:#fd7e14; color:#fff; }
+.hr-badge-weekly-off { background-color:#64748b; color:#fff; }
 .btn-hr-excused { background-color:#fd7e14; border-color:#fd7e14; color:#fff; }
 .btn-hr-excused:hover, .btn-hr-excused:focus { background-color:#e06c0c; border-color:#e06c0c; color:#fff; }
 .btn-outline-hr-excused { border-color:#fd7e14; color:#d9660b; }

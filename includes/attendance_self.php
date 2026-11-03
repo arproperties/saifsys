@@ -321,6 +321,7 @@ function attendance_self_state(PDO $conn): array
         'break_mins'  => null,
         'auto_out'    => false,
         'unclosed'    => null,
+        'camera_out'  => null,
     ];
 
     if (!attendance_self_enabled()) {
@@ -349,6 +350,13 @@ function attendance_self_state(PDO $conn): array
     if ($row) {
         $state['check_in']  = $row['check_in'] ?: null;
         $state['check_out'] = $row['check_out'] ?: null;
+        // The camera's check-out is only "last seen": while the day is Pending
+        // they are still in, so a break and their own check-out stay open.
+        if ($state['check_out'] && (string)$row['status'] === 'pending'
+                && preg_match('/^Camera (?:in: .*? · )?out: /u', (string)$row['notes'])) {
+            $state['camera_out'] = $state['check_out'];
+            $state['check_out'] = null;
+        }
         $state['hours']     = $row['hours'];
         $state['att_status'] = (string)$row['status'];
         $state['auto_out']  = strpos((string)$row['notes'], 'Auto check-out') !== false;
@@ -361,7 +369,7 @@ function attendance_self_state(PDO $conn): array
         }
 
         // HR has already said what today is. Leave it alone.
-        if (in_array((string)$row['status'], ['on_leave', 'absent', 'half', 'excused_absent'], true)) {
+        if (in_array((string)$row['status'], ['on_leave', 'absent', 'half', 'excused_absent', 'weekly_off'], true)) {
             $state['stage'] = 'excused';
             return $state;
         }
@@ -551,7 +559,8 @@ function attendance_self_check_out(PDO $conn): array
         $upd = $conn->prepare(
             "UPDATE attendance
                 SET check_out = ?, check_out_ip = ?, hours = ?, updated_by = ?, updated_at = NOW(),
-                    status = IF(status = 'pending', 'approved', status)
+                    status = IF(status = 'pending', 'approved', status),
+                    source = IF(source = 'camera', 'self', source) -- the source shows who recorded last
               WHERE employee_id = ? AND work_date = ?
               LIMIT 1"
         );
@@ -709,10 +718,11 @@ function attendance_self_break_start(PDO $conn): array
 
     try {
         // break_start IS NULL in the WHERE, so two taps in two tabs cannot
-        // move a break that has already started.
+        // move a break that has already started. A break on a camera row
+        // leaves updated_by alone, so the camera keeps the day up to date.
         $upd = $conn->prepare(
             "UPDATE attendance
-                SET break_start = ?, updated_by = ?, updated_at = NOW()
+                SET break_start = ?, updated_by = IF(source = 'camera', updated_by, ?), updated_at = NOW()
               WHERE employee_id = ? AND work_date = ? AND break_start IS NULL
               LIMIT 1"
         );
@@ -765,7 +775,7 @@ function attendance_self_break_end(PDO $conn): array
     try {
         $upd = $conn->prepare(
             "UPDATE attendance
-                SET break_end = ?, break_minutes = ?, updated_by = ?, updated_at = NOW()
+                SET break_end = ?, break_minutes = ?, updated_by = IF(source = 'camera', updated_by, ?), updated_at = NOW()
               WHERE employee_id = ? AND work_date = ? AND break_end IS NULL
               LIMIT 1"
         );
@@ -861,7 +871,7 @@ function attendance_self_auto_checkout(PDO $conn): int
             AND a.check_in IS NOT NULL
             AND a.check_out IS NULL
             AND a.check_in < ?
-            AND a.status NOT IN ('on_leave', 'absent', 'half', 'excused_absent')
+            AND a.status NOT IN ('on_leave', 'absent', 'half', 'excused_absent', 'weekly_off')
             AND (a.work_date < ? OR (a.work_date = ? AND ? = 1))"
     );
     $st->execute([$cutoff . ':00', $today, $today, $past6 ? 1 : 0]);
