@@ -211,6 +211,13 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'pages' => ['company_documents.php'],
                 ],
                 [
+                    'key' => 'cameras',
+                    'label' => 'Cameras',
+                    'icon' => 'cctv',
+                    'href' => $hrBase . '/attendance_cameras',
+                    'pages' => ['attendance_cameras.php'],
+                ],
+                [
                     'key' => 'access',
                     'label' => 'Access',
                     'icon' => 'shield',
@@ -257,6 +264,7 @@ function hr_nav_page_title(string $currentPage): string
         'loan_settle_cash.php' => 'Settle loan',
         'documents.php' => 'Documents',
         'company_documents.php' => 'Company Documents',
+        'attendance_cameras.php' => 'Cameras',
         'access.php' => 'Access',
         'performance.php' => 'Performance',
         'performance_detail.php' => 'Performance detail',

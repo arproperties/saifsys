@@ -1,0 +1,6 @@
+# Employee photos, the camera key and the downloaded models stay on the office PC.
+faces/
+config.ini
+*.onnx
+faces_hr/
+__pycache__/
