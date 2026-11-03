@@ -9,6 +9,7 @@ require_once dirname(__DIR__) . '/includes/module_access.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_export.php';
+require_once __DIR__ . '/includes/hr_required_docs.php';
 
 //rbac_bootstrap($conn);
 require_role(['Owner','Admin','HR'], $conn);
@@ -23,12 +24,25 @@ $selectedCompanyId = $isHRManager ? hr_selected_company_id($conn, $companies) : 
 $q = trim($_GET['q'] ?? '');
 $group = $_GET['group'] ?? 'current';
 $status = $_GET['status'] ?? 'all';
+// Documents filter: one choice at a time, from the "Show" row above the table.
+$docsFilter = (string)($_GET['docs'] ?? '');
+if (!isset(HR_REQUIRED_DOC_FILTERS[$docsFilter]) && !isset(HR_REQUIRED_DOC_EXPIRY_FILTERS[$docsFilter])) {
+  $docsFilter = '';
+}
+// One document type picked in the Documents column header: the cell shows only
+// that document and the status choices apply to it alone.
+$docType = (string)($_GET['doctype'] ?? '');
+if (!isset(HR_REQUIRED_DOC_TYPES[$docType])) {
+  $docType = '';
+}
 $view = ($_GET['view'] ?? '') === 'company' ? 'company' : 'list';
 // By company view only has the company filter, so the list-only filters must not apply unseen.
 if ($view === 'company') {
   $q = '';
   $group = 'current';
   $status = 'all';
+  $docsFilter = '';
+  $docType = '';
 }
 $page = max(1, (int)($_GET['page'] ?? 1));
 $limit = 20;
@@ -68,6 +82,32 @@ if ($status !== 'all') {
   foreach ($leftStatuses as $idx => $value) {
     $params[':left_status_' . $idx] = $value;
   }
+}
+
+// The "Show" row counts every choice over the other filters (search, company,
+// group, status), so the numbers stay put while you switch between them.
+$docsCondFor = static function (string $value) use ($conn, $docType): string {
+  $only = $docType !== '' ? $docType : null;
+  return isset(HR_REQUIRED_DOC_EXPIRY_FILTERS[$value])
+    ? hr_required_docs_expiry_filter_sql($conn, $value, 'e', $only)
+    : hr_required_docs_filter_sql($conn, $value, 'e', $only);
+};
+$docsChoices = array_merge(array_keys(HR_REQUIRED_DOC_FILTERS), array_keys(HR_REQUIRED_DOC_EXPIRY_FILTERS));
+$docsCounts = ['' => 0] + array_fill_keys($docsChoices, 0);
+if ($view === 'list' && ($_GET['export'] ?? '') !== 'employees') {
+  $cols = ['COUNT(*) AS c_all'];
+  foreach ($docsChoices as $fv) {
+    $cols[] = 'COALESCE(SUM(' . $docsCondFor($fv) . '), 0) AS c_' . $fv;
+  }
+  $stmt = $conn->prepare("SELECT " . implode(', ', $cols) . " FROM employees e " . ($where ? 'WHERE ' . implode(' AND ', $where) : ''));
+  $stmt->execute($params);
+  $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+  foreach ($docsCounts as $fv => $_) {
+    $docsCounts[$fv] = (int)($row['c_' . ($fv === '' ? 'all' : $fv)] ?? 0);
+  }
+}
+if ($docsFilter !== '') {
+  $where[] = $docsCondFor($docsFilter);
 }
 
 $where_sql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
@@ -174,12 +214,7 @@ SELECT
   e.id, e.employee_code, e.full_name, e.nickname, e.email, e.phone,
   e.status, e.position_title, e.date_joined, e.exit_date, e.last_working_day,
   d.name AS department, l.name AS location,
-  c.name AS company_name, c.business_type AS company_type,
-  (
-    SELECT MIN(expires_at) 
-    FROM employee_documents ed 
-    WHERE ed.employee_id = e.id AND ed.expires_at IS NOT NULL
-  ) AS next_expiry
+  c.name AS company_name, c.business_type AS company_type
 FROM employees e
 LEFT JOIN departments d ON d.id = e.department_id
 LEFT JOIN locations l  ON l.id = e.location_id
@@ -193,14 +228,6 @@ $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 }
 
-// helpers
-function days_to($dateStr) {
-  if (!$dateStr) return null;
-  $today = new DateTime('today');
-  $dt = new DateTime($dateStr);
-  return (int)$today->diff($dt)->format('%r%a'); // negative if past
-}
-
 // Carry the active filters into the export link so the file matches the view.
 $exportQuery = $_GET;
 unset($exportQuery['page']);
@@ -211,6 +238,41 @@ $viewQuery = $_GET;
 unset($viewQuery['page'], $viewQuery['view'], $viewQuery['export']);
 
 $pageTitle = 'Employees';
+// Documents column: one line per document, in words. Uploaded documents are
+// filled (green valid, amber expiring soon, red expired); a document that is not
+// uploaded is a white box with a dashed border (red, or orange with a reason).
+$pageHead = '<style>
+  .hr-doc-chips { display: flex; flex-direction: column; gap: 2px; color: inherit; white-space: nowrap; }
+  .hr-doc-chip { display: inline-block; font-size: .78rem; line-height: 1.35; padding: 1px 8px; border-radius: 6px; border: 1px solid transparent; }
+  .hr-doc-chip-valid { background: #e8f5ee; color: #146c43; border-color: #b6dfc8; }
+  .hr-doc-chip-expiring { background: #fff3cd; color: #7a5a00; border-color: #ffd970; }
+  .hr-doc-chip-expired { background: #dc3545; color: #fff; }
+  .hr-doc-chip-missing { background: #fff; color: #b02a37; border: 1px dashed #dc3545; }
+  .hr-doc-chip-explained { background: #fff; color: #a14e00; border: 1px dashed #fd7e14; max-width: 300px; white-space: normal; }
+  /* Document status choices: square buttons that lift on hover and look pressed when picked. */
+  .hr-doc-pill { --c: #6c757d; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 4px; flex: 0 0 auto;
+    font-size: .82rem; font-weight: 500; white-space: nowrap; text-decoration: none; color: var(--c); border: 1px solid var(--c); background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,.12); cursor: pointer; transition: transform .08s, box-shadow .08s, background .08s; }
+  .hr-doc-pill:hover { background: color-mix(in srgb, var(--c) 10%, #fff); color: var(--c); transform: translateY(-1px);
+    box-shadow: 0 3px 6px rgba(0,0,0,.15); }
+  .hr-doc-pill:active { transform: translateY(0); box-shadow: inset 0 2px 3px rgba(0,0,0,.2); }
+  .hr-doc-pill.is-on, .hr-doc-pill.is-on:hover { background: var(--c); color: #fff; transform: none;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,.25); }
+  .hr-doc-pill-n { font-weight: 700; font-size: .85rem; min-width: 26px; text-align: center; padding: 0 6px;
+    border-radius: 3px; background: var(--c); color: #fff; }
+  .hr-doc-pill.is-on .hr-doc-pill-n { background: #fff; color: var(--c); }
+  .hr-doc-pill-success { --c: #198754; }
+  .hr-doc-pill-orange { --c: #d9670b; }
+  .hr-doc-pill-danger { --c: #dc3545; }
+  .hr-doc-pill-warning { --c: #b8860b; }
+  .hr-doc-pills { overflow-x: auto; }
+  .hr-doc-pills-label { font-size: .85rem; font-weight: 600; color: #495057; white-space: nowrap; flex: 0 0 auto; }
+  .hr-doc-reset { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+    border-radius: 4px; border: 1px solid #adb5bd; color: #495057; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.12); text-decoration: none; }
+  .hr-doc-reset:hover { background: #f1f3f5; color: #212529; }
+  .hr-emp-count { font-size: .95rem; font-weight: 700; color: #fff; background: #495057; border-radius: 4px; padding: 3px 10px; }
+  .hr-doc-type-select { width: auto; font-size: .78rem; padding-top: 1px; padding-bottom: 1px; text-transform: none; font-weight: 500; }
+</style>';
 // Breadcrumb lives in the top bar; the page header below keeps only the title.
 $hrTopbarCrumbs = [
     ['label' => 'HR', 'href' => 'dashboard'],
@@ -262,6 +324,12 @@ echo hr_ui_page_header(
           </select>
         </div>
         <?php else: ?>
+        <?php if ($docsFilter !== ''): ?>
+        <input type="hidden" name="docs" value="<?= htmlspecialchars($docsFilter) ?>">
+        <?php endif; ?>
+        <?php if ($docType !== ''): ?>
+        <input type="hidden" name="doctype" value="<?= htmlspecialchars($docType) ?>">
+        <?php endif; ?>
         <div class="col-md">
           <input type="text" class="form-control" name="q" placeholder="Search name, code, email, phone…" value="<?= htmlspecialchars($q) ?>">
         </div>
@@ -308,7 +376,11 @@ echo hr_ui_page_header(
         <?php if ($view === 'company'): ?>
           <span class="small text-muted"><?= number_format(count($companyCards)) ?> compan<?= count($companyCards) === 1 ? 'y' : 'ies' ?> · <?= number_format($total) ?> employee<?= $total === 1 ? '' : 's' ?></span>
         <?php else: ?>
-          <span class="small text-muted"><?= number_format($total) ?> employee<?= $total === 1 ? '' : 's' ?></span>
+          <?php // With a document filter on: shown out of everyone the other filters leave. ?>
+          <span class="hr-emp-count"<?= $docsFilter !== '' ? ' title="Shown / total before the document filter"' : '' ?>>
+            <?= number_format($total) ?><?= $docsFilter !== '' ? ' / ' . number_format($docsCounts['']) : '' ?>
+            Employee<?= ($docsFilter !== '' ? $docsCounts[''] : $total) === 1 ? '' : 's' ?>
+          </span>
         <?php endif; ?>
         <div class="btn-group btn-group-sm" role="group" aria-label="View">
           <a class="btn <?= $view === 'list' ? 'btn-secondary' : 'btn-outline-secondary' ?>"
@@ -318,6 +390,53 @@ echo hr_ui_page_header(
         </div>
       </div>
     </div>
+
+    <?php if ($view === 'list'):
+      // Document status row: pick one. A link keeps every other filter (and the
+      // document picked in the column header) and goes back to page 1.
+      $pillLink = static function (string $value): string {
+        $qs = $_GET;
+        unset($qs['page'], $qs['docs'], $qs['expiry']);
+        if ($value !== '') { $qs['docs'] = $value; }
+        return '?' . http_build_query($qs);
+      };
+      $days = HR_REQUIRED_DOC_EXPIRING_DAYS;
+      if ($docType === '') {
+        $docsPills = [
+          'complete'  => ['All Documents Uploaded', 'bi-check-circle-fill', 'success', 'Passport, Visa, Labor Card, Contract and National ID are all uploaded'],
+          'missing'   => ['Documents Missing', 'bi-x-circle', 'danger', 'A document is not uploaded, and no reason is given'],
+          'explained' => ['Missing With Reason', 'bi-chat-left-text', 'orange', 'Not uploaded, but a reason is given for each one'],
+          'expiring'  => ['Expiring In ' . $days . ' Days', 'bi-clock-history', 'warning', 'A document expires in the next ' . $days . ' days'],
+          'expired'   => ['Expired Documents', 'bi-exclamation-triangle-fill', 'danger', 'A document has already expired'],
+        ];
+      } else {
+        // The same choices, worded for the one document picked.
+        $dl = HR_REQUIRED_DOC_LABELS[$docType];
+        $docsPills = [
+          'complete'  => [$dl . ' Uploaded', 'bi-check-circle-fill', 'success', ''],
+          'missing'   => [$dl . ' Missing', 'bi-x-circle', 'danger', 'Not uploaded, and no reason given'],
+          'explained' => [$dl . ' Missing With Reason', 'bi-chat-left-text', 'orange', ''],
+          'expiring'  => [$dl . ' Expiring In ' . $days . ' Days', 'bi-clock-history', 'warning', ''],
+          'expired'   => [$dl . ' Expired', 'bi-exclamation-triangle-fill', 'danger', ''],
+        ];
+      }
+    ?>
+    <div class="hr-doc-pills d-flex align-items-center gap-2 px-3 py-2 border-bottom">
+      <span class="hr-doc-pills-label"><i class="bi bi-file-earmark-text me-1"></i><?= $docType !== '' ? htmlspecialchars(HR_REQUIRED_DOC_LABELS[$docType]) . ' Status' : 'Document Status' ?>:</span>
+      <?php foreach ($docsPills as $fv => [$fl, $fi, $fc, $ft]): $on = $docsFilter === $fv; ?>
+        <a href="<?= htmlspecialchars($pillLink($on ? '' : $fv)) ?>" class="hr-doc-pill hr-doc-pill-<?= $fc ?><?= $on ? ' is-on' : '' ?>"<?= $ft !== '' ? ' title="' . htmlspecialchars($ft) . '"' : '' ?>>
+          <i class="bi <?= $fi ?>"></i> <?= htmlspecialchars($fl) ?> <span class="hr-doc-pill-n"><?= number_format($docsCounts[$fv]) ?></span>
+        </a>
+      <?php endforeach; ?>
+      <?php if ($docsFilter !== '' || $docType !== ''):
+        $resetQs = $_GET;
+        unset($resetQs['page'], $resetQs['docs'], $resetQs['expiry'], $resetQs['doctype']); ?>
+        <a href="?<?= htmlspecialchars(http_build_query($resetQs)) ?>" class="hr-doc-reset" title="Clear the document filter">
+          <i class="bi bi-arrow-counterclockwise"></i>
+        </a>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
 
     <?php if ($view === 'company'): ?>
     <div class="card-body emp-grid">
@@ -362,7 +481,27 @@ echo hr_ui_page_header(
               <th style="width:180px;">Position</th>
               <th style="width:180px;">Company</th>
               <th style="width:170px;">Lifecycle</th>
-              <th style="width:160px;">Next Expiry</th>
+              <th style="width:280px;">
+                <?php
+                  // Pick one document: the cells and the Document status row then cover only it.
+                  $docTypeLink = static function (string $value): string {
+                    $qs = $_GET;
+                    unset($qs['page'], $qs['doctype']);
+                    if ($value !== '') { $qs['doctype'] = $value; }
+                    return '?' . http_build_query($qs);
+                  };
+                ?>
+                <div class="d-flex align-items-center gap-2">
+                  <span>Documents</span>
+                  <select class="form-select form-select-sm hr-doc-type-select" aria-label="Which document to show"
+                          onchange="window.location.href = this.value;">
+                    <option value="<?= htmlspecialchars($docTypeLink('')) ?>"<?= $docType === '' ? ' selected' : '' ?>>All Documents</option>
+                    <?php foreach (HR_REQUIRED_DOC_LABELS as $tv => $tl): ?>
+                      <option value="<?= htmlspecialchars($docTypeLink($tv)) ?>"<?= $docType === $tv ? ' selected' : '' ?>><?= htmlspecialchars($tl) ?> Status</option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+              </th>
               <th style="width:120px;">Status</th>
               <th style="width:160px;">Actions</th>
             </tr>
@@ -370,18 +509,9 @@ echo hr_ui_page_header(
           <tbody>
   <?php if (!$rows): ?>
     <tr><td colspan="10" class="text-center text-muted py-4">No employees found.</td></tr>
-  <?php else: foreach ($rows as $r):
-    $d = days_to($r['next_expiry'] ?? null);
-    $expiryBadge = '';
-    if ($d !== null) {
-      if ($d < 0) {
-        $expiryBadge = '<span class="badge text-bg-danger">Expired '.abs($d).'d</span>';
-      } elseif ($d <= 30) {
-        $expiryBadge = '<span class="badge text-bg-warning text-dark">In '.$d.'d</span>';
-      } else {
-        $expiryBadge = '<span class="badge text-bg-success">In '.$d.'d</span>';
-      }
-    }
+  <?php else:
+    $requiredDocs = hr_required_docs_details_map($conn, array_column($rows, 'id'));
+    foreach ($rows as $r):
     $displayName = ($r['full_name'] ?? '') !== '' ? $r['full_name'] : ($r['employee_code'] ?? '');
   ?>
     <tr>
@@ -431,8 +561,69 @@ echo hr_ui_page_header(
       </td>
 
       <td>
-        <?= !empty($r['next_expiry']) ? htmlspecialchars(date('Y-m-d', strtotime($r['next_expiry']))) : '—' ?>
-        <?= $expiryBadge ? '<div class="small mt-1">'.$expiryBadge.'</div>' : '' ?>
+        <a href="employee_view.php?id=<?= (int)$r['id'] ?>#tab-overview" class="hr-doc-chips text-decoration-none" title="Open this employee's required documents">
+          <?php
+            // Not uploaded with a reason: one line per reason, naming every document
+            // that shares it, shown where the first of them would be.
+            $empDocs = $requiredDocs[(int)$r['id']] ?? [];
+            if ($docType !== '') {
+              $empDocs = array_intersect_key($empDocs, [$docType => true]);
+            }
+            $reasonGroups = [];
+            foreach ($empDocs as $type => $doc) {
+              if ($doc['state'] === 'explained') {
+                $reasonGroups[$doc['reason']][] = $type;
+              }
+            }
+          ?>
+          <?php foreach ($empDocs as $type => $doc):
+            if ($doc['state'] === 'explained') {
+              $group = $reasonGroups[$doc['reason']];
+              if ($group[0] !== $type) {
+                continue;
+              }
+              $groupLabel = count($group) > 1 && count($group) === count($empDocs)
+                ? 'All ' . count($group) . ' Not Uploaded'
+                : implode(', ', array_map(static fn($t) => HR_REQUIRED_DOC_LABELS[$t], $group));
+          ?>
+            <span class="hr-doc-chip hr-doc-chip-explained"
+                  title="<?= htmlspecialchars(implode(', ', array_map(static fn($t) => HR_REQUIRED_DOC_LABELS[$t], $group)) . ': not uploaded. Reason: ' . $doc['reason']) ?>">
+              <i class="bi bi-chat-left-text"></i> <?= htmlspecialchars($groupLabel) ?>: <b><?= htmlspecialchars($doc['reason']) ?></b>
+            </span>
+          <?php
+              continue;
+            }
+            // Written out in words so the chip reads the same to anyone; colour only backs it up.
+            $exp = $doc['expires_at'];
+            $expText = $exp ? date('d M Y', strtotime($exp)) : '';
+            switch ($doc['state']) {
+              case 'missing':
+                [$icon, $chipText] = ['bi-x-circle', 'NOT UPLOADED'];
+                $chipTitle = 'No ' . HR_REQUIRED_DOC_LABELS[$type] . ' in Documents, and no reason given.';
+                break;
+              case 'expired':
+                [$icon, $chipText] = ['bi-exclamation-triangle-fill', 'EXPIRED ' . $expText];
+                $chipTitle = '';
+                break;
+              case 'expiring':
+                $daysLeft = (int)(new DateTime('today'))->diff(new DateTime($exp))->format('%r%a');
+                $daysText = $daysLeft === 0 ? 'Expires Today' : ($daysLeft === 1 ? 'Expires In 1 Day' : 'Expires In ' . $daysLeft . ' Days');
+                [$icon, $chipText] = ['bi-clock-history', $expText . ' (' . $daysText . ')'];
+                $chipTitle = '';
+                break;
+              default:
+                [$icon, $chipText] = ['bi-check-circle-fill', $exp ? 'Valid Till ' . $expText : 'Uploaded'];
+                $chipTitle = '';
+            }
+            if ($doc['present'] && $doc['doc_number'] !== '') {
+              $chipTitle = 'No. ' . $doc['doc_number'];
+            }
+          ?>
+            <span class="hr-doc-chip hr-doc-chip-<?= $doc['state'] ?>"<?= $chipTitle !== '' ? ' title="' . htmlspecialchars($chipTitle) . '"' : '' ?>>
+              <i class="bi <?= $icon ?>"></i> <?= HR_REQUIRED_DOC_LABELS[$type] ?>: <b><?= htmlspecialchars($chipText) ?></b>
+            </span>
+          <?php endforeach; ?>
+        </a>
       </td>
 
       <td>

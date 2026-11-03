@@ -108,32 +108,32 @@ if (is_file($asWidget)) { require $asWidget; }
              placeholder="Search HR…" aria-label="Search HR navigation" autocomplete="off">
     </div>
     <nav class="pb-2">
-      <?php foreach ($hrNavGroups as $group):
-        $collapsible = !empty($group['collapsible']);
+      <?php foreach ($hrNavGroups as $hrNavGroup):
+        $collapsible = !empty($hrNavGroup['collapsible']);
         $groupActive = false;
-        foreach ($group['items'] as $item) {
+        foreach ($hrNavGroup['items'] as $item) {
           if (!empty($item['pages']) && in_array($currentPage, $item['pages'], true)) { $groupActive = true; }
         }
-        $groupId = 'hr-nav-' . preg_replace('/[^a-z0-9_]/', '', (string)($group['key'] ?? md5($group['label'])));
+        $groupId = 'hr-nav-' . preg_replace('/[^a-z0-9_]/', '', (string)($hrNavGroup['key'] ?? md5($hrNavGroup['label'])));
         ?>
         <div class="hr-nav-group<?= $collapsible ? ' hr-nav-collapsible' . ($groupActive ? ' open has-active' : '') : '' ?>"
-             <?= $collapsible ? 'data-nav-group="' . hr_ui_h($group['key'] ?? '') . '"' : '' ?>>
+             <?= $collapsible ? 'data-nav-group="' . hr_ui_h($hrNavGroup['key'] ?? '') . '"' : '' ?>>
           <?php if ($collapsible): ?>
             <button type="button" class="hr-nav-head" aria-expanded="<?= $groupActive ? 'true' : 'false' ?>" aria-controls="<?= hr_ui_h($groupId) ?>">
-              <span class="nav-ico"><i data-lucide="<?= hr_ui_h($group['icon'] ?? 'folder') ?>" style="width:16px;height:16px"></i></span>
-              <span class="text-truncate"><?= hr_ui_h($group['label']) ?></span>
+              <span class="nav-ico"><i data-lucide="<?= hr_ui_h($hrNavGroup['icon'] ?? 'folder') ?>" style="width:16px;height:16px"></i></span>
+              <span class="text-truncate"><?= hr_ui_h($hrNavGroup['label']) ?></span>
               <i data-lucide="chevron-down" class="hr-nav-chevron" style="width:16px;height:16px"></i>
             </button>
-          <?php elseif ($group['label'] !== ''): ?>
-            <div class="hr-nav-label"><?= hr_ui_h($group['label']) ?></div>
+          <?php elseif ($hrNavGroup['label'] !== ''): ?>
+            <div class="hr-nav-label"><?= hr_ui_h($hrNavGroup['label']) ?></div>
           <?php endif; ?>
           <div class="<?= $collapsible ? 'hr-nav-sub' : '' ?>" id="<?= hr_ui_h($groupId) ?>">
-          <?php foreach ($group['items'] as $item):
+          <?php foreach ($hrNavGroup['items'] as $item):
             $isActive = !empty($item['pages']) && in_array($currentPage, $item['pages'], true);
             ?>
             <a class="hr-nav-link<?= $collapsible ? ' hr-nav-sublink' : '' ?> <?= $isActive ? 'active' : '' ?>"
                href="<?= hr_ui_h($item['href']) ?>"
-               data-label="<?= hr_ui_h($item['label'] . ' ' . $group['label']) ?>">
+               data-label="<?= hr_ui_h($item['label'] . ' ' . $hrNavGroup['label']) ?>">
               <span class="nav-ico"><i data-lucide="<?= hr_ui_h($item['icon']) ?>" style="width:16px;height:16px"></i></span>
               <span class="text-truncate"><?= hr_ui_h($item['label']) ?></span>
             </a>

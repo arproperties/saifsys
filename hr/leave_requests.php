@@ -7,6 +7,7 @@ require_once __DIR__ . '/../includes/audit_bridge.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_schedule_helper.php';
+require_once __DIR__ . '/includes/hr_upload_guard.php';
 
 require_login();
 
@@ -88,9 +89,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!empty($_FILES['attachment']['name'])) {
                 $dir = __DIR__.'/../uploads/leave_attachments';
                 if (!is_dir($dir)) mkdir($dir,0775,true);
+                $ext = hr_upload_safe_ext((string)$_FILES['attachment']['name']);
                 if (!is_writable($dir)) { $err = 'Upload folder not writable.'; }
+                elseif ($ext === null) { $err = 'Attachment must be a PDF or an image (JPG, PNG, WEBP).'; }
                 else {
-                    $ext = pathinfo($_FILES['attachment']['name'], PATHINFO_EXTENSION);
+                    hr_upload_protect_dir($dir);
                     $fname = 'att_'.time().'_'.mt_rand(1000,9999).'.'.$ext;
                     if (move_uploaded_file($_FILES['attachment']['tmp_name'], $dir.'/'.$fname)) {
                         $attach_path = 'uploads/leave_attachments/'.$fname;

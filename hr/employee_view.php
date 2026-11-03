@@ -17,6 +17,8 @@ require_once __DIR__ . '/../modules/operations/includes/ops_attendance_reminder.
 require_once __DIR__ . '/includes/hr_employee_login.php';
 require_once __DIR__ . '/includes/hr_fleet.php';
 require_once __DIR__ . '/includes/hr_employee_bills.php';
+require_once __DIR__ . '/includes/hr_upload_guard.php';
+require_once __DIR__ . '/includes/hr_required_docs.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
@@ -76,34 +78,28 @@ if ($employee_id === '') {
 $workerReadOnly = $isWorkerSelfService;
 
 if ($workerReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Allow certain actions for workers (logout, profile navigation)
+    // Workers may only send their own self-service actions. The URL and Referer
+    // are never trusted here: a worker controls both.
     $allowedActions = ['leave_create', 'cash_advance_request', 'add_expense', 'add_emergency_contact', 'del_emergency_contact', 'update_contact_info'];
-    $isAllowedAction = false;
-    
-    // Check if this is a navigation request to profile or settings (from change password button)
-    // The form submits to profile (base path from url_helper), so check the request URI
-    $requestUri = $_SERVER['REQUEST_URI'] ?? '';
-    if (strpos($requestUri, '/profile') !== false || strpos($requestUri, '/settings') !== false) {
-        // This is navigation to profile/settings page, allow it
-        $isAllowedAction = true;
-    }
-    
-    // Check if this is a tab navigation request (from profile/settings pages)
-    if (isset($_POST['tab']) && (isset($_SERVER['HTTP_REFERER']) && 
-        (strpos($_SERVER['HTTP_REFERER'], '/profile') !== false || 
-         strpos($_SERVER['HTTP_REFERER'], '/settings') !== false))) {
-        // This is a tab navigation, allow it
-        $isAllowedAction = true;
-    }
-    
-    // Check if any allowed action is present
-    foreach ($allowedActions as $action) {
-        if (isset($_POST[$action])) {
-            $isAllowedAction = true;
-            break;
-        }
-    }
-    
+    // Every other action this page handles. Each handler runs on its own, so a
+    // request naming one of these is refused even next to an allowed action.
+    // A new staff-only action on this page belongs in this list.
+    $staffActions = [
+        'add_asset', 'edit_asset', 'del_asset', 'lost_asset', 'return_asset',
+        'add_bill', 'edit_bill', 'del_bill', 'approve_bill', 'remove_evidence',
+        'add_bill_item', 'edit_bill_item', 'del_bill_item',
+        'add_bonus', 'edit_bonus', 'del_bonus',
+        'add_cash_adv', 'del_cash_adv', 'approve_cash_adv', 'reject_cash_adv',
+        'add_deduction', 'del_deduction',
+        'add_history', 'del_history', 'add_note', 'del_note',
+        'add_training', 'del_training', 'update_training_status',
+        'doc_action', 'delete_doc_id', 'leave_change_status', 'save_schedule',
+        'employee_avatar_upload', 'employee_avatar_delete', 'save_required_doc_reason',
+    ];
+    $postedKeys = array_keys($_POST);
+    $isAllowedAction = array_intersect($postedKeys, $allowedActions)
+        && !array_intersect($postedKeys, $staffActions);
+
     if (!$isAllowedAction) {
         require_once __DIR__ . '/../includes/AuditService.php';
         AuditService::log([
@@ -436,19 +432,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['doc_action'])) {
     $expires_at  = trim($_POST['expires_at'] ?? '');
     $notes       = trim($_POST['notes'] ?? '');
 
+    // Passport, Visa, Labor Card, Contract and National ID need a date or N/A ticked.
+    $expiryNa    = !empty($_POST['expiry_na']);
+    $expiryError = hr_required_docs_expiry_error($doc_type, 0, $expires_at, $expiryNa);
+    if ($expiryError !== null) {
+        $errors[] = $expiryError;
+    }
+    if ($expiryNa) {
+        $expires_at = '';
+    }
+
     $issued_at   = $issued_at   ? date('Y-m-d', strtotime($issued_at))   : null;
     $expires_at  = $expires_at  ? date('Y-m-d', strtotime($expires_at))  : null;
 
     $file_name_to_store = null;
-    if (!empty($_FILES['doc_file']['name'])) {
-        $orig = basename($_FILES['doc_file']['name']);
-        $ext  = pathinfo($orig, PATHINFO_EXTENSION);
-        $safe = 'doc_' . $emp['id'] . '_' . time() . ($ext ? ".".$ext : "");
-        $dest = $upload_dir . '/' . $safe;
-        if (!move_uploaded_file($_FILES['doc_file']['tmp_name'], $dest)) {
-            $errors[] = "Upload failed: cannot write to folder.";
+    if (!$errors && !empty($_FILES['doc_file']['name'])) {
+        $ext  = hr_upload_safe_ext((string)$_FILES['doc_file']['name']);
+        if ($ext === null) {
+            $errors[] = "File must be a PDF or an image (JPG, PNG, WEBP).";
         } else {
-            $file_name_to_store = $safe;
+            hr_upload_protect_dir($upload_dir);
+            $safe = 'doc_' . $emp['id'] . '_' . time() . '.' . $ext;
+            $dest = $upload_dir . '/' . $safe;
+            if (!move_uploaded_file($_FILES['doc_file']['tmp_name'], $dest)) {
+                $errors[] = "Upload failed: cannot write to folder.";
+            } else {
+                $file_name_to_store = $safe;
+            }
         }
     }
 
@@ -586,10 +596,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['leave_create'])) {
         if (!empty($_FILES['leave_attachment']['name'])) {
             $dir = __DIR__.'/../uploads/leave_attachments';
             if (!is_dir($dir)) @mkdir($dir,0775,true);
+            $ext = hr_upload_safe_ext((string)$_FILES['leave_attachment']['name']);
             if (!is_writable($dir)) {
                 $_SESSION['leave_err'] = 'Upload folder not writable.';
+            } elseif ($ext === null) {
+                $_SESSION['leave_err'] = 'Attachment must be a PDF or an image (JPG, PNG, WEBP).';
             } else {
-                $ext = pathinfo($_FILES['leave_attachment']['name'], PATHINFO_EXTENSION);
+                hr_upload_protect_dir($dir);
                 $fname = 'att_'.time().'_'.mt_rand(1000,9999).'.'.$ext;
                 if (move_uploaded_file($_FILES['leave_attachment']['tmp_name'], $dir.'/'.$fname)) {
                     $attach_path = 'uploads/leave_attachments/'.$fname;
@@ -3063,8 +3076,38 @@ $billItems = $billsReady ? hr_bills_items($conn, (int)$emp['id']) : [];
 $billRows = $billsReady ? hr_bills_list($conn, (int)$emp['id']) : [];
 
 
+/* ---------------- Required documents (Overview card) ---------------- */
+$reqdoc_msg = $_SESSION['reqdoc_msg'] ?? '';
+$reqdoc_err = $_SESSION['reqdoc_err'] ?? '';
+unset($_SESSION['reqdoc_msg'], $_SESSION['reqdoc_err']);
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_required_doc_reason']) && !$workerReadOnly) {
+  csrf_verify();
+  $reqdocUid = isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null;
+  $reqdocType = (string)($_POST['doc_type'] ?? '');
+  $result = hr_required_docs_save_reason($conn, (int)$emp['id'], $reqdocType, (string)($_POST['reason'] ?? ''), $reqdocUid);
+  if ($result['ok']) {
+    audit_bridge_hr_ops('required_doc_reason_saved', 'employee_required_doc_notes', (int)$emp['id'],
+      $result['message'] . ' (' . ($emp['full_name'] ?? $emp['employee_code']) . ')',
+      isset($emp['company_id']) ? (int)$emp['company_id'] : null,
+      ['employee_id' => (int)$emp['id'], 'doc_type' => $reqdocType, 'reason' => trim((string)($_POST['reason'] ?? ''))],
+      'Employee #' . (int)$emp['id'], $reqdocUid);
+  }
+  $_SESSION[$result['ok'] ? 'reqdoc_msg' : 'reqdoc_err'] = $result['message'];
+  header('Location: employee_view.php?id=' . urlencode($employee_id) . '#tab-overview');
+  exit;
+}
+
+$requiredDocs = hr_required_docs_status($conn, (int)$emp['id']);
+$requiredDocsPresent = count(array_filter($requiredDocs, static fn($r) => $r['present']));
+// Expiry of each uploaded one (same rules as the Employees list): valid / expiring / expired.
+$requiredDocsExpiry = hr_required_docs_details_map($conn, [(int)$emp['id']])[(int)$emp['id']] ?? [];
+$requiredDocsNotesReady = hr_required_docs_notes_ready($conn);
+
+
 /* ---------------- Training (actions + data) ---------------- */
 $train_msg = '';
+$train_err = '';
 $train_upload_dir = __DIR__ . '/../uploads/training_certs';
 if (!is_dir($train_upload_dir)) @mkdir($train_upload_dir,0775,true);
 
@@ -3081,14 +3124,19 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_training'])) {
 
   $cert_path = null;
   if (!empty($_FILES['certificate']['name'])) {
-    $ext = pathinfo($_FILES['certificate']['name'], PATHINFO_EXTENSION);
-    $fname = 'cert_'.$emp['id'].'_'.time().($ext?'.'.$ext:'');
-    if (move_uploaded_file($_FILES['certificate']['tmp_name'], $train_upload_dir.'/'.$fname)) {
-      $cert_path = 'uploads/training_certs/'.$fname;
+    $ext = hr_upload_safe_ext((string)$_FILES['certificate']['name']);
+    if ($ext === null) {
+      $train_err = 'Certificate must be a PDF or an image (JPG, PNG, WEBP).';
+    } else {
+      hr_upload_protect_dir($train_upload_dir);
+      $fname = 'cert_'.$emp['id'].'_'.time().'.'.$ext;
+      if (move_uploaded_file($_FILES['certificate']['tmp_name'], $train_upload_dir.'/'.$fname)) {
+        $cert_path = 'uploads/training_certs/'.$fname;
+      }
     }
   }
 
-  if ($course!=='') {
+  if ($course!=='' && $train_err === '') {
     $stmt = $conn->prepare("INSERT INTO employee_training
       (employee_id,course_name,provider,start_date,end_date,cert_valid_until,status,result,certificate_path,notes,created_by)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)");
@@ -4334,6 +4382,155 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                 <button type="button" class="btn btn-sm <?= $expiringDocsCount > 0 ? 'btn-outline-danger' : 'btn-outline-secondary' ?>" onclick="switchToTab('tab-docs')">
                                     <?= $expiringDocsCount > 0 ? 'Review' : 'View Docs' ?>
                                 </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <?php
+            /* Required documents: at least one of each type in Documents, any date. */
+            $requiredDocsTotal = count($requiredDocs);
+            $requiredDocsComplete = $requiredDocsPresent === $requiredDocsTotal;
+            // Green: all present. Orange: the rest have a reason. Red: one is missing with no reason.
+            $requiredDocsUnexplained = count(array_filter($requiredDocs, static fn($r) => $r['state'] === 'missing'));
+            $requiredDocsBadge = $requiredDocsComplete ? 'success' : ($requiredDocsUnexplained ? 'danger' : 'warning');
+            ?>
+            <div class="row g-3 mt-1">
+                <div class="col-12">
+                    <div class="card panel-card" id="required-docs">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-3">
+                                <div>
+                                    <h6 class="card-title mb-1">Required documents</h6>
+                                    <div class="stat-meta">Quick check if Passport, Visa, Labor Card, Contract and National ID are found, and when they expire.</div>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="switchToTab('tab-docs')">
+                                        <i class="bi bi-folder2-open me-1"></i>View documents
+                                    </button>
+                                    <span class="badge px-3 py-2 bg-<?= $requiredDocsBadge ?>-subtle text-<?= $requiredDocsBadge ?>-emphasis border border-<?= $requiredDocsBadge ?>-subtle">
+                                        <?= (int)$requiredDocsPresent ?> / <?= (int)$requiredDocsTotal ?>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <?php if ($reqdoc_msg): ?><div class="alert alert-success py-2 small"><?= htmlspecialchars($reqdoc_msg) ?></div><?php endif; ?>
+                            <?php if ($reqdoc_err): ?><div class="alert alert-danger py-2 small"><?= htmlspecialchars($reqdoc_err) ?></div><?php endif; ?>
+
+                            <?php
+                              // Uploaded documents that need renewing: expired first, then expiring soon.
+                              $renewDocs = [];
+                              foreach (['expired', 'expiring'] as $renewState) {
+                                foreach ($requiredDocsExpiry as $rType => $rCell) {
+                                  if ($rCell['state'] === $renewState) { $renewDocs[$rType] = $rCell; }
+                                }
+                              }
+                            ?>
+                            <?php if ($requiredDocsComplete && !$renewDocs): ?>
+                                <div class="text-success"><i class="bi bi-check-circle me-1"></i>All required documents present and valid.</div>
+                            <?php elseif ($requiredDocsComplete): ?>
+                                <div class="text-success mb-2"><i class="bi bi-check-circle me-1"></i>All required documents uploaded. <?= count($renewDocs) ?> need<?= count($renewDocs) === 1 ? 's' : '' ?> renewing:</div>
+                            <?php endif; ?>
+
+                            <?php foreach ($renewDocs as $rType => $rCell):
+                              $rLabel = HR_REQUIRED_DOC_LABELS[$rType];
+                              $rDate = date('d M Y', strtotime($rCell['expires_at']));
+                              $rExpired = $rCell['state'] === 'expired';
+                              $rDays = (int)(new DateTime('today'))->diff(new DateTime($rCell['expires_at']))->format('%r%a');
+                              $rWhen = $rExpired
+                                ? ($rDays === -1 ? '1 day ago' : abs($rDays) . ' days ago')
+                                : ($rDays === 0 ? 'today' : ($rDays === 1 ? 'in 1 day' : 'in ' . $rDays . ' days'));
+                            ?>
+                                <div class="border rounded p-2 mb-2 <?= $rExpired ? 'border-danger bg-danger-subtle' : 'border-warning bg-warning-subtle' ?>">
+                                    <div class="d-flex flex-wrap align-items-center gap-2">
+                                        <i class="bi <?= $rExpired ? 'bi-exclamation-triangle-fill text-danger' : 'bi-clock-history text-warning-emphasis' ?>"></i>
+                                        <strong><?= htmlspecialchars($rLabel) ?></strong>
+                                        <span class="<?= $rExpired ? 'text-danger fw-semibold' : 'text-warning-emphasis fw-semibold' ?>">
+                                            <?= $rExpired ? 'EXPIRED on ' . $rDate : 'expires on ' . $rDate ?> (<?= $rWhen ?>)
+                                        </span>
+                                        <span class="flex-grow-1 small text-muted">
+                                            —
+                                            <?php if ($workerReadOnly): ?>
+                                                <?= $rExpired ? 'please renew it and hand the new copy to HR.' : 'please start the renewal and hand the new copy to HR.' ?>
+                                            <?php else: ?>
+                                                <?= $rExpired ? 'renew it and upload the new copy.' : 'start the renewal and upload the new copy when ready.' ?>
+                                            <?php endif; ?>
+                                        </span>
+                                        <?php if (!$workerReadOnly): ?>
+                                            <button type="button" class="btn btn-sm <?= $rExpired ? 'btn-danger' : 'btn-outline-primary' ?>" data-bs-toggle="modal" data-bs-target="#docModal"
+                                                    onclick="newDoc(); document.getElementById('doc_type').value = <?= htmlspecialchars(json_encode($rType), ENT_QUOTES) ?>; if (window.hrExpiryRuleSync) hrExpiryRuleSync();">
+                                                <i class="bi bi-upload me-1"></i>Upload new
+                                            </button>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+
+                            <?php if (!$requiredDocsComplete): ?>
+                                <?php foreach ($requiredDocs as $rd): if ($rd['present']) continue;
+                                    $rdKey = 'reqdoc-' . preg_replace('/[^a-z0-9]/', '', strtolower($rd['type'])); ?>
+                                    <?php $rdExplained = $rd['state'] === 'explained'; ?>
+                                    <div class="border rounded p-2 mb-2 <?= $rdExplained ? 'border-warning-subtle bg-warning-subtle' : 'border-danger-subtle' ?>">
+                                        <div class="d-flex flex-wrap align-items-center gap-2">
+                                            <?php if ($rdExplained): ?>
+                                                <i class="bi bi-exclamation-circle-fill text-warning"></i>
+                                                <strong><?= htmlspecialchars(HR_REQUIRED_DOC_LABELS[$rd['type']] ?? $rd['type']) ?></strong>
+                                                <span class="text-muted">not on file, reason given</span>
+                                            <?php else: ?>
+                                                <i class="bi bi-x-circle-fill text-danger"></i>
+                                                <strong><?= htmlspecialchars(HR_REQUIRED_DOC_LABELS[$rd['type']] ?? $rd['type']) ?></strong>
+                                                <span class="text-danger">missing</span>
+                                            <?php endif; ?>
+                                            <span class="flex-grow-1 small">
+                                                <?php if ($rd['reason'] !== ''): ?>
+                                                    — <?= htmlspecialchars($rd['reason']) ?>
+                                                    <span class="text-muted">
+                                                        (<?= $rd['updated_by_name'] !== '' ? htmlspecialchars($rd['updated_by_name']) . ', ' : '' ?><?= htmlspecialchars(date('d M Y', strtotime($rd['updated_at']))) ?>)
+                                                    </span>
+                                                <?php else: ?>
+                                                    <span class="text-muted fst-italic">— no reason given</span>
+                                                <?php endif; ?>
+                                            </span>
+                                            <?php if (!$workerReadOnly): ?>
+                                                <?php if ($requiredDocsNotesReady): ?>
+                                                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#<?= $rdKey ?>">
+                                                        <?= $rd['reason'] !== '' ? 'Edit reason' : 'Add reason' ?>
+                                                    </button>
+                                                <?php endif; ?>
+                                                <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#docModal"
+                                                        onclick="newDoc(); document.getElementById('doc_type').value = <?= htmlspecialchars(json_encode($rd['type']), ENT_QUOTES) ?>; if (window.hrExpiryRuleSync) hrExpiryRuleSync();">
+                                                    <i class="bi bi-upload me-1"></i>Upload
+                                                </button>
+                                            <?php endif; ?>
+                                        </div>
+                                        <?php if (!$workerReadOnly && $requiredDocsNotesReady): ?>
+                                            <form method="post" class="collapse mt-2" id="<?= $rdKey ?>">
+                                                <?php csrf_field(); ?>
+                                                <input type="hidden" name="save_required_doc_reason" value="1">
+                                                <input type="hidden" name="doc_type" value="<?= htmlspecialchars($rd['type']) ?>">
+                                                <div class="input-group input-group-sm">
+                                                    <input type="text" name="reason" class="form-control" maxlength="<?= (int)HR_REQUIRED_DOC_REASON_MAX ?>"
+                                                           value="<?= htmlspecialchars($rd['reason']) ?>" placeholder="Why is the <?= htmlspecialchars(HR_REQUIRED_DOC_LABELS[$rd['type']] ?? $rd['type']) ?> missing? Leave empty to remove the reason.">
+                                                    <button class="btn btn-primary">Save</button>
+                                                </div>
+                                            </form>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+
+                            <div class="d-flex flex-wrap gap-2 mt-2">
+                                <?php foreach ($requiredDocs as $rd):
+                                    // Valid ones only; expired and expiring are listed above with what to do.
+                                    $vCell = $requiredDocsExpiry[$rd['type']] ?? null;
+                                    if (!$rd['present'] || ($vCell && $vCell['state'] !== 'valid')) continue; ?>
+                                    <button type="button" class="badge bg-success-subtle text-success-emphasis border border-success-subtle px-2 py-1"
+                                            onclick="switchToTab('tab-docs')" title="Open Documents">
+                                        <i class="bi bi-check-circle me-1"></i><?= htmlspecialchars(HR_REQUIRED_DOC_LABELS[$rd['type']] ?? $rd['type']) ?>
+                                        <span class="fw-normal">· <?= !empty($vCell['expires_at']) ? 'Valid Till ' . htmlspecialchars(date('d M Y', strtotime($vCell['expires_at']))) : 'Uploaded' ?></span>
+                                    </button>
+                                <?php endforeach; ?>
                             </div>
                         </div>
                     </div>
@@ -6225,6 +6422,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                 </div>
 
                                 <?php if($train_msg): ?><div class="alert alert-success py-2"><?= htmlspecialchars($train_msg) ?></div><?php endif; ?>
+                                <?php if($train_err): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($train_err) ?></div><?php endif; ?>
 
                                 <?php if (!$workerReadOnly): ?>
                                 <form method="post" enctype="multipart/form-data" class="row g-2 mb-3">
@@ -7022,13 +7220,13 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
         <h5 class="modal-title" id="docModalTitle">Add Document</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body" data-expiry-rule>
         <input type="hidden" name="doc_action" id="doc_action" value="create">
         <input type="hidden" name="doc_id" id="doc_id">
 
         <div class="mb-2">
             <label class="form-label">Type</label>
-            <select name="doc_type" id="doc_type" class="form-select" required>
+            <select name="doc_type" id="doc_type" class="form-select" required data-req-type>
                 <option value="">-- choose --</option>
                 <option>Passport</option>
                 <option>Visa</option>
@@ -7048,8 +7246,12 @@ document.getElementById('bonusEditModal').addEventListener('show.bs.modal', func
                 <input type="date" name="issued_at" id="issued_at" class="form-control">
             </div>
             <div class="col-md-6 mb-2">
-                <label class="form-label">Expires at</label>
-                <input type="date" name="expires_at" id="expires_at" class="form-control">
+                <label class="form-label">Expiry Date<span class="text-danger d-none" data-req-only> *</span></label>
+                <input type="date" name="expires_at" id="expires_at" class="form-control" data-req-expiry>
+                <div class="form-check mt-1 d-none" data-req-only>
+                    <input class="form-check-input" type="checkbox" name="expiry_na" value="1" id="expiry_na" data-req-na>
+                    <label class="form-check-label small" for="expiry_na">No expiry date (N/A)</label>
+                </div>
             </div>
         </div>
         <div class="mb-2">
@@ -7564,7 +7766,9 @@ function newDoc() {
     document.getElementById('doc_number').value = '';
     document.getElementById('issued_at').value = '';
     document.getElementById('expires_at').value = '';
+    document.getElementById('expiry_na').checked = false;
     document.getElementById('notes').value = '';
+    if (window.hrExpiryRuleSync) hrExpiryRuleSync();
 }
 function editDoc(d) {
     document.getElementById('docModalTitle').innerText = 'Edit Document';
@@ -7574,7 +7778,10 @@ function editDoc(d) {
     document.getElementById('doc_number').value = d.doc_number || '';
     document.getElementById('issued_at').value = (d.issued_at && d.issued_at !== '0000-00-00') ? d.issued_at : '';
     document.getElementById('expires_at').value = (d.expires_at && d.expires_at !== '0000-00-00') ? d.expires_at : '';
+    // A saved document with no date was N/A, so it opens ticked and saves as before.
+    document.getElementById('expiry_na').checked = !document.getElementById('expires_at').value;
     document.getElementById('notes').value = d.notes || '';
+    if (window.hrExpiryRuleSync) hrExpiryRuleSync();
 }
 
 function newEmergencyContact() {
@@ -7834,4 +8041,5 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 HR_EMP_VIEW_JS;
+$pageScripts .= hr_required_docs_expiry_field_js();
 require_once __DIR__ . '/includes/hr_layout_footer.php';
