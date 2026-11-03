@@ -40,6 +40,31 @@
     });
   }
 
+  // Desktop: shrink the menu to icons or show it in full; the choice is remembered in this browser.
+  var NAV_HIDDEN_KEY = 'hr.nav.hidden';
+  function setNavHidden(hidden) {
+    document.documentElement.classList.toggle('hr-nav-hidden', hidden);
+    try { localStorage.setItem(NAV_HIDDEN_KEY, hidden ? '1' : '0'); } catch (e) {}
+  }
+  function initNavToggle() {
+    var root = document.documentElement;
+    document.querySelectorAll('[data-hr-nav-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        setNavHidden(!root.classList.contains('hr-nav-hidden'));
+      });
+    });
+    // On the icon bar a menu heading has no room for its submenu: open the full menu first.
+    document.querySelectorAll('.hr-nav-head').forEach(function (head) {
+      head.addEventListener('click', function (e) {
+        if (!root.classList.contains('hr-nav-hidden') || window.innerWidth < 992) return;
+        e.stopImmediatePropagation();
+        setNavHidden(false);
+        var group = head.closest('.hr-nav-collapsible');
+        if (group && !group.classList.contains('open')) setTimeout(function () { head.click(); }, 0);
+      }, true);
+    });
+  }
+
   // Collapsible menus: the one holding the current page starts open; the rest
   // remember whether HR left them open (localStorage).
   var NAV_OPEN_KEY = 'hr.nav.open';
@@ -158,6 +183,7 @@
     if (!document.body.classList.contains('hr-ui-v2')) return;
     initLucide();
     initMobileSidebar();
+    initNavToggle();
     initNavGroups();
     initNavSearch();
     initUnsavedForms();

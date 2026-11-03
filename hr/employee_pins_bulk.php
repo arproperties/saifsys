@@ -63,6 +63,29 @@ if ($ready) {
     }
 }
 
+/* ---------- Last used the app ----------
+ * The later of their last PIN sign-in on a phone (kept 90 days) and their
+ * last check-in made from the app themselves (attendance source 'self').
+ */
+$lastUsed = [];
+if ($ready) {
+    $signIns = [];
+    foreach ($conn->query("SELECT user_id, MAX(attempted_at) AS at FROM ops_pin_attempts WHERE succeeded = 1 AND user_id IS NOT NULL GROUP BY user_id") as $row) {
+        $signIns[(int)$row['user_id']] = substr((string)$row['at'], 0, 10);
+    }
+    $selfIn = [];
+    foreach ($conn->query("SELECT employee_id, MAX(work_date) AS d FROM attendance WHERE source = 'self' AND work_date <= CURDATE() GROUP BY employee_id") as $row) {
+        $selfIn[(int)$row['employee_id']] = (string)$row['d'];
+    }
+    foreach ($employees as $e) {
+        $d = max($signIns[(int)$e['user_id']] ?? '', $selfIn[(int)$e['id']] ?? '');
+        if ($d !== '') {
+            $lastUsed[(int)$e['id']] = $d;
+        }
+    }
+}
+$usingSince = date('Y-m-d', strtotime('-30 days'));
+
 /* ---------- Generate ---------- */
 $results = null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -128,7 +151,7 @@ echo hr_ui_page_header(
       If the page is closed first, generate new ones for the people you missed.
       <div class="mt-2">
         <button type="button" class="btn btn-primary btn-sm" onclick="window.print()">Print</button>
-        <a class="btn btn-outline-secondary btn-sm" href="employee_pins_bulk.php<?= $selectedCompanyId ? '?company_id=' . (int)$selectedCompanyId : '' ?>">Back to the list</a>
+        <a class="btn btn-outline-secondary" href="employee_pins_bulk.php<?= $selectedCompanyId ? '?company_id=' . (int)$selectedCompanyId : '' ?>"><i class="bi bi-arrow-left me-1"></i>Back</a>
       </div>
     </div>
   <?php endif; ?>
@@ -212,6 +235,7 @@ echo hr_ui_page_header(
         elseif (isset($hasPin[(int)$e['user_id']])) { $withPin++; }
     }
     $withoutPin = count($employees) - $withPin;
+    $usingApp = count(array_filter($lastUsed, static fn($d) => $d >= $usingSince));
   ?>
 
   <div class="hr-filter-bar mb-3">
@@ -234,23 +258,75 @@ echo hr_ui_page_header(
   </div>
 
   <div class="row g-3 mb-3">
-    <div class="col-md-4">
+    <div class="col-md-3">
+      <div class="hr-settings-card"><div class="card-body">
+        <div class="text-muted small">Using the app (last 30 days)</div>
+        <div class="fs-3 fw-semibold text-primary"><?= (int)$usingApp ?> <span class="fs-6 text-muted fw-normal">of <?= count($employees) ?></span></div>
+        <?php if ($employees): ?>
+          <button type="button" class="btn btn-link btn-sm p-0" data-bs-toggle="modal" data-bs-target="#appUsersModal">Show who</button>
+        <?php endif; ?>
+      </div></div>
+    </div>
+    <div class="col-md-3">
       <div class="hr-settings-card"><div class="card-body">
         <div class="text-muted small">No PIN yet</div>
         <div class="fs-3 fw-semibold text-danger"><?= (int)$withoutPin ?></div>
       </div></div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3">
       <div class="hr-settings-card"><div class="card-body">
         <div class="text-muted small">Already have a PIN</div>
         <div class="fs-3 fw-semibold text-success"><?= (int)$withPin ?></div>
       </div></div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3">
       <div class="hr-settings-card"><div class="card-body">
         <div class="text-muted small">No login yet (one is created with the PIN)</div>
         <div class="fs-3 fw-semibold text-muted"><?= (int)$noLogin ?></div>
       </div></div>
+    </div>
+  </div>
+
+  <?php
+    $appUsing = []; $appNot = [];
+    foreach ($employees as $e) {
+        $d = $lastUsed[(int)$e['id']] ?? '';
+        if ($d !== '' && $d >= $usingSince) { $appUsing[] = $e + ['last_used' => $d]; }
+        else { $appNot[] = $e + ['last_used' => $d]; }
+    }
+    usort($appUsing, static fn($a, $b) => strcmp($b['last_used'], $a['last_used']));
+  ?>
+  <div class="modal fade" id="appUsersModal" tabindex="-1" aria-labelledby="appUsersTitle" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="appUsersTitle">Staff app use (last 30 days)</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-4">
+            <?php foreach ([['Using the app', $appUsing, 'text-success'], ['Not using the app', $appNot, 'text-danger']] as [$title, $list, $cls]): ?>
+              <div class="col-md-6">
+                <div class="fw-semibold mb-2 <?= $cls ?>"><?= $title ?> (<?= count($list) ?>)</div>
+                <table class="table table-sm align-middle mb-0">
+                  <thead class="table-light"><tr><th>Code</th><th>Name</th><th>Last used</th></tr></thead>
+                  <tbody>
+                    <?php if (!$list): ?>
+                      <tr><td colspan="3" class="text-muted">Nobody</td></tr>
+                    <?php else: foreach ($list as $e): ?>
+                      <tr>
+                        <td><?= h($e['employee_code']) ?></td>
+                        <td><?= h($e['full_name']) ?></td>
+                        <td class="text-nowrap small"><?= $e['last_used'] !== '' ? h(date('j M Y', strtotime($e['last_used']))) : '<span class="text-muted">Never</span>' ?></td>
+                      </tr>
+                    <?php endforeach; endif; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endforeach; ?>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 

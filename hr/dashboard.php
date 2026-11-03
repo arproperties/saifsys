@@ -9,6 +9,7 @@ require_once __DIR__ . '/../includes/module_access.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_company_documents.php';
+require_once __DIR__ . '/includes/hr_comp_off.php';
 
 // Get branding settings
 $brand = getBrandSettings($conn);
@@ -336,6 +337,8 @@ echo hr_ui_page_header(
     </div>
   </div>
   <?php endif; ?>
+
+  <?= hr_comp_off_pending_notice($conn, (int)$selectedCompanyId) ?>
 
   <div class="row g-3">
     <div class="col-lg-4">
