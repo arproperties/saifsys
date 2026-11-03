@@ -24,7 +24,7 @@ function has_column(PDO $conn, $table, $col){
 
 // ---------- which tab? ----------
     $tab = $_GET['tab'] ?? 'department';
-    if (!in_array($tab, ['department','location','reminders','company'], true)) {
+    if (!in_array($tab, ['department','location','managers','reminders','company'], true)) {
         $tab = 'department';
     }
     
@@ -288,6 +288,47 @@ $locCols = array_merge(['id','name'], array_filter([
 $locations = $conn->query("SELECT ".implode(',',$locCols)." FROM locations ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
     
     /* =========================================================================
+       Managers: who reports to whom, from the Manager field on each employee
+       ========================================================================= */
+    $mgrGroups = [];   // manager id => ['manager' => row, 'staff' => rows]
+    $noManager = [];
+    if ($tab === 'managers') {
+        require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
+        $cur = hr_employee_current_statuses();
+        $st = $conn->prepare("
+            SELECT e.id, e.employee_code, e.full_name, e.position_title, e.department_id, e.manager_id, e.status,
+                   c.name AS company_name
+              FROM employees e
+              LEFT JOIN companies c ON c.id = e.company_id
+             WHERE e.status IN (" . hr_employee_status_in_sql($cur) . ")
+             ORDER BY e.full_name");
+        $st->execute($cur);
+        $staffRows = $st->fetchAll(PDO::FETCH_ASSOC);
+        $mgrIds = array_values(array_unique(array_filter(array_map(fn($r) => (int)$r['manager_id'], $staffRows))));
+        $mgrRows = [];
+        if ($mgrIds) {
+            // Managers may have left; they are still shown so their staff can be moved.
+            $ms = $conn->prepare("
+                SELECT e.id, e.employee_code, e.full_name, e.position_title, e.department_id, e.status, c.name AS company_name
+                  FROM employees e LEFT JOIN companies c ON c.id = e.company_id
+                 WHERE e.id IN (" . implode(',', array_fill(0, count($mgrIds), '?')) . ")");
+            $ms->execute($mgrIds);
+            foreach ($ms->fetchAll(PDO::FETCH_ASSOC) as $m) $mgrRows[(int)$m['id']] = $m;
+        }
+        foreach ($staffRows as $r) {
+            $mid = (int)$r['manager_id'];
+            if ($mid > 0 && $mid !== (int)$r['id']) {
+                $mgrGroups[$mid]['manager'] = $mgrRows[$mid] ?? ['id' => $mid, 'employee_code' => '', 'full_name' => 'Unknown employee #' . $mid,
+                                                                  'position_title' => '', 'department_id' => null, 'status' => '', 'company_name' => ''];
+                $mgrGroups[$mid]['staff'][] = $r;
+            } else {
+                $noManager[] = $r;
+            }
+        }
+        uasort($mgrGroups, fn($a, $b) => strcasecmp((string)$a['manager']['full_name'], (string)$b['manager']['full_name']));
+    }
+
+    /* =========================================================================
        Company info (load only when needed)
        ========================================================================= */
     $company = [];
@@ -464,7 +505,7 @@ echo hr_ui_page_header(
         ['label' => 'HR', 'href' => $hrBase . '/dashboard'],
         ['label' => 'Organization'],
     ],
-    '<a href="../operation.php" class="btn btn-outline-secondary">Back</a>'
+    '<a href="../operation.php" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>'
 );
 ?>
 
@@ -475,6 +516,7 @@ echo hr_ui_page_header(
       <ul class="nav nav-tabs mb-3">
         <li class="nav-item"><a class="nav-link <?= $tab==='department'?'active':'' ?>" href="?tab=department">Departments</a></li>
         <li class="nav-item"><a class="nav-link <?= $tab==='location'?'active':'' ?>" href="?tab=location">Locations</a></li>
+        <li class="nav-item"><a class="nav-link <?= $tab==='managers'?'active':'' ?>" href="?tab=managers">Managers</a></li>
         <li class="nav-item"><a class="nav-link <?= $tab==='reminders'?'active':'' ?>" href="?tab=reminders">Reminders</a></li>
         <li class="nav-item"><a class="nav-link <?= $tab==='company'?'active':'' ?>" href="?tab=company">Company info</a></li>
       </ul>
@@ -544,10 +586,10 @@ echo hr_ui_page_header(
               <?php foreach($departments as $d): ?>
               <tr>
                 <td><?= htmlspecialchars($d['name']) ?></td>
-                <?php if (isset($d['code'])): ?><td><?= htmlspecialchars($d['code']) ?></td><?php endif; ?>
-                <?php if (isset($d['parent_id'])): ?><td><?= isset($dept_map[$d['parent_id']]) ? htmlspecialchars($dept_map[$d['parent_id']]) : '—' ?></td><?php endif; ?>
-                <?php if (isset($d['status'])): ?><td><span class="badge bg-<?= $d['status']==='active'?'success':'secondary' ?>"><?= htmlspecialchars($d['status']) ?></span></td><?php endif; ?>
-                <?php if (isset($d['created_at'])): ?><td><?= htmlspecialchars($d['created_at']) ?></td><?php endif; ?>
+                <?php if (array_key_exists('code', $d)): ?><td><?= (string)($d['code'] ?? '') !== '' ? htmlspecialchars($d['code']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('parent_id', $d)): ?><td><?= isset($dept_map[$d['parent_id']]) ? htmlspecialchars($dept_map[$d['parent_id']]) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('status', $d)): ?><td><span class="badge bg-<?= $d['status']==='active'?'success':'secondary' ?>"><?= htmlspecialchars($d['status'] ?? '—') ?></span></td><?php endif; ?>
+                <?php if (array_key_exists('created_at', $d)): ?><td><?= (string)($d['created_at'] ?? '') !== '' ? htmlspecialchars($d['created_at']) : '—' ?></td><?php endif; ?>
                 <td class="text-end">
                   <button class="btn btn-sm btn-outline-primary" onclick="fillDept(<?= (int)$d['id'] ?>)">Edit</button>
                   <form method="post" class="d-inline" onsubmit="return confirm('Delete this department?')">
@@ -687,12 +729,12 @@ echo hr_ui_page_header(
               <?php foreach($locations as $l): ?>
               <tr>
                 <td><?= htmlspecialchars($l['name']) ?></td>
-                <?php if (isset($l['code'])): ?><td><?= htmlspecialchars($l['code']) ?></td><?php endif; ?>
-                <?php if (isset($l['address'])): ?><td><?= htmlspecialchars($l['address']) ?></td><?php endif; ?>
-                <?php if (isset($l['city'])): ?><td><?= htmlspecialchars($l['city']) ?></td><?php endif; ?>
-                <?php if (isset($l['country'])): ?><td><?= htmlspecialchars($l['country']) ?></td><?php endif; ?>
-                <?php if (isset($l['status'])): ?><td><span class="badge bg-<?= $l['status']==='active'?'success':'secondary' ?>"><?= htmlspecialchars($l['status']) ?></span></td><?php endif; ?>
-                <?php if (isset($l['created_at'])): ?><td><?= htmlspecialchars($l['created_at']) ?></td><?php endif; ?>
+                <?php if (array_key_exists('code', $l)): ?><td><?= (string)($l['code'] ?? '') !== '' ? htmlspecialchars($l['code']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('address', $l)): ?><td><?= (string)($l['address'] ?? '') !== '' ? htmlspecialchars($l['address']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('city', $l)): ?><td><?= (string)($l['city'] ?? '') !== '' ? htmlspecialchars($l['city']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('country', $l)): ?><td><?= (string)($l['country'] ?? '') !== '' ? htmlspecialchars($l['country']) : '—' ?></td><?php endif; ?>
+                <?php if (array_key_exists('status', $l)): ?><td><span class="badge bg-<?= $l['status']==='active'?'success':'secondary' ?>"><?= htmlspecialchars($l['status'] ?? '—') ?></span></td><?php endif; ?>
+                <?php if (array_key_exists('created_at', $l)): ?><td><?= (string)($l['created_at'] ?? '') !== '' ? htmlspecialchars($l['created_at']) : '—' ?></td><?php endif; ?>
                 <td class="text-end">
                   <button class="btn btn-sm btn-outline-primary" onclick="fillLoc(<?= (int)$l['id'] ?>)">Edit</button>
                   <form method="post" class="d-inline" onsubmit="return confirm('Delete this location?')">
@@ -985,6 +1027,52 @@ echo hr_ui_page_header(
         </div>
       </div>
     </div>
+
+  <?php elseif ($tab==='managers'): ?>
+
+    <?php
+      // One collapsible card per manager; "No manager set" last.
+      $mgrCards = [];
+      foreach ($mgrGroups as $mid => $g) $mgrCards[] = ['key' => 'm' . (int)$mid, 'manager' => $g['manager'], 'staff' => $g['staff']];
+      if ($noManager) $mgrCards[] = ['key' => 'none', 'manager' => null, 'staff' => $noManager];
+    ?>
+
+    <?php if (!$mgrCards): ?>
+      <div class="alert alert-info">No current employees.</div>
+    <?php endif; ?>
+
+    <?php foreach ($mgrCards as $c): $m = $c['manager']; ?>
+      <div class="card mb-2">
+        <button type="button" class="card-header d-flex align-items-center gap-2 border-0 text-start w-100 bg-light"
+                data-bs-toggle="collapse" data-bs-target="#mgr-<?= $c['key'] ?>" aria-expanded="false">
+          <i class="bi bi-chevron-right small mgr-chev"></i>
+          <?php if ($m): ?>
+            <span class="fw-semibold"><?= htmlspecialchars((string)$m['full_name']) ?></span>
+            <?php if ((string)$m['position_title'] !== ''): ?><span class="text-muted small"><?= htmlspecialchars((string)$m['position_title']) ?></span><?php endif; ?>
+            <?php if ($m['status'] !== '' && !in_array($m['status'], hr_employee_current_statuses(), true)): ?>
+              <span class="badge text-bg-warning">Left</span>
+            <?php endif; ?>
+          <?php else: ?>
+            <span class="fw-semibold text-muted">No manager set</span>
+          <?php endif; ?>
+          <span class="badge text-bg-<?= $m ? 'primary' : 'secondary' ?> ms-auto"><?= count($c['staff']) ?></span>
+        </button>
+        <div id="mgr-<?= $c['key'] ?>" class="collapse">
+          <ul class="list-group list-group-flush">
+            <?php foreach ($c['staff'] as $s): ?>
+              <li class="list-group-item d-flex justify-content-between gap-2">
+                <a href="employee_view.php?id=<?= (int)$s['id'] ?>"><?= htmlspecialchars((string)$s['full_name']) ?></a>
+                <span class="text-muted small"><?= htmlspecialchars((string)($s['position_title'] ?: '')) ?></span>
+              </li>
+            <?php endforeach; ?>
+          </ul>
+        </div>
+      </div>
+    <?php endforeach; ?>
+    <style>
+      [aria-expanded="true"] > .mgr-chev { transform: rotate(90deg); }
+      .mgr-chev { transition: transform .15s; }
+    </style>
 
                 <?php elseif ($tab==='company'): ?>
 

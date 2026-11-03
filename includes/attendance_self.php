@@ -361,7 +361,7 @@ function attendance_self_state(PDO $conn): array
         }
 
         // HR has already said what today is. Leave it alone.
-        if (in_array((string)$row['status'], ['on_leave', 'absent', 'half', 'excused_absent'], true)) {
+        if (in_array((string)$row['status'], ['on_leave', 'absent', 'half', 'excused_absent', 'weekly_off'], true)) {
             $state['stage'] = 'excused';
             return $state;
         }
@@ -861,7 +861,7 @@ function attendance_self_auto_checkout(PDO $conn): int
             AND a.check_in IS NOT NULL
             AND a.check_out IS NULL
             AND a.check_in < ?
-            AND a.status NOT IN ('on_leave', 'absent', 'half', 'excused_absent')
+            AND a.status NOT IN ('on_leave', 'absent', 'half', 'excused_absent', 'weekly_off')
             AND (a.work_date < ? OR (a.work_date = ? AND ? = 1))"
     );
     $st->execute([$cutoff . ':00', $today, $today, $past6 ? 1 : 0]);

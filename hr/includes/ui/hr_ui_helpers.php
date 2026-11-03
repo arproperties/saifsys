@@ -47,7 +47,11 @@ if (!function_exists('hr_ui_status_pill')) {
  * @param string|list<string> $actions
  */
 if (!function_exists('hr_ui_page_header')) {
-    function hr_ui_page_header(string $title, string $description = '', array $crumbs = [], $actions = ''): string
+    /**
+     * $description is plain text and gets escaped. Pass $descriptionIsHtml = true
+     * only for a line the page built itself with every value already escaped.
+     */
+    function hr_ui_page_header(string $title, string $description = '', array $crumbs = [], $actions = '', bool $descriptionIsHtml = false): string
     {
         $crumbHtml = '';
         if ($crumbs) {
@@ -66,7 +70,7 @@ if (!function_exists('hr_ui_page_header')) {
         return '<div class="hr-page-header mb-3 d-flex flex-wrap justify-content-between align-items-start gap-3">'
             . '<div>' . $crumbHtml
             . '<h1>' . hr_ui_h($title) . '</h1>'
-            . ($description !== '' ? '<p class="hr-page-sub small mb-0 mt-1">' . hr_ui_h($description) . '</p>' : '')
+            . ($description !== '' ? '<p class="hr-page-sub small mb-0 mt-1">' . ($descriptionIsHtml ? $description : hr_ui_h($description)) . '</p>' : '')
             . '</div>'
             . ($actionsHtml !== '' ? '<div class="d-flex flex-wrap gap-2">' . $actionsHtml . '</div>' : '')
             . '</div>';
