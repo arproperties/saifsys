@@ -9,7 +9,10 @@ require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_attendance_daily.php';
 require_once __DIR__ . '/includes/hr_weekly_off_plans.php';
+require_once __DIR__ . '/includes/hr_attendance_cameras.php';
 require_role(['Owner','Admin','HR'], $conn);
+// Camera arrival/departure photos are staff photos: the HR role only.
+$canSeeCamPhotos = has_role('HR', $conn);
 
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
 
@@ -261,9 +264,9 @@ $cardPrms  = $prms;
 if ($st !== '' && in_array($st, $attStatusKeys, true)) {
     $where[] = "a.status = ?"; $prms[] = $st;
 }
-// Who recorded it: HR by hand, the staff member themselves, or an import.
+// Who recorded it: HR by hand, the staff member themselves, the entrance camera, or an import.
 $src = $_GET['source'] ?? '';
-if ($src !== '' && in_array($src, ['admin','self','import'], true)) {
+if ($src !== '' && in_array($src, ['admin','self','camera','import'], true)) {
     $where[] = "a.source = ?"; $prms[] = $src;
     $cardWhere[] = "a.source = ?"; $cardPrms[] = $src;
 }
@@ -428,7 +431,7 @@ echo hr_ui_page_header(
     foreach ($employees as $e) {
       if ((int)$e['id'] === $emp) { $empLabel = $e['label'] . (!empty($e['company_name']) ? ' - ' . $e['company_name'] : ''); break; }
     }
-    $srcOpts = ['' => 'Recorded by: anyone', 'admin' => 'Recorded by: HR', 'self' => 'Recorded by: staff (self)', 'import' => 'Recorded by: import'];
+    $srcOpts = ['' => 'Recorded by: anyone', 'admin' => 'Recorded by: HR', 'self' => 'Recorded by: staff (self)', 'camera' => 'Recorded by: camera', 'import' => 'Recorded by: import'];
     $filtersChanged = $emp > 0 || $selectedCompanyId > 0 || $src !== '' || $st !== ''
       || $df !== date('Y-m-01') || $dt !== $todayF;
   ?>
@@ -695,6 +698,8 @@ echo hr_ui_page_header(
                 <?php $srcVal = (string)($r['source'] ?? 'admin'); ?>
                 <?php if ($srcVal === 'self'): ?>
                   <span class="badge text-bg-primary">Self</span>
+                <?php elseif ($srcVal === 'camera'): ?>
+                  <span class="badge text-bg-info">Camera</span>
                 <?php elseif ($srcVal === 'import'): ?>
                   <span class="badge text-bg-secondary">Import</span>
                 <?php else: ?>
@@ -703,7 +708,30 @@ echo hr_ui_page_header(
               </td>
               <td><?= h($r['notes'] ?: '') ?></td>
               <td>
-                <?php if (!$rowFiles): ?>
+                <?php
+                  // Camera arrival / departure photos sit with the files (HR role only). A staff-app
+                  // day can have a camera check-out photo too.
+                  $camPhotos = ($canSeeCamPhotos && in_array($srcVal, ['camera', 'self'], true)) ? hr_camera_photos_for($rowId) : ['in' => false, 'out' => false];
+                  // Only the latest one in the list: the check-out photo, or the check-in one until there is one.
+                  if ($camPhotos['out']) $camPhotos['in'] = false;
+                ?>
+                <?php foreach (['in' => 'Check-in', 'out' => 'Check-out'] as $camK => $camLabel): if (!$camPhotos[$camK]) continue; ?>
+                  <span class="d-inline-flex flex-column align-items-center me-1 align-middle">
+                    <form method="post" action="attendance_camera_photo.php" class="m-0 lh-1"
+                          onsubmit="return confirm('Delete this <?= strtolower($camLabel) ?> camera photo?');">
+                      <?php csrf_field(); ?>
+                      <input type="hidden" name="id" value="<?= $rowId ?>">
+                      <input type="hidden" name="which" value="<?= $camK ?>">
+                      <input type="hidden" name="back" value="<?= h('attendance.php' . (($_SERVER['QUERY_STRING'] ?? '') !== '' ? '?' . $_SERVER['QUERY_STRING'] : '')) ?>">
+                      <button type="submit" class="btn btn-link p-0 text-danger lh-1" style="font-size:.7rem"
+                              title="Delete <?= strtolower($camLabel) ?> camera photo"><i class="bi bi-trash"></i></button>
+                    </form>
+                    <a class="text-decoration-none" target="_blank" rel="noopener"
+                       href="attendance_camera_photo.php?id=<?= $rowId ?>&amp;which=<?= $camK ?>"
+                       title="<?= $camLabel ?> camera photo"><i class="bi bi-camera"></i><span class="small"><?= $camK === 'in' ? 'In' : 'Out' ?></span></a>
+                  </span>
+                <?php endforeach; ?>
+                <?php if (!$rowFiles && !$camPhotos['in'] && !$camPhotos['out']): ?>
                   <span class="text-muted small">—</span>
                 <?php else: foreach ($rowFiles as $f): ?>
                   <a class="d-inline-block me-1" target="_blank" rel="noopener"

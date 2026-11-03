@@ -5,6 +5,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/../includes/audit_bridge.php';
 require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
+require_once __DIR__ . '/includes/hr_attendance_cameras.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
@@ -218,6 +219,31 @@ echo hr_ui_page_header(
       </form>
     </div>
   </div>
+
+  <?php
+    // Camera arrival / departure photos: the HR role only.
+    $camPhotos = has_role('HR', $conn) ? hr_camera_photos_for((int)$row['id']) : ['in' => false, 'out' => false];
+  ?>
+  <?php if ($camPhotos['in'] || $camPhotos['out']): ?>
+  <div class="hr-settings-card mt-3">
+    <div class="settings-header">Camera photos</div>
+    <div class="card-body">
+      <div class="row g-3">
+        <?php foreach (['in' => 'Check-in', 'out' => 'Check-out'] as $k => $label): ?>
+          <div class="col-sm-6 text-center">
+            <div class="fw-semibold mb-2"><?= $label ?></div>
+            <?php if ($camPhotos[$k]): ?>
+              <img src="attendance_camera_photo.php?id=<?= (int)$row['id'] ?>&amp;which=<?= $k ?>&amp;t=<?= time() ?>"
+                   class="img-fluid rounded border" style="max-height:320px" alt="<?= $label ?> photo">
+            <?php else: ?>
+              <div class="text-muted small py-5 border rounded">No photo</div>
+            <?php endif; ?>
+          </div>
+        <?php endforeach; ?>
+      </div>
+    </div>
+  </div>
+  <?php endif; ?>
 
   <div class="hr-settings-card mt-3">
     <div class="settings-header">Attachments</div>
