@@ -324,6 +324,11 @@ if ($action === 'lease') {
             'end_date' => (string)$l['end_date'],
             'annual_rent' => jarvis_legal_money(((float)($l['annual_rent'] ?? 0)) ?: (float)$l['monthly_rent'] * 12),
             'service_charge_monthly' => jarvis_legal_money($l['monthly_service_charge'] ?? 0),
+            // The contract's own charges, so a dispute over one (e.g. the chiller fee) is checked against the lease, not the tenant's word.
+            'chiller_fee' => jarvis_legal_money($l['chiller_fees'] ?? 0),
+            'admin_fee' => jarvis_legal_money($l['admin_fees'] ?? 0),
+            'parking_fee' => !empty($l['has_additional_parking']) ? jarvis_legal_money($l['additional_parking_fee'] ?? 0) : 0.0,
+            'store_fee' => !empty($l['has_additional_store']) ? jarvis_legal_money($l['additional_store_fee'] ?? 0) : 0.0,
             'security_deposit' => jarvis_legal_money($l['security_deposit']),
             'installments' => (int)($l['number_of_installments'] ?? 0),
             'payment_method' => (string)($l['payment_method'] ?? ''),
