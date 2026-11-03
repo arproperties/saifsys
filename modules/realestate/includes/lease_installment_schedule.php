@@ -337,6 +337,7 @@ if (!function_exists('lease_repair_invoice_mode_operational_schedule')) {
                 'sep_commission_fees' => $lease['sep_commission_fees'] ?? 0,
                 'vat_distribution_type' => $lease['vat_distribution_type'] ?? 'first_installment',
                 'total_vat_amount' => $lease['total_vat_amount'] ?? 0,
+                'first_extras_total' => $lease['first_extras_total'] ?? 0,
             ], $lockedIds);
 
             if ($cfRow && (string)($cfRow['installment_type'] ?? '') === 'combined_fees') {

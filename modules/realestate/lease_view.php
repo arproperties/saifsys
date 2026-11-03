@@ -264,6 +264,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['repair_schedule'])) {
         if (!$repairLease) {
             throw new Exception('Lease not found.');
         }
+        // Extras merged into the 1st-fees cheque stay on it: the fees cheque amount includes them.
+        require_once __DIR__ . '/includes/lease_form_extras_helper.php';
+        $repairLease['first_extras_total'] = re_lease_first_extras_total(
+            $conn,
+            (int)$currentCompanyId,
+            (int)$leaseId,
+            !empty($repairLease['add_fees_to_first_installment'])
+        );
         $repairAccountingMode = re_accounting_mode_for_existing_lease($conn, $repairLease);
         if ($repairAccountingMode === 'invoice') {
             $conn->beginTransaction();
@@ -949,7 +957,17 @@ foreach ($installments as &$inst) {
 }
 unset($inst);
 
-$scheduleCompareTotals = lease_compute_totals($lease);
+// The 1st-fees cheque also carries the extras merged into it; without them a Fees cheque
+// holding parking no longer matches the fees and is counted as an extra rent row.
+require_once __DIR__ . '/includes/lease_form_extras_helper.php';
+$leaseWithFirstExtras = $lease;
+$leaseWithFirstExtras['first_extras_total'] = re_lease_first_extras_total(
+    $conn,
+    (int)$currentCompanyId,
+    (int)$leaseId,
+    !empty($lease['add_fees_to_first_installment'])
+);
+$scheduleCompareTotals = lease_compute_totals($leaseWithFirstExtras);
 $scheduleCompareFees = (float)($scheduleCompareTotals['to_first'] ?? 0);
 $scheduledPaymentTotal = round(array_sum(array_map(static function ($row) {
     if (in_array((string)($row['status'] ?? ''), ['cancelled', 'waived'], true)) {
@@ -1085,6 +1103,28 @@ if (($leaseDistribution['store'] ?? '') === 'first'
 if (($lease['vat_distribution_type'] ?? '') === 'first_installment' && (float)($lease['total_vat_amount'] ?? 0) > 0) {
     $firstPaymentExtras[] = ['label' => $leaseExtraLabels['vat'], 'amount' => (float)$lease['total_vat_amount']];
 }
+// Extra Services merged or split into a cheque (lease form, Billing, Renewal), by cheque.
+$mergedExtrasByInstallment = [];
+try {
+    $mergedExtrasStmt = $conn->prepare("
+        SELECT bi.installment_id, sc.charge_name, bi.total_amount, bi.tax_amount
+        FROM re_billing_items bi
+        JOIN re_service_charges sc ON sc.id = bi.service_charge_id AND sc.company_id = bi.company_id
+        WHERE bi.company_id = ? AND bi.lease_id = ? AND bi.installment_id IS NOT NULL
+          AND bi.item_type = 'service_charge' AND bi.status <> 'waived'
+          AND sc.is_active = 1 AND sc.apply_mode IN ('merge_first_installment', 'split_all_installments')
+        ORDER BY bi.id ASC
+    ");
+    $mergedExtrasStmt->execute([$currentCompanyId, $leaseId]);
+    foreach ($mergedExtrasStmt->fetchAll(PDO::FETCH_ASSOC) as $mergedExtra) {
+        $mergedExtrasByInstallment[(int)$mergedExtra['installment_id']][] = [
+            'label' => $mergedExtra['charge_name'] . ((float)$mergedExtra['tax_amount'] > 0 ? ' (incl. VAT)' : ''),
+            'amount' => (float)$mergedExtra['total_amount'],
+        ];
+    }
+} catch (Throwable $e) {
+    $mergedExtrasByInstallment = [];
+}
 $splitPaymentExtras = [];
 $installmentCountForSplit = max(1, (int)($lease['number_of_installments'] ?? 12));
 foreach ([
@@ -1109,7 +1149,7 @@ if (($leaseDistribution['store'] ?? '') === 'split' && !empty($lease['has_additi
 }
 // Total fees routed to the 1st installment / combined-fees cheque — from the ONE engine formula.
 $isRenewalLease = !empty($lease['is_renewal_lease']);
-$leaseTotals    = lease_compute_totals($lease);
+$leaseTotals    = lease_compute_totals($leaseWithFirstExtras);
 $totalFees      = (float)$leaseTotals['to_first'];
 
 // Identify Fees Installment (if checkbox was unchecked and fees exist)
@@ -1187,7 +1227,8 @@ try {
     $serviceStmt = $conn->prepare("
         SELECT bi.*, sc.charge_name AS service_name, sc.is_active AS service_active,
                sc.is_recurring, sc.recurrence_type,
-               sc.lifecycle_status, sc.contracted_amount, sc.vat_treatment, sc.vat_rate
+               sc.lifecycle_status, sc.contracted_amount, sc.vat_treatment, sc.vat_rate,
+               sc.apply_mode
         FROM re_billing_items bi
         LEFT JOIN re_service_charges sc ON sc.id = bi.service_charge_id
         WHERE bi.lease_id = ?
@@ -2174,6 +2215,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 } elseif ($instType === '' || $instType === 'rent') {
                                     $amountDetails = $splitPaymentExtras;
                                 }
+                                foreach ($mergedExtrasByInstallment[(int)$inst['id']] ?? [] as $mergedDetail) {
+                                    $amountDetails[] = $mergedDetail;
+                                }
                                 // Cheque No.: for a cheque row the cheque number entered on the
                                 // lease form is the identifier; reference_number is only a fallback. A stored
                                 // system placeholder (CHQ-<lease>-<n>) never shadows a real number.
@@ -2858,7 +2902,10 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     <td><span class="badge bg-<?= $svcBadge ?>"><?= ucfirst($svcStatus) ?></span></td>
                                     <?php if ($accountingMode !== 'invoice'): ?>
                                     <td>
-                                        <?php if ((float)$svcItem['outstanding_amount'] > 0 && $svcStatus !== 'waived'): ?>
+                                        <?php if (!empty($svcItem['installment_id']) && in_array((string)($svcItem['apply_mode'] ?? ''), ['merge_first_installment', 'split_all_installments'], true)): ?>
+                                            <?php // Merged into a cheque: collected with that cheque, never on its own. ?>
+                                            <small class="text-muted">Paid with the cheque</small>
+                                        <?php elseif ((float)$svcItem['outstanding_amount'] > 0 && $svcStatus !== 'waived'): ?>
                                             <a href="payment_add.php?lease_id=<?= (int)$leaseId ?>&billing_item_id=<?= (int)$svcItem['id'] ?>&collect_balance=1" class="btn btn-sm btn-warning">
                                                 Collect
                                             </a>
