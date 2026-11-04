@@ -6,6 +6,8 @@
  *                         else the profile photo.
  * POST upload / delete   the uploaded one, then back to the Cameras page. The
  *                         profile photo itself is never changed from here.
+ * POST capture           save the face just taken from a camera in the popup
+ *                         (hr/attendance_camera_live.php), HR only.
  */
 
 declare(strict_types=1);
@@ -40,6 +42,19 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             }
             $_SESSION['cam_face_flash'] = $err === null
                 ? ['ok', 'Photo saved for ' . $label . '. The camera PC picks it up within 15 seconds.']
+                : ['err', $err];
+        } elseif (($_POST['action'] ?? '') === 'capture') {
+            // The face taken from the camera in this popup (HR only, like the Live view).
+            $capture = hr_camera_capture_paths((int)($_POST['camera_id'] ?? 0))['jpg'];
+            $err = !has_role('HR', $conn) ? 'Only HR can take a photo from the camera.'
+                : (is_file($capture) ? hr_camera_face_save($id, ['tmp_name' => $capture]) : 'Capture again: that picture is no longer there.');
+            if ($err === null) {
+                @unlink($capture);
+                audit_bridge_hr_ops('attendance_camera_face_uploaded', 'employees', $id, 'Camera face photo taken from the camera for ' . $label,
+                    isset($emp['company_id']) ? (int)$emp['company_id'] : null, ['employee_id' => $id, 'from_camera' => (int)($_POST['camera_id'] ?? 0)], $label, $userId);
+            }
+            $_SESSION['cam_face_flash'] = $err === null
+                ? ['ok', 'Photo taken from the camera and saved for ' . $label . '. The camera PC picks it up within 15 seconds.']
                 : ['err', $err];
         } elseif (($_POST['action'] ?? '') === 'delete') {
             if (hr_camera_face_delete($id)) {

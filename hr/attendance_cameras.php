@@ -567,10 +567,169 @@ echo hr_ui_page_header(
                   <input type="hidden" name="company_id" value="<?= (int)$selectedCompanyId ?>">
                   <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Delete photo</button>
                 </form>
+                <?php $takeCams = $canLive ? array_values(array_filter($cameras, function ($c) { return (int)$c['is_active']; })) : []; ?>
+                <?php if ($takeCams): ?>
+                <!-- Take it from a camera: the person stands in front of it while HR watches Live. -->
+                <div class="mt-3 pt-3 border-top text-start">
+                  <label class="form-label small mb-1" for="camTakeCam">Or take it from a camera: the person stands close, facing the camera</label>
+                  <div class="input-group">
+                    <select class="form-select" id="camTakeCam">
+                      <?php foreach ($takeCams as $c): ?><option value="<?= (int)$c['id'] ?>"><?= h($c['name']) ?></option><?php endforeach; ?>
+                    </select>
+                    <button type="button" class="btn btn-outline-success" id="camTakeStart"><i class="bi bi-camera-video"></i> Start camera</button>
+                  </div>
+                  <div id="camTakeBox" class="d-none mt-2 text-center">
+                    <!-- HR can drag a box around the person; Capture then looks only inside it. -->
+                    <div id="camTakeArea" class="position-relative d-inline-block" style="touch-action:none;cursor:crosshair;user-select:none">
+                      <img id="camTakeLive" alt="Live" class="img-fluid rounded border d-none" draggable="false">
+                      <div id="camTakeRect" class="position-absolute d-none" style="border:2px solid #20c997;background:rgba(32,201,151,.15);pointer-events:none"></div>
+                    </div>
+                    <div id="camTakeHint" class="small text-muted d-none">Drag a box around the person to take only them. <a href="#" id="camTakeClear" class="d-none">Clear box</a></div>
+                    <!-- The box, enlarged from the live picture: what Capture will look at (taken at full quality). -->
+                    <div id="camTakeZoomWrap" class="d-none mt-2">
+                      <div class="small text-muted mb-1">Inside the box</div>
+                      <canvas id="camTakeZoom" class="rounded border" style="max-width:100%"></canvas>
+                    </div>
+                    <img id="camTakeShot" alt="Face taken" class="img-fluid rounded border d-none" style="max-height:260px">
+                    <div id="camTakeMsg" class="small text-muted py-2"></div>
+                    <div class="d-flex gap-2 justify-content-center">
+                      <button type="button" class="btn btn-sm btn-primary" id="camTakeCapture"><i class="bi bi-camera"></i> Capture</button>
+                      <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="camTakeRetake">Retake</button>
+                      <form method="post" action="attendance_camera_face.php" id="camTakeSave" class="d-none m-0">
+                        <?php csrf_field(); ?>
+                        <input type="hidden" name="action" value="capture">
+                        <input type="hidden" name="employee_id" class="camFaceId">
+                        <input type="hidden" name="company_id" value="<?= (int)$selectedCompanyId ?>">
+                        <input type="hidden" name="camera_id" id="camTakeCamId">
+                        <button class="btn btn-sm btn-success"><i class="bi bi-check-lg"></i> Save this photo</button>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+                <?php endif; ?>
               </div>
             </div>
           </div>
         </div>
+        <?php if ($takeCams): ?>
+        <script>
+        // Take from camera: Live picture every 2 s; Capture asks the camera PC for a
+        // full-quality face (it checks one clear, front-facing face) and shows it to save.
+        (function () {
+          var modal = document.getElementById('camFaceModal');
+          var sel = document.getElementById('camTakeCam'), box = document.getElementById('camTakeBox');
+          var live = document.getElementById('camTakeLive'), shot = document.getElementById('camTakeShot');
+          var msg = document.getElementById('camTakeMsg'), capBtn = document.getElementById('camTakeCapture');
+          var retake = document.getElementById('camTakeRetake'), save = document.getElementById('camTakeSave');
+          var liveTimer = null, capTimer = null;
+          var areaEl = document.getElementById('camTakeArea'), rect = document.getElementById('camTakeRect');
+          var hint = document.getElementById('camTakeHint'), clear = document.getElementById('camTakeClear');
+          var area = null, dragFrom = null; // area: [x, y, w, h] as fractions of the picture
+          function at(e) {
+            var r = live.getBoundingClientRect();
+            return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
+          }
+          var zoomWrap = document.getElementById('camTakeZoomWrap'), zoom = document.getElementById('camTakeZoom');
+          function drawBox(a) {
+            rect.classList.toggle('d-none', !a);
+            clear.classList.toggle('d-none', !a);
+            if (a) {
+              rect.style.left = (a[0] * 100) + '%'; rect.style.top = (a[1] * 100) + '%';
+              rect.style.width = (a[2] * 100) + '%'; rect.style.height = (a[3] * 100) + '%';
+            }
+            drawZoom(a);
+          }
+          // The box cut out of the live picture and enlarged to fit about 320 px.
+          function drawZoom(a) {
+            var w = live.naturalWidth, h = live.naturalHeight;
+            var on = !!a && !live.classList.contains('d-none') && w > 0;
+            zoomWrap.classList.toggle('d-none', !on);
+            if (!on) return;
+            var sx = a[0] * w, sy = a[1] * h, sw = Math.max(1, a[2] * w), sh = Math.max(1, a[3] * h);
+            var scale = Math.min(320 / sw, 320 / sh, 4);
+            zoom.width = Math.round(sw * scale); zoom.height = Math.round(sh * scale);
+            var ctx = zoom.getContext('2d');
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(live, sx, sy, sw, sh, 0, 0, zoom.width, zoom.height);
+          }
+          live.addEventListener('load', function () { if (area) drawZoom(area); });
+          function boxOf(p, q) { return [Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1])]; }
+          areaEl.addEventListener('pointerdown', function (e) {
+            if (live.classList.contains('d-none')) return;
+            dragFrom = at(e); areaEl.setPointerCapture(e.pointerId); e.preventDefault();
+          });
+          areaEl.addEventListener('pointermove', function (e) { if (dragFrom) drawBox(boxOf(dragFrom, at(e))); });
+          areaEl.addEventListener('pointerup', function (e) {
+            if (!dragFrom) return;
+            var b = boxOf(dragFrom, at(e)); dragFrom = null;
+            // A click, not a drag, keeps the box there was.
+            area = (b[2] >= 0.03 && b[3] >= 0.03) ? b : area;
+            drawBox(area);
+          });
+          clear.addEventListener('click', function (e) { e.preventDefault(); area = null; drawBox(null); });
+          function show(img, blob) { var old = img.src; img.src = URL.createObjectURL(blob); if (old && old.indexOf('blob:') === 0) URL.revokeObjectURL(old); img.classList.remove('d-none'); }
+          function tick() {
+            fetch('attendance_camera_live.php?id=' + sel.value + '&t=' + Date.now(), {credentials: 'same-origin', cache: 'no-store'})
+              .then(function (r) { return r.status === 200 ? r.blob() : null; })
+              .then(function (b) {
+                if (!liveTimer) return;
+                if (b) { show(live, b); hint.classList.remove('d-none'); if (msg.dataset.waiting) { msg.textContent = 'Ask the person to look straight at the camera, then click Capture.'; delete msg.dataset.waiting; } }
+              }).catch(function () {});
+          }
+          function stop() {
+            clearInterval(liveTimer); clearInterval(capTimer); liveTimer = capTimer = null;
+            box.classList.add('d-none'); live.classList.add('d-none'); shot.classList.add('d-none');
+            save.classList.add('d-none'); retake.classList.add('d-none'); capBtn.classList.remove('d-none'); capBtn.disabled = false;
+            hint.classList.add('d-none'); area = null; drawBox(null);
+          }
+          function startLive() {
+            clearInterval(liveTimer);
+            box.classList.remove('d-none'); shot.classList.add('d-none');
+            save.classList.add('d-none'); retake.classList.add('d-none'); capBtn.classList.remove('d-none'); capBtn.disabled = false;
+            msg.textContent = 'Starting the camera… (a few seconds)'; msg.dataset.waiting = '1';
+            liveTimer = setInterval(tick, 2000); tick();
+            drawBox(area); // Retake keeps the box drawn
+          }
+          document.getElementById('camTakeStart').addEventListener('click', startLive);
+          // Another camera is another view: the box does not fit it.
+          sel.addEventListener('change', function () { area = null; drawBox(null); if (liveTimer) startLive(); });
+          retake.addEventListener('click', startLive);
+          capBtn.addEventListener('click', function () {
+            var fd = new FormData();
+            fd.append('_csrf', save.querySelector('[name=_csrf]').value);
+            fd.append('action', 'capture');
+            fd.append('id', sel.value);
+            if (area) fd.append('area', area.map(function (v) { return v.toFixed(4); }).join(','));
+            capBtn.disabled = true;
+            msg.textContent = 'Taking the photo… hold still.';
+            fetch('attendance_camera_live.php', {method: 'POST', body: fd, credentials: 'same-origin'}).then(function () {
+              var tries = 0;
+              clearInterval(capTimer);
+              capTimer = setInterval(function () {
+                if (++tries > 40) { clearInterval(capTimer); capBtn.disabled = false; msg.textContent = 'No answer from the camera PC. Try again.'; return; }
+                fetch('attendance_camera_live.php?id=' + sel.value + '&capture=1&t=' + Date.now(), {credentials: 'same-origin', cache: 'no-store'})
+                  .then(function (r) {
+                    if (r.status === 204) return;
+                    clearInterval(capTimer);
+                    capBtn.disabled = false;
+                    if (r.status === 200) {
+                      return r.blob().then(function (b) {
+                        clearInterval(liveTimer); liveTimer = null;
+                        live.classList.add('d-none'); rect.classList.add('d-none'); hint.classList.add('d-none'); zoomWrap.classList.add('d-none'); show(shot, b);
+                        document.getElementById('camTakeCamId').value = sel.value;
+                        capBtn.classList.add('d-none'); retake.classList.remove('d-none'); save.classList.remove('d-none');
+                        msg.textContent = 'Is the face clear? Save it, or Retake.';
+                      });
+                    }
+                    return r.text().then(function (t) { msg.textContent = t + ' Then click Capture again.'; });
+                  }).catch(function () {});
+              }, 1000);
+            });
+          });
+          modal.addEventListener('hidden.bs.modal', stop);
+        })();
+        </script>
+        <?php endif; ?>
         <script>
         document.getElementById('camFaceModal').addEventListener('show.bs.modal', function (e) {
           var b = e.relatedTarget, face = b.dataset.face;

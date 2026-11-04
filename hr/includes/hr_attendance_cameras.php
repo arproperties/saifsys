@@ -312,9 +312,11 @@ function hr_camera_live_wanted(): array
         if (time() - (int)@filemtime($file) <= HR_CAMERA_LIVE_SECONDS) {
             $ids[] = (int)substr(basename($file, '.want'), 3);
         } else {
-            // Box closed: the last frame goes too.
+            // Box closed: the last frame and any capture not saved go too.
             @unlink($file);
             @unlink(substr($file, 0, -5) . '.jpg');
+            @unlink(substr($file, 0, -5) . '_capture.jpg');
+            @unlink(substr($file, 0, -5) . '_capture.txt');
         }
     }
     return array_values(array_filter($ids));
@@ -329,6 +331,92 @@ function hr_camera_live_save(int $cameraId, string $jpeg): bool
     $path = hr_camera_live_frame_path($cameraId);
     $tmp = $path . '.tmp';
     return @file_put_contents($tmp, $jpeg) !== false && @rename($tmp, $path);
+}
+
+/* Capture: HR clicks Capture in the face photo popup while the person stands in
+ * front of the camera. The PC takes a full-quality frame, checks there is one
+ * clear front-facing face and sends it back cropped (or why not). HR then saves
+ * it as the person's camera photo. Request and answer are files next to the
+ * live frame. */
+
+/** A capture request the PC has not answered in this long is dropped. */
+const HR_CAMERA_CAPTURE_SECONDS = 30;
+
+function hr_camera_capture_paths(int $cameraId): array
+{
+    $base = hr_camera_live_dir() . '/cam' . $cameraId;
+    return ['ask' => $base . '.capture', 'jpg' => $base . '_capture.jpg', 'err' => $base . '_capture.txt'];
+}
+
+/**
+ * HR clicked Capture: forget the last answer and ask the PC. $area is the box
+ * HR drew around the person on the live picture, as fractions of it
+ * [x, y, width, height]; the PC then looks only there, at full quality.
+ */
+function hr_camera_capture_request(int $cameraId, ?array $area = null): void
+{
+    hr_camera_live_want($cameraId);
+    $p = hr_camera_capture_paths($cameraId);
+    @unlink($p['jpg']);
+    @unlink($p['err']);
+    @file_put_contents($p['ask'], $area ? json_encode(array_values($area)) : '');
+}
+
+/** "0.1,0.2,0.3,0.4" from the page as [x, y, w, h] inside the picture, or null for the whole picture. */
+function hr_camera_capture_area(string $raw): ?array
+{
+    $v = array_map('floatval', explode(',', $raw));
+    if (count($v) !== 4) {
+        return null;
+    }
+    [$x, $y, $w, $h] = $v;
+    $x = max(0.0, min(1.0, $x));
+    $y = max(0.0, min(1.0, $y));
+    $w = min(1.0 - $x, $w);
+    $h = min(1.0 - $y, $h);
+    // A box too small to hold a face is a slip of the mouse.
+    return ($w >= 0.03 && $h >= 0.03) ? [round($x, 4), round($y, 4), round($w, 4), round($h, 4)] : null;
+}
+
+/** Waiting captures with a box: camera id => [x, y, w, h]. */
+function hr_camera_capture_areas(): array
+{
+    $out = [];
+    foreach (hr_camera_capture_wanted() as $id) {
+        $area = json_decode((string)@file_get_contents(hr_camera_capture_paths($id)['ask']), true);
+        if (is_array($area) && count($area) === 4) {
+            $out[(string)$id] = array_map('floatval', $area);
+        }
+    }
+    return $out;
+}
+
+/** Cameras with a capture waiting for the PC. */
+function hr_camera_capture_wanted(): array
+{
+    $ids = [];
+    foreach (glob(hr_camera_live_dir() . '/cam*.capture') ?: [] as $file) {
+        if (time() - (int)@filemtime($file) <= HR_CAMERA_CAPTURE_SECONDS) {
+            $ids[] = (int)substr(basename($file, '.capture'), 3);
+        } else {
+            @unlink($file);
+        }
+    }
+    return array_values(array_filter($ids));
+}
+
+/** The PC's answer: the cropped face, or the reason there is none. Only for a capture HR asked for. */
+function hr_camera_capture_answer(int $cameraId, ?string $jpeg, string $error): bool
+{
+    if (!in_array($cameraId, hr_camera_capture_wanted(), true)) {
+        return false;
+    }
+    $p = hr_camera_capture_paths($cameraId);
+    $ok = $jpeg !== null
+        ? @file_put_contents($p['jpg'] . '.tmp', $jpeg) !== false && @rename($p['jpg'] . '.tmp', $p['jpg'])
+        : @file_put_contents($p['err'], mb_substr($error !== '' ? $error : 'No face could be taken.', 0, 200)) !== false;
+    @unlink($p['ask']);
+    return $ok;
 }
 
 /* ---------- Face photos: what the camera PC learns each person's face from ---------- */
