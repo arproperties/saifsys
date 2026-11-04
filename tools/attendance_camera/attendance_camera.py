@@ -148,6 +148,7 @@ class LatestFrame:
         self.cam_id = cam_id        # the camera's id in HR; None for a config.ini camera
         self.last_frame_at = 0.0    # when video last came through, for the status report
         self.frame = None
+        self.newest = None          # the same frame, but not taken by get(): for the Live view
         self.lock = threading.Lock()
         self.stopped = False
         threading.Thread(target=self._run, daemon=True).start()
@@ -173,7 +174,7 @@ class LatestFrame:
                 if ok:
                     last_ok = self.last_frame_at = time.time()
                     with self.lock:
-                        self.frame = frame
+                        self.frame = self.newest = frame
                 elif time.time() - last_ok > 10:
                     log(f"{self.name}: no picture for 10 s; reconnecting")
                     break
@@ -188,6 +189,58 @@ class LatestFrame:
         with self.lock:
             frame, self.frame = self.frame, None
         return frame
+
+    def peek(self):
+        """The newest frame, if one came in the last few seconds; left for get()."""
+        if time.time() - self.last_frame_at > 5:
+            return None
+        with self.lock:
+            return self.newest
+
+
+# The Live box on HR -> Cameras: while HR watches a camera, send its picture
+# this often. When nobody watches, only ask now and then (a few bytes).
+LIVE_SEND_SECONDS = 2
+LIVE_ASK_SECONDS = 5
+
+
+def live_loop(cfg, streams):
+    """Send frames only for the cameras HR has open in Live. View only: no attendance."""
+    headers = {"X-Camera-Key": cfg["camera_key"]}
+    want = []
+    while True:
+        if not want:
+            time.sleep(LIVE_ASK_SECONDS)
+            try:
+                req = urllib.request.Request(cfg["saifsys_url"] + "/api/attendance_camera.php?action=live", headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    want = json.loads(r.read().decode() or "{}").get("want") or []
+            except Exception:
+                want = []  # an older saifsys without Live, or offline: ask again later
+            continue
+        time.sleep(LIVE_SEND_SECONDS)
+        still = []
+        for s in list(streams.values()):
+            if s.cam_id not in want:
+                continue
+            frame = s.peek()
+            if frame is None:
+                still.append(s.cam_id)  # no picture right now; keep trying while HR watches
+                continue
+            if frame.shape[1] > 640:
+                frame = cv2.resize(frame, (640, int(frame.shape[0] * 640 / frame.shape[1])))
+            ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+            if not ok:
+                continue
+            body = json.dumps({"live_frame": {"camera_id": s.cam_id, "jpeg": base64.b64encode(jpg.tobytes()).decode()}}).encode()
+            req = urllib.request.Request(cfg["saifsys_url"] + "/api/attendance_camera.php", data=body,
+                                         headers={**headers, "Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    still = json.loads(r.read().decode() or "{}").get("want") or []
+            except Exception:
+                still = []
+        want = still
 
 
 def snapshot(frame, face, label):
@@ -481,6 +534,7 @@ def main():
     if not wanted:
         log("No cameras yet. Add one in HR -> Administration -> Cameras; picked up within 15 seconds.")
     streams = {name: LatestFrame(name, url, cam_id) for name, (cam_id, url) in wanted.items()}
+    threading.Thread(target=live_loop, args=(cfg, streams), daemon=True).start()
     next_camera_check = time.time() + HR_CHECK_SECONDS
     next_status = time.time() + 60  # first report once the streams have had a minute to connect
     # Shared by every camera: someone walking between rooms is still sent once per resend_seconds.

@@ -23,6 +23,11 @@
  *              "network": "CameraTest (this PC's hotspot)", "band": "2.4 GHz", "camera_ip": "192.168.137.172"}]}
  *        the PC's report on each camera, shown on the Cameras page.
  *
+ *   GET ?action=live                                  -> {"want": [2]}
+ *   POST JSON {"live_frame": {"camera_id": 2, "jpeg": "<base64>"}}
+ *        the Live box on the Cameras page: the PC sends frames only for the
+ *        cameras HR is watching. Kept as one overwritten file; never attendance.
+ *
  *   GET ?action=cameras
  *        the cameras switched on in HR -> Administration -> Cameras, each with
  *        its stream address, and resend_seconds (how often the same person is
@@ -113,11 +118,24 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['
     }
     attendance_camera_send(['ok' => true, 'managed' => true, 'changed' => true, 'version' => $version] + $answer);
 }
+// The PC asks which cameras HR is watching live on the Cameras page.
+if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['action'] ?? '') === 'live') {
+    require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
+    attendance_camera_send(['ok' => true, 'want' => hr_camera_live_wanted()]);
+}
 if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) !== 'POST') {
     attendance_camera_send(['ok' => false, 'error' => 'POST only.'], 405);
 }
 
 $in = json_decode((string)file_get_contents('php://input'), true);
+
+// A live frame for a camera HR is watching. View only: never attendance.
+if (isset($in['live_frame']) && is_array($in['live_frame'])) {
+    require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
+    $jpeg = hr_camera_photo_decode($in['live_frame']['jpeg'] ?? null);
+    $saved = $jpeg !== null && hr_camera_live_save((int)($in['live_frame']['camera_id'] ?? 0), $jpeg);
+    attendance_camera_send(['ok' => true, 'saved' => $saved, 'want' => hr_camera_live_wanted()]);
+}
 
 // The PC's report on each camera: the name it gives itself on the network and
 // whether video is coming through. Shown on HR -> Administration -> Cameras.

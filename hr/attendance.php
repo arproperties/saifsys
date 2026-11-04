@@ -660,15 +660,38 @@ echo hr_ui_page_header(
               $rowId    = (int)$r['id'];
               $rowEmp   = $r['full_name'].' ('.$r['employee_code'].')';
               $rowFiles = $attachmentsByRow[$rowId] ?? [];
+              $srcVal   = (string)($r['source'] ?? 'admin');
+              // Camera arrival / departure photos sit beside the time they were taken at (HR role only).
+              // A staff-app day can have a camera check-out photo too.
+              $camPhotos = ($canSeeCamPhotos && in_array($srcVal, ['camera', 'self'], true)) ? hr_camera_photos_for($rowId) : ['in' => false, 'out' => false];
+              $camBack   = 'attendance.php' . (($_SERVER['QUERY_STRING'] ?? '') !== '' ? '?' . $_SERVER['QUERY_STRING'] : '');
+              $camIcon   = function (string $camK) use ($camPhotos, $rowId, $camBack): void {
+                  if (!$camPhotos[$camK]) return;
+                  $camLabel = $camK === 'in' ? 'Check-in' : 'Check-out'; ?>
+                  <span class="d-inline-flex align-items-center gap-1 ms-1 align-middle">
+                    <a class="text-decoration-none" target="_blank" rel="noopener"
+                       href="attendance_camera_photo.php?id=<?= $rowId ?>&amp;which=<?= $camK ?>"
+                       title="<?= $camLabel ?> camera photo"><i class="bi bi-camera"></i></a>
+                    <form method="post" action="attendance_camera_photo.php" class="m-0 lh-1 d-inline"
+                          onsubmit="return confirm('Delete this <?= strtolower($camLabel) ?> camera photo?');">
+                      <?php csrf_field(); ?>
+                      <input type="hidden" name="id" value="<?= $rowId ?>">
+                      <input type="hidden" name="which" value="<?= $camK ?>">
+                      <input type="hidden" name="back" value="<?= h($camBack) ?>">
+                      <button type="submit" class="btn btn-link p-0 text-danger lh-1" style="font-size:.7rem"
+                              title="Delete <?= strtolower($camLabel) ?> camera photo"><i class="bi bi-trash"></i></button>
+                    </form>
+                  </span>
+              <?php };
             ?>
             <tr>
               <td><?= $rowId ?></td>
               <td class="text-nowrap att-date-cell"><?= h(date('j M Y', strtotime($r['work_date']))) ?></td>
               <td class="fw-semibold"><?= h($rowEmp) ?></td>
               <td class="att-company-cell"><?= h($r['company_name'] ?: '—') ?></td>
-              <td><?= h($r['check_in'] ?: '—') ?></td>
+              <td class="text-nowrap"><?= h($r['check_in'] ?: '—') ?><?php $camIcon('in'); ?></td>
               <td>
-                <?= h($r['check_out']?: '—') ?><?php if (hr_attendance_is_overnight($r['check_in'], $r['check_out'])): ?> <span class="small text-muted" title="Next day">(+1)</span><?php endif; ?>
+                <span class="text-nowrap"><?= h($r['check_out']?: '—') ?><?php if (hr_attendance_is_overnight($r['check_in'], $r['check_out'])): ?> <span class="small text-muted" title="Next day">(+1)</span><?php endif; ?><?php $camIcon('out'); ?></span>
                 <?php
                   // Break columns only exist once migrations/hr_attendance_break.sql
                   // has run, so read them defensively. A break is recorded only —
@@ -695,7 +718,6 @@ echo hr_ui_page_header(
                 <?php endif; ?>
               </td>
               <td>
-                <?php $srcVal = (string)($r['source'] ?? 'admin'); ?>
                 <?php if ($srcVal === 'self'): ?>
                   <span class="badge text-bg-primary">Self</span>
                 <?php elseif ($srcVal === 'camera'): ?>
@@ -708,30 +730,7 @@ echo hr_ui_page_header(
               </td>
               <td><?= h($r['notes'] ?: '') ?></td>
               <td>
-                <?php
-                  // Camera arrival / departure photos sit with the files (HR role only). A staff-app
-                  // day can have a camera check-out photo too.
-                  $camPhotos = ($canSeeCamPhotos && in_array($srcVal, ['camera', 'self'], true)) ? hr_camera_photos_for($rowId) : ['in' => false, 'out' => false];
-                  // Only the latest one in the list: the check-out photo, or the check-in one until there is one.
-                  if ($camPhotos['out']) $camPhotos['in'] = false;
-                ?>
-                <?php foreach (['in' => 'Check-in', 'out' => 'Check-out'] as $camK => $camLabel): if (!$camPhotos[$camK]) continue; ?>
-                  <span class="d-inline-flex flex-column align-items-center me-1 align-middle">
-                    <form method="post" action="attendance_camera_photo.php" class="m-0 lh-1"
-                          onsubmit="return confirm('Delete this <?= strtolower($camLabel) ?> camera photo?');">
-                      <?php csrf_field(); ?>
-                      <input type="hidden" name="id" value="<?= $rowId ?>">
-                      <input type="hidden" name="which" value="<?= $camK ?>">
-                      <input type="hidden" name="back" value="<?= h('attendance.php' . (($_SERVER['QUERY_STRING'] ?? '') !== '' ? '?' . $_SERVER['QUERY_STRING'] : '')) ?>">
-                      <button type="submit" class="btn btn-link p-0 text-danger lh-1" style="font-size:.7rem"
-                              title="Delete <?= strtolower($camLabel) ?> camera photo"><i class="bi bi-trash"></i></button>
-                    </form>
-                    <a class="text-decoration-none" target="_blank" rel="noopener"
-                       href="attendance_camera_photo.php?id=<?= $rowId ?>&amp;which=<?= $camK ?>"
-                       title="<?= $camLabel ?> camera photo"><i class="bi bi-camera"></i><span class="small"><?= $camK === 'in' ? 'In' : 'Out' ?></span></a>
-                  </span>
-                <?php endforeach; ?>
-                <?php if (!$rowFiles && !$camPhotos['in'] && !$camPhotos['out']): ?>
+                <?php if (!$rowFiles): ?>
                   <span class="text-muted small">—</span>
                 <?php else: foreach ($rowFiles as $f): ?>
                   <a class="d-inline-block me-1" target="_blank" rel="noopener"
