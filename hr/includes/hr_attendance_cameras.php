@@ -270,6 +270,67 @@ function hr_camera_photo_cleanup(): void
     }
 }
 
+/* ---------- Live view on the Cameras page ----------
+ * While HR has a camera's Live box open, the page asks for its picture every
+ * couple of seconds (hr/attendance_camera_live.php), which marks the camera as
+ * watched. The PC asks which cameras are watched and sends only their latest
+ * frame, one file per camera, overwritten each time. Nothing is kept: a frame
+ * is useless a few seconds later, and the folder refuses direct requests like
+ * the photos above.
+ * ------------------------------------------------- */
+
+/** A camera counts as watched this long after HR's page last asked for it. */
+const HR_CAMERA_LIVE_SECONDS = 15;
+
+function hr_camera_live_dir(): string
+{
+    return hr_camera_photo_dir() . '/live';
+}
+
+function hr_camera_live_frame_path(int $cameraId): string
+{
+    return hr_camera_live_dir() . '/cam' . $cameraId . '.jpg';
+}
+
+/** HR's page is showing this camera now. */
+function hr_camera_live_want(int $cameraId): void
+{
+    if ($cameraId <= 0 || !hr_camera_photo_prepare_dir()) {
+        return;
+    }
+    $dir = hr_camera_live_dir();
+    if (is_dir($dir) || @mkdir($dir, 0755, true)) {
+        @touch($dir . '/cam' . $cameraId . '.want');
+    }
+}
+
+/** Ids of the cameras someone is watching. */
+function hr_camera_live_wanted(): array
+{
+    $ids = [];
+    foreach (glob(hr_camera_live_dir() . '/cam*.want') ?: [] as $file) {
+        if (time() - (int)@filemtime($file) <= HR_CAMERA_LIVE_SECONDS) {
+            $ids[] = (int)substr(basename($file, '.want'), 3);
+        } else {
+            // Box closed: the last frame goes too.
+            @unlink($file);
+            @unlink(substr($file, 0, -5) . '.jpg');
+        }
+    }
+    return array_values(array_filter($ids));
+}
+
+/** The PC's latest frame for a watched camera; ignored when nobody is watching. */
+function hr_camera_live_save(int $cameraId, string $jpeg): bool
+{
+    if (!in_array($cameraId, hr_camera_live_wanted(), true)) {
+        return false;
+    }
+    $path = hr_camera_live_frame_path($cameraId);
+    $tmp = $path . '.tmp';
+    return @file_put_contents($tmp, $jpeg) !== false && @rename($tmp, $path);
+}
+
 /* ---------- Face photos: what the camera PC learns each person's face from ---------- */
 
 /** HR uploads one per person on the Cameras page; without one the profile photo is used. */

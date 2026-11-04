@@ -26,6 +26,8 @@ if (!function_exists('h')) {
 }
 
 $ready = hr_cameras_ready($conn);
+// The Live view shows staff on camera, so the HR role only, like the camera photos.
+$canLive = has_role('HR', $conn);
 $flash_ok = $flash_err = '';
 $userId = function_exists('current_user_id') ? (current_user_id() ?: null) : null;
 
@@ -282,6 +284,10 @@ echo hr_ui_page_header(
             </td>
             <td class="small text-muted"><?= h(date('j M Y, g:i A', strtotime((string)$c['updated_at']))) ?></td>
             <td class="text-end text-nowrap">
+              <?php if ($canLive && (int)$c['is_active']): ?>
+                <button type="button" class="btn btn-sm btn-outline-success cam-live-btn" data-id="<?= (int)$c['id'] ?>"
+                        aria-expanded="false"><i class="bi bi-play-fill"></i> Live</button>
+              <?php endif; ?>
               <a class="btn btn-sm btn-outline-primary" href="attendance_cameras.php?edit=<?= (int)$c['id'] ?>#cameraForm">Edit</a>
               <form method="post" class="d-inline" onsubmit="return confirm('Remove <?= h(addslashes($c['name'])) ?>? The camera PC stops watching it.')">
                 <?php csrf_field(); ?>
@@ -291,11 +297,71 @@ echo hr_ui_page_header(
               </form>
             </td>
           </tr>
+          <?php if ($canLive && (int)$c['is_active']): ?>
+          <tr class="d-none" id="camLive<?= (int)$c['id'] ?>">
+            <td colspan="9" class="bg-light text-center">
+              <img class="cam-live-img img-fluid rounded d-none" style="max-height:420px" alt="Live: <?= h($c['name']) ?>">
+              <div class="cam-live-msg small text-muted py-3">Waiting for the camera PC…</div>
+              <div class="cam-live-time small text-muted"></div>
+            </td>
+          </tr>
+          <?php endif; ?>
         <?php endforeach; ?>
         </tbody>
       </table>
     </div>
   </div>
+  <?php if ($canLive): ?>
+  <script>
+  // Live: ask for the camera's latest frame every 2 s while the box is open. Each
+  // ask also tells the camera PC to keep sending; closing the box stops it.
+  (function () {
+    var timers = {};
+    function load(id, row) {
+      fetch('attendance_camera_live.php?id=' + id + '&t=' + Date.now(), {credentials: 'same-origin', cache: 'no-store'})
+        .then(function (r) {
+          if (r.status !== 200) return null;
+          var at = r.headers.get('X-Frame-Time');
+          return r.blob().then(function (b) { return {blob: b, at: at}; });
+        })
+        .then(function (f) {
+          if (!timers[id]) return;
+          var img = row.querySelector('.cam-live-img'), msg = row.querySelector('.cam-live-msg');
+          if (!f) {
+            msg.textContent = img.classList.contains('d-none') ? 'Waiting for the camera PC… (it starts within a few seconds if it is running)' : 'No new picture: the camera PC or the camera stopped.';
+            msg.classList.remove('d-none');
+            return;
+          }
+          var old = img.src;
+          img.src = URL.createObjectURL(f.blob);
+          if (old) URL.revokeObjectURL(old);
+          img.classList.remove('d-none');
+          msg.classList.add('d-none');
+          row.querySelector('.cam-live-time').textContent = 'Picture from ' + (f.at || '') + ' · refreshes every 2 seconds';
+        })
+        .catch(function () {});
+    }
+    document.querySelectorAll('.cam-live-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.dataset.id, row = document.getElementById('camLive' + id);
+        if (timers[id]) {
+          clearInterval(timers[id]);
+          delete timers[id];
+          row.classList.add('d-none');
+          btn.innerHTML = '<i class="bi bi-play-fill"></i> Live';
+          btn.setAttribute('aria-expanded', 'false');
+          return;
+        }
+        row.classList.remove('d-none');
+        btn.innerHTML = '<i class="bi bi-stop-fill"></i> Stop';
+        btn.setAttribute('aria-expanded', 'true');
+        timers[id] = setInterval(function () { load(id, row); }, 2000);
+        load(id, row);
+      });
+    });
+  })();
+  </script>
+  <?php endif; ?>
 
   <?php
     $edit = null;
