@@ -204,43 +204,109 @@ LIVE_SEND_SECONDS = 2
 LIVE_ASK_SECONDS = 5
 
 
-def live_loop(cfg, streams):
-    """Send frames only for the cameras HR has open in Live. View only: no attendance."""
+def capture_face(detector, frame, area=None):
+    """HR's Capture in the face photo popup: (base64 JPEG of the face, "") or (None, why not).
+
+    The face must be the clear main one, big enough and looking at the camera,
+    because every later match is compared with it. area is the box HR drew
+    around the person, [x, y, w, h] as fractions of the picture: only that part
+    is looked at, enlarged up to twice when it is small.
+    """
+    if area:
+        fh, fw = frame.shape[:2]
+        ax, ay, aw, ah = (float(v) for v in area)
+        x0, y0 = int(ax * fw), int(ay * fh)
+        x1, y1 = min(fw, int((ax + aw) * fw)), min(fh, int((ay + ah) * fh))
+        if x1 - x0 < 20 or y1 - y0 < 20:
+            return None, "The box is too small. Draw it around the person's head and shoulders."
+        frame = frame[y0:y1, x0:x1]
+        if frame.shape[1] < 640:
+            scale = min(2.0, 640 / frame.shape[1])
+            frame = cv2.resize(frame, (int(frame.shape[1] * scale), int(frame.shape[0] * scale)), interpolation=cv2.INTER_CUBIC)
+    h, w = frame.shape[:2]
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(frame)
+    if faces is None or len(faces) == 0:
+        return None, "No face found. Ask the person to stand closer, facing the camera."
+    faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
+    face = faces[0]
+    # Someone else close by would make it unclear whose photo this is.
+    if len(faces) > 1 and faces[1][2] * faces[1][3] > face[2] * face[3] * 0.5:
+        return None, "More than one person in front of the camera. Only the person should stand close."
+    x, y, fw, fh = (int(v) for v in face[:4])
+    if fw < 70:
+        return None, "The face is too small. Ask the person to come closer to the camera."
+    # Looking straight: the nose sits about halfway between the eyes.
+    eye_r, eye_l, nose = face[4:6], face[6:8], face[8:10]
+    eyes = abs(eye_l[0] - eye_r[0])
+    if eyes <= 0 or abs(nose[0] - (eye_l[0] + eye_r[0]) / 2) / eyes > 0.25:
+        return None, "The face is turned. Ask the person to look straight at the camera."
+    x0, x1 = max(0, x - int(fw * 0.6)), min(w, x + fw + int(fw * 0.6))
+    y0, y1 = max(0, y - int(fh * 0.6)), min(h, y + fh + int(fh * 0.5))
+    crop = frame[y0:y1, x0:x1]
+    if crop.shape[1] > 600:
+        crop = cv2.resize(crop, (600, int(crop.shape[0] * 600 / crop.shape[1])))
+    ok, jpg = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    if not ok:
+        return None, "The photo could not be made. Try again."
+    return base64.b64encode(jpg.tobytes()).decode(), ""
+
+
+def live_loop(cfg, streams, det_path):
+    """Send frames only for the cameras HR has open in Live, and answer Capture. View only: no attendance."""
     headers = {"X-Camera-Key": cfg["camera_key"]}
-    want = []
+    # Its own detector: the main loop's is busy on another thread.
+    detector = cv2.FaceDetectorYN.create(det_path, "", (320, 320), 0.8, 0.3, 5000)
+    url = cfg["saifsys_url"] + "/api/attendance_camera.php"
+
+    def post(payload):
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                     headers={**headers, "Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = json.loads(r.read().decode() or "{}")
+        areas.clear()
+        areas.update(body.get("capture_area") or {})
+        return body.get("want") or [], body.get("capture") or []
+
+    want, capture = [], []
+    areas = {}  # camera id (text) -> the box HR drew for a waiting capture
     while True:
         if not want:
             time.sleep(LIVE_ASK_SECONDS)
             try:
-                req = urllib.request.Request(cfg["saifsys_url"] + "/api/attendance_camera.php?action=live", headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    want = json.loads(r.read().decode() or "{}").get("want") or []
+                with urllib.request.urlopen(urllib.request.Request(url + "?action=live", headers=headers), timeout=10) as r:
+                    body = json.loads(r.read().decode() or "{}")
+                want, capture = body.get("want") or [], body.get("capture") or []
+                areas.clear()
+                areas.update(body.get("capture_area") or {})
             except Exception:
-                want = []  # an older saifsys without Live, or offline: ask again later
+                want, capture = [], []  # an older saifsys without Live, or offline: ask again later
             continue
-        time.sleep(LIVE_SEND_SECONDS)
-        still = []
+        # A capture is answered straight away; frames go every LIVE_SEND_SECONDS.
+        time.sleep(0.5 if capture else LIVE_SEND_SECONDS)
+        answer = None
         for s in list(streams.values()):
-            if s.cam_id not in want:
+            if s.cam_id not in want and s.cam_id not in capture:
                 continue
             frame = s.peek()
             if frame is None:
-                still.append(s.cam_id)  # no picture right now; keep trying while HR watches
-                continue
-            if frame.shape[1] > 640:
-                frame = cv2.resize(frame, (640, int(frame.shape[0] * 640 / frame.shape[1])))
-            ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
-            if not ok:
-                continue
-            body = json.dumps({"live_frame": {"camera_id": s.cam_id, "jpeg": base64.b64encode(jpg.tobytes()).decode()}}).encode()
-            req = urllib.request.Request(cfg["saifsys_url"] + "/api/attendance_camera.php", data=body,
-                                         headers={**headers, "Content-Type": "application/json"}, method="POST")
+                continue  # no picture right now; keep trying while HR watches
             try:
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    still = json.loads(r.read().decode() or "{}").get("want") or []
+                if s.cam_id in capture:
+                    jpeg, why = capture_face(detector, frame, areas.get(str(s.cam_id)))
+                    answer = post({"live_capture": {"camera_id": s.cam_id, "jpeg": jpeg, "error": why}})
+                    log(f"{s.name}: face photo taken for HR" if jpeg else f"{s.name}: face photo not taken: {why}")
+                if s.cam_id in want:
+                    small = frame
+                    if small.shape[1] > 640:
+                        small = cv2.resize(small, (640, int(small.shape[0] * 640 / small.shape[1])))
+                    ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                    if ok:
+                        answer = post({"live_frame": {"camera_id": s.cam_id, "jpeg": base64.b64encode(jpg.tobytes()).decode()}})
             except Exception:
-                still = []
-        want = still
+                answer = ([], [])
+        # Nothing sent (no picture, or a camera this PC does not have): ask again instead.
+        want, capture = answer if answer is not None else ([], [])
 
 
 def snapshot(frame, face, label):
@@ -534,7 +600,7 @@ def main():
     if not wanted:
         log("No cameras yet. Add one in HR -> Administration -> Cameras; picked up within 15 seconds.")
     streams = {name: LatestFrame(name, url, cam_id) for name, (cam_id, url) in wanted.items()}
-    threading.Thread(target=live_loop, args=(cfg, streams), daemon=True).start()
+    threading.Thread(target=live_loop, args=(cfg, streams, det_path), daemon=True).start()
     next_camera_check = time.time() + HR_CHECK_SECONDS
     next_status = time.time() + 60  # first report once the streams have had a minute to connect
     # Shared by every camera: someone walking between rooms is still sent once per resend_seconds.

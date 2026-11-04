@@ -27,6 +27,11 @@
  *   POST JSON {"live_frame": {"camera_id": 2, "jpeg": "<base64>"}}
  *        the Live box on the Cameras page: the PC sends frames only for the
  *        cameras HR is watching. Kept as one overwritten file; never attendance.
+ *        "capture" lists cameras where HR clicked Capture in the face photo
+ *        popup; the PC answers POST {"live_capture": {"camera_id": 2,
+ *        "jpeg": "<base64>"}} or {..., "error": "Two people in view"}.
+ *        "capture_area" {"2": [x, y, w, h]} is the box HR drew around the
+ *        person (fractions of the picture): look only there.
  *
  *   GET ?action=cameras
  *        the cameras switched on in HR -> Administration -> Cameras, each with
@@ -121,7 +126,7 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['
 // The PC asks which cameras HR is watching live on the Cameras page.
 if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['action'] ?? '') === 'live') {
     require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
-    attendance_camera_send(['ok' => true, 'want' => hr_camera_live_wanted()]);
+    attendance_camera_send(['ok' => true, 'want' => hr_camera_live_wanted(), 'capture' => hr_camera_capture_wanted(), 'capture_area' => (object)hr_camera_capture_areas()]);
 }
 if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) !== 'POST') {
     attendance_camera_send(['ok' => false, 'error' => 'POST only.'], 405);
@@ -134,7 +139,15 @@ if (isset($in['live_frame']) && is_array($in['live_frame'])) {
     require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
     $jpeg = hr_camera_photo_decode($in['live_frame']['jpeg'] ?? null);
     $saved = $jpeg !== null && hr_camera_live_save((int)($in['live_frame']['camera_id'] ?? 0), $jpeg);
-    attendance_camera_send(['ok' => true, 'saved' => $saved, 'want' => hr_camera_live_wanted()]);
+    attendance_camera_send(['ok' => true, 'saved' => $saved, 'want' => hr_camera_live_wanted(), 'capture' => hr_camera_capture_wanted(), 'capture_area' => (object)hr_camera_capture_areas()]);
+}
+// The answer to HR's Capture (face photo popup): the cropped face, or why there is none.
+if (isset($in['live_capture']) && is_array($in['live_capture'])) {
+    require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
+    $jpeg = hr_camera_photo_decode($in['live_capture']['jpeg'] ?? null);
+    $saved = hr_camera_capture_answer((int)($in['live_capture']['camera_id'] ?? 0), $jpeg,
+        $jpeg === null ? trim((string)($in['live_capture']['error'] ?? '')) : '');
+    attendance_camera_send(['ok' => true, 'saved' => $saved, 'want' => hr_camera_live_wanted(), 'capture' => hr_camera_capture_wanted(), 'capture_area' => (object)hr_camera_capture_areas()]);
 }
 
 // The PC's report on each camera: the name it gives itself on the network and
