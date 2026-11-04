@@ -301,7 +301,7 @@ echo hr_ui_page_header(
           <tr class="d-none" id="camLive<?= (int)$c['id'] ?>">
             <td colspan="9" class="bg-light text-center">
               <img class="cam-live-img img-fluid rounded d-none" style="max-height:420px" alt="Live: <?= h($c['name']) ?>">
-              <div class="cam-live-msg small text-muted py-3">Waiting for the camera PC…</div>
+              <div class="cam-live-msg small text-muted py-3">Connecting to the camera… this takes a few seconds.</div>
               <div class="cam-live-time small text-muted"></div>
             </td>
           </tr>
@@ -316,8 +316,26 @@ echo hr_ui_page_header(
   // Live: ask for the camera's latest frame every 2 s while the box is open. Each
   // ask also tells the camera PC to keep sending; closing the box stops it.
   (function () {
-    var timers = {};
+    // Live stops by itself after 5 minutes (a forgotten tab would keep pictures
+    // coming all day) and pauses while the tab is not being looked at.
+    var LIVE_MS = 5 * 60 * 1000;
+    var timers = {}, started = {};
+    function run(id, row) {
+      clearInterval(timers[id]);
+      timers[id] = setInterval(function () { load(id, row); }, 2000);
+      load(id, row);
+    }
     function load(id, row) {
+      if (Date.now() - started[id] > LIVE_MS) {
+        clearInterval(timers[id]);
+        timers[id] = 'ended';
+        var msg = row.querySelector('.cam-live-msg');
+        msg.innerHTML = 'Live stopped after 5 minutes to save internet. Click Continue to keep watching. <button type="button" class="btn btn-sm btn-outline-success ms-1 cam-live-more">Continue</button>';
+        msg.classList.remove('d-none');
+        row.querySelector('.cam-live-img').classList.add('d-none');
+        msg.querySelector('.cam-live-more').addEventListener('click', function () { started[id] = Date.now(); msg.textContent = 'Connecting to the camera… this takes a few seconds.'; run(id, row); });
+        return;
+      }
       fetch('attendance_camera_live.php?id=' + id + '&t=' + Date.now(), {credentials: 'same-origin', cache: 'no-store'})
         .then(function (r) {
           if (r.status !== 200) return null;
@@ -325,10 +343,13 @@ echo hr_ui_page_header(
           return r.blob().then(function (b) { return {blob: b, at: at}; });
         })
         .then(function (f) {
-          if (!timers[id]) return;
+          if (!timers[id] || timers[id] === 'ended') return;
           var img = row.querySelector('.cam-live-img'), msg = row.querySelector('.cam-live-msg');
           if (!f) {
-            msg.textContent = img.classList.contains('d-none') ? 'Waiting for the camera PC… (it starts within a few seconds if it is running)' : 'No new picture: the camera PC or the camera stopped.';
+            // Still nothing after 20 seconds, or the picture stopped coming: say what to check.
+            msg.textContent = (img.classList.contains('d-none') && Date.now() - started[id] < 20000)
+              ? 'Connecting to the camera… this takes a few seconds.'
+              : 'No picture yet. Click Stop, then Live to try again. If it still does not show, check that the camera program is running on the office computer.';
             msg.classList.remove('d-none');
             return;
           }
@@ -355,8 +376,16 @@ echo hr_ui_page_header(
         row.classList.remove('d-none');
         btn.innerHTML = '<i class="bi bi-stop-fill"></i> Stop';
         btn.setAttribute('aria-expanded', 'true');
-        timers[id] = setInterval(function () { load(id, row); }, 2000);
-        load(id, row);
+        started[id] = Date.now();
+        run(id, row);
+      });
+    });
+    // Another tab or a minimised window: no pictures until it is looked at again.
+    document.addEventListener('visibilitychange', function () {
+      Object.keys(timers).forEach(function (id) {
+        if (timers[id] === 'ended') return;
+        if (document.hidden) { clearInterval(timers[id]); }
+        else { run(id, document.getElementById('camLive' + id)); }
       });
     });
   })();
@@ -668,11 +697,24 @@ echo hr_ui_page_header(
           });
           clear.addEventListener('click', function (e) { e.preventDefault(); area = null; drawBox(null); });
           function show(img, blob) { var old = img.src; img.src = URL.createObjectURL(blob); if (old && old.indexOf('blob:') === 0) URL.revokeObjectURL(old); img.classList.remove('d-none'); }
+          // Like Live on the camera list: stops after 5 minutes, pauses while the tab is not looked at.
+          var LIVE_MS = 5 * 60 * 1000, liveStarted = 0;
           function tick() {
+            if (document.hidden) return;
+            if (Date.now() - liveStarted > LIVE_MS) {
+              clearInterval(liveTimer); liveTimer = null;
+              live.classList.add('d-none'); rect.classList.add('d-none'); zoomWrap.classList.add('d-none'); hint.classList.add('d-none');
+              capBtn.disabled = true;
+              msg.textContent = 'Camera stopped after 5 minutes to save internet. Click Start camera to continue.';
+              return;
+            }
             fetch('attendance_camera_live.php?id=' + sel.value + '&t=' + Date.now(), {credentials: 'same-origin', cache: 'no-store'})
               .then(function (r) { return r.status === 200 ? r.blob() : null; })
               .then(function (b) {
                 if (!liveTimer) return;
+                if (!b && msg.dataset.waiting && Date.now() - liveStarted > 20000) {
+                  msg.textContent = 'No picture yet. Click Start camera to try again. If it still does not show, check that the camera program is running on the office computer.';
+                }
                 if (b) { show(live, b); hint.classList.remove('d-none'); if (msg.dataset.waiting) { msg.textContent = 'Ask the person to look straight at the camera, then click Capture.'; delete msg.dataset.waiting; } }
               }).catch(function () {});
           }
@@ -686,7 +728,8 @@ echo hr_ui_page_header(
             clearInterval(liveTimer);
             box.classList.remove('d-none'); shot.classList.add('d-none');
             save.classList.add('d-none'); retake.classList.add('d-none'); capBtn.classList.remove('d-none'); capBtn.disabled = false;
-            msg.textContent = 'Starting the camera… (a few seconds)'; msg.dataset.waiting = '1';
+            msg.textContent = 'Connecting to the camera… this takes a few seconds.'; msg.dataset.waiting = '1';
+            liveStarted = Date.now();
             liveTimer = setInterval(tick, 2000); tick();
             drawBox(area); // Retake keeps the box drawn
           }
@@ -706,7 +749,7 @@ echo hr_ui_page_header(
               var tries = 0;
               clearInterval(capTimer);
               capTimer = setInterval(function () {
-                if (++tries > 40) { clearInterval(capTimer); capBtn.disabled = false; msg.textContent = 'No answer from the camera PC. Try again.'; return; }
+                if (++tries > 40) { clearInterval(capTimer); capBtn.disabled = false; msg.textContent = 'The photo could not be taken. Click Capture to try again. If it still fails, check that the camera program is running on the office computer.'; return; }
                 fetch('attendance_camera_live.php?id=' + sel.value + '&capture=1&t=' + Date.now(), {credentials: 'same-origin', cache: 'no-store'})
                   .then(function (r) {
                     if (r.status === 204) return;

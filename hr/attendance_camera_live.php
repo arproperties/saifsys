@@ -54,7 +54,7 @@ if (!empty($_GET['capture'])) {
         // Asked too long ago: the PC is not running or not watching this camera.
         http_response_code(422);
         header('Content-Type: text/plain; charset=utf-8');
-        echo 'The camera PC did not answer. Check it is running and the camera is in use.';
+        echo 'The photo could not be taken. Check that the camera program is running on the office computer.';
     } else {
         http_response_code(204);
     }
