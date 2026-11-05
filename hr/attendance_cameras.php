@@ -166,6 +166,12 @@ if ($peopleReady) {
         $face = hr_camera_face($conn, (int)$p['id']);
         $p['face'] = $face['source'] ?? null;
         $p['face_v'] = $face ? (int)filemtime($face['path']) : 0;
+        // Clear camera matches kept beside it: [[name, score], ...], closest first.
+        $p['learned'] = array_map(static fn($l) => [$l['name'], $l['score']], hr_camera_learned((int)$p['id']));
+        // The closest any camera has seen them: [match, when (Dubai)], or null.
+        $best = hr_camera_best((int)$p['id']);
+        $p['rejected'] = array_column(hr_camera_rejected((int)$p['id']), 'name');
+        $p['best'] = $best ? [$best['score'], (new DateTimeImmutable('@' . $best['at']))->setTimezone(new DateTimeZone('Asia/Dubai'))->format('j M Y, g:i A')] : null;
     }
     unset($p);
 
@@ -218,6 +224,16 @@ echo hr_ui_page_header(
   <?php if ($flash_ok): ?><div class="alert alert-success"><?= h($flash_ok) ?></div><?php endif; ?>
   <?php if ($flash_err): ?><div class="alert alert-danger"><?= h($flash_err) ?></div><?php endif; ?>
   <?php if ($faceFlash): ?><div class="alert alert-<?= $faceFlash[0] === 'ok' ? 'success' : 'danger' ?>"><?= h($faceFlash[1]) ?></div><?php endif; ?>
+
+  <!-- Two tabs: the cameras themselves, and the employees they record. #people in the address opens Employees
+       (saving there, and the face photo popup, come back to it). -->
+  <ul class="nav nav-tabs mb-3" id="camTabs">
+    <li class="nav-item"><a class="nav-link" href="#cameras" data-cam-tab="cameras"><i class="bi bi-camera-video"></i> Cameras</a></li>
+    <li class="nav-item"><a class="nav-link" href="#people" data-cam-tab="people"><i class="bi bi-people"></i> Employees
+      <span class="badge rounded-pill text-bg-light border"><?= (int)$onCameraCount ?></span></a></li>
+  </ul>
+
+  <div id="camTabCameras">
 
   <div class="hr-settings-card mb-3">
     <div class="card-body p-0">
@@ -470,11 +486,14 @@ echo hr_ui_page_header(
     </div>
   </div>
 
-  <div class="hr-settings-card mt-3" id="people">
+  </div>
+
+  <div id="camTabPeople" class="d-none">
+  <div class="hr-settings-card" id="people">
     <div class="card-body">
       <div class="d-flex flex-wrap align-items-end justify-content-between gap-2 mb-3">
         <div>
-          <h2 class="h6 mb-1">People</h2>
+          <h2 class="h6 mb-1">Employees</h2>
           <div class="small text-muted">
             Ticked = attendance from the cameras. Not ticked = staff app, as before; the cameras ignore them.
           </div>
@@ -523,13 +542,18 @@ echo hr_ui_page_header(
                   <td>
                     <button type="button" class="btn btn-link p-0 cam-face-btn" data-bs-toggle="modal" data-bs-target="#camFaceModal"
                             data-id="<?= (int)$p['id'] ?>" data-name="<?= h($p['full_name'] . ' (' . $p['employee_code'] . ')') ?>"
-                            data-face="<?= h((string)$p['face']) ?>" data-v="<?= (int)$p['face_v'] ?>">
+                            data-face="<?= h((string)$p['face']) ?>" data-v="<?= (int)$p['face_v'] ?>"
+                            data-learned="<?= h(json_encode($p['learned'])) ?>" data-best="<?= h(json_encode($p['best'])) ?>"
+                            data-rejected="<?= h(json_encode($p['rejected'])) ?>">
                       <?php if ($p['face']): ?>
                         <img src="attendance_camera_face.php?id=<?= (int)$p['id'] ?>&amp;v=<?= (int)$p['face_v'] ?>" alt="" loading="lazy"
                              class="rounded border" style="width:36px;height:36px;object-fit:cover"
                              title="<?= ['profile' => 'From the profile photo', 'file' => 'From the faces folder on the camera PC'][$p['face']] ?? 'Camera photo' ?>">
                       <?php else: ?>
                         <span class="small"><i class="bi bi-person-plus"></i> Add</span>
+                      <?php endif; ?>
+                      <?php if ($p['learned']): ?>
+                        <span class="badge rounded-pill text-bg-light border align-top" title="Reference photos kept from the cameras">+<?= count($p['learned']) ?></span>
                       <?php endif; ?>
                     </button>
                   </td>
@@ -595,6 +619,47 @@ echo hr_ui_page_header(
                   <input type="hidden" name="employee_id" class="camFaceId">
                   <input type="hidden" name="company_id" value="<?= (int)$selectedCompanyId ?>">
                   <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Delete photo</button>
+                </form>
+                <!-- The closest any camera has seen this person, whatever the match. Shown only. -->
+                <div id="camBestBox" class="mt-3 pt-3 border-top text-start d-none">
+                  <div class="small mb-1">Best match so far from the cameras</div>
+                  <div class="d-flex align-items-center gap-3">
+                    <img id="camBestImg" src="" alt="Best camera match" class="rounded border" style="width:96px;height:96px;object-fit:cover">
+                    <div class="small">
+                      <div class="fw-semibold" id="camBestScore"></div>
+                      <div class="text-muted" id="camBestAt"></div>
+                      <div class="text-muted" id="camBestNote"></div>
+                      <form method="post" action="attendance_camera_face.php" class="m-0 mt-1 d-flex gap-3">
+                        <?php csrf_field(); ?>
+                        <input type="hidden" name="employee_id" class="camFaceId">
+                        <input type="hidden" name="company_id" value="<?= (int)$selectedCompanyId ?>">
+                        <button name="action" value="best_use" id="camBestUse" class="btn btn-link p-0 text-success small"
+                                onclick="return confirm('Use this photo as a reference? The cameras will also recognise this person from it.');"><i class="bi bi-check2-circle"></i> Use as reference</button>
+                        <button name="action" value="best_reject" class="btn btn-link p-0 text-danger small"
+                                onclick="return confirm('Different person? The cameras will stop matching this face to them.');"><i class="bi bi-person-x"></i> Different person</button>
+                        <button name="action" value="best_delete" class="btn btn-link p-0 text-secondary small"
+                                onclick="return confirm('Delete this best match? The next match takes its place.');"><i class="bi bi-trash"></i> Delete</button>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+                <!-- Reference photos: clear matches the cameras kept for this person, also compared with. -->
+                <div id="camLearnedBox" class="mt-3 pt-3 border-top text-start d-none">
+                  <div class="small mb-1">Reference photos from the cameras <span class="text-muted">(clear matches, also used to recognise this person)</span></div>
+                  <div id="camLearned" class="d-flex flex-wrap gap-2"></div>
+                  <div class="small text-muted mt-1"><i class="bi bi-person-x"></i> Different person: the cameras stop matching that face to them. <i class="bi bi-trash"></i> only removes the photo.</div>
+                </div>
+                <!-- Faces HR marked "Different person": the cameras skip faces like these for them. -->
+                <div id="camRejectedBox" class="mt-3 pt-3 border-top text-start d-none">
+                  <div class="small mb-1">Marked "Different person" <span class="text-muted">(the cameras will not match faces like these to them)</span></div>
+                  <div id="camRejected" class="d-flex flex-wrap gap-2"></div>
+                </div>
+                <form method="post" action="attendance_camera_face.php" id="camLearnedDelete" class="d-none">
+                  <?php csrf_field(); ?>
+                  <input type="hidden" name="action" value="learned_delete" id="camLearnedAction">
+                  <input type="hidden" name="employee_id" class="camFaceId">
+                  <input type="hidden" name="company_id" value="<?= (int)$selectedCompanyId ?>">
+                  <input type="hidden" name="name" id="camLearnedName">
                 </form>
                 <?php $takeCams = $canLive ? array_values(array_filter($cameras, function ($c) { return (int)$c['is_active']; })) : []; ?>
                 <?php if ($takeCams): ?>
@@ -789,6 +854,71 @@ echo hr_ui_page_header(
           }[face] || '';
           // Only a photo uploaded here can be deleted; the profile photo stays on the profile.
           document.getElementById('camFaceDelete').classList.toggle('d-none', face !== 'camera');
+          var learned = JSON.parse(b.dataset.learned || '[]'), list = document.getElementById('camLearned');
+          list.textContent = '';
+          // One small form for the photo buttons below: what to do, and with which photo.
+          function act(action, name, question) {
+            if (!confirm(question)) return;
+            document.getElementById('camLearnedAction').value = action;
+            document.getElementById('camLearnedName').value = name;
+            document.getElementById('camLearnedDelete').submit();
+          }
+          function button(icon, title, cls, onClick) {
+            var el = document.createElement('button');
+            el.type = 'button';
+            el.className = 'btn btn-link p-0 small ' + cls;
+            el.title = title;
+            el.innerHTML = '<i class="bi ' + icon + '"></i>';
+            el.addEventListener('click', onClick);
+            return el;
+          }
+          learned.forEach(function (l) {
+            var cell = document.createElement('div'), pic = document.createElement('img'), del = document.createElement('button');
+            cell.className = 'text-center small';
+            pic.src = 'attendance_camera_face.php?id=' + b.dataset.id + '&learned=' + encodeURIComponent(l[0]);
+            pic.alt = 'Reference photo';
+            pic.className = 'rounded border d-block';
+            pic.style.cssText = 'width:64px;height:64px;object-fit:cover';
+            del.type = 'button';
+            del.className = 'btn btn-link p-0 text-secondary small';
+            del.title = 'Delete this reference photo';
+            del.innerHTML = '<i class="bi bi-trash"></i>';
+            del.addEventListener('click', function () { act('learned_delete', l[0], 'Delete this reference photo?'); });
+            cell.appendChild(pic);
+            cell.appendChild(document.createTextNode('match ' + Number(l[1]).toFixed(2) + ' '));
+            cell.appendChild(button('bi-person-x', 'Different person', 'text-danger me-1', function () {
+              act('learned_reject', l[0], 'Different person? The cameras will stop matching this face to them.');
+            }));
+            cell.appendChild(del);
+            list.appendChild(cell);
+          });
+          var rejected = JSON.parse(b.dataset.rejected || '[]'), rlist = document.getElementById('camRejected');
+          rlist.textContent = '';
+          rejected.forEach(function (name) {
+            var cell = document.createElement('div'), pic = document.createElement('img');
+            cell.className = 'text-center small';
+            pic.src = 'attendance_camera_face.php?id=' + b.dataset.id + '&rejected=' + encodeURIComponent(name);
+            pic.alt = 'Different person';
+            pic.className = 'rounded border d-block';
+            pic.style.cssText = 'width:48px;height:48px;object-fit:cover;opacity:.7';
+            cell.appendChild(pic);
+            cell.appendChild(button('bi-arrow-counterclockwise', 'Undo: it may be this person after all', 'text-secondary', function () {
+              act('rejected_delete', name, 'Undo? The cameras may match this face to them again.');
+            }));
+            rlist.appendChild(cell);
+          });
+          document.getElementById('camRejectedBox').classList.toggle('d-none', !rejected.length);
+          document.getElementById('camLearnedBox').classList.toggle('d-none', !learned.length);
+          var best = JSON.parse(b.dataset.best || 'null');
+          document.getElementById('camBestBox').classList.toggle('d-none', !best);
+          document.getElementById('camBestImg').src = best ? 'attendance_camera_face.php?id=' + b.dataset.id + '&best=1&t=' + Date.now() : '';
+          document.getElementById('camBestScore').textContent = best ? 'match ' + Number(best[0]).toFixed(2) : '';
+          document.getElementById('camBestAt').textContent = best ? best[1] : '';
+          // From 0.40 HR can use it as a reference; below that it is shown only.
+          var usable = best && best[0] >= <?= json_encode(HR_CAMERA_BEST_USE_MIN) ?>;
+          document.getElementById('camBestUse').classList.toggle('d-none', !usable);
+          document.getElementById('camBestNote').textContent = usable
+            ? 'Shown only until you click Use as reference.' : 'Below 0.40: shown only, too far to use as a reference.';
         });
         </script>
         <script>
@@ -822,6 +952,25 @@ echo hr_ui_page_header(
       <?php endif; ?>
     </div>
   </div>
+  </div>
+
+  <script>
+  (function () {
+    var panes = {cameras: document.getElementById('camTabCameras'), people: document.getElementById('camTabPeople')};
+    function show(tab) {
+      Object.keys(panes).forEach(function (k) { panes[k].classList.toggle('d-none', k !== tab); });
+      document.querySelectorAll('[data-cam-tab]').forEach(function (a) { a.classList.toggle('active', a.dataset.camTab === tab); });
+    }
+    document.querySelectorAll('[data-cam-tab]').forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        show(a.dataset.camTab);
+        history.replaceState(null, '', a.dataset.camTab === 'people' ? '#people' : location.pathname + location.search);
+      });
+    });
+    show(location.hash === '#people' ? 'people' : 'cameras');
+  })();
+  </script>
 
 <?php endif; ?>
 

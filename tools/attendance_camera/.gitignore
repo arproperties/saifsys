@@ -4,3 +4,5 @@ config.ini
 *.onnx
 faces_hr/
 __pycache__/
+faces_learned/
+faces_rejected/

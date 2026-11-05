@@ -38,7 +38,22 @@
  *        its stream address, and resend_seconds (how often the same person is
  *        recorded, set on that page). With &since=<version> from the last
  *        answer it only says {"changed": false} when nothing is different.
- *        "faces" lists the ticked people with a face photo in HR.
+ *        "faces" lists the ticked people with a face photo in HR,
+ *        "learned" their reference faces: {"E00076": ["0.623_1793500000.jpg"]},
+ *        "best" their best match so far: {"E00076": 0.43}, "rejected" the
+ *        faces HR marked "Not this person" for them (skip faces like these).
+ *
+ *   GET ?action=learned&code=E00076&name=0.623_1793500000.jpg
+ *        one of that person's reference faces (listed under "learned");
+ *        action=rejected the same for a "Not this person" face.
+ *
+ *   POST JSON {"learned_face": {"employee_code": "E00076", "score": 0.62, "jpeg": "<base64>"}}
+ *        a face the camera matched clearly (0.50 or more against the person's
+ *        own photo). Kept when it is among their 5 closest; {"kept": bool}.
+ *
+ *   POST JSON {"best_face": {"employee_code": "E00076", "score": 0.43, "jpeg": "<base64>"}}
+ *        the person's closest face so far, any match; kept when closer than
+ *        the one kept. {"best": the match kept now}. Shown to HR only.
  *
  *   GET ?action=face&code=E00076
  *        that person's face photo (uploaded on the Cameras page, else the
@@ -93,6 +108,28 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['
     exit;
 }
 
+// The PC fetches one reference face listed under "learned", or one "Not this person" face under "rejected".
+if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && in_array($_GET['action'] ?? '', ['learned', 'rejected'], true)) {
+    require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
+    $st = $conn->prepare("SELECT e.id FROM employees e JOIN hr_attendance_camera_people p ON p.employee_id = e.id WHERE e.employee_code = ?");
+    $path = null;
+    try {
+        $st->execute([(string)($_GET['code'] ?? '')]);
+        $empId = (int)$st->fetchColumn();
+        $name = (string)($_GET['name'] ?? '');
+        $path = $empId <= 0 ? null
+            : ($_GET['action'] === 'rejected' ? hr_camera_rejected_path($empId, $name) : hr_camera_learned_path($empId, $name));
+    } catch (PDOException $e) {
+    }
+    if ($path === null || !is_file($path)) {
+        attendance_camera_send(['ok' => false, 'error' => 'No photo.'], 404);
+    }
+    header('Content-Type: application/octet-stream');
+    header('Cache-Control: no-store');
+    readfile($path);
+    exit;
+}
+
 // The PC asks for the cameras HR has switched on (HR -> Administration -> Cameras).
 if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['action'] ?? '') === 'cameras') {
     require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
@@ -115,7 +152,8 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['
     }
     // faces: employee code => version of the face photo HR keeps for them (Cameras -> People -> Photo).
     $answer = ['cameras' => $list, 'people' => $people, 'resend_seconds' => hr_camera_resend_seconds($conn),
-               'faces' => (object)hr_camera_face_versions($conn)];
+               'faces' => (object)hr_camera_face_versions($conn), 'learned' => (object)hr_camera_learned_versions($conn),
+               'best' => (object)hr_camera_best_scores($conn), 'rejected' => (object)hr_camera_rejected_versions($conn)];
     // The PC asks often with the version it has; the whole list goes back only when something changed.
     $version = substr(hash('sha256', json_encode($answer)), 0, 16);
     if (($_GET['since'] ?? '') === $version) {
@@ -148,6 +186,40 @@ if (isset($in['live_capture']) && is_array($in['live_capture'])) {
     $saved = hr_camera_capture_answer((int)($in['live_capture']['camera_id'] ?? 0), $jpeg,
         $jpeg === null ? trim((string)($in['live_capture']['error'] ?? '')) : '');
     attendance_camera_send(['ok' => true, 'saved' => $saved, 'want' => hr_camera_live_wanted(), 'capture' => hr_camera_capture_wanted(), 'capture_area' => (object)hr_camera_capture_areas()]);
+}
+
+// A face a camera matched clearly, kept as one of the person's reference faces
+// (HR -> Cameras -> People -> Photo). Only for people ticked for the camera.
+if (isset($in['learned_face']) && is_array($in['learned_face'])) {
+    require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
+    $jpeg = hr_camera_photo_decode($in['learned_face']['jpeg'] ?? null);
+    $st = $conn->prepare("SELECT e.id FROM employees e JOIN hr_attendance_camera_people p ON p.employee_id = e.id WHERE e.employee_code = ?");
+    $kept = false;
+    try {
+        $st->execute([(string)($in['learned_face']['employee_code'] ?? '')]);
+        $empId = (int)$st->fetchColumn();
+        $kept = $empId > 0 && $jpeg !== null && hr_camera_learned_add($empId, $jpeg, (float)($in['learned_face']['score'] ?? 0));
+    } catch (PDOException $e) {
+    }
+    attendance_camera_send(['ok' => true, 'kept' => $kept]);
+}
+
+// The closest face so far for a person, whatever the match: HR sees it beside the
+// face photo. Kept only when closer than the one kept; "best" is the match kept now.
+if (isset($in['best_face']) && is_array($in['best_face'])) {
+    require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
+    $jpeg = hr_camera_photo_decode($in['best_face']['jpeg'] ?? null);
+    $st = $conn->prepare("SELECT e.id FROM employees e JOIN hr_attendance_camera_people p ON p.employee_id = e.id WHERE e.employee_code = ?");
+    $best = 0.0;
+    try {
+        $st->execute([(string)($in['best_face']['employee_code'] ?? '')]);
+        $empId = (int)$st->fetchColumn();
+        if ($empId > 0 && $jpeg !== null) {
+            $best = hr_camera_best_offer($empId, $jpeg, (float)($in['best_face']['score'] ?? 0));
+        }
+    } catch (PDOException $e) {
+    }
+    attendance_camera_send(['ok' => true, 'best' => $best]);
 }
 
 // The PC's report on each camera: the name it gives itself on the network and
