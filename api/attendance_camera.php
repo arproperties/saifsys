@@ -41,11 +41,13 @@
  *        "faces" lists the ticked people with a face photo in HR,
  *        "learned" their reference faces: {"E00076": ["0.623_1793500000.jpg"]},
  *        "best" their best match so far: {"E00076": 0.43}, "rejected" the
- *        faces HR marked "Not this person" for them (skip faces like these).
+ *        faces HR marked "Different person" for them (skip faces like these),
+ *        "extra" more photos HR uploaded of them (used like the face photo).
  *
  *   GET ?action=learned&code=E00076&name=0.623_1793500000.jpg
  *        one of that person's reference faces (listed under "learned");
- *        action=rejected the same for a "Not this person" face.
+ *        action=rejected the same for a "Different person" face, action=extra
+ *        for one of the extra photos.
  *
  *   POST JSON {"learned_face": {"employee_code": "E00076", "score": 0.62, "jpeg": "<base64>"}}
  *        a face the camera matched clearly (0.50 or more against the person's
@@ -108,8 +110,9 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['
     exit;
 }
 
-// The PC fetches one reference face listed under "learned", or one "Not this person" face under "rejected".
-if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && in_array($_GET['action'] ?? '', ['learned', 'rejected'], true)) {
+// The PC fetches one reference face listed under "learned", one "Different person" face under
+// "rejected", or one of HR's extra photos under "extra".
+if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && in_array($_GET['action'] ?? '', ['learned', 'rejected', 'extra'], true)) {
     require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
     $st = $conn->prepare("SELECT e.id FROM employees e JOIN hr_attendance_camera_people p ON p.employee_id = e.id WHERE e.employee_code = ?");
     $path = null;
@@ -118,7 +121,7 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && in_array
         $empId = (int)$st->fetchColumn();
         $name = (string)($_GET['name'] ?? '');
         $path = $empId <= 0 ? null
-            : ($_GET['action'] === 'rejected' ? hr_camera_rejected_path($empId, $name) : hr_camera_learned_path($empId, $name));
+            : ['rejected' => 'hr_camera_rejected_path', 'extra' => 'hr_camera_extra_path', 'learned' => 'hr_camera_learned_path'][$_GET['action']]($empId, $name);
     } catch (PDOException $e) {
     }
     if ($path === null || !is_file($path)) {
@@ -153,7 +156,8 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) === 'GET' && ($_GET['
     // faces: employee code => version of the face photo HR keeps for them (Cameras -> People -> Photo).
     $answer = ['cameras' => $list, 'people' => $people, 'resend_seconds' => hr_camera_resend_seconds($conn),
                'faces' => (object)hr_camera_face_versions($conn), 'learned' => (object)hr_camera_learned_versions($conn),
-               'best' => (object)hr_camera_best_scores($conn), 'rejected' => (object)hr_camera_rejected_versions($conn)];
+               'best' => (object)hr_camera_best_scores($conn), 'rejected' => (object)hr_camera_rejected_versions($conn),
+               'extra' => (object)hr_camera_extra_versions($conn)];
     // The PC asks often with the version it has; the whole list goes back only when something changed.
     $version = substr(hash('sha256', json_encode($answer)), 0, 16);
     if (($_GET['since'] ?? '') === $version) {

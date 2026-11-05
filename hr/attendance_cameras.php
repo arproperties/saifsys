@@ -171,7 +171,8 @@ if ($peopleReady) {
         // The closest any camera has seen them: [match, when (Dubai)], or null.
         $best = hr_camera_best((int)$p['id']);
         $p['rejected'] = array_column(hr_camera_rejected((int)$p['id']), 'name');
-        $p['best'] = $best ? [$best['score'], (new DateTimeImmutable('@' . $best['at']))->setTimezone(new DateTimeZone('Asia/Dubai'))->format('j M Y, g:i A')] : null;
+        $p['extra'] = array_column(hr_camera_extra((int)$p['id']), 'name');
+        $p['best'] = $best ? [$best['score'], (new DateTimeImmutable('@' . $best['at']))->setTimezone(new DateTimeZone('Asia/Dubai'))->format('j M Y, g:i A'), $best['used']] : null;
     }
     unset($p);
 
@@ -544,7 +545,7 @@ echo hr_ui_page_header(
                             data-id="<?= (int)$p['id'] ?>" data-name="<?= h($p['full_name'] . ' (' . $p['employee_code'] . ')') ?>"
                             data-face="<?= h((string)$p['face']) ?>" data-v="<?= (int)$p['face_v'] ?>"
                             data-learned="<?= h(json_encode($p['learned'])) ?>" data-best="<?= h(json_encode($p['best'])) ?>"
-                            data-rejected="<?= h(json_encode($p['rejected'])) ?>">
+                            data-rejected="<?= h(json_encode($p['rejected'])) ?>" data-extra="<?= h(json_encode($p['extra'])) ?>">
                       <?php if ($p['face']): ?>
                         <img src="attendance_camera_face.php?id=<?= (int)$p['id'] ?>&amp;v=<?= (int)$p['face_v'] ?>" alt="" loading="lazy"
                              class="rounded border" style="width:36px;height:36px;object-fit:cover"
@@ -620,6 +621,21 @@ echo hr_ui_page_header(
                   <input type="hidden" name="company_id" value="<?= (int)$selectedCompanyId ?>">
                   <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Delete photo</button>
                 </form>
+                <!-- More photos of the same person (another angle, glasses...): used like the photo above. -->
+                <div class="mt-3 pt-3 border-top text-start">
+                  <div class="small mb-1">More photos of this employee <span class="text-muted">(another angle, with glasses, different light; up to <?= HR_CAMERA_EXTRA_KEEP ?>)</span></div>
+                  <div id="camExtra" class="d-flex flex-wrap gap-2 mb-2"></div>
+                  <form method="post" action="attendance_camera_face.php" enctype="multipart/form-data" class="m-0">
+                    <?php csrf_field(); ?>
+                    <input type="hidden" name="action" value="extra_upload">
+                    <input type="hidden" name="employee_id" class="camFaceId">
+                    <input type="hidden" name="company_id" value="<?= (int)$selectedCompanyId ?>">
+                    <div class="input-group input-group-sm">
+                      <input type="file" name="photo" class="form-control" accept="image/jpeg,image/png,image/webp" required>
+                      <button class="btn btn-outline-primary"><i class="bi bi-plus-lg"></i> Add photo</button>
+                    </div>
+                  </form>
+                </div>
                 <!-- The closest any camera has seen this person, whatever the match. Shown only. -->
                 <div id="camBestBox" class="mt-3 pt-3 border-top text-start d-none">
                   <div class="small mb-1">Best match so far from the cameras</div>
@@ -892,6 +908,21 @@ echo hr_ui_page_header(
             cell.appendChild(del);
             list.appendChild(cell);
           });
+          var extra = JSON.parse(b.dataset.extra || '[]'), elist = document.getElementById('camExtra');
+          elist.textContent = '';
+          extra.forEach(function (name) {
+            var cell = document.createElement('div'), pic = document.createElement('img');
+            cell.className = 'text-center small';
+            pic.src = 'attendance_camera_face.php?id=' + b.dataset.id + '&extra=' + encodeURIComponent(name);
+            pic.alt = 'More photo';
+            pic.className = 'rounded border d-block';
+            pic.style.cssText = 'width:64px;height:64px;object-fit:cover';
+            cell.appendChild(pic);
+            cell.appendChild(button('bi-trash', 'Delete this photo', 'text-secondary', function () {
+              act('extra_delete', name, 'Delete this photo?');
+            }));
+            elist.appendChild(cell);
+          });
           var rejected = JSON.parse(b.dataset.rejected || '[]'), rlist = document.getElementById('camRejected');
           rlist.textContent = '';
           rejected.forEach(function (name) {
@@ -916,9 +947,9 @@ echo hr_ui_page_header(
           document.getElementById('camBestAt').textContent = best ? best[1] : '';
           // From 0.40 HR can use it as a reference; below that it is shown only.
           var usable = best && best[0] >= <?= json_encode(HR_CAMERA_BEST_USE_MIN) ?>;
-          document.getElementById('camBestUse').classList.toggle('d-none', !usable);
-          document.getElementById('camBestNote').textContent = usable
-            ? 'Shown only until you click Use as reference.' : 'Below 0.40: shown only, too far to use as a reference.';
+          document.getElementById('camBestUse').classList.toggle('d-none', !usable || best[2]);
+          document.getElementById('camBestNote').textContent = best && best[2] ? '✓ Used as reference (in the reference photos below).'
+            : usable ? 'Shown only until you click Use as reference.' : 'Below 0.40: shown only, too far to use as a reference.';
         });
         </script>
         <script>

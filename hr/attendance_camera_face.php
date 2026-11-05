@@ -16,6 +16,8 @@
  *                         someone else's, so the cameras stop matching it to
  *                         this person. GET ?rejected=<name> shows one;
  *                         POST rejected_delete is the Undo.
+ * POST extra_upload / extra_delete  more photos of the person, used like the
+ *                         face photo; GET ?extra=<name> shows one.
  */
 
 declare(strict_types=1);
@@ -75,6 +77,24 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             if (hr_camera_best_delete($id)) {
                 $_SESSION['cam_face_flash'] = ['ok', 'Best match deleted for ' . $label . '. The next camera match takes its place.'];
             }
+        } elseif (($_POST['action'] ?? '') === 'extra_upload') {
+            $f = $_FILES['photo'] ?? [];
+            $err = (($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK && is_uploaded_file($f['tmp_name'] ?? ''))
+                ? hr_camera_extra_add($id, $f)
+                : (in_array($f['error'] ?? 0, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true) ? 'The photo is too large.' : 'Choose a photo to upload.');
+            if ($err === null) {
+                audit_bridge_hr_ops('attendance_camera_extra_uploaded', 'employees', $id, 'Extra camera face photo uploaded for ' . $label,
+                    isset($emp['company_id']) ? (int)$emp['company_id'] : null, ['employee_id' => $id], $label, $userId);
+            }
+            $_SESSION['cam_face_flash'] = $err === null
+                ? ['ok', 'Photo added for ' . $label . '. The camera PC uses it within 15 seconds.']
+                : ['err', $err];
+        } elseif (($_POST['action'] ?? '') === 'extra_delete') {
+            if (hr_camera_extra_delete($id, (string)($_POST['name'] ?? ''))) {
+                audit_bridge_hr_ops('attendance_camera_extra_deleted', 'employees', $id, 'Extra camera face photo deleted for ' . $label,
+                    isset($emp['company_id']) ? (int)$emp['company_id'] : null, ['employee_id' => $id], $label, $userId);
+                $_SESSION['cam_face_flash'] = ['ok', 'Photo deleted for ' . $label . '.'];
+            }
         } elseif (($_POST['action'] ?? '') === 'best_use') {
             $score = hr_camera_best($id)['score'] ?? 0;
             if (hr_camera_best_use($id)) {
@@ -82,7 +102,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                     isset($emp['company_id']) ? (int)$emp['company_id'] : null, ['employee_id' => $id, 'score' => $score], $label, $userId);
                 $_SESSION['cam_face_flash'] = ['ok', 'Best match added to the reference photos for ' . $label . '. The cameras use it within 15 seconds.'];
             } else {
-                $_SESSION['cam_face_flash'] = ['err', 'Only a best match of 0.40 or more can be used as a reference.'];
+                $_SESSION['cam_face_flash'] = ['err', !empty(hr_camera_best($id)['used'])
+                    ? 'This best match is already a reference photo.' : 'Only a best match of 0.40 or more can be used as a reference.'];
             }
         } elseif (in_array($_POST['action'] ?? '', ['best_reject', 'learned_reject'], true)) {
             $from = $_POST['action'] === 'best_reject' ? (hr_camera_best($id)['path'] ?? '')
@@ -113,6 +134,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
 if (!empty($_GET['best'])) {
     $face = hr_camera_best((int)($_GET['id'] ?? 0));
+} elseif (isset($_GET['extra'])) {
+    $path = hr_camera_extra_path((int)($_GET['id'] ?? 0), (string)$_GET['extra']);
+    $face = $path !== null && is_file($path) ? ['path' => $path] : null;
 } elseif (isset($_GET['rejected'])) {
     $path = hr_camera_rejected_path((int)($_GET['id'] ?? 0), (string)$_GET['rejected']);
     $face = $path !== null && is_file($path) ? ['path' => $path] : null;

@@ -488,7 +488,7 @@ function hr_camera_face_prepare_dir(): bool
 }
 
 /** Save an image file as this person's camera photo: re-drawn as a JPEG, at most 1000 px. Null on success, else why not. */
-function hr_camera_face_save(int $employeeId, array $file): ?string
+function hr_camera_face_save(int $employeeId, array $file, ?string $to = null): ?string
 {
     if (!is_file($file['tmp_name'] ?? '')) {
         return 'Choose a photo to upload.';
@@ -519,7 +519,7 @@ function hr_camera_face_save(int $employeeId, array $file): ?string
     if (!hr_camera_face_prepare_dir()) {
         return 'The photo folder could not be created.';
     }
-    $path = hr_camera_face_upload_path($employeeId);
+    $path = $to ?? hr_camera_face_upload_path($employeeId);
     $ok = imagejpeg($img, $path . '.tmp', 88) && @rename($path . '.tmp', $path);
     return $ok ? null : 'The photo could not be saved.';
 }
@@ -632,19 +632,20 @@ function hr_camera_learned_versions(PDO $conn): array
 /**
  * One per person, whatever the match (even 0.40), replaced only by a closer
  * one. For HR to see how well the cameras know someone; never used for matching.
- * File: best/<employee id>_<match>.jpg.
+ * File: best/<employee id>_<match>.jpg, ..._ref.jpg once HR used it as a reference.
  */
 function hr_camera_best_dir(): string
 {
     return hr_camera_face_dir() . '/best';
 }
 
-/** ['name', 'score', 'at' => unix time] or null when none yet. */
+/** ['name', 'score', 'at' => unix time, 'used' => already a reference, 'path'] or null when none yet. */
 function hr_camera_best(int $employeeId): ?array
 {
     foreach (glob(hr_camera_best_dir() . '/' . $employeeId . '_*.jpg') ?: [] as $file) {
-        if (preg_match('/^\d+_([01]\.\d{3})\.jpg$/', basename($file), $m)) {
-            return ['name' => basename($file), 'score' => (float)$m[1], 'at' => (int)filemtime($file), 'path' => $file];
+        if (preg_match('/^\d+_([01]\.\d{3})(_ref)?\.jpg$/', basename($file), $m)) {
+            return ['name' => basename($file), 'score' => (float)$m[1], 'at' => (int)filemtime($file),
+                    'used' => !empty($m[2]), 'path' => $file];
         }
     }
     return null;
@@ -693,20 +694,26 @@ function hr_camera_best_scores(PDO $conn): array
 const HR_CAMERA_BEST_USE_MIN = 0.40;
 
 /**
- * HR's "Use as reference": the best match becomes one of the reference faces.
- * HR chose it, so it stays even when it is the lowest; the lowest other goes
- * when there are more than HR_CAMERA_LEARNED_KEEP.
+ * HR's "Use as reference": a copy of the best match becomes one of the
+ * reference faces, and the best match stays (marked used). HR chose it, so it
+ * stays even when it is the lowest; the lowest other goes when there are more
+ * than HR_CAMERA_LEARNED_KEEP.
  */
 function hr_camera_best_use(int $employeeId): bool
 {
     $best = hr_camera_best($employeeId);
     $dir = hr_camera_learned_dir($employeeId);
-    if (!$best || $best['score'] < HR_CAMERA_BEST_USE_MIN || (!is_dir($dir) && !@mkdir($dir, 0755, true))) {
+    if (!$best || $best['used'] || $best['score'] < HR_CAMERA_BEST_USE_MIN || (!is_dir($dir) && !@mkdir($dir, 0755, true))) {
         return false;
     }
     $name = sprintf('%.3f_%d.jpg', $best['score'], time());
-    if (!@rename($best['path'], $dir . '/' . $name)) {
+    if (!@copy($best['path'], $dir . '/' . $name)) {
         return false;
+    }
+    $mtime = (int)filemtime($best['path']);
+    $used = preg_replace('/\.jpg$/', '_ref.jpg', $best['path']);
+    if (@rename($best['path'], $used)) {
+        @touch($used, $mtime);  // still "seen at" the time the camera took it
     }
     $others = array_values(array_filter(hr_camera_learned($employeeId), static fn($l) => $l['name'] !== $name));
     foreach (array_slice($others, HR_CAMERA_LEARNED_KEEP - 1) as $old) {
@@ -787,6 +794,74 @@ function hr_camera_rejected_versions(PDO $conn): array
                            WHERE e.employee_code <> '' ORDER BY e.employee_code")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as $r) {
         if ($names = array_column(hr_camera_rejected((int)$r['id']), 'name')) {
+            $out[strtoupper($r['employee_code'])] = $names;
+        }
+    }
+    return $out;
+}
+
+/* ---------- More photos: extra face photos HR uploads for a person ---------- */
+
+/**
+ * Beside the main face photo, HR can upload more of the same person (another
+ * angle, glasses, a different light). The camera PC finds the face in each and
+ * treats them like the main photo. At most HR_CAMERA_EXTRA_KEEP.
+ */
+const HR_CAMERA_EXTRA_KEEP = 10;
+
+function hr_camera_extra_dir(int $employeeId): string
+{
+    return hr_camera_face_dir() . '/extra/' . $employeeId;
+}
+
+function hr_camera_extra_path(int $employeeId, string $name): ?string
+{
+    return preg_match('/^\d{1,12}_[0-9a-f]{6}\.jpg$/', $name) ? hr_camera_extra_dir($employeeId) . '/' . $name : null;
+}
+
+/** This person's extra photos, newest first: [['name', 'at']]. */
+function hr_camera_extra(int $employeeId): array
+{
+    $out = [];
+    foreach (glob(hr_camera_extra_dir($employeeId) . '/*.jpg') ?: [] as $file) {
+        if (preg_match('/^(\d{1,12})_[0-9a-f]{6}\.jpg$/', basename($file), $m)) {
+            $out[] = ['name' => basename($file), 'at' => (int)$m[1]];
+        }
+    }
+    usort($out, static fn($a, $b) => [$b['at'], $b['name']] <=> [$a['at'], $a['name']]);
+    return $out;
+}
+
+/** Add an uploaded photo. Null on success, else why not. */
+function hr_camera_extra_add(int $employeeId, array $file): ?string
+{
+    if (count(hr_camera_extra($employeeId)) >= HR_CAMERA_EXTRA_KEEP) {
+        return 'Up to ' . HR_CAMERA_EXTRA_KEEP . ' more photos. Delete one first.';
+    }
+    $dir = hr_camera_extra_dir($employeeId);
+    if (!hr_camera_face_prepare_dir() || (!is_dir($dir) && !@mkdir($dir, 0755, true))) {
+        return 'The photo folder could not be created.';
+    }
+    return hr_camera_face_save($employeeId, $file, $dir . '/' . time() . '_' . bin2hex(random_bytes(3)) . '.jpg');
+}
+
+function hr_camera_extra_delete(int $employeeId, string $name): bool
+{
+    $path = hr_camera_extra_path($employeeId, $name);
+    return $path !== null && is_file($path) && @unlink($path);
+}
+
+/** Ticked people's extra photos for the PC: employee code => [file names]. */
+function hr_camera_extra_versions(PDO $conn): array
+{
+    if (!hr_camera_people_ready($conn)) {
+        return [];
+    }
+    $out = [];
+    $rows = $conn->query("SELECT e.id, e.employee_code FROM hr_attendance_camera_people p JOIN employees e ON e.id = p.employee_id
+                           WHERE e.employee_code <> '' ORDER BY e.employee_code")->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($rows as $r) {
+        if ($names = array_column(hr_camera_extra((int)$r['id']), 'name')) {
             $out[strtoupper($r['employee_code'])] = $names;
         }
     }

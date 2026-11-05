@@ -106,7 +106,10 @@ def biggest_face(detector, img):
 
 # faces/ holds photos put on this PC by hand; faces_hr/ the ones HR keeps on the
 # Cameras page (or profile photos), downloaded by sync_hr_faces.
-FACE_FOLDERS = ("faces", "faces_hr")
+# faces_extra/ the more photos HR uploads of a person, downloaded by sync_learned
+# as CODE__<name>.jpg: the face is found in each like in the main photo.
+FACE_FOLDERS = ("faces", "faces_hr", "faces_extra")
+EXTRA = os.path.join(HERE, "faces_extra")
 
 
 def faces_signature():
@@ -587,6 +590,8 @@ def fetch_cameras(cfg):
         sync_learned(cfg, body["learned"])
     if body.get("rejected") is not None:
         sync_learned(cfg, body["rejected"], REJECTED, "rejected")
+    if body.get("extra") is not None:
+        sync_learned(cfg, body["extra"], EXTRA, "extra")
     if body.get("best") is not None:
         BEST_SEEN.clear()
         BEST_SEEN.update({c.upper(): float(v) for c, v in body["best"].items()})
@@ -666,7 +671,7 @@ def sync_learned(cfg, learned, folder=LEARNED, action="learned"):
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = r.read()
         except Exception as e:
-            log(f"{code}: could not download a {'reference' if action == 'learned' else 'Not this person'} face: {e}")
+            log(f"{code}: could not download a {action} face: {e}")
             continue
         with open(path + ".tmp", "wb") as f:
             f.write(data)
