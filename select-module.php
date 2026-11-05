@@ -81,7 +81,7 @@ $modulesWithDeptsCount = count($modulesWithDepts);
 // anyone with a single module. Hold them here until they have checked in.
 require_once __DIR__ . '/includes/attendance_self.php';
 $asMustCheckIn = false;
-if (attendance_self_enabled() && attendance_self_blocking()) {
+if (attendance_self_enabled() && attendance_self_web_visible() && attendance_self_blocking()) {
     $asGateState = attendance_self_state($conn);
     $asMustCheckIn = in_array($asGateState['stage'], ['check_in', 'close_previous'], true);
 }
