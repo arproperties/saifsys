@@ -260,9 +260,12 @@ if (is_file($asWidget)) { require $asWidget; }
         </a>
       <?php endforeach; ?>
 
-    <div class="nav-sect">Purchases</div>
+    <div class="nav-sect">Purchases &amp; store</div>
       <a href="<?= h($opsBase) ?>/purchases.php" class="slink <?= in_array($currentPage, ['purchases.php', 'purchase_view.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-cart-check"></i></span><span class="slabel">Purchases</span>
+      </a>
+      <a href="<?= h($opsBase) ?>/store.php" class="slink <?= in_array($currentPage, ['store.php', 'store_history.php', 'store_entry.php', 'store_setup.php'], true) ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-box-seam"></i></span><span class="slabel">Store</span>
       </a>
 
     <div class="nav-sect">Other</div>
