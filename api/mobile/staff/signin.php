@@ -14,6 +14,7 @@
  *             (ops_api_handle_pin_login's rule)
  *   driver    Driver access switched on in HR (fleet_api_handle_pin_login's rule)
  *   purchase  Purchase switched on in HR (api/mobile/purchase, token typ staff_purchase)
+ *   store     Store switched on in HR (api/mobile/store, token typ staff_store)
  *
  * A PIN that opens neither gets the same "That PIN did not work" as a wrong one
  * and counts as a failed guess, exactly as each app does on its own.
@@ -26,6 +27,7 @@
 declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/purchase/purchase_api.php';
+require_once dirname(__DIR__) . '/store/store_api.php';
 
 customer_api_json_headers();
 header('Access-Control-Allow-Headers: Content-Type, X-Ops-App-Key, X-Ops-Device-Id');
@@ -63,8 +65,9 @@ $userId = $person ? (int)$person['id'] : 0;
 $cleaning = $person !== null && ops_api_user_company_ids($conn, $userId) !== [];
 $driver = $person !== null && fleet_tables_ready($conn) && fleet_app_access_has($conn, $userId, FLEET_DRIVER_APP);
 $purchase = $person !== null && purchase_api_allowed($conn, $userId);
+$store = $person !== null && store_api_allowed($conn, $userId);
 
-if (!$cleaning && !$driver && !$purchase) {
+if (!$cleaning && !$driver && !$purchase && !$store) {
     ops_pin_record_attempt($conn, $deviceId, $ip, $person['id'] ?? null, false);
     ops_pin_prune_attempts($conn);
     customer_api_send_error('bad_pin', 'That PIN did not work.', 401);
@@ -81,5 +84,6 @@ customer_api_send_ok([
         'cleaning' => $cleaning ? ops_api_issue_token($userId, $epoch) : null,
         'driver' => $driver ? fleet_api_issue_token($userId, $epoch) : null,
         'purchase' => $purchase ? purchase_api_issue_token($userId, $epoch) : null,
+        'store' => $store ? store_api_issue_token($userId, $epoch) : null,
     ],
 ]);

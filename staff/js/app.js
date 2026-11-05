@@ -1,5 +1,5 @@
 /**
- * Staff app — the PIN, the main screen (Driver / Cleaning / Purchase), Settings, and
+ * Staff app — the PIN, the main screen (Driver / Cleaning / Purchase / Store), Settings, and
  * starting up. One PIN opens both halves: api/mobile/staff/signin.php checks it
  * once and hands back a token for each app this person may use. Someone with
  * only one of them never sees the main screen — they go straight in.
@@ -68,6 +68,7 @@
           cleaning: data.apps && data.apps.cleaning ? data.apps.cleaning.token : null,
           driver: data.apps && data.apps.driver ? data.apps.driver.token : null,
           purchase: data.apps && data.apps.purchase ? data.apps.purchase.token : null,
+          store: data.apps && data.apps.store ? data.apps.store.token : null,
         },
       });
       pin.value = '';
@@ -90,7 +91,7 @@
   /** Signed out on purpose (Settings) or because the server refused the token and they said so. */
   function signOut(refused) {
     var mods = S.modules;
-    return Promise.all(['driver', 'cleaning', 'purchase'].map(function (k) {
+    return Promise.all(['driver', 'cleaning', 'purchase', 'store'].map(function (k) {
       return mods[k] && mods[k].beforeSignOut ? mods[k].beforeSignOut() : null;
     })).catch(function () {}).then(function () {
       S.setSession(null);
@@ -113,6 +114,7 @@
       { app: 'cleaning', kind: 'cleaning', title: T.home.cleaning, hint: T.home.cleaningHint, icon: 'sparkles' },
       { app: 'cleaning', kind: 'maintenance', title: T.home.maintenance, hint: T.home.maintenanceHint, icon: 'wrench' },
       { app: 'purchase', title: T.home.purchase, hint: T.home.purchaseHint, icon: 'cart' },
+      { app: 'store', title: T.home.store, hint: T.home.storeHint, icon: 'box' },
     ].filter(function (t) { return S.hasApp(t.app); }).map(function (t) {
       var mod = S.modules[t.app];
       var status = mod && mod.tileStatus ? mod.tileStatus(t.kind) : null;
@@ -139,7 +141,7 @@
   function renderSettings() {
     var s = S.session();
     var names = S.apps().map(function (a) {
-      return a === 'driver' ? T.home.driver : a === 'purchase' ? T.home.purchase : T.home.cleaning + ' · ' + T.home.maintenance;
+      return a === 'driver' ? T.home.driver : a === 'purchase' ? T.home.purchase : a === 'store' ? T.home.store : T.home.cleaning + ' · ' + T.home.maintenance;
     }).join(' · ');
     return '<main class="screen">' +
       S.backBar('core:back', T.settings.back) +
@@ -179,7 +181,7 @@
   // --- Starting up -----------------------------------------------------------
 
   function startApps() {
-    ['driver', 'cleaning', 'purchase'].forEach(function (k) {
+    ['driver', 'cleaning', 'purchase', 'store'].forEach(function (k) {
       if (S.hasApp(k) && S.modules[k] && S.modules[k].start) S.modules[k].start();
     });
   }

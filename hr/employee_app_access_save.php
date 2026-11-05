@@ -3,7 +3,7 @@
  * Switch an employee's access to a company mobile app on or off.
  *
  * One PIN (employee_pin_save.php) signs in to every app; this decides which
- * apps it opens: the Driver app, and Purchase in the staff app. Switching
+ * apps it opens: the Driver app, and Purchase and Store in the staff app. Switching
  * one off signs the phone out of it on its next request — the API re-checks
  * access every time.
  */
@@ -41,7 +41,7 @@ if (!$emp) {
 $back = 'employee_view.php?id=' . urlencode((string)$empId) . '#tab-overview';
 $userId = (int)($emp['user_id'] ?? 0);
 $allowed = ($_POST['allowed'] ?? '') === '1';
-$apps = [FLEET_DRIVER_APP => 'Driver app', 'purchase' => 'Purchase'];
+$apps = [FLEET_DRIVER_APP => 'Driver app', 'purchase' => 'Purchase', 'store' => 'Store'];
 $app = (string)($_POST['app'] ?? FLEET_DRIVER_APP);
 if (!isset($apps[$app])) {
     header('Location: ' . $back);
@@ -67,10 +67,10 @@ if (!fleet_tables_ready($conn)) {
         'User #' . $userId . ' — ' . $empLabel,
         $actorId
     );
-    if ($app === 'purchase') {
+    if ($app !== FLEET_DRIVER_APP) {
         $_SESSION['flash_success'] = $allowed
-            ? 'Purchase turned on for ' . $emp['full_name'] . '. They see the Purchase button the next time they sign in to the staff app.'
-            : 'Purchase turned off for ' . $emp['full_name'] . '. Their phone is signed out of Purchase on its next use.';
+            ? $appName . ' turned on for ' . $emp['full_name'] . '. They see the ' . $appName . ' button the next time they sign in to the staff app.'
+            : $appName . ' turned off for ' . $emp['full_name'] . '. Their phone is signed out of ' . $appName . ' on its next use.';
     } else {
         $_SESSION['flash_success'] = $allowed
             ? 'Driver app turned on for ' . $emp['full_name'] . '. They sign in with their mobile app PIN.'

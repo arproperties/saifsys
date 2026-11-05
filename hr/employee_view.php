@@ -5037,35 +5037,41 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     </div>
                                 </div>
                                 <?php
-                                /* Purchase, in the staff app: records what they buy
-                                   (api/mobile/purchase). Off until switched on here. */
-                                $purchaseOn = $opsPinUserId > 0 && fleet_app_access_has($conn, $opsPinUserId, 'purchase');
+                                /* Purchase and Store, in the staff app (api/mobile/purchase,
+                                   api/mobile/store). Off until switched on here. */
+                                $staffAppSwitches = [
+                                    'purchase' => ['Purchase', 'bi-cart-check', 'The Purchase button in the staff app: they record what they buy, cash at a shop or ordered from a supplier, with a photo of the bill.'],
+                                    'store' => ['Store', 'bi-box-seam', 'The Store button in the staff app: the store keeper records goods in, goods out, moves between stores and count corrections.'],
+                                ];
+                                foreach ($staffAppSwitches as $switchApp => [$switchLabel, $switchIcon, $switchHint]):
+                                    $switchOn = $opsPinUserId > 0 && fleet_app_access_has($conn, $opsPinUserId, $switchApp);
                                 ?>
                                 <div class="d-flex flex-wrap align-items-center gap-3 mt-3">
                                     <div>
-                                        <div class="fw-semibold">Purchase
-                                            <?php if ($purchaseOn): ?>
+                                        <div class="fw-semibold"><?= htmlspecialchars($switchLabel) ?>
+                                            <?php if ($switchOn): ?>
                                                 <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1">On</span>
                                             <?php else: ?>
                                                 <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Off</span>
                                             <?php endif; ?>
                                         </div>
-                                        <div class="stat-meta">The Purchase button in the staff app: they record what they buy, cash at a shop or ordered from a supplier, with a photo of the bill.</div>
+                                        <div class="stat-meta"><?= htmlspecialchars($switchHint) ?></div>
                                     </div>
                                     <?php if ($opsPinUserId > 0): ?>
                                     <form method="post" action="employee_app_access_save.php" class="ms-auto m-0">
                                         <?php csrf_field(); ?>
                                         <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
-                                        <input type="hidden" name="app" value="purchase">
-                                        <input type="hidden" name="allowed" value="<?= $purchaseOn ? '0' : '1' ?>">
-                                        <button class="btn btn-sm <?= $purchaseOn ? 'btn-outline-danger' : 'btn-outline-primary' ?>">
-                                            <i class="bi <?= $purchaseOn ? 'bi-x-circle' : 'bi-cart-check' ?> me-1"></i><?= $purchaseOn ? 'Turn off' : 'Turn on' ?>
+                                        <input type="hidden" name="app" value="<?= htmlspecialchars($switchApp) ?>">
+                                        <input type="hidden" name="allowed" value="<?= $switchOn ? '0' : '1' ?>">
+                                        <button class="btn btn-sm <?= $switchOn ? 'btn-outline-danger' : 'btn-outline-primary' ?>">
+                                            <i class="bi <?= $switchOn ? 'bi-x-circle' : htmlspecialchars($switchIcon) ?> me-1"></i><?= $switchOn ? 'Turn off' : 'Turn on' ?>
                                         </button>
                                     </form>
                                     <?php else: ?>
                                     <span class="stat-meta ms-auto">Set a PIN first.</span>
                                     <?php endif; ?>
                                 </div>
+                                <?php endforeach; ?>
                             <?php endif; ?>
 
                             <?php

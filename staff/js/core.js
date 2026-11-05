@@ -40,6 +40,8 @@
       maintenanceHint: 'Your jobs',
       purchase: 'Purchase',
       purchaseHint: 'What you buy',
+      store: 'Store',
+      storeHint: 'Goods in and out',
       back: 'Home',
       settings: 'Settings',
     },
@@ -119,12 +121,12 @@
   };
 
   /**
-   * { user: {id, name}, tokens: {cleaning, driver, purchase: string|null} }
+   * { user: {id, name}, tokens: {cleaning, driver, purchase, store: string|null} }
    * One token per app: each API only accepts its own.
    */
   function session() {
     var s = readJson(KEYS.session, null);
-    return s && s.user && s.user.id && s.tokens && (s.tokens.cleaning || s.tokens.driver || s.tokens.purchase) ? s : null;
+    return s && s.user && s.user.id && s.tokens && (s.tokens.cleaning || s.tokens.driver || s.tokens.purchase || s.tokens.store) ? s : null;
   }
 
   function setSession(s) { writeJson(KEYS.session, s); }
@@ -137,7 +139,7 @@
   function hasApp(app) { return !!token(app); }
 
   function apps() {
-    return ['driver', 'cleaning', 'purchase'].filter(hasApp);
+    return ['driver', 'cleaning', 'purchase', 'store'].filter(hasApp);
   }
 
   /** Per-install id the sign-in lockout counts against. Kept across sign-outs. Not a secret. */
@@ -604,7 +606,7 @@
     if (!s || state.route.app === 'signin') return modules.app.renderSignIn();
     var r = state.route;
     if (r.app === 'settings') return modules.app.renderSettings();
-    if ((r.app === 'driver' || r.app === 'cleaning' || r.app === 'purchase') && hasApp(r.app) && modules[r.app]) {
+    if (['driver', 'cleaning', 'purchase', 'store'].indexOf(r.app) !== -1 && hasApp(r.app) && modules[r.app]) {
       return modules[r.app].render(r);
     }
     // Home, or an app this person no longer has.
