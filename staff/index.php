@@ -7,6 +7,7 @@
  *             (api/mobile/fleet)
  *   Cleaning  same API, jobs and rules as OPERATION-MOBILE-APP
  *             (api/mobile/ops)
+ *   Purchase  what the buyer bought, cash or ordered (api/mobile/purchase)
  *
  * One PIN signs in to both through api/mobile/staff/signin.php, which hands
  * back a separate token for each app the person may use. Someone with only one
@@ -61,6 +62,7 @@ window.STAFF_CONFIG = <?= json_encode([
     'signinUrl' => $apiRoot . '/staff/signin.php',
     'opsBase' => $apiRoot . '/ops',
     'fleetBase' => $apiRoot . '/fleet',
+    'purchaseBase' => $apiRoot . '/purchase',
     'appKey' => $appKey,
     'version' => $version,
 ], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
@@ -68,6 +70,7 @@ window.STAFF_CONFIG = <?= json_encode([
 <script src="<?= htmlspecialchars($asset('js/core.js')) ?>"></script>
 <script src="<?= htmlspecialchars($asset('js/driver.js')) ?>"></script>
 <script src="<?= htmlspecialchars($asset('js/cleaning.js')) ?>"></script>
+<script src="<?= htmlspecialchars($asset('js/purchase.js')) ?>"></script>
 <script src="<?= htmlspecialchars($asset('js/app.js')) ?>"></script>
 </body>
 </html>

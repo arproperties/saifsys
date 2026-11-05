@@ -3,8 +3,9 @@
  * Switch an employee's access to a company mobile app on or off.
  *
  * One PIN (employee_pin_save.php) signs in to every app; this decides which
- * apps it opens. Today that is the Driver app. Switching it off signs the
- * phone out on its next request — the API re-checks access every time.
+ * apps it opens: the Driver app, and Purchase in the staff app. Switching
+ * one off signs the phone out of it on its next request — the API re-checks
+ * access every time.
  */
 
 declare(strict_types=1);
@@ -40,28 +41,41 @@ if (!$emp) {
 $back = 'employee_view.php?id=' . urlencode((string)$empId) . '#tab-overview';
 $userId = (int)($emp['user_id'] ?? 0);
 $allowed = ($_POST['allowed'] ?? '') === '1';
+$apps = [FLEET_DRIVER_APP => 'Driver app', 'purchase' => 'Purchase'];
+$app = (string)($_POST['app'] ?? FLEET_DRIVER_APP);
+if (!isset($apps[$app])) {
+    header('Location: ' . $back);
+    exit;
+}
+$appName = $apps[$app];
 $actorId = isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null;
 $empLabel = trim((string)$emp['full_name'] . ' (' . (string)($emp['employee_code'] ?: '#' . $empId) . ')');
 
 if (!fleet_tables_ready($conn)) {
     $_SESSION['flash_error'] = 'Vehicle tracking is not set up on this server yet. Run migrations/fleet_tracking.sql.';
 } elseif (!hr_employee_has_login($conn, $userId)) {
-    $_SESSION['flash_error'] = 'Set a mobile app PIN first — it creates the login that Driver access hangs on.';
+    $_SESSION['flash_error'] = 'Set a mobile app PIN first — it creates the login that ' . $appName . ' access hangs on.';
 } else {
-    fleet_app_access_set($conn, $userId, $allowed, $actorId);
+    fleet_app_access_set($conn, $userId, $allowed, $actorId, $app);
     audit_bridge_hr_ops(
         $allowed ? 'app_access_granted' : 'app_access_revoked',
         'user',
         $userId,
-        ($allowed ? 'Turned on' : 'Turned off') . ' Driver app access for ' . $empLabel,
+        ($allowed ? 'Turned on' : 'Turned off') . ' ' . $appName . ' access for ' . $empLabel,
         $emp['company_id'] !== null ? (int)$emp['company_id'] : null,
-        ['employee_id' => $empId, 'user_id' => $userId, 'app' => FLEET_DRIVER_APP, 'allowed' => $allowed],
+        ['employee_id' => $empId, 'user_id' => $userId, 'app' => $app, 'allowed' => $allowed],
         'User #' . $userId . ' — ' . $empLabel,
         $actorId
     );
-    $_SESSION['flash_success'] = $allowed
-        ? 'Driver app turned on for ' . $emp['full_name'] . '. They sign in with their mobile app PIN.'
-        : 'Driver app turned off for ' . $emp['full_name'] . '. Their phone is signed out on its next use.';
+    if ($app === 'purchase') {
+        $_SESSION['flash_success'] = $allowed
+            ? 'Purchase turned on for ' . $emp['full_name'] . '. They see the Purchase button the next time they sign in to the staff app.'
+            : 'Purchase turned off for ' . $emp['full_name'] . '. Their phone is signed out of Purchase on its next use.';
+    } else {
+        $_SESSION['flash_success'] = $allowed
+            ? 'Driver app turned on for ' . $emp['full_name'] . '. They sign in with their mobile app PIN.'
+            : 'Driver app turned off for ' . $emp['full_name'] . '. Their phone is signed out on its next use.';
+    }
 }
 
 header('Location: ' . $back);
