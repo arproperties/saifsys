@@ -245,6 +245,7 @@ if (is_file($asWidget)) { require $asWidget; }
         ['Live Map', 'bi-geo-alt', 'fleet_live', ['fleet_live.php'], true],
         ['Trip History', 'bi-clock-history', 'fleet_history', ['fleet_history.php', 'fleet_trip.php'], true],
         ['Daily Checks', 'bi-clipboard-check', 'fleet_checks', ['fleet_checks.php'], true],
+        ['Usage Report', 'bi-bar-chart-line', 'fleet_usage', ['fleet_usage.php'], true],
         ['Pickup Report', 'bi-card-checklist', 'fleet_pickup_report', ['fleet_pickup_report.php'], fleet_routes_enabled()],
         ['Vehicles', 'bi-truck', 'vehicles', ['vehicles.php', 'vehicle_view.php'], true],
         ['Routes', 'bi-signpost-2', 'fleet_routes', ['fleet_routes.php'], fleet_routes_enabled()],
