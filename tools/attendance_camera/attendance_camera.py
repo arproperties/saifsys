@@ -52,6 +52,7 @@ MODELS = {
 # How often to ask HR -> Cameras whether anything changed. The answer is a few
 # bytes unless something did; then the whole list comes.
 HR_CHECK_SECONDS = 15
+HOLD_SECONDS = 5  # how long a person's matches are compared before the closest is sent
 SAME = "same"
 
 # Cosine similarity. Named differently across OpenCV versions; the value is 0 in all of them.
@@ -78,6 +79,7 @@ def load_config():
         "camera_key": c.get("camera_key"),
         "match_threshold": c.getfloat("match_threshold", 0.40),
         "match_margin": c.getfloat("match_margin", 0.05),
+        "learn_threshold": c.getfloat("learn_threshold", 0.50),
         "resend_seconds": c.getint("resend_seconds", 120),
         "check_every_seconds": c.getfloat("check_every_seconds", 0.5),
     }
@@ -104,7 +106,10 @@ def biggest_face(detector, img):
 
 # faces/ holds photos put on this PC by hand; faces_hr/ the ones HR keeps on the
 # Cameras page (or profile photos), downloaded by sync_hr_faces.
-FACE_FOLDERS = ("faces", "faces_hr")
+# faces_extra/ the more photos HR uploads of a person, downloaded by sync_learned
+# as CODE__<name>.jpg: the face is found in each like in the main photo.
+FACE_FOLDERS = ("faces", "faces_hr", "faces_extra")
+EXTRA = os.path.join(HERE, "faces_extra")
 
 
 def faces_signature():
@@ -115,6 +120,94 @@ def faces_signature():
         if os.path.isdir(folder):
             out += [(sub, e.name, e.stat().st_size, e.stat().st_mtime) for e in os.scandir(folder) if e.is_file()]
     return tuple(sorted(out))
+
+
+# faces_learned/ holds the reference faces HR keeps (Cameras -> People -> Photo):
+# clear matches a camera sent, already cut out and lined up, so no face search.
+# Downloaded by sync_learned as CODE__<name>.jpg; never the HR or profile photo.
+LEARNED = os.path.join(HERE, "faces_learned")
+LEARN_KEEP = 5  # the same as saifsys keeps per person
+# faces_rejected/ the faces HR marked "Not this person" for someone, the same way:
+# a face more like one of these than like the person is not them.
+REJECTED = os.path.join(HERE, "faces_rejected")
+
+
+def learned_signature(folder=LEARNED):
+    return tuple(sorted(os.listdir(folder))) if os.path.isdir(folder) else ()
+
+
+def load_learned(recognizer, folder=LEARNED):
+    """Employee code -> features of the faces in faces_learned/ (or faces_rejected/)."""
+    learned = {}
+    for name in learned_signature(folder):
+        if not name.lower().endswith(".jpg") or "__" not in name:
+            continue
+        img = cv2.imdecode(np.fromfile(os.path.join(folder, name), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is not None and img.shape[:2] == (112, 112):
+            learned.setdefault(name.split("__")[0].upper(), []).append(recognizer.feature(img))
+    return learned
+
+
+def learned_scores(code):
+    """The matches of the reference faces this PC has for code."""
+    out = []
+    for name in learned_signature():
+        if name.upper().startswith(code + "__"):
+            try:
+                out.append(float(name.split("__", 1)[1].split("_")[0]))
+            except ValueError:
+                pass
+    return out
+
+
+def with_learned(known, learned):
+    """Each person's own photos plus their reference faces (only for people with a photo)."""
+    return {code: features + learned.get(code, []) for code, features in known.items()}
+
+
+def is_clear(face):
+    """Big enough and looking at the camera, like HR's Capture asks: fit to keep as a reference."""
+    eye_r, eye_l, nose = face[4:6], face[6:8], face[8:10]
+    eyes = abs(eye_l[0] - eye_r[0])
+    return face[2] >= 70 and eyes > 0 and abs(nose[0] - (eye_l[0] + eye_r[0]) / 2) / eyes <= 0.25
+
+
+def send_learned(cfg, code, score, aligned):
+    """Offer a clear match to saifsys as one of the person's reference faces. Best effort."""
+    ok, jpg = cv2.imencode(".jpg", aligned, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    if not ok:
+        return
+    body = {"learned_face": {"employee_code": code, "score": round(score, 3), "jpeg": base64.b64encode(jpg.tobytes()).decode()}}
+    req = urllib.request.Request(cfg["saifsys_url"] + "/api/attendance_camera.php", data=json.dumps(body).encode(),
+                                 headers={"X-Camera-Key": cfg["camera_key"], "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            if json.loads(r.read().decode() or "{}").get("kept"):
+                log(f"{code}: kept as a reference face (match {score:.2f})")
+    except Exception:
+        pass  # an older saifsys, or offline: the next clear match tries again
+
+
+# Employee code -> best match so far that saifsys keeps (HR's "Best match so far"),
+# from the camera list; a closer match is sent. HR deleting one sets it back to none.
+BEST_SEEN = {}
+
+
+def send_best(cfg, code, score, aligned, best_seen):
+    """Offer the person's closest face so far (any match) for HR to see. Best effort."""
+    ok, jpg = cv2.imencode(".jpg", aligned, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    if not ok:
+        return
+    body = {"best_face": {"employee_code": code, "score": round(score, 3), "jpeg": base64.b64encode(jpg.tobytes()).decode()}}
+    req = urllib.request.Request(cfg["saifsys_url"] + "/api/attendance_camera.php", data=json.dumps(body).encode(),
+                                 headers={"X-Camera-Key": cfg["camera_key"], "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            kept = json.loads(r.read().decode() or "{}").get("best")
+        if kept is not None:
+            best_seen[code] = max(best_seen.get(code, 0.0), float(kept))  # saifsys may have a closer one from before
+    except Exception:
+        best_seen.pop(code, None)  # an older saifsys, or offline: try again with the next match
 
 
 def load_faces(detector, recognizer):
@@ -493,6 +586,15 @@ def fetch_cameras(cfg):
     cfg["list_version"] = body.get("version")
     if body.get("faces") is not None:
         sync_hr_faces(cfg, body["faces"])
+    if body.get("learned") is not None:
+        sync_learned(cfg, body["learned"])
+    if body.get("rejected") is not None:
+        sync_learned(cfg, body["rejected"], REJECTED, "rejected")
+    if body.get("extra") is not None:
+        sync_learned(cfg, body["extra"], EXTRA, "extra")
+    if body.get("best") is not None:
+        BEST_SEEN.clear()
+        BEST_SEEN.update({c.upper(): float(v) for c, v in body["best"].items()})
     people = body.get("people")
     resend = body.get("resend_seconds")
     return ({c["name"]: (c["id"], c["rtsp_url"]) for c in body.get("cameras", [])},
@@ -546,6 +648,36 @@ def sync_hr_faces(cfg, faces):
         json.dump(have, f)
 
 
+def sync_learned(cfg, learned, folder=LEARNED, action="learned"):
+    """Keep faces_learned/ (or faces_rejected/) the same as saifsys: {code: [file names]}."""
+    os.makedirs(folder, exist_ok=True)
+    want = {f"{code.upper()}__{name}": (code, name) for code, names in learned.items() for name in names}
+    for name in learned_signature(folder):
+        if name not in want:
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
+    for local, (code, name) in want.items():
+        path = os.path.join(folder, local)
+        if os.path.exists(path):
+            continue
+        req = urllib.request.Request(
+            cfg["saifsys_url"] + f"/api/attendance_camera.php?action={action}&code=" + urllib.parse.quote(code)
+            + "&name=" + urllib.parse.quote(name),
+            headers={"X-Camera-Key": cfg["camera_key"]},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
+        except Exception as e:
+            log(f"{code}: could not download a {action} face: {e}")
+            continue
+        with open(path + ".tmp", "wb") as f:
+            f.write(data)
+        os.replace(path + ".tmp", path)
+
+
 def use_resend(cfg, seconds):
     """HR -> Cameras -> How often; config.ini's resend_seconds when saifsys does not send it."""
     if seconds and seconds != cfg["resend_seconds"]:
@@ -596,7 +728,11 @@ def main():
         wanted, people, resend = fetched
         log(f"Cameras from HR: {', '.join(wanted) or 'none switched on'}")
         use_resend(cfg, resend)
-    active = only_ticked(known, people)
+    learned_seen = learned_signature()
+    learned = load_learned(recognizer)
+    rejected_seen = learned_signature(REJECTED)
+    rejected = load_learned(recognizer, REJECTED)
+    active = only_ticked(with_learned(known, learned), people)
     if not wanted:
         log("No cameras yet. Add one in HR -> Administration -> Cameras; picked up within 15 seconds.")
     streams = {name: LatestFrame(name, url, cam_id) for name, (cam_id, url) in wanted.items()}
@@ -606,6 +742,11 @@ def main():
     # Shared by every camera: someone walking between rooms is still sent once per resend_seconds.
     last_sent = {}   # code -> time we last told saifsys
     pending = []     # (code, seen_at, cam_id, photo) not yet delivered
+    # A person is held for HOLD_SECONDS from their first match, on every camera,
+    # and only the closest match is sent: when two people both look like them,
+    # the one who looks most like them wins (time and photo).
+    held = {}        # code -> {"until", "score", "seen_at", "cam_id", "photo", "name"}
+    best_seen = BEST_SEEN  # code -> closest match to their own photo so far, for HR's "Best match so far"
 
     while True:
         time.sleep(cfg["check_every_seconds"])
@@ -631,8 +772,16 @@ def main():
                 known = load_faces(detector, recognizer)
                 log(f"Photos changed; loaded {len(known)} employees: {', '.join(sorted(known)) or 'none'}")
                 refresh = True
+            # Reference faces kept or deleted in saifsys.
+            if learned_signature() != learned_seen:
+                learned_seen = learned_signature()
+                learned = load_learned(recognizer)
+                refresh = True
+            if learned_signature(REJECTED) != rejected_seen:
+                rejected_seen = learned_signature(REJECTED)
+                rejected = load_learned(recognizer, REJECTED)
             if refresh:
-                active = only_ticked(known, people)
+                active = only_ticked(with_learned(known, learned), people)
             if latest is not None and latest != {n: (s.cam_id, s.url) for n, s in streams.items()}:
                 for name, s in list(streams.items()):
                     if latest.get(name) != (s.cam_id, s.url):
@@ -666,8 +815,10 @@ def main():
                 continue
 
             now = time.time()
+            best = {}  # code -> (score, face, aligned): in one picture each person is the closest face only
             for face in faces:
-                feature = recognizer.feature(recognizer.alignCrop(frame, face))
+                aligned = recognizer.alignCrop(frame, face)
+                feature = recognizer.feature(aligned)
                 scores = {code: max(recognizer.match(feature, f, FR_COSINE) for f in features)
                           for code, features in active.items() if features}
                 if not scores:
@@ -680,15 +831,42 @@ def main():
                 # With a low threshold two people can both pass; only a clear winner counts.
                 if best_score - runner_up < cfg["match_margin"]:
                     continue
-                if now - last_sent.get(best_code, 0) < cfg["resend_seconds"]:
+                # HR marked a face like this one "Not this person" for them.
+                if any(recognizer.match(feature, f, FR_COSINE) >= best_score for f in rejected.get(best_code, [])):
                     continue
-                last_sent[best_code] = now
-                photo = snapshot(frame, face, f"{stream.name}  {time.strftime('%d %b %H:%M', time.localtime(now))}  match {best_score:.2f}")
-                ok, answer = send(cfg, best_code, now, stream.cam_id, photo)
-                log(f"{stream.name}: saw {best_code} (match {best_score:.2f}) -> {answer}")
-                if not ok:
-                    pending.append((best_code, now, stream.cam_id, photo))
+                if best_code not in best or best_score > best[best_code][0]:
+                    # How alike against their own photo only, not the reference faces: what decides
+                    # if this face is kept as a new one, so references never build on references.
+                    own = max((recognizer.match(feature, f, FR_COSINE) for f in known.get(best_code, [])), default=0.0)
+                    best[best_code] = (best_score, face, aligned, own)
+            for code, (score, face, aligned, own) in best.items():
+                if code not in held:
+                    if now - last_sent.get(code, 0) < cfg["resend_seconds"]:
+                        continue
+                    held[code] = {"until": now + HOLD_SECONDS, "score": -1.0}
+                elif score <= held[code]["score"]:
+                    continue
+                held[code].update(score=score, seen_at=now, cam_id=stream.cam_id, name=stream.name,
+                                  own=own, clear=is_clear(face), aligned=aligned,
+                                  photo=snapshot(frame, face, f"{stream.name}  {time.strftime('%d %b %H:%M', time.localtime(now))}  match {score:.2f}"))
 
+        # Held long enough: send each person's closest match.
+        for code in [c for c, m in held.items() if time.time() >= m["until"]]:
+            m = held.pop(code)
+            last_sent[code] = m["seen_at"]
+            ok, answer = send(cfg, code, m["seen_at"], m["cam_id"], m["photo"])
+            log(f"{m['name']}: saw {code} (match {m['score']:.2f}) -> {answer}")
+            if not ok:
+                pending.append((code, m["seen_at"], m["cam_id"], m["photo"]))
+            # Closer to their own photo than any before: HR's "Best match so far".
+            if m["own"] > best_seen.get(code, 0.0):
+                best_seen[code] = m["own"]
+                threading.Thread(target=send_best, args=(cfg, code, m["own"], m["aligned"], best_seen), daemon=True).start()
+            # A clear, close match becomes a reference face, when it beats one of the 5 kept.
+            if cfg["learn_threshold"] > 0 and m["clear"] and m["own"] >= cfg["learn_threshold"]:
+                kept = learned_scores(code)
+                if len(kept) < LEARN_KEEP or m["own"] > min(kept):
+                    threading.Thread(target=send_learned, args=(cfg, code, m["own"], m["aligned"]), daemon=True).start()
 
 if __name__ == "__main__":
     try:
