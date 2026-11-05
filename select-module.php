@@ -267,6 +267,11 @@ function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
                 if ($mn === MODULE_INVENTORY) {
                     return false;
                 }
+                // Grocery and Barbershop are hidden from the launcher too; their files and
+                // data stay as they are.
+                if ($mn === MODULE_GROCERY || $mn === MODULE_BARBER) {
+                    return false;
+                }
                 return true;
             }));
 
