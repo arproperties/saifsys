@@ -410,3 +410,15 @@ body.viewing { overflow: hidden; }
 .gas-kg { display: flex; align-items: center; gap: 10px; }
 .gas-kg .field { font-size: 28px; font-weight: 700; text-align: center; letter-spacing: .02em; }
 .gas-kg span { font-size: 22px; font-weight: 700; color: var(--text-2); }
+
+/* ---------------------------------------------------------------------------
+   Purchase (js/purchase.js)
+   --------------------------------------------------------------------------- */
+.pur-icon { width: 48px; height: 48px; border-radius: 14px; background: var(--navy-800); color: var(--gold-500); display: grid; place-items: center; flex: none; }
+.pur-nums { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pur-nums label { display: block; }
+.pur-nums .field { margin-top: 4px; font-size: 22px; font-weight: 700; text-align: center; }
+.pur-line .row .field { font-weight: 600; }
+.pur-kv { padding: 8px 0; border-bottom: 1px solid var(--cream-200); }
+.pur-kv:last-child { border-bottom: 0; }
+.pur-kv > span:last-child { white-space: nowrap; font-weight: 700; }

@@ -5036,6 +5036,36 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <div class="stat-meta">Anyone with a PIN can sign in to the Driver app and record vehicle trips.</div>
                                     </div>
                                 </div>
+                                <?php
+                                /* Purchase, in the staff app: records what they buy
+                                   (api/mobile/purchase). Off until switched on here. */
+                                $purchaseOn = $opsPinUserId > 0 && fleet_app_access_has($conn, $opsPinUserId, 'purchase');
+                                ?>
+                                <div class="d-flex flex-wrap align-items-center gap-3 mt-3">
+                                    <div>
+                                        <div class="fw-semibold">Purchase
+                                            <?php if ($purchaseOn): ?>
+                                                <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1">On</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">Off</span>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="stat-meta">The Purchase button in the staff app: they record what they buy, cash at a shop or ordered from a supplier, with a photo of the bill.</div>
+                                    </div>
+                                    <?php if ($opsPinUserId > 0): ?>
+                                    <form method="post" action="employee_app_access_save.php" class="ms-auto m-0">
+                                        <?php csrf_field(); ?>
+                                        <input type="hidden" name="employee_id" value="<?= (int)$emp['id'] ?>">
+                                        <input type="hidden" name="app" value="purchase">
+                                        <input type="hidden" name="allowed" value="<?= $purchaseOn ? '0' : '1' ?>">
+                                        <button class="btn btn-sm <?= $purchaseOn ? 'btn-outline-danger' : 'btn-outline-primary' ?>">
+                                            <i class="bi <?= $purchaseOn ? 'bi-x-circle' : 'bi-cart-check' ?> me-1"></i><?= $purchaseOn ? 'Turn off' : 'Turn on' ?>
+                                        </button>
+                                    </form>
+                                    <?php else: ?>
+                                    <span class="stat-meta ms-auto">Set a PIN first.</span>
+                                    <?php endif; ?>
+                                </div>
                             <?php endif; ?>
 
                             <?php
