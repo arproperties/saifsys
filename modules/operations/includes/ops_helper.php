@@ -221,6 +221,11 @@ function ops_require_access(PDO $conn): void {
     require_operations_supervisor_department($conn);
 }
 
+/** Owner, Admin and HR: they inactivate and activate purchases and store entries, and see the Inactive tabs. */
+function ops_can_inactivate(PDO $conn): bool {
+    return (bool)array_intersect(current_user_roles($conn), ['Owner', 'Admin', 'HR']);
+}
+
 /** Company scope for every query on this module. */
 function ops_company_id(PDO $conn): int {
     $cid = (int)(current_company_id($conn) ?: 0);

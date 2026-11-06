@@ -60,6 +60,8 @@
       itemsCount: 'Count the items',
       addItem: 'Add an item',
       howMany: 'How many',
+      unit: 'Unit',
+      unitFixed: 'This item is counted in this unit. The office can change it.',
       counted: 'Real number',
       here: function (q) { return q + ' in this store'; },
       system: function (q) { return 'The system says ' + q; },
@@ -87,7 +89,7 @@
       search: 'Search an item',
       newTitle: 'New item',
       newName: function (n) { return 'Add "' + n + '" as a new item'; },
-      unit: 'Unit (pcs, box, litre…)',
+      unit: 'Unit (pc, box, litre…)',
       add: 'Add item',
       empty: 'No item with that name.',
       newOnlyIn: 'Only items already in the store can go out. New items are added with Goods in.',
@@ -189,6 +191,17 @@
   }
 
   function unitText(it, q) { return qtyText(q) + (it && it.unit ? ' ' + it.unit : ''); }
+
+  // An item has one unit. Until it has one, the line asks for it (pc unless typed) and saving sets it.
+  var UNITS = ['pc', 'litre', 'box', 'kg', 'bag', 'bucket', 'm'];
+  var DEFAULT_UNIT = 'pc';
+  function unitsList() {
+    return '<datalist id="st-units">' + UNITS.map(function (u) { return '<option value="' + esc(u) + '">'; }).join('') + '</datalist>';
+  }
+  function lineUnit(it, l) {
+    if (it && it.unit) return it.unit;
+    return l.unit === undefined || l.unit === null ? DEFAULT_UNIT : l.unit;
+  }
 
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   function when(stamp) {
@@ -396,7 +409,12 @@
       reason: d.reason || undefined,
       notes: d.notes,
       client_ref: d.ref,
-      lines: d.lines.map(function (l) { return { item_id: l.item_id, qty: num(l.qty) }; }),
+      lines: d.lines.map(function (l) {
+        var it = item(l.item_id);
+        var line = { item_id: l.item_id, qty: num(l.qty) };
+        if (it && !it.unit) line.unit = String(lineUnit(it, l)).trim() || DEFAULT_UNIT;
+        return line;
+      }),
     };
     var req;
     if (d.id) {
@@ -559,7 +577,7 @@
     if (q && !exact) {
       if (d.kind === 'in' || d.kind === 'count') {
         body += '<div class="card info mt-3"><div class="h3">' + esc(T.pick.newName(q)) + '</div>' +
-          '<input class="field mt-2" id="st-pick-unit" type="text" autocomplete="off" maxlength="20" placeholder="' + esc(T.pick.unit) + '" value="' + esc(p.unit) + '">' +
+          '<input class="field mt-2" id="st-pick-unit" type="text" list="st-units" autocomplete="off" maxlength="20" placeholder="' + esc(T.pick.unit) + '" value="' + esc(p.unit) + '">' + unitsList() +
           '<div class="mt-3">' + button(T.pick.add, 'store:new-item', { icon: 'plus', loading: state.busy }) + '</div></div>';
       } else {
         body += '<div class="card info mt-3"><div class="small">' + esc(T.pick.newOnlyIn) + '</div></div>';
@@ -585,12 +603,17 @@
         d.lines.map(function (l, i) {
           var it = item(l.item_id) || { name: '?', unit: null };
           var have = stockOf(it, d.storeId);
+          var unit = lineUnit(it, l);
+          var shown = { unit: String(unit).trim() };
           return '<div class="card" data-key="l' + l.item_id + '"><div class="row"><span class="grow h3">' + esc(it.name) + '</span>' +
             '<button type="button" class="icon-btn" data-action="store:line-del" data-i="' + i + '" aria-label="' + esc(T.step.remove) + '">' + icon('trash') + '</button></div>' +
-            '<div class="row mt-2"><label class="grow"><span class="small muted">' + esc(d.kind === 'count' ? T.step.counted : T.step.howMany) + (it.unit ? ' (' + esc(it.unit) + ')' : '') + '</span>' +
-            '<input class="field st-num" data-qty-item="' + l.item_id + '" data-i="' + i + '" type="text" inputmode="decimal" autocomplete="off" placeholder="0" value="' + esc(l.qty) + '"></label></div>' +
-            '<div class="small secondary mt-2">' + esc(d.kind === 'count' ? T.step.system(unitText(it, have)) : T.step.here(unitText(it, have))) + '</div></div>';
-        }).join('') +
+            '<div class="row mt-2" style="align-items:flex-end"><label class="grow"><span class="small muted">' + esc(d.kind === 'count' ? T.step.counted : T.step.howMany) + '</span>' +
+            '<input class="field st-num" data-qty-item="' + l.item_id + '" data-i="' + i + '" type="text" inputmode="decimal" autocomplete="off" placeholder="0" value="' + esc(l.qty) + '"></label>' +
+            '<label style="width:40%"><span class="small muted">' + esc(T.step.unit) + '</span>' +
+            '<input class="field" data-unit-item="' + l.item_id + '" data-i="' + i + '" type="text" list="st-units" autocomplete="off" maxlength="20" placeholder="' + esc(DEFAULT_UNIT) + '" value="' + esc(unit) + '"' +
+            (it.unit ? ' disabled title="' + esc(T.step.unitFixed) + '"' : '') + '></label></div>' +
+            '<div class="small secondary mt-2">' + esc(d.kind === 'count' ? T.step.system(unitText(shown, have)) : T.step.here(unitText(shown, have))) + '</div></div>';
+        }).join('') + unitsList() +
         '<div class="mt-3">' + button(T.step.addItem, 'store:pick-open', { variant: 'secondary', icon: 'plus' }) + '</div>';
     } else if (d.step === 'from') {
       body = '<div class="qcard"><div class="qicon">' + icon('download', 'huge') + '</div><div class="qtext">' + esc(T.step.from) + '</div></div>' +
@@ -757,7 +780,7 @@
       case 'back': S.back(); break;
       case 'step-back': moveStep(-1); break;
       case 'step-next': moveStep(1); break;
-      case 'pick-open': state.pick = { q: '', unit: '' }; S.render(); window.scrollTo(0, 0); setTimeout(function () { var q = document.getElementById('st-pick-q'); if (q) q.focus(); }, 60); break;
+      case 'pick-open': state.pick = { q: '', unit: DEFAULT_UNIT }; S.render(); window.scrollTo(0, 0); setTimeout(function () { var q = document.getElementById('st-pick-q'); if (q) q.focus(); }, 60); break;
       case 'pick-close': state.pick = null; S.render(); break;
       case 'pick-item': addLine(id); break;
       case 'new-item': {
@@ -868,6 +891,9 @@
     if (t.hasAttribute('data-qty-item')) {
       var l = d.lines[Number(t.getAttribute('data-i'))];
       if (l) l.qty = t.value;
+    } else if (t.hasAttribute('data-unit-item')) {
+      var lu = d.lines[Number(t.getAttribute('data-i'))];
+      if (lu) lu.unit = t.value;
     } else if (t.id === 'st-source') {
       d.source = t.value;
     } else if (t.id === 'st-for') {

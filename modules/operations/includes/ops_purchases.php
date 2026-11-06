@@ -13,6 +13,9 @@
  *
  * The buyer may change or delete his own purchase on the day he made it.
  * After that only the office can, from Operations → Purchases.
+ * Nothing is really deleted: the buyer's Delete makes it inactive ("Tried
+ * deleting on same day") and it leaves his list. Owner / Admin / HR inactivate
+ * and activate in the office (columns: migrations/staff_purchases.sql).
  *
  * "Who" is an array: ['user_id' => int, 'name' => string, 'office' => bool].
  * Every refusal is a PurError whose message is written to be shown as it is.
@@ -33,6 +36,8 @@ const PUR_KINDS = ['cash' => 'Paid cash', 'order' => 'Order'];
 const PUR_STATUSES = ['paid' => 'Paid cash', 'ordered' => 'Waiting to arrive', 'received' => 'Received'];
 const PUR_FILE_KINDS = ['bill' => 'Bill', 'delivery' => 'Delivery note'];
 const PUR_FILE_TYPES = ['jpg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp', 'pdf' => 'application/pdf'];
+const PUR_REASON_MAX = 255;
+const PUR_SAME_DAY_DELETE = 'Tried deleting on same day';
 
 class PurError extends RuntimeException
 {
@@ -177,16 +182,22 @@ function pur_shape_many(PDO $conn, array $rows, ?string $today = null): array
         'created_at' => (string)$p['created_at'],
         'updated_at' => (string)$p['updated_at'],
         'updated_by' => $p['updated_by_name'] !== null ? (string)$p['updated_by_name'] : null,
+        'active' => (int)$p['is_active'] === 1,
+        'inactive' => (int)$p['is_active'] === 1 ? null : [
+            'at' => (string)$p['inactive_at'],
+            'by' => (string)$p['inactive_by_name'],
+            'reason' => (string)$p['inactive_reason'],
+        ],
     ], $rows);
 }
 
-/** One purchase row as the asker may see it: the buyer only his own, the office any. */
+/** One purchase row as the asker may see it: the buyer only his own and active, the office any. */
 function pur_row_for(PDO $conn, array $who, int $id, bool $lock = false): ?array
 {
     $stmt = $conn->prepare(PUR_SELECT . ' WHERE p.id = ?' . ($lock ? ' FOR UPDATE' : ''));
     $stmt->execute([$id]);
     $p = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$p || (empty($who['office']) && (int)$p['user_id'] !== (int)$who['user_id'])) {
+    if (!$p || (empty($who['office']) && ((int)$p['user_id'] !== (int)$who['user_id'] || (int)$p['is_active'] !== 1))) {
         return null;
     }
     return $p;
@@ -201,7 +212,7 @@ function pur_get(PDO $conn, array $who, int $id, ?string $today = null): ?array
 /** The buyer's own, newest first, thirty at a time ($before = the last id he has). */
 function pur_list_mine(PDO $conn, array $who, int $before = 0, ?string $today = null): array
 {
-    $stmt = $conn->prepare(PUR_SELECT . ' WHERE p.user_id = ? AND (? = 0 OR p.id < ?) ORDER BY p.id DESC LIMIT 30');
+    $stmt = $conn->prepare(PUR_SELECT . ' WHERE p.user_id = ? AND p.is_active = 1 AND (? = 0 OR p.id < ?) ORDER BY p.id DESC LIMIT 30');
     $stmt->execute([(int)$who['user_id'], $before, $before]);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
     return ['purchases' => pur_shape_many($conn, $rows, $today), 'more' => count($rows) === 30];
@@ -209,7 +220,8 @@ function pur_list_mine(PDO $conn, array $who, int $before = 0, ?string $today = 
 
 /**
  * The office list: purchases bought between two days, with their total.
- * $f: from, to, supplier (id), person (user id), kind, status, q.
+ * $f: from, to, supplier (id), person (user id), kind, status, q, inactive (true = the Inactive tab).
+ * inactive_count: how many in the range are inactive, for the tab.
  */
 function pur_list_all(PDO $conn, array $f, ?string $today = null): array
 {
@@ -221,6 +233,11 @@ function pur_list_all(PDO $conn, array $f, ?string $today = null): array
     }
     $where = ['p.bought_on BETWEEN ? AND ?'];
     $params = [$from, $to];
+    $count = $conn->prepare('SELECT COUNT(*) FROM pur_purchases p WHERE p.is_active = 0 AND p.bought_on BETWEEN ? AND ?');
+    $count->execute([$from, $to]);
+    $inactiveCount = (int)$count->fetchColumn();
+    $where[] = 'p.is_active = ?';
+    $params[] = empty($f['inactive']) ? 1 : 0;
     if ((int)($f['supplier'] ?? 0) > 0) {
         $where[] = 'p.supplier_id = ?';
         $params[] = (int)$f['supplier'];
@@ -254,6 +271,7 @@ function pur_list_all(PDO $conn, array $f, ?string $today = null): array
         'to' => $to,
         'purchases' => $purchases,
         'total' => pur_money(array_sum(array_column($purchases, 'total'))),
+        'inactive_count' => $inactiveCount,
         'people' => $people,
         'suppliers' => $suppliers,
     ];
@@ -368,6 +386,9 @@ function pur_save(PDO $conn, array $who, int $id, array $input, array $files = [
         }
         if ($p) {
             pur_may_change($who, $p, $today);
+            if ((int)$p['is_active'] !== 1) {
+                throw new PurError('This purchase is inactive. Activate it first to change it.', 409, 'inactive');
+            }
         }
         $supplierId = pur_supplier_for($conn, $input);
         $now = pur_now();
@@ -420,6 +441,9 @@ function pur_mark_received(PDO $conn, array $who, int $id, array $files = [], ?s
     if ($p['status'] === 'received') {
         throw new PurError('This order is already marked received.', 409, 'conflict');
     }
+    if ((int)$p['is_active'] !== 1) {
+        throw new PurError('This purchase is inactive. Activate it first to change it.', 409, 'inactive');
+    }
     $photos = pur_check_files($files);
     if (empty($who['office']) && !$photos) {
         throw new PurError('Take a photo of the delivery note or the invoice.');
@@ -458,23 +482,61 @@ function pur_mark_not_received(PDO $conn, array $who, int $id, ?string $today = 
     return pur_get($conn, $who, (int)$p['id'], $today);
 }
 
+/**
+ * The buyer's Delete on the phone. Nothing is removed: it becomes inactive with
+ * "Tried deleting on same day", leaves his list, and the office keeps it with
+ * its photos. The office inactivates instead (pur_set_active).
+ */
 function pur_delete(PDO $conn, array $who, int $id, ?string $today = null): ?array
 {
     $today = $today ?? pur_today();
+    if (!empty($who['office'])) {
+        throw new PurError('The office does not delete purchases. Inactivate it instead.', 403, 'forbidden');
+    }
     $p = pur_row_for($conn, $who, $id);
     if (!$p) {
         return null;
     }
     pur_may_change($who, $p, $today);
-    $stmt = $conn->prepare('SELECT file_path FROM pur_purchase_files WHERE purchase_id = ?');
-    $stmt->execute([(int)$p['id']]);
-    $paths = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
-    $conn->prepare('DELETE FROM pur_purchases WHERE id = ?')->execute([(int)$p['id']]);
-    foreach ($paths as $rel) {
-        pur_drop_file((string)$rel);
-    }
-    @rmdir(pur_root() . '/uploads/purchases/' . (int)$p['id']);
+    pur_mark_active($conn, $who, (int)$p['id'], false, PUR_SAME_DAY_DELETE);
     return ['deleted' => (int)$p['id']];
+}
+
+/**
+ * Inactivate (with a reason) or activate again — the office, Owner / Admin / HR.
+ * The page checks the role (ops_can_inactivate); this checks the rest.
+ */
+function pur_set_active(PDO $conn, array $who, int $id, bool $active, string $reason = '', ?string $today = null): ?array
+{
+    if (empty($who['office'])) {
+        throw new PurError('Ask the office to change it.', 403, 'forbidden');
+    }
+    $p = pur_row_for($conn, $who, $id);
+    if (!$p) {
+        return null;
+    }
+    if ((int)$p['is_active'] === ($active ? 1 : 0)) {
+        throw new PurError($active ? 'This purchase is already active.' : 'This purchase is already inactive.', 409, 'conflict');
+    }
+    $reason = pur_text($reason, PUR_REASON_MAX);
+    if (!$active && $reason === '') {
+        throw new PurError('Write why it is being made inactive.');
+    }
+    pur_mark_active($conn, $who, (int)$p['id'], $active, $reason);
+    return pur_get($conn, $who, (int)$p['id'], $today);
+}
+
+/** Active: the inactive note is cleared. Inactive: who, when and why are kept. */
+function pur_mark_active(PDO $conn, array $who, int $id, bool $active, string $reason): void
+{
+    if ($active) {
+        $conn->prepare('UPDATE pur_purchases SET is_active = 1, inactive_at = NULL, inactive_by = NULL, inactive_by_name = NULL, inactive_reason = NULL,
+                updated_at = ?, updated_by = ?, updated_by_name = ? WHERE id = ?')
+            ->execute([pur_now(), (int)$who['user_id'] ?: null, (string)$who['name'], $id]);
+        return;
+    }
+    $conn->prepare('UPDATE pur_purchases SET is_active = 0, inactive_at = ?, inactive_by = ?, inactive_by_name = ?, inactive_reason = ? WHERE id = ?')
+        ->execute([pur_now(), (int)$who['user_id'] ?: null, (string)$who['name'], $reason, $id]);
 }
 
 // ---------------------------------------------------------------------------
