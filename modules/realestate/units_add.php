@@ -33,7 +33,7 @@ function re_unit_type_options(PDO $conn): array {
     $fallback = [
         'studio', '1br', '2br', '3br', '4br', 'penthouse', 'commercial',
         'office', 'big_electrical_room', 'pump_room', 'store_room', 'dining_hall', 'big_kitchen',
-        'labour_room', 'labour_bathroom',
+        'labour_room', 'labour_bathroom', 'food_court',
     ];
 
     try {
@@ -71,6 +71,7 @@ function re_unit_type_label(string $type): string {
         'big_kitchen' => 'Big Kitchen',
         'labour_room' => 'Labour Room',
         'labour_bathroom' => 'Labour Bathroom',
+        'food_court' => 'Food Court',
         'labour room' => 'Labour Room',
         'labour bathroom' => 'Labour Bathroom',
     ];
