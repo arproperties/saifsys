@@ -197,6 +197,34 @@ if ($peopleReady) {
         $p['detected_cam'] = $d['camera'] ?? null;
     }
     unset($p);
+
+    // Latest in / out photo: the newest day in the last week with a camera photo,
+    // so HR can mark it "Different person" from the popup (HR role only, like the photos).
+    $lastIds = $canLive ? array_map('intval', array_column($people, 'id')) : [];
+    $lastRows = [];
+    if ($lastIds) {
+        $lastSt = $conn->query("SELECT id, employee_id, work_date, check_in, check_out FROM attendance
+                                 WHERE employee_id IN (" . implode(',', $lastIds) . ")
+                                   AND work_date >= '" . date('Y-m-d', strtotime('-7 days')) . "'
+                                 ORDER BY work_date DESC, id DESC");
+        foreach ($lastSt as $r) {
+            if (isset($lastRows[(int)$r['employee_id']])) {
+                continue;
+            }
+            $ph = hr_camera_photos_for((int)$r['id']);
+            if ($ph['in'] || $ph['out']) {
+                $lastRows[(int)$r['employee_id']] = [
+                    (int)$r['id'], date('j M Y', strtotime($r['work_date'])),
+                    $ph['in'] ? substr((string)$r['check_in'], 0, 5) : null,
+                    $ph['out'] ? substr((string)$r['check_out'], 0, 5) : null,
+                ];
+            }
+        }
+    }
+    foreach ($people as &$p) {
+        $p['last'] = $lastRows[(int)$p['id']] ?? null;
+    }
+    unset($p);
 }
 $faceFlash = $_SESSION['cam_face_flash'] ?? null;
 unset($_SESSION['cam_face_flash']);
@@ -544,7 +572,7 @@ echo hr_ui_page_header(
                     <button type="button" class="btn btn-link p-0 cam-face-btn" data-bs-toggle="modal" data-bs-target="#camFaceModal"
                             data-id="<?= (int)$p['id'] ?>" data-name="<?= h($p['full_name'] . ' (' . $p['employee_code'] . ')') ?>"
                             data-face="<?= h((string)$p['face']) ?>" data-v="<?= (int)$p['face_v'] ?>"
-                            data-learned="<?= h(json_encode($p['learned'])) ?>" data-best="<?= h(json_encode($p['best'])) ?>"
+                            data-learned="<?= h(json_encode($p['learned'])) ?>" data-best="<?= h(json_encode($p['best'])) ?>" data-last="<?= h(json_encode($p['last'] ?? null)) ?>"
                             data-rejected="<?= h(json_encode($p['rejected'])) ?>" data-extra="<?= h(json_encode($p['extra'])) ?>">
                       <?php if ($p['face']): ?>
                         <img src="attendance_camera_face.php?id=<?= (int)$p['id'] ?>&amp;v=<?= (int)$p['face_v'] ?>" alt="" loading="lazy"
@@ -658,6 +686,12 @@ echo hr_ui_page_header(
                       </form>
                     </div>
                   </div>
+                </div>
+                <!-- The latest day's check-in / check-out photo: "Different person" when it is someone else. -->
+                <div id="camLastBox" class="mt-3 pt-3 border-top text-start d-none">
+                  <div class="small mb-1">Latest check-in and check-out photos <span class="text-muted" id="camLastDate"></span></div>
+                  <div id="camLast" class="d-flex flex-wrap gap-3"></div>
+                  <div class="small text-muted mt-1"><i class="bi bi-person-x"></i> Different person: the cameras stop matching that face to them, and the photo is taken off that day.</div>
                 </div>
                 <!-- Reference photos: clear matches the cameras kept for this person, also compared with. -->
                 <div id="camLearnedBox" class="mt-3 pt-3 border-top text-start d-none">
@@ -938,6 +972,30 @@ echo hr_ui_page_header(
             }));
             rlist.appendChild(cell);
           });
+          var last = JSON.parse(b.dataset.last || 'null'), llist = document.getElementById('camLast');
+          llist.textContent = '';
+          if (last) {
+            document.getElementById('camLastDate').textContent = '(' + last[1] + ')';
+            [['in', 'Check-in', last[2]], ['out', 'Check-out', last[3]]].forEach(function (w) {
+              if (!w[2]) return;
+              var cell = document.createElement('div'), pic = document.createElement('img');
+              cell.className = 'text-center small';
+              pic.src = 'attendance_camera_photo.php?id=' + last[0] + '&which=' + w[0] + '&t=' + Date.now();
+              pic.alt = w[1] + ' photo';
+              pic.className = 'rounded border d-block mb-1';
+              pic.style.cssText = 'width:96px;height:96px;object-fit:cover';
+              cell.appendChild(pic);
+              cell.appendChild(document.createTextNode(w[1] + ' ' + w[2] + ' '));
+              cell.appendChild(document.createElement('br'));
+              var rej = button('bi-person-x', 'Different person', 'text-danger', function () {
+                act('attendance_reject', last[0] + ':' + w[0], 'Different person in this ' + w[1].toLowerCase() + ' photo? The cameras will stop matching this face to them, and the photo is taken off that day.');
+              });
+              rej.innerHTML += ' Different person';
+              cell.appendChild(rej);
+              llist.appendChild(cell);
+            });
+          }
+          document.getElementById('camLastBox').classList.toggle('d-none', !last);
           document.getElementById('camRejectedBox').classList.toggle('d-none', !rejected.length);
           document.getElementById('camLearnedBox').classList.toggle('d-none', !learned.length);
           var best = JSON.parse(b.dataset.best || 'null');

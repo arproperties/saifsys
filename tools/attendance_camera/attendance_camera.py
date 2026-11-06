@@ -136,15 +136,25 @@ def learned_signature(folder=LEARNED):
     return tuple(sorted(os.listdir(folder))) if os.path.isdir(folder) else ()
 
 
-def load_learned(recognizer, folder=LEARNED):
-    """Employee code -> features of the faces in faces_learned/ (or faces_rejected/)."""
+def load_learned(recognizer, folder=LEARNED, detector=None):
+    """Employee code -> features of the faces in faces_learned/ (or faces_rejected/).
+
+    These are 112x112 face crops. With a detector, a larger picture counts too
+    (a check-in photo HR marked "Different person"): its face is found first.
+    """
     learned = {}
     for name in learned_signature(folder):
         if not name.lower().endswith(".jpg") or "__" not in name:
             continue
         img = cv2.imdecode(np.fromfile(os.path.join(folder, name), dtype=np.uint8), cv2.IMREAD_COLOR)
-        if img is not None and img.shape[:2] == (112, 112):
-            learned.setdefault(name.split("__")[0].upper(), []).append(recognizer.feature(img))
+        if img is None:
+            continue
+        if img.shape[:2] != (112, 112):
+            face = biggest_face(detector, img) if detector is not None else None
+            if face is None:
+                continue
+            img = recognizer.alignCrop(img, face)
+        learned.setdefault(name.split("__")[0].upper(), []).append(recognizer.feature(img))
     return learned
 
 
@@ -702,6 +712,9 @@ def main():
     det_path, rec_path = ensure_models()
     detector = cv2.FaceDetectorYN.create(det_path, "", (320, 320), 0.8, 0.3, 5000)
     recognizer = cv2.FaceRecognizerSF.create(rec_path, "")
+    # For check-in photos HR marked "Different person": the cropped photo is
+    # known to show a face, which the stricter detector can miss once cropped.
+    photo_detector = cv2.FaceDetectorYN.create(det_path, "", (320, 320), 0.6, 0.3, 5000)
 
     photos_seen = faces_signature()
     known = load_faces(detector, recognizer)
@@ -731,7 +744,7 @@ def main():
     learned_seen = learned_signature()
     learned = load_learned(recognizer)
     rejected_seen = learned_signature(REJECTED)
-    rejected = load_learned(recognizer, REJECTED)
+    rejected = load_learned(recognizer, REJECTED, photo_detector)
     active = only_ticked(with_learned(known, learned), people)
     if not wanted:
         log("No cameras yet. Add one in HR -> Administration -> Cameras; picked up within 15 seconds.")
@@ -779,7 +792,7 @@ def main():
                 refresh = True
             if learned_signature(REJECTED) != rejected_seen:
                 rejected_seen = learned_signature(REJECTED)
-                rejected = load_learned(recognizer, REJECTED)
+                rejected = load_learned(recognizer, REJECTED, photo_detector)
             if refresh:
                 active = only_ticked(with_learned(known, learned), people)
             if latest is not None and latest != {n: (s.cam_id, s.url) for n, s in streams.items()}:
