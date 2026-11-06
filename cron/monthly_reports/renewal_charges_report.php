@@ -89,7 +89,7 @@ if (!$blds) { fwrite(STDERR, "building not found: $buildingName\n"); exit(1); }
 $b = $ALLB ? ['id' => 0, 'company_id' => 0, 'name' => 'All buildings, all companies'] : $blds[0];
 $bIn = implode(',', array_map(fn($x) => (int)$x['id'], $blds));
 
-$nonResidential = "'commercial','office','big_electrical_room','pump_room','store_room','dining_hall','big_kitchen','labour_room','labour_bathroom'";
+$nonResidential = "'commercial','office','big_electrical_room','pump_room','store_room','dining_hall','big_kitchen','labour_room','labour_bathroom','food_court'";
 $leases = $q("
     SELECT l.*, u.unit_number, u.unit_type, bb.name building_name,
            TRIM(CONCAT_WS(' ', t.first_name, t.last_name, t.company_name)) tenant
