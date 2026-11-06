@@ -245,6 +245,7 @@ if (is_file($asWidget)) { require $asWidget; }
         ['Live Map', 'bi-geo-alt', 'fleet_live', ['fleet_live.php'], true],
         ['Trip History', 'bi-clock-history', 'fleet_history', ['fleet_history.php', 'fleet_trip.php'], true],
         ['Daily Checks', 'bi-clipboard-check', 'fleet_checks', ['fleet_checks.php'], true],
+        ['Usage Report', 'bi-bar-chart-line', 'fleet_usage', ['fleet_usage.php'], true],
         ['Pickup Report', 'bi-card-checklist', 'fleet_pickup_report', ['fleet_pickup_report.php'], fleet_routes_enabled()],
         ['Vehicles', 'bi-truck', 'vehicles', ['vehicles.php', 'vehicle_view.php'], true],
         ['Routes', 'bi-signpost-2', 'fleet_routes', ['fleet_routes.php'], fleet_routes_enabled()],
@@ -258,6 +259,14 @@ if (is_file($asWidget)) { require $asWidget; }
           <span class="sicon"><i class="bi <?= h($fleetIcon) ?>"></i></span><span class="slabel"><?= h($fleetLabel) ?></span>
         </a>
       <?php endforeach; ?>
+
+    <div class="nav-sect">Purchases &amp; store</div>
+      <a href="<?= h($opsBase) ?>/purchases.php" class="slink <?= in_array($currentPage, ['purchases.php', 'purchase_view.php'], true) ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-cart-check"></i></span><span class="slabel">Purchases</span>
+      </a>
+      <a href="<?= h($opsBase) ?>/store.php" class="slink <?= in_array($currentPage, ['store.php', 'store_history.php', 'store_entry.php', 'store_setup.php'], true) ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-box-seam"></i></span><span class="slabel">Store</span>
+      </a>
 
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>

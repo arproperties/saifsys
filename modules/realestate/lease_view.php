@@ -18,6 +18,9 @@ require_once __DIR__ . '/includes/lease_payment_schedule_helper.php';
 require_once __DIR__ . '/includes/cheque_lifecycle_helper.php';
 require_once __DIR__ . '/includes/receipt_allocation_engine.php';
 require_once __DIR__ . '/includes/security_deposit_helper.php';
+require_once __DIR__ . '/includes/move_in_historical_helper.php';
+require_once __DIR__ . '/includes/move_in_chain_helper.php';
+require_once __DIR__ . '/includes/re_lease_picker.php';
 
 require_login();
 require_module_access($conn, MODULE_REALESTATE);
@@ -261,6 +264,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['repair_schedule'])) {
         if (!$repairLease) {
             throw new Exception('Lease not found.');
         }
+        // Extras merged into the 1st-fees cheque stay on it: the fees cheque amount includes them.
+        require_once __DIR__ . '/includes/lease_form_extras_helper.php';
+        $repairLease['first_extras_total'] = re_lease_first_extras_total(
+            $conn,
+            (int)$currentCompanyId,
+            (int)$leaseId,
+            !empty($repairLease['add_fees_to_first_installment'])
+        );
         $repairAccountingMode = re_accounting_mode_for_existing_lease($conn, $repairLease);
         if ($repairAccountingMode === 'invoice') {
             $conn->beginTransaction();
@@ -798,7 +809,42 @@ $stmt = $conn->prepare("
 ");
 $stmt->execute([$leaseId]);
 $moveInRecord = $stmt->fetch(PDO::FETCH_ASSOC);
-$hasMoveInCompleted = !empty($moveInRecord);
+// Renewal of the same unit by the same tenant: the first lease's move-in covers it
+$moveInCarried = $moveInRecord ? null : re_move_in_carried_over($conn, (int)$currentCompanyId, (int)$leaseId);
+$hasMoveInCompleted = !empty($moveInRecord) || $moveInCarried !== null;
+
+// "Mark as Moved In": for tenants who moved in before the Move-In module was
+// used. Only when there is no move-in record at all, never for drafts.
+// Which move-in action fits this lease:
+//   renewal of an earlier lease (same tenant + unit) -> Mark as Moved In on the first lease
+//   existing tenancy (started before the move-in process went live) -> Mark as Moved In
+//   new lease -> full Move-In process
+$openMoveIn = $hasMoveInCompleted ? null : re_move_in_open_record($conn, (int)$leaseId);
+$moveInFirstLease = ($hasMoveInCompleted || $openMoveIn) ? null : re_move_in_first_lease($conn, (int)$currentCompanyId, (int)$leaseId);
+$isDraftLease = ($lease['status'] ?? '') === 'draft';
+$isOldLease = !$isDraftLease && re_lease_is_old($conn, $lease);
+// One move-in and one move-out per tenancy, on its newest lease: a lease that
+// was renewed (also by a renewal that is still a draft) shows neither, and a
+// draft renewal waits for activation instead of offering a new Move-In
+$leaseRenewedBy = re_move_out_superseded_by($conn, (int)$currentCompanyId, (int)$leaseId);
+$isDraftRenewal = re_lease_is_draft_renewal($lease);
+// "Renewed by" replaces the move buttons only once this lease has its move-in (or a
+// move-out) done. A renewed lease without one still offers Mark as Moved In, so the
+// tenancy's move-in can be recorded (on its first lease) and its renewals follow it.
+$moveOutDoneSt = $conn->prepare("SELECT COUNT(*) FROM re_move_outs WHERE lease_id = ? AND company_id = ? AND status = 'completed'");
+$moveOutDoneSt->execute([(int)$leaseId, (int)$currentCompanyId]);
+$hasMoveOutDone = (int)$moveOutDoneSt->fetchColumn() > 0;
+$showRenewedBy = $leaseRenewedBy && ($hasMoveInCompleted || $hasMoveOutDone);
+$moveInMode = $showRenewedBy ? 'superseded'
+    : ($hasMoveInCompleted ? 'done'
+    : ($openMoveIn ? 'open'
+    : ($leaseRenewedBy ? ($moveInFirstLease ? 'renewal' : 'old')   // renewed, no move-in yet: never a new Move-In
+    : ($isDraftRenewal ? 'renewal_draft' : ($moveInFirstLease ? 'renewal' : ($isOldLease ? 'old' : 'new'))))));
+$canManageMoveIn = has_role('Owner', $conn) || has_role('Admin', $conn);
+// Not for a lease that has ended (expired / terminated)
+$leaseEnded = in_array($lease['status'] ?? '', ['expired', 'terminated'], true);
+$canMarkMovedIn = in_array($moveInMode, ['renewal', 'old'], true) && !$leaseEnded && $canManageMoveIn && re_move_in_historical_ready($conn);
+$markLease = $moveInMode === 'renewal' ? $moveInFirstLease : $lease;
 
 // Get move-in/out operations (for display in history section)
 $stmt = $conn->prepare("
@@ -911,7 +957,17 @@ foreach ($installments as &$inst) {
 }
 unset($inst);
 
-$scheduleCompareTotals = lease_compute_totals($lease);
+// The 1st-fees cheque also carries the extras merged into it; without them a Fees cheque
+// holding parking no longer matches the fees and is counted as an extra rent row.
+require_once __DIR__ . '/includes/lease_form_extras_helper.php';
+$leaseWithFirstExtras = $lease;
+$leaseWithFirstExtras['first_extras_total'] = re_lease_first_extras_total(
+    $conn,
+    (int)$currentCompanyId,
+    (int)$leaseId,
+    !empty($lease['add_fees_to_first_installment'])
+);
+$scheduleCompareTotals = lease_compute_totals($leaseWithFirstExtras);
 $scheduleCompareFees = (float)($scheduleCompareTotals['to_first'] ?? 0);
 $scheduledPaymentTotal = round(array_sum(array_map(static function ($row) {
     if (in_array((string)($row['status'] ?? ''), ['cancelled', 'waived'], true)) {
@@ -1047,6 +1103,28 @@ if (($leaseDistribution['store'] ?? '') === 'first'
 if (($lease['vat_distribution_type'] ?? '') === 'first_installment' && (float)($lease['total_vat_amount'] ?? 0) > 0) {
     $firstPaymentExtras[] = ['label' => $leaseExtraLabels['vat'], 'amount' => (float)$lease['total_vat_amount']];
 }
+// Extra Services merged or split into a cheque (lease form, Billing, Renewal), by cheque.
+$mergedExtrasByInstallment = [];
+try {
+    $mergedExtrasStmt = $conn->prepare("
+        SELECT bi.installment_id, sc.charge_name, bi.total_amount, bi.tax_amount
+        FROM re_billing_items bi
+        JOIN re_service_charges sc ON sc.id = bi.service_charge_id AND sc.company_id = bi.company_id
+        WHERE bi.company_id = ? AND bi.lease_id = ? AND bi.installment_id IS NOT NULL
+          AND bi.item_type = 'service_charge' AND bi.status <> 'waived'
+          AND sc.is_active = 1 AND sc.apply_mode IN ('merge_first_installment', 'split_all_installments')
+        ORDER BY bi.id ASC
+    ");
+    $mergedExtrasStmt->execute([$currentCompanyId, $leaseId]);
+    foreach ($mergedExtrasStmt->fetchAll(PDO::FETCH_ASSOC) as $mergedExtra) {
+        $mergedExtrasByInstallment[(int)$mergedExtra['installment_id']][] = [
+            'label' => $mergedExtra['charge_name'] . ((float)$mergedExtra['tax_amount'] > 0 ? ' (incl. VAT)' : ''),
+            'amount' => (float)$mergedExtra['total_amount'],
+        ];
+    }
+} catch (Throwable $e) {
+    $mergedExtrasByInstallment = [];
+}
 $splitPaymentExtras = [];
 $installmentCountForSplit = max(1, (int)($lease['number_of_installments'] ?? 12));
 foreach ([
@@ -1071,7 +1149,7 @@ if (($leaseDistribution['store'] ?? '') === 'split' && !empty($lease['has_additi
 }
 // Total fees routed to the 1st installment / combined-fees cheque — from the ONE engine formula.
 $isRenewalLease = !empty($lease['is_renewal_lease']);
-$leaseTotals    = lease_compute_totals($lease);
+$leaseTotals    = lease_compute_totals($leaseWithFirstExtras);
 $totalFees      = (float)$leaseTotals['to_first'];
 
 // Identify Fees Installment (if checkbox was unchecked and fees exist)
@@ -1149,7 +1227,8 @@ try {
     $serviceStmt = $conn->prepare("
         SELECT bi.*, sc.charge_name AS service_name, sc.is_active AS service_active,
                sc.is_recurring, sc.recurrence_type,
-               sc.lifecycle_status, sc.contracted_amount, sc.vat_treatment, sc.vat_rate
+               sc.lifecycle_status, sc.contracted_amount, sc.vat_treatment, sc.vat_rate,
+               sc.apply_mode
         FROM re_billing_items bi
         LEFT JOIN re_service_charges sc ON sc.id = bi.service_charge_id
         WHERE bi.lease_id = ?
@@ -1521,14 +1600,58 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <i class="bi bi-trash3"></i> Delete Lease
                     </button>
                 <?php endif; ?>
-                <?php if (!$hasMoveInCompleted): ?>
-                    <a href="move_in_add.php?lease_id=<?= $leaseId ?>" class="btn btn-primary">
-                        <i class="bi bi-box-arrow-in-right"></i> Move-In
+                <?php if ($moveInCarried): ?>
+                    <a href="move_in_view.php?id=<?= (int)$moveInCarried['move_in_id'] ?>" class="btn btn-outline-success"
+                       title="Same tenant and unit: the move-in of lease <?= h($moveInCarried['lease_number'] ?: ('#' . $moveInCarried['lease_id'])) ?> covers this renewal">
+                        <i class="bi bi-arrow-repeat"></i> Moved in under <?= h($moveInCarried['lease_number'] ?: ('lease #' . $moveInCarried['lease_id'])) ?>
                     </a>
+                <?php endif; ?>
+                <?php if ($moveInMode === 'superseded'): ?>
+                    <a href="lease_view.php?id=<?= (int)$leaseRenewedBy['id'] ?>" class="btn btn-outline-secondary"
+                       title="This lease was renewed. Move-in and move-out of the tenancy are handled on the current lease.">
+                        <i class="bi bi-arrow-repeat"></i> Renewed by <?= h($leaseRenewedBy['lease_number'] ?: ('#' . $leaseRenewedBy['id'])) ?><?= ($leaseRenewedBy['status'] ?? '') === 'draft' ? ' (draft)' : '' ?>
+                    </a>
+                <?php elseif ($moveInMode === 'renewal_draft'): ?>
+                    <button type="button" class="btn btn-outline-secondary" disabled
+                            title="A renewal does not need a new move-in. Activate this lease first; then Mark as Moved In records the tenancy's move-in if it has none.">
+                        <i class="bi bi-check2-square"></i> Mark as Moved In · activate the lease first
+                    </button>
+                <?php elseif (!$hasMoveInCompleted): ?>
+                    <?php if ($moveInMode === 'open'): ?>
+                        <a href="move_in_view.php?id=<?= (int)$openMoveIn['id'] ?>" class="btn btn-primary">
+                            <i class="bi bi-box-arrow-in-right"></i> Open Move-In
+                        </a>
+                    <?php elseif ($moveInMode === 'new'): ?>
+                        <a href="move_in_add.php?lease_id=<?= $leaseId ?>" class="btn btn-primary">
+                            <i class="bi bi-box-arrow-in-right"></i> Move-In
+                        </a>
+                    <?php elseif ($canMarkMovedIn): ?>
+                        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#markMovedInModal"
+                                title="<?= $moveInMode === 'renewal' ? 'Renewal: record the move-in on the first lease of this tenancy' : 'Existing tenancy: record the move-in without the checklist' ?>">
+                            <i class="bi bi-check2-square"></i> Mark as Moved In
+                        </button>
+                    <?php elseif (!$leaseEnded): ?>
+                        <button type="button" class="btn btn-outline-secondary" disabled
+                                title="<?= $canManageMoveIn ? 'Run migrations/add_re_move_ins_is_historical.sql first' : 'Owner or Admin can mark this lease as moved in' ?>">
+                            <i class="bi bi-check2-square"></i> Mark as Moved In
+                        </button>
+                    <?php endif; ?>
                 <?php else: ?>
-                    <a href="move_out_add.php?lease_id=<?= $leaseId ?>" class="btn btn-warning">
-                        <i class="bi bi-box-arrow-right"></i> Move-Out
-                    </a>
+                    <?php if (($lease['status'] ?? '') === 'draft'): ?>
+                        <button type="button" class="btn btn-warning"
+                                onclick="showDraftLeasePopup(<?= h(json_encode((string)($lease['lease_number'] ?: ('L-' . $lease['id'])))) ?>, <?= (int)$leaseId ?>)">
+                            <i class="bi bi-box-arrow-right"></i> Move-Out
+                        </button>
+                    <?php elseif ($moveOutSupersededBy = re_move_out_superseded_by($conn, (int)$currentCompanyId, (int)$leaseId)): ?>
+                        <a href="lease_view.php?id=<?= (int)$moveOutSupersededBy['id'] ?>" class="btn btn-outline-secondary"
+                           title="Renewed: the move-out is done on the current lease of this tenancy">
+                            <i class="bi bi-box-arrow-right"></i> Move-Out on <?= h($moveOutSupersededBy['lease_number'] ?: ('#' . $moveOutSupersededBy['id'])) ?>
+                        </a>
+                    <?php else: ?>
+                        <a href="move_out_add.php?lease_id=<?= $leaseId ?>" class="btn btn-warning">
+                            <i class="bi bi-box-arrow-right"></i> Move-Out
+                        </a>
+                    <?php endif; ?>
                 <?php endif; ?>
                 <?php if ($accountingMode === 'invoice'): ?>
                     <a href="accounting/receipt_multi_cheque.php?lease_id=<?= $leaseId ?>" class="btn btn-success">
@@ -2092,6 +2215,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 } elseif ($instType === '' || $instType === 'rent') {
                                     $amountDetails = $splitPaymentExtras;
                                 }
+                                foreach ($mergedExtrasByInstallment[(int)$inst['id']] ?? [] as $mergedDetail) {
+                                    $amountDetails[] = $mergedDetail;
+                                }
                                 // Cheque No.: for a cheque row the cheque number entered on the
                                 // lease form is the identifier; reference_number is only a fallback. A stored
                                 // system placeholder (CHQ-<lease>-<n>) never shadows a real number.
@@ -2389,6 +2515,59 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-danger"><i class="bi bi-trash3"></i> Delete permanently</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+<?php endif; ?>
+
+<?php if (($lease['status'] ?? '') === 'draft') echo re_lease_draft_popup(); ?>
+
+<?php if ($canMarkMovedIn): ?>
+        <div class="modal fade" id="markMovedInModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog">
+                <form method="post" action="move_in_mark_historical.php" class="modal-content">
+                    <?php csrf_field(); ?>
+                    <input type="hidden" name="lease_id" value="<?= (int)$leaseId ?>">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-check2-square"></i> Mark as Moved In</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <?php if ($moveInMode === 'renewal'): ?>
+                            <div class="alert alert-info small">
+                                <i class="bi bi-arrow-repeat"></i> This lease renews the tenancy that started with lease
+                                <strong><?= h($moveInFirstLease['lease_number'] ?: ('#' . $moveInFirstLease['id'])) ?></strong>
+                                (same tenant and unit). The move-in is recorded on <strong>that first lease</strong> and covers this renewal and later ones.
+                            </div>
+                        <?php endif; ?>
+                        <div class="alert alert-warning small">
+                            Use this only for a tenant who <strong>already moved in</strong> before the Move-In module was used.
+                            It records the move-in as completed. <strong>No checklist, inspection or meter readings</strong> will be recorded,
+                            so there is nothing to compare against at move-out.
+                        </div>
+                        <p class="mb-3"><?= $moveInMode === 'renewal' ? 'Recorded on lease' : 'Lease' ?> <strong><?= h($markLease['lease_number'] ?: ('L-' . $markLease['id'])) ?></strong>
+                            <span class="badge bg-secondary"><?= h(ucwords(str_replace('_', ' ', (string)$markLease['status']))) ?></span></p>
+                        <div class="mb-3">
+                            <label class="form-label">Move-in date <span class="text-danger">*</span></label>
+                            <input type="date" name="move_in_date" class="form-control" required max="<?= date('Y-m-d') ?>"
+                                   value="<?= h(min(date('Y-m-d'), re_move_in_historical_default_date($markLease))) ?>">
+                            <div class="form-text">Taken from the <?= $moveInMode === 'renewal' ? 'first lease\'s' : 'lease' ?> move-in date, or its start date. Change it if needed.</div>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Reason <span class="text-danger">*</span></label>
+                            <textarea name="reason" class="form-control" rows="2" required maxlength="500"
+                                      placeholder="e.g. Tenant moved in before system go-live"></textarea>
+                        </div>
+                        <?php if (($lease['status'] ?? '') === 'active'): ?>
+                            <div class="form-text">The unit will be set to <strong>Occupied</strong>.</div>
+                        <?php else: ?>
+                            <div class="form-text">The lease is not active, so the unit status will not be changed.</div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary"><i class="bi bi-check2"></i> Confirm moved in</button>
                     </div>
                 </form>
             </div>
@@ -2723,7 +2902,10 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     <td><span class="badge bg-<?= $svcBadge ?>"><?= ucfirst($svcStatus) ?></span></td>
                                     <?php if ($accountingMode !== 'invoice'): ?>
                                     <td>
-                                        <?php if ((float)$svcItem['outstanding_amount'] > 0 && $svcStatus !== 'waived'): ?>
+                                        <?php if (!empty($svcItem['installment_id']) && in_array((string)($svcItem['apply_mode'] ?? ''), ['merge_first_installment', 'split_all_installments'], true)): ?>
+                                            <?php // Merged into a cheque: collected with that cheque, never on its own. ?>
+                                            <small class="text-muted">Paid with the cheque</small>
+                                        <?php elseif ((float)$svcItem['outstanding_amount'] > 0 && $svcStatus !== 'waived'): ?>
                                             <a href="payment_add.php?lease_id=<?= (int)$leaseId ?>&billing_item_id=<?= (int)$svcItem['id'] ?>&collect_balance=1" class="btn btn-sm btn-warning">
                                                 Collect
                                             </a>
@@ -3597,7 +3779,7 @@ function openEditPenalty(id, currentAmount) {
         <?php endif; ?>
 
         <!-- Documents Section -->
-        <div data-lv-tab="documents">
+        <div data-lv-tab="documents" id="lease-documents">
         <?php
         require_once __DIR__ . '/includes/document_manager.php';
         render_document_manager('lease', $leaseId, $currentCompanyId);

@@ -82,16 +82,60 @@ try {
                     $errors[] = $files['name'][$i] . ': ' . $res['error'];
                 }
             }
+            // "Photos taken" is ticked once a photo is saved
+            $ticked = $saved > 0 ? ars_move_inspection_sync_photo_items($conn, $inspectionId, $userId) : 0;
             // Success only when a file was really saved.
             echo json_encode([
                 'success' => $saved > 0,
                 'saved' => $saved,
+                'photo_item_ticked' => $ticked > 0,
                 'error' => $errors ? implode(' ', $errors) : null,
             ]);
             break;
 
         case 'delete_photo':
             echo json_encode(ars_move_inspection_photo_delete($conn, $inspection, (int)($_POST['photo_id'] ?? 0)));
+            break;
+
+        // Video: init -> video_chunk (in order) -> video_finish; video_cancel drops an unfinished upload
+        case 'video_init':
+            echo json_encode(ars_move_inspection_video_init(
+                $conn,
+                $inspection,
+                (string)($_POST['name'] ?? ''),
+                (int)($_POST['size'] ?? 0),
+                (string)($_POST['caption'] ?? ''),
+                $userId
+            ));
+            break;
+
+        case 'video_chunk':
+            echo json_encode(ars_move_inspection_video_chunk(
+                $inspection,
+                (string)($_POST['token'] ?? ''),
+                (int)($_POST['offset'] ?? -1),
+                $_FILES['chunk'] ?? [],
+                $userId
+            ));
+            break;
+
+        case 'video_finish':
+            $res = ars_move_inspection_video_finish($conn, $inspection, (string)($_POST['token'] ?? ''), $userId);
+            // "Photos/videos taken" is ticked once a video is saved
+            $res['photo_item_ticked'] = $res['success'] && ars_move_inspection_sync_photo_items($conn, $inspectionId, $userId) > 0;
+            echo json_encode($res);
+            break;
+
+        case 'video_cancel':
+            $token = (string)($_POST['token'] ?? '');
+            if (ars_move_inspection_video_session($inspection, $token, $userId)[0]) {
+                ars_move_inspection_video_discard($token);
+            }
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'delete_video':
+            echo json_encode(ars_move_inspection_video_delete($conn, $inspection, (int)($_POST['video_id'] ?? 0)));
             break;
 
         case 'complete':

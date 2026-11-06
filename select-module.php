@@ -81,7 +81,7 @@ $modulesWithDeptsCount = count($modulesWithDepts);
 // anyone with a single module. Hold them here until they have checked in.
 require_once __DIR__ . '/includes/attendance_self.php';
 $asMustCheckIn = false;
-if (attendance_self_enabled() && attendance_self_blocking()) {
+if (attendance_self_enabled() && attendance_self_web_visible() && attendance_self_blocking()) {
     $asGateState = attendance_self_state($conn);
     $asMustCheckIn = in_array($asGateState['stage'], ['check_in', 'close_previous'], true);
 }
@@ -265,6 +265,11 @@ function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
                 // Files stay in place: Grocery POS, purchasing and cross-module material
                 // requests still reach /modules/inventory/ through their own links.
                 if ($mn === MODULE_INVENTORY) {
+                    return false;
+                }
+                // Grocery and Barbershop are hidden from the launcher too; their files and
+                // data stay as they are.
+                if ($mn === MODULE_GROCERY || $mn === MODULE_BARBER) {
                     return false;
                 }
                 return true;

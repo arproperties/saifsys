@@ -369,7 +369,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
       // Cashback is kept apart from net: WPS still pays the whole net.
       $cashback = round(max(0.0, n($cashback_in[$eid] ?? 0)), 2);
       // Checked with the toggle off too: a hidden amount must still fit if it is switched on later.
-      if ($cashback > $net + 0.005) {
+      // Zero cashback never blocks; a negative net is the WPS guard's job (Override can lift it).
+      if ($cashback > 0.005 && $cashback > $net + 0.005) {
         throw new RuntimeException($e['full_name'] . ' cashback (' . number_format($cashback, 2) . ') is more than net pay (' . number_format($net, 2) . ').'
           . ($showCashback ? '' : ' Turn on Show cashback to change it.'));
       }
@@ -1298,7 +1299,7 @@ echo hr_ui_page_header(
       const cashback = num(input.value);
       if (cashback < 0) {
         issues.push(a.name + ' cashback cannot be negative.');
-      } else if (cashback > a.net + 0.005) {
+      } else if (cashback > 0.005 && cashback > a.net + 0.005) {
         issues.push(a.name + ' cashback (' + fmt2(cashback) + ') is more than net pay (' + fmt2(a.net) + ').' + hint);
       }
     });

@@ -17,6 +17,7 @@ require_once __DIR__ . '/includes/lease_schedule_engine.php';
 require_once __DIR__ . '/includes/accounting_mode_helper.php';
 require_once __DIR__ . '/includes/lease_payment_schedule_helper.php';
 require_once __DIR__ . '/includes/invoice_engine.php';
+require_once __DIR__ . '/includes/lease_form_extras_helper.php';
 
 /**
  * Store the Contract Amount (rent for the whole lease period) and the Annual
@@ -388,6 +389,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $totalFeesToFirst += $totalVatStored;
     }
     // separate_payment: VAT row is injected into $separateFeeList below (new leases only)
+
+    // Extra services paid upfront (Additional Parking, Storage, Pest Control & Cleaning) ride
+    // with the 1st-installment fees, VAT included. So do extras merged into that cheque from
+    // Billing / Renewal. Extras on other cheques stay there; all of them count in Expected.
+    $leaseExtrasReady = re_lease_form_extras_ready($conn);
+    $leaseExtrasStored = $leaseId ? re_lease_form_extras_load($conn, $currentCompanyId, (int)$leaseId) : [];
+    $leaseExtrasPosted = $leaseExtrasReady
+        ? re_lease_form_extras_from_post($_POST, $leaseExtrasStored, re_lease_form_extras_vat_rate($conn))
+        : ['items' => [], 'total' => 0.0];
+    $leaseMergedExtras = ['first_total' => 0.0, 'first_items' => [], 'by_installment' => [], 'other_total' => 0.0];
+    if ($leaseId) {
+        $affStmt = $conn->prepare("SELECT add_fees_to_first_installment FROM re_leases WHERE id = ? AND company_id = ? LIMIT 1");
+        $affStmt->execute([$leaseId, $currentCompanyId]);
+        $storedAddFeesToFirst = !empty($affStmt->fetchColumn());
+        $leaseMergedExtras = re_lease_merged_extras($conn, $currentCompanyId, (int)$leaseId, $storedAddFeesToFirst, false, true);
+
+        $newExtraAdded = false;
+        foreach ($leaseExtrasPosted['items'] as $extraKey => $extraItem) {
+            if (empty($leaseExtrasStored[$extraKey]) && (float)$extraItem['gross'] > 0) {
+                $newExtraAdded = true;
+            }
+        }
+        $firstFeesInst = re_lease_first_fees_installment($conn, (int)$leaseId, $storedAddFeesToFirst);
+        if (!$error && $newExtraAdded && $firstFeesInst
+            && isset(lease_locked_installment_ids($conn, (int)$leaseId, (int)$currentCompanyId)[(int)$firstFeesInst['id']])) {
+            $error = 'The 1st cheque is already collected, so extra services cannot be added to it here. Add them from Billing / Extra Services.';
+        }
+    }
+    $firstExtrasTotal = round($leaseExtrasPosted['total'] + $leaseMergedExtras['first_total'], 2);
+    $totalFeesToFirst += $firstExtrasTotal;
     
     // Helper function to handle file uploads
     function handleFileUpload($fileKey, $uploadDir, $allowedTypes = ['png', 'jpg', 'jpeg', 'pdf']) {
@@ -489,6 +520,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'vat_applicable_on_extra_charges' => $vatApplicableOnExtraCharges ? 1 : 0,
         'lease_vat_rate' => $leaseVatRate,
     ]);
+    // Extra services carried by the cheques (lease form + Billing / Renewal), VAT included.
+    $expectedScheduleBreakdown['extra_services'] = round($firstExtrasTotal + $leaseMergedExtras['other_total'], 2);
+    $expectedScheduleBreakdown['total_expected'] = round(
+        (float)$expectedScheduleBreakdown['total_expected'] + $expectedScheduleBreakdown['extra_services'],
+        2
+    );
     $postedScheduleRows = (!empty($_POST['cheques']) && is_array($_POST['cheques'])) ? $_POST['cheques'] : [];
     $postedScheduleTotal = $postedScheduleRows
         ? re_payment_schedule_sum_posted_rows($postedScheduleRows)
@@ -602,6 +639,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 // Sync re_lease_units for this lease
+                // Units on the lease before this save (to vacate the ones taken off)
+                $unitsBefore = function_exists('re_lease_unit_ids') ? re_lease_unit_ids($conn, (int)$leaseId) : [];
                 if (!empty($multiUnits)) {
                     // Delete existing unit rows (re-insert fresh)
                     $conn->prepare("DELETE FROM re_lease_units WHERE lease_id = ?")->execute([$leaseId]);
@@ -618,11 +657,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                 } else {
-                    // Single-unit lease: ensure re_lease_units has at least one row
+                    // Single-unit lease: only its unit stays linked (a lease switched from
+                    // Multiple Units to Single Unit drops the other units)
+                    $conn->prepare("DELETE FROM re_lease_units WHERE lease_id = ? AND unit_id <> ?")->execute([$leaseId, $unitId]);
                     $conn->prepare("
                         INSERT IGNORE INTO re_lease_units (company_id, lease_id, unit_id, annual_rent, sort_order)
                         VALUES (?, ?, ?, ?, 0)
                     ")->execute([$currentCompanyId, $leaseId, $unitId, $annualRent]);
+                    $conn->prepare("UPDATE re_lease_units SET annual_rent = ?, sort_order = 0 WHERE lease_id = ? AND unit_id = ?")
+                        ->execute([$annualRent, $leaseId, $unitId]);
+                }
+                // A unit taken off this lease is vacant again, unless another active lease holds it
+                $unitsNow = function_exists('re_lease_unit_ids') ? re_lease_unit_ids($conn, (int)$leaseId) : [];
+                $heldElsewhere = $conn->prepare("
+                    SELECT COUNT(*) FROM re_leases l2
+                    LEFT JOIN re_lease_units lu2 ON lu2.lease_id = l2.id
+                    WHERE l2.company_id = ? AND l2.id <> ? AND l2.status IN ('active', 'has_legal_case')
+                      AND " . re_lease_not_deleted_sql($conn, 'l2') . "
+                      AND (l2.unit_id = ? OR lu2.unit_id = ?)
+                ");
+                foreach (array_diff($unitsBefore, $unitsNow) as $freedUnit) {
+                    $heldElsewhere->execute([$currentCompanyId, $leaseId, $freedUnit, $freedUnit]);
+                    if ((int)$heldElsewhere->fetchColumn() === 0) {
+                        $conn->prepare("UPDATE re_units SET status = 'vacant' WHERE id = ? AND company_id = ? AND status = 'occupied'")
+                            ->execute([$freedUnit, $currentCompanyId]);
+                    }
+                }
+                if (array_diff($unitsBefore, $unitsNow)) {
+                    re_lease_lifecycle_audit('units_changed', (int)$leaseId, ['unit_ids' => array_values($unitsBefore)], ['unit_ids' => array_values($unitsNow)],
+                        'Units removed from the lease while editing: unit id(s) ' . implode(', ', array_diff($unitsBefore, $unitsNow)) . '.');
                 }
 
                 // Handle Fees Installment for existing leases (use same fees-to-first as computed above)
@@ -767,7 +830,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         
                         // Only remove if unpaid (safe to modify)
                         if (!$feesInstPaid) {
-                            // Delete the Fees Installment
+                            // Delete the Fees Installment and its cheque rows (a cheque left behind
+                            // shows as a pending cheque with no installment).
+                            $conn->prepare("DELETE FROM re_post_dated_cheques WHERE lease_id = ? AND installment_id = ?")
+                                 ->execute([$leaseId, $feesInstallmentId]);
+                            $conn->prepare("DELETE FROM re_lease_cheques WHERE lease_id = ? AND installment_id = ?")
+                                 ->execute([$leaseId, $feesInstallmentId]);
                             $stmt = $conn->prepare("DELETE FROM re_lease_installments WHERE id = ?");
                             $stmt->execute([$feesInstallmentId]);
                             
@@ -900,6 +968,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'sep_commission_fees' => $sepCommissionFees ? 1 : 0,
                         'vat_distribution_type' => $vatDistributionType,
                         'total_vat_amount' => $totalVatStored,
+                        'first_extras_total' => $firstExtrasTotal,
                     ];
                     lease_fix_mistagged_combined_fees_rows($conn, (int)$leaseId, (int)$currentCompanyId, (float)$totalFees, $lockedInstIds);
                     lease_ensure_combined_fees_installment($conn, (int)$leaseId, (int)$currentCompanyId, $leaseRowForSchedule, $lockedInstIds);
@@ -1821,6 +1890,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $success = "Lease created successfully";
             }
 
+            // Extra services: charges + bills on the 1st-fees cheque (amounts are already in the schedule).
+            if ($leaseExtrasReady) {
+                re_lease_form_extras_sync(
+                    $conn,
+                    (int)$currentCompanyId,
+                    (int)$leaseId,
+                    $leaseExtrasPosted['items'],
+                    array_column($leaseMergedExtras['first_items'], 'bill_id'),
+                    (bool)$addFeesToFirstInstallment,
+                    [
+                        'start_date' => $startDate,
+                        'end_date' => $endDate,
+                        'payment_method' => $paymentMethod,
+                        'user_id' => $userId,
+                    ]
+                );
+                // Invoice Mode obligations for these bills are regenerated just below.
+            }
+
             if (!empty($scheduleValidation['requires_approval']) && abs((float)$scheduleValidation['difference']) > 0.02) {
                 re_payment_schedule_log_mismatch_approval(
                     $conn,
@@ -1999,6 +2087,20 @@ if ($leaseId) {
     ");
     $stmt->execute([$leaseId]);
     $allInstallments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+// Extra services paid with the 1st installment (see includes/lease_form_extras_helper.php).
+$leaseExtrasReadyView = re_lease_form_extras_ready($conn);
+$leaseExtrasVatRateView = re_lease_form_extras_vat_rate($conn);
+$leaseExtrasStoredView = $lease ? re_lease_form_extras_load($conn, $currentCompanyId, (int)$leaseId) : [];
+$leaseMergedExtrasView = $lease
+    ? re_lease_merged_extras($conn, $currentCompanyId, (int)$leaseId, !empty($lease['add_fees_to_first_installment']), false, true)
+    : ['first_total' => 0.0, 'first_items' => [], 'by_installment' => [], 'other_total' => 0.0];
+$leaseFirstFeesLockedView = false;
+if ($lease) {
+    $firstFeesInstView = re_lease_first_fees_installment($conn, (int)$leaseId, !empty($lease['add_fees_to_first_installment']));
+    $leaseFirstFeesLockedView = $firstFeesInstView
+        && isset(lease_locked_installment_ids($conn, (int)$leaseId, (int)$currentCompanyId)[(int)$firstFeesInstView['id']]);
 }
 
 $displayAccountingMode = $lease
@@ -2381,17 +2483,85 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <label class="form-label">Commission Fees (AED)</label>
                             <input type="number" step="0.01" class="form-control" name="commission_fees" id="commissionFees" value="<?= $lease ? ($lease['commission_fees'] ?? 0) : '0' ?>">
                         </div>
+                        <?php if (!$leaseExtrasReadyView): ?>
                         <div class="col-md-4 mb-3">
                             <div class="alert alert-light border mb-0 h-100">
                                 <strong>Extra services moved.</strong><br>
                                 <small>AMC, cleaning, pest control, parking, store rooms, access cards, and similar charges must be managed from Billing / Extra Services.</small>
-                                <?php if ($lease && (float)($lease['amc_amount'] ?? 0) > 0): ?>
-                                    <div class="small text-muted mt-1">Legacy AMC on this lease: <?= number_format((float)$lease['amc_amount'], 2) ?> AED, preserved read-only.</div>
-                                <?php endif; ?>
-                                <input type="hidden" name="amc_amount" id="amcAmount" value="<?= $lease ? h((string)($lease['amc_amount'] ?? 0)) : '0' ?>">
                             </div>
                         </div>
+                        <?php endif; ?>
+                        <input type="hidden" name="amc_amount" id="amcAmount" value="<?= $lease ? h((string)($lease['amc_amount'] ?? 0)) : '0' ?>">
                     </div>
+                    <?php if ($lease && (float)($lease['amc_amount'] ?? 0) > 0): ?>
+                        <div class="small text-muted mb-3">Legacy AMC on this lease: <?= number_format((float)$lease['amc_amount'], 2) ?> AED, preserved read-only.</div>
+                    <?php endif; ?>
+
+                    <?php if ($leaseExtrasReadyView): ?>
+                    <h6 class="mb-1 mt-2"><i class="bi bi-plus-square"></i> Extra Services Paid Upfront</h6>
+                    <p class="small text-muted mb-2">
+                        Paid with the 1st installment, together with the fees above. Each one is saved as an Extra Service charge with its own bill.
+                        Tick <strong>+<?= h(rtrim(rtrim(number_format($leaseExtrasVatRateView, 2), '0'), '.')) ?>% VAT</strong> when VAT applies; it is added on top.
+                    </p>
+                    <div class="row">
+                        <?php foreach (re_lease_form_extra_defs() as $extraKey => $extraName):
+                            $extraStored = $leaseExtrasStoredView[$extraKey] ?? null;
+                            $extraPosted = $formData['lease_extra'][$extraKey] ?? null;
+                            $extraLocked = !empty($extraStored['locked']) || (!$extraStored && $leaseFirstFeesLockedView);
+                            if ($extraPosted !== null && !$extraLocked) {
+                                $extraAmount = (float)($extraPosted['amount'] ?? 0);
+                                $extraVatOn = !empty($extraPosted['vat']);
+                            } else {
+                                $extraAmount = (float)($extraStored['net'] ?? 0);
+                                $extraVatOn = !empty($extraStored['vat_on']);
+                            }
+                        ?>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label" for="leaseExtra_<?= h($extraKey) ?>"><?= h($extraName) ?> (AED)</label>
+                            <div class="input-group">
+                                <input type="number" step="0.01" min="0" class="form-control lease-extra-amount"
+                                       name="lease_extra[<?= h($extraKey) ?>][amount]" id="leaseExtra_<?= h($extraKey) ?>"
+                                       data-extra-key="<?= h($extraKey) ?>" value="<?= h(number_format($extraAmount, 2, '.', '')) ?>"
+                                       <?= $extraLocked ? 'readonly' : '' ?>>
+                                <label class="input-group-text gap-1">
+                                    <input class="form-check-input mt-0 lease-extra-vat" type="checkbox" value="1"
+                                           name="lease_extra[<?= h($extraKey) ?>][vat]" id="leaseExtraVat_<?= h($extraKey) ?>"
+                                           data-extra-key="<?= h($extraKey) ?>" <?= $extraVatOn ? 'checked' : '' ?> <?= $extraLocked ? 'disabled' : '' ?>>
+                                    + VAT
+                                </label>
+                            </div>
+                            <small class="text-muted">With VAT: <span id="leaseExtraGross_<?= h($extraKey) ?>">0.00</span> AED</small>
+                            <?php if (!empty($extraStored['locked'])): ?>
+                                <small class="text-warning-emphasis d-block"><i class="bi bi-lock"></i> Collected or invoiced, so it can't be changed here. Use <a href="billing_service_charges.php?lease_id=<?= (int)$leaseId ?>">Billing / Extra Services</a>.</small>
+                            <?php elseif ($extraLocked): ?>
+                                <small class="text-warning-emphasis d-block"><i class="bi bi-lock"></i> The 1st cheque is already collected. Add it from <a href="billing_service_charges.php?lease_id=<?= (int)$leaseId ?>">Billing / Extra Services</a>.</small>
+                            <?php endif; ?>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php
+                    $otherFirstExtras = array_values(array_filter($leaseMergedExtrasView['first_items'], static fn($i) => empty($i['lease_form_key'])));
+                    if ($otherFirstExtras || $leaseMergedExtrasView['other_total'] > 0): ?>
+                        <div class="alert alert-light border small mb-3">
+                            <strong>Already on this lease's cheques from Billing / Renewal</strong> (kept on their cheques when the schedule is regenerated):
+                            <ul class="mb-1">
+                                <?php foreach ($otherFirstExtras as $item): ?>
+                                    <li>
+                                        <?= h($item['name']) ?>: <?= number_format((float)$item['gross'], 2) ?> AED, with the 1st-installment fees
+                                        <?php if (!empty($item['orphan'])): ?>
+                                            <span class="badge bg-warning text-dark">Its cheque row was removed by an earlier edit. Saving puts it back on the 1st-installment cheque.</span>
+                                        <?php endif; ?>
+                                    </li>
+                                <?php endforeach; ?>
+                                <?php if ($leaseMergedExtrasView['other_total'] > 0): ?>
+                                    <li>On other cheques: <?= number_format((float)$leaseMergedExtrasView['other_total'], 2) ?> AED</li>
+                                <?php endif; ?>
+                            </ul>
+                            Change these from <a href="billing_service_charges.php?lease_id=<?= (int)$leaseId ?>">Billing / Extra Services</a>.
+                        </div>
+                    <?php endif; ?>
+                    <p class="small text-muted">Monthly or recurring services (AMC, EV charging, access cards and similar) stay in Billing / Extra Services.</p>
+                    <?php endif; ?>
                     
                     <div class="mb-2">
                         <div class="form-check">
@@ -2578,6 +2748,27 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     <td class="text-center"><?= distRadio('dist_commission','separate',$dComm) ?></td>
                                     <td><span class="fee-live-amt" id="liveCommission">0.00</span></td>
                                 </tr>
+                                <?php if ($leaseExtrasReadyView): ?>
+                                    <?php // Extra services always go with the 1st-installment fees: shown fixed, no choice. ?>
+                                    <?php foreach (re_lease_form_extra_defs() as $extraKey => $extraName): ?>
+                                        <tr class="lease-extra-dist-row table-warning" id="leaseExtraDistRow_<?= h($extraKey) ?>" style="display:none;">
+                                            <td><strong><?= h($extraName) ?></strong> <small class="text-muted">(Extra Service, incl. VAT)</small></td>
+                                            <td class="text-center text-muted">—</td>
+                                            <td class="text-center"><input type="radio" class="form-check-input" checked disabled aria-label="1st Inst."></td>
+                                            <td class="text-center text-muted">—</td>
+                                            <td><span class="fee-live-amt" id="liveLeaseExtra_<?= h($extraKey) ?>">0.00</span></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                    <?php foreach ($leaseMergedExtrasView['first_items'] as $item): if (!empty($item['lease_form_key'])) continue; ?>
+                                        <tr class="table-warning">
+                                            <td><strong><?= h($item['name']) ?></strong> <small class="text-muted">(Extra Service from Billing / Renewal)</small></td>
+                                            <td class="text-center text-muted">—</td>
+                                            <td class="text-center"><input type="radio" class="form-check-input" checked disabled aria-label="1st Inst."></td>
+                                            <td class="text-center text-muted">—</td>
+                                            <td><span class="fee-live-amt"><?= number_format((float)$item['gross'], 2, '.', '') ?></span></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
                                 <tr id="amcDistRow" style="display:none;">
                                     <td>
                                         <strong style="color:#6f42c1;">AMC Fee</strong>
@@ -2628,7 +2819,12 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 </div>
                 <div class="card-body">
                     <div class="alert alert-info mb-3">
-                        Extra services such as parking, store rooms, cleaning, pest control, AMC, access cards, and similar charges must be managed from the Billing / Extra Services module.
+                        <?php if ($leaseExtrasReadyView): ?>
+                            Additional Parking, Storage and Pest Control &amp; Cleaning paid upfront with the 1st installment are entered under Additional Fees above.
+                            Other or recurring extra services (AMC, access cards, EV charging and similar) are managed from the Billing / Extra Services module.
+                        <?php else: ?>
+                            Extra services such as parking, store rooms, cleaning, pest control, AMC, access cards, and similar charges must be managed from the Billing / Extra Services module.
+                        <?php endif; ?>
                     </div>
                     <?php if ($lease && (!empty($lease['has_additional_parking']) || !empty($lease['has_additional_store']))): ?>
                         <div class="alert alert-light border">
@@ -2892,6 +3088,32 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             const LEASE_ENGINE_TOTALS = <?= json_encode((isset($lease) && is_array($lease)) ? lease_compute_totals($lease) : null, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
             const LEASE_ENGINE_PLAN = <?= json_encode((isset($lease) && is_array($lease)) ? lease_build_plan($lease)['lines'] : null, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
             let preserveExistingScheduleOnInitialEdit = !!editingLeaseId;
+            // Extra services (lease_form_extras_helper.php). The lease form fields and the extras
+            // already merged into the 1st-fees cheque from Billing / Renewal ride with the
+            // 1st-installment fees; merged/split extras on other cheques stay on those cheques.
+            const LEASE_EXTRA_VAT_RATE = <?= json_encode((float)$leaseExtrasVatRateView) ?>;
+            const LEASE_OTHER_FIRST_EXTRAS = <?= json_encode((float)$leaseMergedExtrasView['first_total']) ?>;
+            const LEASE_EXTRAS_BY_INSTALLMENT = <?= json_encode((object)$leaseMergedExtrasView['by_installment']) ?>;
+            const LEASE_OTHER_EXTRAS_TOTAL = <?= json_encode((float)$leaseMergedExtrasView['other_total']) ?>;
+
+            function leaseFormExtrasGross() {
+                let total = 0;
+                document.querySelectorAll('.lease-extra-amount').forEach(input => {
+                    const key = input.dataset.extraKey;
+                    const net = Math.max(0, parseFloat(input.value) || 0);
+                    const vatEl = document.getElementById('leaseExtraVat_' + key);
+                    const vat = (vatEl && vatEl.checked && net > 0) ? Math.round(net * LEASE_EXTRA_VAT_RATE) / 100 : 0;
+                    const gross = Math.round((net + vat) * 100) / 100;
+                    const out = document.getElementById('leaseExtraGross_' + key);
+                    if (out) out.textContent = gross.toFixed(2);
+                    const live = document.getElementById('liveLeaseExtra_' + key);
+                    if (live) live.textContent = gross.toFixed(2);
+                    const distRow = document.getElementById('leaseExtraDistRow_' + key);
+                    if (distRow) distRow.style.display = gross > 0 ? '' : 'none';
+                    total += gross;
+                });
+                return Math.round(total * 100) / 100;
+            }
 
             function computeRentInstallmentAmounts(effectiveAnnual, installmentCount, addFeesToFirst, feesToFirst) {
                 if (installmentCount < 1) return [];
@@ -3350,6 +3572,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 if (vatDistributionType === 'first_installment' && totalVat > 0) {
                     toFirst += totalVat;
                 }
+                const formExtras = leaseFormExtrasGross();
+                const extrasFirst = Math.round((formExtras + LEASE_OTHER_FIRST_EXTRAS) * 100) / 100;
+                toFirst = Math.round((toFirst + extrasFirst) * 100) / 100;
 
                 // Fees getting their own separate cheque
                 let toSep = 0;
@@ -3366,7 +3591,8 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     isRenewal, hasParking, hasStore,
                     distSecurity, distChiller, distEjari, distAdmin, distComm, distAmc, distParking, distStore,
                     effectiveAnnual, perInstallment, toFirst, toSep,
-                    rentVat, extraVat, totalVat, vatDistributionType, leaseVatRate
+                    rentVat, extraVat, totalVat, vatDistributionType, leaseVatRate,
+                    formExtras, extrasFirst
                 };
             }
 
@@ -3475,6 +3701,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     adminVat: (v.leaseVatRate > 0 && (!document.getElementById('vatApplicableOnExtraCharges') || document.getElementById('vatApplicableOnExtraCharges').checked)) ? Math.round((v.admin || 0) * (v.leaseVatRate / 100) * 100) / 100 : 0,
                     commissionFees: v.commission || 0,
                     commissionVat: (v.leaseVatRate > 0 && (!document.getElementById('vatApplicableOnExtraCharges') || document.getElementById('vatApplicableOnExtraCharges').checked)) ? Math.round((v.commission || 0) * (v.leaseVatRate / 100) * 100) / 100 : 0,
+                    extraServices: Math.round(((v.extrasFirst || 0) + LEASE_OTHER_EXTRAS_TOTAL) * 100) / 100,
                 };
                 expected.total = Object.values(expected).reduce((sum, val) => sum + (parseFloat(val) || 0), 0);
                 return expected;
@@ -3500,7 +3727,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 if (warning) warning.classList.toggle('d-none', Math.abs(difference) <= 0.02);
                 const breakdown = document.getElementById('expectedCollectionBreakdown');
                 if (breakdown) {
-                    breakdown.innerHTML = `Breakdown: Annual Rent ${b.annualRent.toFixed(2)} + Rent VAT ${b.rentVat.toFixed(2)} + Security Deposit ${b.securityDeposit.toFixed(2)} + Chiller ${b.chillerFees.toFixed(2)} + Chiller VAT ${b.chillerVat.toFixed(2)} + Ejari ${b.ejariFees.toFixed(2)} + Admin ${b.adminFees.toFixed(2)} + Admin VAT ${b.adminVat.toFixed(2)} + Commission ${b.commissionFees.toFixed(2)} + Commission VAT ${b.commissionVat.toFixed(2)}`;
+                    breakdown.innerHTML = `Breakdown: Annual Rent ${b.annualRent.toFixed(2)} + Rent VAT ${b.rentVat.toFixed(2)} + Security Deposit ${b.securityDeposit.toFixed(2)} + Chiller ${b.chillerFees.toFixed(2)} + Chiller VAT ${b.chillerVat.toFixed(2)} + Ejari ${b.ejariFees.toFixed(2)} + Admin ${b.adminFees.toFixed(2)} + Admin VAT ${b.adminVat.toFixed(2)} + Commission ${b.commissionFees.toFixed(2)} + Commission VAT ${b.commissionVat.toFixed(2)} + Extra Services (incl. VAT) ${b.extraServices.toFixed(2)}`;
                 }
             }
 
@@ -3511,6 +3738,12 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             ['securityDeposit', 'chillerFees', 'ejariFees', 'adminFees', 'commissionFees', 'amcAmount'].forEach(id => {
                 const field = document.getElementById(id);
                 if (field) field.addEventListener('input', markScheduleChangedAndRecalculate);
+            });
+            document.querySelectorAll('.lease-extra-amount').forEach(field => {
+                field.addEventListener('input', markScheduleChangedAndRecalculate);
+            });
+            document.querySelectorAll('.lease-extra-vat').forEach(field => {
+                field.addEventListener('change', markScheduleChangedAndRecalculate);
             });
 
             ['additional_parking_fee', 'additional_parking_start_date', 'additional_parking_end_date',
@@ -3578,6 +3811,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 if (v.distAdmin   === 'first' && v.admin > 0)        feeBreakdown.push(`Admin (${v.admin.toFixed(2)})`);
                 if (v.distComm    === 'first' && v.commission > 0)   feeBreakdown.push(`Commission (${v.commission.toFixed(2)})`);
                 if (v.vatDistributionType === 'first_installment' && v.totalVat > 0) feeBreakdown.push(`Total VAT (${v.totalVat.toFixed(2)})`);
+                if (v.extrasFirst > 0) feeBreakdown.push(`Extra Services incl. VAT (${v.extrasFirst.toFixed(2)})`);
 
                 const container = document.getElementById('chequesContainer');
                 container.innerHTML = '';
@@ -3691,6 +3925,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
 
                 let chequeIndex = 0;
 
+                // Extras merged/split into a cheque that is not the 1st-fees cheque: a recalculated
+                // row adds its own extras back; a row shown as saved already includes them.
+                const extrasSeen = new Set();
+                let firstFeesAmountInput = null;
+                const takeInstallmentExtras = (inst, amountFromDb) => {
+                    if (!inst || !inst.id) return 0;
+                    const id = String(inst.id);
+                    if (extrasSeen.has(id)) return 0;
+                    extrasSeen.add(id);
+                    return amountFromDb ? 0 : (parseFloat(LEASE_EXTRAS_BY_INSTALLMENT[id]) || 0);
+                };
+
                 // ── STEP 1: Separate-installment fees (one cheque card per fee) ─────
                 for (const sf of separateFeeList) {
                     if (sf.dist !== 'separate' || sf.amount <= 0) continue;
@@ -3699,9 +3945,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     let sepInst = separateInstallmentByType[sf.type] || findSeparateInstallmentRow(sf.type, sf.amount, firstDbInstallmentDate);
                     const sepDate   = sepInst ? sepInst.installment_date : (installmentDates[0] || startDate);
                     const sepCheque = sepInst ? (chequesMapById[sepInst.id] || null) : chequesMapByDate[sepDate] || null;
-                    const sepAmount = (sepInst && isInstallmentLocked(sepInst))
-                        ? (parseFloat(sepInst.amount) || sf.amount)
-                        : sf.amount;
+                    const sepFromDb = !!(sepInst && isInstallmentLocked(sepInst));
+                    const sepAmount = (sepFromDb ? (parseFloat(sepInst.amount) || sf.amount) : sf.amount)
+                        + takeInstallmentExtras(sepInst, sepFromDb);
                     const sepPayM   = sepCheque ? (sepCheque.payment_method || 'cheque') : 'cheque';
                     const sepChqNum = sepCheque ? (sepCheque.cheque_number  || '')       : '';
                     const sepHolder = sepCheque ? (sepCheque.account_holder_name || '')  : '';
@@ -3789,9 +4035,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     const feesChequeNum = feesCheque ? (feesCheque.cheque_number || '') : '';
                     const feesHolder    = feesCheque ? (feesCheque.account_holder_name || '') : '';
                     const feesChqDate   = feesCheque ? (feesCheque.cheque_date || feesDate) : feesDate;
-                    const feesAmount = (preserveExistingScheduleOnInitialEdit && feesInst && Math.abs((parseFloat(feesInst.amount) || 0) - totalFees) < 0.02)
-                        ? (parseFloat(feesInst.amount) || totalFees)
-                        : totalFees;
+                    const feesFromDb = !!(preserveExistingScheduleOnInitialEdit && feesInst && Math.abs((parseFloat(feesInst.amount) || 0) - totalFees) < 0.02);
+                    const feesAmount = (feesFromDb ? (parseFloat(feesInst.amount) || totalFees) : totalFees)
+                        + takeInstallmentExtras(feesInst, feesFromDb);
                     const feesVatAmount = (v.vatDistributionType === 'first_installment' && v.totalVat > 0) ? v.totalVat : 0;
                     row.innerHTML = `
                         <div class="card-body" data-schedule-row="1">
@@ -3837,6 +4083,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <small class="text-muted">Includes: ${feeBreakdown.join(', ') || '–'}</small>
                         </div>`;
                     container.appendChild(row);
+                    firstFeesAmountInput = row.querySelector('input[name$="[amount]"]');
                     const feesSelect = row.querySelector('.payment-method-select');
                     if (feesSelect) updatePaymentLabels(feesSelect);
                     chequeIndex++;
@@ -3856,15 +4103,20 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         ? installmentDate
                         : (existingCheque ? (existingCheque.cheque_date || installmentDate) : installmentDate);
                     let chequeAmount = installmentAmount;
+                    let rentFromDb = false;
                     if (preserveRentDates && rentInst && isInstallmentLocked(rentInst)) {
                         chequeAmount = parseFloat(rentInst.amount) || installmentAmount;
+                        rentFromDb = true;
                     } else if (preserveRentDates && rentInst && savedRentRowsMatchCount) {
                         // Opening a lease must show the schedule as it was saved. Amounts
                         // are only recalculated after something that drives them changes.
                         chequeAmount = parseFloat(rentInst.amount) || installmentAmount;
+                        rentFromDb = true;
                     } else if (preserveRentDates && existingCheque && isInstallmentLocked(rentInst)) {
                         chequeAmount = parseFloat(existingCheque.cheque_amount) || installmentAmount;
+                        rentFromDb = true;
                     }
+                    chequeAmount += takeInstallmentExtras(rentInst, rentFromDb);
                     const chequeNumber = existingCheque ? (existingCheque.cheque_number || '') : '';
                     const storedReference = existingCheque ? (existingCheque.reference_number || '') : '';
                     // Never re-post a system placeholder (CHQ-<lease>-<n>) as the reference.
@@ -3945,9 +4197,26 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             </div>
                         </div>`;
                     container.appendChild(row);
+                    if (i === 0 && !firstFeesAmountInput) {
+                        firstFeesAmountInput = row.querySelector('input[name$="[amount]"]');
+                    }
                     const iSelect = row.querySelector('.payment-method-select');
                     if (iSelect) updatePaymentLabels(iSelect);
                     chequeIndex++;
+                }
+
+                // Extras whose cheque is no longer in the schedule go with the 1st-installment
+                // fees; saving moves their bills onto that cheque (re_lease_form_extras_sync).
+                let unplacedExtras = 0;
+                Object.keys(LEASE_EXTRAS_BY_INSTALLMENT).forEach(id => {
+                    if (!extrasSeen.has(id)) unplacedExtras += parseFloat(LEASE_EXTRAS_BY_INSTALLMENT[id]) || 0;
+                });
+                if (unplacedExtras > 0.005 && firstFeesAmountInput) {
+                    firstFeesAmountInput.value = ((parseFloat(firstFeesAmountInput.value) || 0) + unplacedExtras).toFixed(2);
+                    const note = document.createElement('small');
+                    note.className = 'text-muted d-block mt-1';
+                    note.textContent = `Includes extra services moved from a removed cheque: ${unplacedExtras.toFixed(2)}`;
+                    firstFeesAmountInput.insertAdjacentElement('afterend', note);
                 }
                 updateScheduleTotals();
             }

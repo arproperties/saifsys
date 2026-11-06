@@ -23,6 +23,10 @@ if (!isset($conn) || !($conn instanceof PDO)) {
 require_once __DIR__ . '/attendance_self.php';
 require_once __DIR__ . '/url_helper.php';
 
+if (!attendance_self_web_visible()) {
+    return;
+}
+
 // Every page that reaches here has loaded auth.php, which defines these. The
 // fallback is for the gate's own page, which is drawn from almost nothing —
 // without it the form would die half-printed on an undefined function.

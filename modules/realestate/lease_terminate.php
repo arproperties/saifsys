@@ -51,6 +51,16 @@ if (!$lease) {
     exit;
 }
 
+// Opened from Complete Move-Out: go back to that move-out after terminating
+$returnMoveOutId = (int)($_POST['return_move_out'] ?? ($_GET['return_move_out'] ?? 0));
+if ($returnMoveOutId > 0) {
+    $rmo = $conn->prepare("SELECT id FROM re_move_outs WHERE id = ? AND lease_id = ? AND company_id = ?");
+    $rmo->execute([$returnMoveOutId, $leaseId, $currentCompanyId]);
+    if (!$rmo->fetchColumn()) {
+        $returnMoveOutId = 0;
+    }
+}
+
 $terminationDate = $_POST['termination_date'] ?? ($_GET['termination_date'] ?? date('Y-m-d'));
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $terminationDate)) {
     $terminationDate = date('Y-m-d');
@@ -116,6 +126,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $successParts[] = 'termination penalty created';
                 }
                 $_SESSION['success'] = implode(', ', $successParts) . '.';
+                if ($returnMoveOutId > 0) {
+                    header('Location: move_out_view.php?id=' . $returnMoveOutId);
+                    exit;
+                }
                 header('Location: lease_view.php?id=' . $leaseId);
                 exit;
             } catch (Throwable $e) {
@@ -212,6 +226,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 <form method="post" id="terminationForm" onsubmit="return handleTerminationSubmit(event);">
                     <?php csrf_field(); ?>
                     <input type="hidden" name="lease_id" value="<?= (int)$leaseId ?>">
+                    <?php if ($returnMoveOutId > 0): ?>
+                        <input type="hidden" name="return_move_out" value="<?= (int)$returnMoveOutId ?>">
+                    <?php endif; ?>
                     <input type="hidden" name="action" id="terminationAction" value="preview">
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Effective Termination Date *</label>

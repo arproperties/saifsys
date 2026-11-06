@@ -81,6 +81,48 @@ if (!function_exists('re_sd_load_lease')) {
     }
 }
 
+if (!function_exists('re_sd_deposit_lease_id')) {
+    /**
+     * The lease that holds the tenant's security deposit. A renewal lease
+     * carries no deposit of its own (re_sd_summary() expects 0 on it): the
+     * deposit stays on the first lease of the tenancy. Walks parent_lease_id
+     * up to the first lease that is not a renewal or has a deposit obligation;
+     * renewals saved without the link fall back to the first lease of the same
+     * tenant and unit (move_in_chain_helper.php).
+     */
+    function re_sd_deposit_lease_id(PDO $conn, int $companyId, int $leaseId): int
+    {
+        $current = $leaseId;
+        $seen = [];
+        $obl = $conn->prepare("SELECT COUNT(*) FROM re_obligations WHERE company_id = ? AND lease_id = ? AND obligation_type = 'security_deposit'");
+        for ($i = 0; $i < 20 && !isset($seen[$current]); $i++) {
+            $seen[$current] = true;
+            $lease = re_sd_load_lease($conn, $companyId, $current);
+            if (!$lease) {
+                break;
+            }
+            if (empty($lease['is_renewal_lease'])) {
+                return $current;
+            }
+            try {
+                $obl->execute([$companyId, $current]);
+                if ((int)$obl->fetchColumn() > 0) {
+                    return $current;
+                }
+            } catch (Throwable $e) {
+            }
+            $parent = (int)($lease['parent_lease_id'] ?? 0);
+            if ($parent <= 0) {
+                require_once __DIR__ . '/move_in_chain_helper.php';
+                $first = re_move_in_first_lease($conn, $companyId, $current);
+                return $first ? (int)$first['id'] : $current;
+            }
+            $current = $parent;
+        }
+        return $current ?: $leaseId;
+    }
+}
+
 if (!function_exists('re_sd_summary')) {
     /**
      * @return array<string,mixed>
@@ -454,6 +496,51 @@ if (!function_exists('re_sd_settlement_for_move_out')) {
     }
 }
 
+if (!function_exists('re_sd_sync_move_out_deductions')) {
+    /**
+     * Rebuild a move-out's draft deductions from the current damage costs and
+     * standard move-out charges. Run when the settlement is prepared and again
+     * just before it is approved, so a cost or charge changed in between is
+     * never approved at its old amount. Call inside a transaction.
+     */
+    function re_sd_sync_move_out_deductions(PDO $conn, int $companyId, int $moveOutId, int $leaseId, ?int $tenantId, ?int $userId): void
+    {
+        $dt = $conn->prepare("SELECT COALESCE(SUM(repair_cost), 0) FROM re_move_out_damages WHERE move_out_id = ? AND company_id = ?");
+        $dt->execute([$moveOutId, $companyId]);
+        $damageTotal = re_sd_money($dt->fetchColumn());
+        // Keep the damage deduction in line with the current damage assessment
+        $existing = $conn->prepare("
+            SELECT id, amount FROM re_security_deposit_deductions
+            WHERE company_id = ? AND move_out_id = ? AND deduction_type = 'damage' AND status IN ('draft','approved')
+            LIMIT 1
+        ");
+        $existing->execute([$companyId, $moveOutId]);
+        $existingDeduction = $existing->fetch(PDO::FETCH_ASSOC) ?: null;
+        if ($existingDeduction && $damageTotal <= 0) {
+            $conn->prepare("UPDATE re_security_deposit_deductions SET status = 'cancelled' WHERE id = ?")
+                ->execute([(int)$existingDeduction['id']]);
+        } elseif ($existingDeduction && re_sd_money($existingDeduction['amount']) !== $damageTotal) {
+            $conn->prepare("UPDATE re_security_deposit_deductions SET amount = ?, status = 'draft', approved_by = NULL, approved_at = NULL WHERE id = ?")
+                ->execute([$damageTotal, (int)$existingDeduction['id']]);
+        }
+
+        if ($damageTotal > 0) {
+            if (!$existingDeduction) {
+                $conn->prepare("
+                    INSERT INTO re_security_deposit_deductions
+                        (company_id, lease_id, tenant_id, move_out_id, deduction_type, amount, reason, status, created_by)
+                    VALUES (?, ?, ?, ?, 'damage', ?, 'Damage assessment total from move-out inspection', 'draft', ?)
+                ")->execute([$companyId, $leaseId, $tenantId, $moveOutId, $damageTotal, $userId]);
+                re_sd_log($conn, $companyId, $leaseId, $tenantId, 'deduction_requested', null, 'damage', $damageTotal, 'Damage assessment deduction drafted', $userId, 'move_out_view', null, null, $moveOutId, null, null);
+            }
+        }
+
+        // Standard move-out charges (cleaning, painting, ...): one deduction each
+        require_once __DIR__ . '/move_out_charges_helper.php';
+        rmoc_sync_deductions($conn, $companyId, $moveOutId, $leaseId, $tenantId, $userId);
+    }
+}
+
 if (!function_exists('re_sd_prepare_move_out_settlement')) {
     function re_sd_prepare_move_out_settlement(PDO $conn, int $companyId, int $moveOutId, ?int $userId = null): array
     {
@@ -461,7 +548,11 @@ if (!function_exists('re_sd_prepare_move_out_settlement')) {
         if (!$moveOut) {
             return ['success' => false, 'error' => 'Move-out record not found.'];
         }
-        $leaseId = (int)$moveOut['lease_id'];
+        if (in_array((string)($moveOut['status'] ?? ''), ['completed', 'cancelled'], true)) {
+            return ['success' => false, 'error' => 'This move-out is ' . $moveOut['status'] . '; the deposit settlement can no longer be changed.'];
+        }
+        // A renewal's deposit sits on the first lease of the tenancy
+        $leaseId = re_sd_deposit_lease_id($conn, $companyId, (int)$moveOut['lease_id']);
         $tenantId = !empty($moveOut['tenant_id']) ? (int)$moveOut['tenant_id'] : null;
         $summary = re_sd_summary($conn, $companyId, $leaseId);
         $received = (float)$summary['allocated'];
@@ -482,28 +573,20 @@ if (!function_exists('re_sd_prepare_move_out_settlement')) {
                 $settlementId = (int)$conn->lastInsertId();
             } else {
                 $settlementId = (int)$settlement['id'];
-                if (in_array((string)$settlement['status'], ['draft', 'approved'], true)) {
-                    $conn->prepare("UPDATE re_security_deposit_settlements SET expected_amount = ?, received_amount = ?, updated_at = NOW() WHERE id = ? AND company_id = ?")
-                        ->execute([$expected, $received, $settlementId, $companyId]);
+                if (!empty($settlement['journal_id']) || !in_array((string)$settlement['status'], ['draft', 'approved', 'cancelled'], true)) {
+                    throw new RuntimeException('This deposit settlement is already processed and cannot be recalculated.');
                 }
+                // Recalculating an approved (or closed, unposted) settlement sends it back for approval
+                $conn->prepare("
+                    UPDATE re_security_deposit_settlements
+                    SET expected_amount = ?, received_amount = ?, deduction_amount = 0.00, refund_amount = ?, retained_amount = 0.00,
+                        status = 'draft', approved_by = NULL, approved_at = NULL, updated_at = NOW()
+                    WHERE id = ? AND company_id = ?
+                ")->execute([$expected, $received, $received, $settlementId, $companyId]);
             }
 
-            if ($damageTotal > 0) {
-                $exists = $conn->prepare("
-                    SELECT id FROM re_security_deposit_deductions
-                    WHERE company_id = ? AND move_out_id = ? AND deduction_type = 'damage' AND status IN ('draft','approved')
-                    LIMIT 1
-                ");
-                $exists->execute([$companyId, $moveOutId]);
-                if (!$exists->fetchColumn()) {
-                    $conn->prepare("
-                        INSERT INTO re_security_deposit_deductions
-                            (company_id, lease_id, tenant_id, move_out_id, deduction_type, amount, reason, status, created_by)
-                        VALUES (?, ?, ?, ?, 'damage', ?, 'Damage assessment total from move-out inspection', 'draft', ?)
-                    ")->execute([$companyId, $leaseId, $tenantId, $moveOutId, $damageTotal, $userId]);
-                    re_sd_log($conn, $companyId, $leaseId, $tenantId, 'deduction_requested', null, 'damage', $damageTotal, 'Damage assessment deduction drafted', $userId, 'move_out_view', null, null, $moveOutId, null, null);
-                }
-            }
+            // Damage and standard charge deductions, from the current figures
+            re_sd_sync_move_out_deductions($conn, $companyId, $moveOutId, $leaseId, $tenantId, $userId);
 
             $conn->prepare("UPDATE re_move_outs SET status = 'deposit_processing' WHERE id = ? AND company_id = ?")
                 ->execute([$moveOutId, $companyId]);
@@ -520,16 +603,27 @@ if (!function_exists('re_sd_prepare_move_out_settlement')) {
 }
 
 if (!function_exists('re_sd_approve_move_out_deductions')) {
-    function re_sd_approve_move_out_deductions(PDO $conn, int $companyId, int $moveOutId, ?int $userId, string $reason): array
+    /**
+     * Approve deductions and work out the refund. Refuses when a deposit is
+     * expected but none has been received, unless $confirmNoDeposit is set:
+     * then the settlement is closed (status 'cancelled', nothing to post).
+     * Returns 'excess' = approved damage not covered by the deposit, which
+     * must be charged to the tenant separately.
+     */
+    function re_sd_approve_move_out_deductions(PDO $conn, int $companyId, int $moveOutId, ?int $userId, string $reason, bool $confirmNoDeposit = false): array
     {
         $moveOut = re_sd_load_move_out($conn, $companyId, $moveOutId);
         if (!$moveOut) {
             return ['success' => false, 'error' => 'Move-out record not found.'];
         }
+        if (in_array((string)($moveOut['status'] ?? ''), ['completed', 'cancelled'], true)) {
+            return ['success' => false, 'error' => 'This move-out is ' . $moveOut['status'] . '; the deposit settlement can no longer be changed.'];
+        }
         if (trim($reason) === '') {
             return ['success' => false, 'error' => 'Approval reason is required.'];
         }
-        $leaseId = (int)$moveOut['lease_id'];
+        // A renewal's deposit sits on the first lease of the tenancy
+        $leaseId = re_sd_deposit_lease_id($conn, $companyId, (int)$moveOut['lease_id']);
         $tenantId = !empty($moveOut['tenant_id']) ? (int)$moveOut['tenant_id'] : null;
         $settlement = re_sd_settlement_for_move_out($conn, $companyId, $moveOutId);
         if (!$settlement) {
@@ -539,28 +633,59 @@ if (!function_exists('re_sd_approve_move_out_deductions')) {
             }
             $settlement = re_sd_settlement_for_move_out($conn, $companyId, $moveOutId);
         }
+        if (!empty($settlement['journal_id']) || (string)($settlement['status'] ?? '') !== 'draft') {
+            return ['success' => false, 'error' => 'Only a draft settlement can be approved. Click Recalculate first.'];
+        }
+
+        // Use the live received amount, not the figure stored when the preview was prepared
+        $summary = re_sd_summary($conn, $companyId, $leaseId);
+        $received = re_sd_money($summary['allocated'] ?? 0);
+        $expected = re_sd_money($summary['expected'] ?? 0);
+        if ($expected > 0 && $received <= 0 && !$confirmNoDeposit) {
+            return [
+                'success' => false,
+                'error' => 'No security deposit has been received for this lease (expected AED ' . number_format($expected, 2) . '). '
+                    . 'If the tenant paid it, allocate the receipt to the Security Deposit in Receipts & Allocations and click Recalculate. '
+                    . 'If no deposit was ever collected, tick the confirmation box to close the settlement.',
+                'code' => 'no_deposit',
+            ];
+        }
 
         $conn->beginTransaction();
         try {
+            // Approve what the move-out shows now, not what it showed when prepared
+            re_sd_sync_move_out_deductions($conn, $companyId, $moveOutId, $leaseId, $tenantId, $userId);
+            // The approval note is kept in the audit log (deduction_approved), not
+            // appended to each reason: that grew past the column size and failed
             $conn->prepare("
                 UPDATE re_security_deposit_deductions
-                SET status = 'approved', approved_by = ?, approved_at = NOW(), reason = CONCAT(reason, ' | Approval: ', ?)
+                SET status = 'approved', approved_by = ?, approved_at = NOW()
                 WHERE company_id = ? AND move_out_id = ? AND status = 'draft'
-            ")->execute([$userId, $reason, $companyId, $moveOutId]);
+            ")->execute([$userId, $companyId, $moveOutId]);
 
             $deductionStmt = $conn->prepare("SELECT COALESCE(SUM(amount), 0) FROM re_security_deposit_deductions WHERE company_id = ? AND move_out_id = ? AND status IN ('approved','applied')");
             $deductionStmt->execute([$companyId, $moveOutId]);
-            $deductions = re_sd_money($deductionStmt->fetchColumn());
-            $received = re_sd_money($settlement['received_amount'] ?? re_sd_summary($conn, $companyId, $leaseId)['allocated']);
-            $deductions = min($deductions, $received);
+            $requestedDeductions = re_sd_money($deductionStmt->fetchColumn());
+            $deductions = min($requestedDeductions, $received);
+            $excess = re_sd_money(max(0, $requestedDeductions - $deductions));
             $refund = re_sd_money(max(0, $received - $deductions));
-            $status = $refund > 0 ? 'approved' : ($deductions > 0 ? 'deducted' : 'approved');
+
+            if ($received <= 0) {
+                // Nothing was collected, so nothing to refund or post: close the settlement
+                $status = 'cancelled';
+                $note = 'Closed without settlement: no security deposit received.'
+                    . ($excess > 0 ? ' Damage of AED ' . number_format($excess, 2) . ' must be charged to the tenant separately.' : '');
+            } else {
+                $status = $refund > 0 ? 'approved' : 'deducted';
+                $note = $excess > 0 ? 'Damage of AED ' . number_format($excess, 2) . ' exceeds the deposit and must be charged to the tenant separately.' : null;
+            }
 
             $conn->prepare("
                 UPDATE re_security_deposit_settlements
-                SET deduction_amount = ?, refund_amount = ?, retained_amount = ?, status = ?, approved_by = ?, approved_at = NOW(), updated_at = NOW()
+                SET received_amount = ?, expected_amount = ?, deduction_amount = ?, refund_amount = ?, retained_amount = ?, status = ?,
+                    notes = COALESCE(?, notes), approved_by = ?, approved_at = NOW(), updated_at = NOW()
                 WHERE id = ? AND company_id = ?
-            ")->execute([$deductions, $refund, $deductions, $status, $userId, (int)$settlement['id'], $companyId]);
+            ")->execute([$received, $expected, $deductions, $refund, $deductions, $status, $note, $userId, (int)$settlement['id'], $companyId]);
 
             $depositStatus = $refund > 0 ? ($deductions > 0 ? 'partial' : 'processing') : 'forfeited';
             $conn->prepare("
@@ -568,9 +693,9 @@ if (!function_exists('re_sd_approve_move_out_deductions')) {
                 SET deposit_deduction_amount = ?, deposit_refund_amount = ?, deposit_status = ?, status = 'deposit_processing'
                 WHERE id = ? AND company_id = ?
             ")->execute([$deductions, $refund, $depositStatus, $moveOutId, $companyId]);
-            re_sd_log($conn, $companyId, $leaseId, $tenantId, 'deduction_approved', null, null, $deductions, $reason, $userId, 'move_out_view', null, null, $moveOutId, null, null);
+            re_sd_log($conn, $companyId, $leaseId, $tenantId, 'deduction_approved', null, null, $deductions, $reason . ($note ? ' | ' . $note : ''), $userId, 'move_out_view', null, null, $moveOutId, null, null);
             $conn->commit();
-            return ['success' => true, 'deductions' => $deductions, 'refund' => $refund];
+            return ['success' => true, 'deductions' => $deductions, 'refund' => $refund, 'excess' => $excess, 'closed' => $status === 'cancelled'];
         } catch (Throwable $e) {
             if ($conn->inTransaction()) {
                 $conn->rollBack();
@@ -608,16 +733,23 @@ if (!function_exists('re_sd_process_move_out_refund')) {
         if (!$moveOut) {
             return ['success' => false, 'error' => 'Move-out record not found.'];
         }
+        if (in_array((string)($moveOut['status'] ?? ''), ['completed', 'cancelled'], true)) {
+            return ['success' => false, 'error' => 'This move-out is ' . $moveOut['status'] . '; the deposit settlement can no longer be changed.'];
+        }
         $settlement = re_sd_settlement_for_move_out($conn, $companyId, $moveOutId);
+        if ($settlement && !empty($settlement['journal_id'])) {
+            return ['success' => false, 'error' => 'This deposit settlement has already been processed.'];
+        }
         if (!$settlement || !in_array((string)$settlement['status'], ['approved','deducted'], true)) {
             return ['success' => false, 'error' => 'Deposit settlement must be approved before refund/deduction posting.'];
         }
-        $leaseId = (int)$moveOut['lease_id'];
+        // A renewal's deposit sits on the first lease of the tenancy
+        $leaseId = re_sd_deposit_lease_id($conn, $companyId, (int)$moveOut['lease_id']);
         $tenantId = !empty($moveOut['tenant_id']) ? (int)$moveOut['tenant_id'] : null;
         $refund = re_sd_money($settlement['refund_amount'] ?? 0);
         $deduction = re_sd_money($settlement['deduction_amount'] ?? 0);
         if (($refund + $deduction) <= 0) {
-            return ['success' => false, 'error' => 'No approved refund or deduction amount to process.'];
+            return ['success' => false, 'error' => 'Nothing to process: no security deposit was received for this lease, so there is no refund or deduction to post.'];
         }
 
         $conn->beginTransaction();
@@ -700,8 +832,10 @@ if (!function_exists('re_sd_process_move_out_refund')) {
             if ($deduction > 0) {
                 re_sd_log($conn, $companyId, $leaseId, $tenantId, 'deduction_applied', null, null, $deduction, 'Approved security deposit deduction applied', $userId, 'move_out_view', null, (int)$journal['journal_id'], $moveOutId, null, $refundId);
             }
-            re_sd_notify_tenant($conn, $companyId, $leaseId, 'security_deposit_settlement', 'Security deposit settlement processed', 'Your security deposit settlement has been processed. Refund: AED ' . number_format($refund, 2) . ', deductions: AED ' . number_format($deduction, 2) . '.', 'move_out', $moveOutId);
             $conn->commit();
+            // Notify after commit: the push path runs CREATE TABLE IF NOT EXISTS,
+            // which implicitly commits an open MySQL transaction.
+            re_sd_notify_tenant($conn, $companyId, $leaseId, 'security_deposit_settlement', 'Security deposit settlement processed', 'Your security deposit settlement has been processed. Refund: AED ' . number_format($refund, 2) . ', deductions: AED ' . number_format($deduction, 2) . '.', 'move_out', $moveOutId);
             return ['success' => true, 'journal_id' => (int)$journal['journal_id'], 'refund_id' => $refundId, 'refund' => $refund, 'deduction' => $deduction];
         } catch (Throwable $e) {
             if ($conn->inTransaction()) {
@@ -712,3 +846,79 @@ if (!function_exists('re_sd_process_move_out_refund')) {
     }
 }
 
+
+if (!function_exists('re_sd_settlement_journal_reversed')) {
+    /**
+     * The settlement journal was reversed (Journal Entry > Reverse): put the
+     * deposit settlement back to draft, so it can be corrected, approved and
+     * processed again. Called from reverse_journal() for journals with
+     * reference_type 'security_deposit_settlement'.
+     *  - settlement: status draft, no journal / refund, approval cleared, note added
+     *  - deductions posted by it: back to draft
+     *  - tenant refund it created: removed (its details stay in the notes and audit log)
+     *  - move-out: deposit fields cleared; a completed move-out reopens at Deposit Settlement
+     * Returns ['success' => bool, 'move_out_id' => int|null, 'error' => string].
+     */
+    function re_sd_settlement_journal_reversed(PDO $conn, int $settlementId, int $journalId, int $reversalJournalId, ?int $userId = null, string $reason = ''): array
+    {
+        $st = $conn->prepare("SELECT * FROM re_security_deposit_settlements WHERE id = ?");
+        $st->execute([$settlementId]);
+        $set = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$set || (int)$set['journal_id'] !== $journalId) {
+            return ['success' => true, 'move_out_id' => null, 'error' => '']; // not (or no longer) this settlement's journal
+        }
+        $companyId = (int)$set['company_id'];
+        $moveOutId = (int)($set['move_out_id'] ?? 0);
+        $leaseId = (int)$set['lease_id'];
+        $tenantId = !empty($set['tenant_id']) ? (int)$set['tenant_id'] : null;
+        $own = !$conn->inTransaction();
+        if ($own) {
+            $conn->beginTransaction();
+        }
+        try {
+            $refundNote = '';
+            if (!empty($set['refund_id'])) {
+                $rf = $conn->prepare("SELECT * FROM re_tenant_refunds WHERE id = ? AND company_id = ?");
+                $rf->execute([(int)$set['refund_id'], $companyId]);
+                if ($r = $rf->fetch(PDO::FETCH_ASSOC)) {
+                    $refundNote = ' Refund ' . ($r['receipt_number'] ?: '#' . $r['id']) . ' of AED ' . number_format((float)$r['amount'], 2)
+                        . ' (' . $r['payment_method'] . ($r['reference_number'] ? ', ref ' . $r['reference_number'] : '') . ', ' . $r['refund_date'] . ') removed.';
+                    $conn->prepare("DELETE FROM re_tenant_refunds WHERE id = ? AND company_id = ?")->execute([(int)$r['id'], $companyId]);
+                }
+            }
+            $note = '[' . date('Y-m-d H:i') . '] Settlement journal #' . $journalId . ' reversed (reversal journal #' . $reversalJournalId . ')'
+                . ($reason !== '' ? ': ' . $reason : '') . '. Settlement set back to draft.' . $refundNote;
+            $conn->prepare("
+                UPDATE re_security_deposit_settlements
+                SET status = 'draft', journal_id = NULL, refund_id = NULL, approved_by = NULL, approved_at = NULL,
+                    notes = TRIM(CONCAT(COALESCE(notes, ''), '\n', ?)), updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$note, $settlementId]);
+            $conn->prepare("
+                UPDATE re_security_deposit_deductions
+                SET status = 'draft', journal_id = NULL, approved_by = NULL, approved_at = NULL
+                WHERE company_id = ? AND journal_id = ?
+            ")->execute([$companyId, $journalId]);
+            if ($moveOutId) {
+                $conn->prepare("
+                    UPDATE re_move_outs
+                    SET deposit_status = 'processing', deposit_refunded_at = NULL, deposit_refund_method = NULL, deposit_refund_reference = NULL,
+                        status = IF(status IN ('completed', 'deposit_processing', 'inspection_completed'), 'deposit_processing', status)
+                    WHERE id = ? AND company_id = ?
+                ")->execute([$moveOutId, $companyId]);
+            }
+            re_sd_log($conn, $companyId, $leaseId, $tenantId, 'settlement_reversed', null, 'draft', (float)$set['refund_amount'] + (float)$set['deduction_amount'],
+                $note, $userId, 'journal_reversal', null, $reversalJournalId, $moveOutId ?: null, null, !empty($set['refund_id']) ? (int)$set['refund_id'] : null);
+            if ($own) {
+                $conn->commit();
+            }
+            return ['success' => true, 'move_out_id' => $moveOutId ?: null, 'error' => ''];
+        } catch (Throwable $e) {
+            if ($own && $conn->inTransaction()) {
+                $conn->rollBack();
+            }
+            error_log('Deposit settlement reversal sync failed (settlement ' . $settlementId . '): ' . $e->getMessage());
+            return ['success' => false, 'move_out_id' => $moveOutId ?: null, 'error' => $e->getMessage()];
+        }
+    }
+}

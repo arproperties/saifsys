@@ -104,6 +104,16 @@ function ars_booking_doc_categories(): array {
             'icon' => 'bi-shield-lock',
             'hint' => 'Deposit receipts, refund proof, damage / deduction evidence.',
         ],
+        'move_in_form' => [
+            'label' => 'Move-In Inspection (signed)',
+            'icon' => 'bi-box-arrow-in-right',
+            'hint' => 'The move-in inspection report signed by the guest (Move-In, Inspection Form step).',
+        ],
+        'move_out_report' => [
+            'label' => 'Move-Out Inspection (signed)',
+            'icon' => 'bi-box-arrow-right',
+            'hint' => 'The move-out inspection report signed by the guest (Move-Out, Inspection Report step).',
+        ],
         'other' => [
             'label' => 'Other',
             'icon' => 'bi-paperclip',

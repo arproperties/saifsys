@@ -2,10 +2,13 @@
 /**
  * Finance > Vouchers: list of one kind for the company selected in the session.
  * Opened through fin_journal_vouchers.php, fin_petty_cash.php,
- * fin_payment_vouchers.php or fin_receipt_vouchers.php, which set $finVoucherType.
+ * fin_payment_vouchers.php, fin_receipt_vouchers.php, fin_supplier_invoices.php,
+ * fin_fixed_journals.php or fin_allocation_journals.php,
+ * which set $finVoucherType.
  */
 require_once __DIR__ . '/../includes/fin_context.php';
 require_once __DIR__ . '/../includes/fin_voucher_helper.php';
+require_once __DIR__ . '/../includes/fin_supplier_payment_helper.php';
 
 $type = (string)($finVoucherType ?? $_GET['type'] ?? 'jv');
 if (!isset(FIN_VOUCHER_TYPES[$type])) {
@@ -26,6 +29,21 @@ if (($from !== '' && !fin_voucher_valid_date($from)) || ($to !== '' && !fin_vouc
 
 $showDeleted = !empty($_GET['deleted']);
 $rows = ($tableOk && $company) ? fin_voucher_list($conn, $companyId, $type, $from ?: null, $to ?: null, $showDeleted) : [];
+// Supplier invoices also show what is paid; supplier payments say how they were paid.
+$paidOf = ($type === 'si' && $rows && fin_sp_ready($conn)) ? array_column(fin_sp_invoices($conn, $companyId, null, false), 'paid', 'id') : [];
+$modeOf = [];
+// Journals that moved an advance onto an invoice are changed in Supplier Allocations only.
+$transferIds = [];
+if ($type === 'jv' && $rows && fin_sp_ready($conn)) {
+    $stmt = $conn->prepare("SELECT transfer_voucher_id FROM fin_payment_allocations WHERE company_id = ? AND transfer_voucher_id IS NOT NULL AND removed_at IS NULL");
+    $stmt->execute([$companyId]);
+    $transferIds = array_flip(array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN)));
+}
+if ($type === 'pv' && $rows && fin_sp_ready($conn)) {
+    $stmt = $conn->prepare("SELECT voucher_id, mode FROM fin_supplier_payments WHERE company_id = ?");
+    $stmt->execute([$companyId]);
+    $modeOf = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+}
 $total = 0.0;
 foreach ($rows as $r) {
     if ($r['status'] === 'posted') {
@@ -75,7 +93,13 @@ require __DIR__ . '/../includes/fin_layout_header.php';
         </div>
         <div class="col-auto ms-md-auto">
           <a href="fin_voucher_history.php?type=<?= h($type) ?>" class="btn btn-sm btn-outline-secondary"><i class="bi bi-clock-history"></i> History</a>
+          <?php if (in_array($type, FIN_SCHEDULED_TYPES, true)): ?>
+          <a href="fin_pending_entries.php" class="btn btn-sm btn-success"><i class="bi bi-hourglass-split"></i> Pending Approval</a>
+          <a href="<?= h($vt['new']) ?>" class="btn btn-sm btn-outline-secondary"><?= $type === 'fj' ? 'Fixed Assets' : 'Allocations' ?></a>
+          <?php else: ?>
           <a href="<?= h($vt['new']) ?>" class="btn btn-sm btn-success"><i class="bi bi-plus-lg"></i> New <?= h($vt['label']) ?></a>
+          <?php endif; ?>
+          <?php if ($type === 'pv'): ?><a href="fin_supplier_payment_new.php" class="btn btn-sm btn-success"><i class="bi bi-person-check"></i> Pay a Supplier</a><?php endif; ?>
         </div>
       </form>
     </div>
@@ -88,7 +112,7 @@ require __DIR__ . '/../includes/fin_layout_header.php';
           <tr>
             <th>Voucher no.</th><th>Date</th>
             <?php if ($vt['party'] !== ''): ?><th><?= h($vt['party']) ?></th><?php endif; ?>
-            <th>Reference</th><th>Narration</th><th class="text-end">Amount (AED)</th><th>Status</th><th></th>
+            <th><?= $type === 'si' ? 'Supplier inv. no.' : 'Reference' ?></th><th><?= $type === 'si' ? 'Description' : 'Narration' ?></th><th class="text-end">Amount (AED)</th><?php if ($type === 'si'): ?><th class="text-end">Outstanding</th><?php endif; ?><th>Status</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -100,12 +124,20 @@ require __DIR__ . '/../includes/fin_layout_header.php';
             <td><?= h($r['reference']) ?></td>
             <td><?= h($r['narration']) ?></td>
             <td class="v-num"><?= number_format((float)$r['amount'], 2) ?></td>
+            <?php if ($type === 'si'): $paid = (float)($paidOf[(int)$r['id']] ?? 0); ?>
+            <td class="v-num"><?= $r['status'] === 'posted' ? number_format((float)$r['amount'] - $paid, 2) : '' ?></td>
+            <?php endif; ?>
             <td class="v-keep">
-              <?= $r['status'] === 'void' ? '<span class="badge text-bg-secondary">Deleted</span>' : '<span class="badge text-bg-success">Posted</span>' ?>
+              <?php if ($r['status'] === 'void'): ?><span class="badge text-bg-secondary">Deleted</span>
+              <?php elseif ($type === 'si'): ?><?= fin_sp_status_badge((float)$r['amount'], (float)($paidOf[(int)$r['id']] ?? 0)) ?>
+              <?php else: ?><span class="badge text-bg-success">Posted</span><?php endif; ?>
+              <?php if (isset($modeOf[(int)$r['id']])): ?><span class="badge text-bg-light border"><?= h(FIN_SP_MODES[$modeOf[(int)$r['id']]]) ?></span><?php endif; ?>
             </td>
             <td class="v-keep text-end text-nowrap">
-              <?php if ($r['status'] === 'posted'): ?>
-              <a href="fin_voucher_edit.php?id=<?= (int)$r['id'] ?>" class="btn btn-sm btn-link py-0">Edit</a>
+              <?php if (isset($transferIds[(int)$r['id']])): ?>
+              <a href="fin_supplier_allocations.php" class="btn btn-sm btn-link py-0">Advance link</a>
+              <?php elseif ($r['status'] === 'posted'): ?>
+              <?php if (!isset($modeOf[(int)$r['id']]) && !in_array($type, FIN_SCHEDULED_TYPES, true)): ?><a href="fin_voucher_edit.php?id=<?= (int)$r['id'] ?>" class="btn btn-sm btn-link py-0">Edit</a><?php endif; ?>
               <form method="post" action="fin_voucher_view.php?id=<?= (int)$r['id'] ?>" class="d-inline" onsubmit="return confirm('Delete <?= h($r['voucher_no']) ?>? Its amounts will stop counting in the trial balance. This cannot be undone.');">
                 <?php csrf_field(); ?>
                 <input type="hidden" name="action" value="delete">
@@ -116,7 +148,7 @@ require __DIR__ . '/../includes/fin_layout_header.php';
             </td>
           </tr>
         <?php endforeach; if (!$rows): ?>
-          <tr><td colspan="8" class="text-muted text-center py-4">No <?= h(strtolower($vt['plural'])) ?> <?= ($from !== '' || $to !== '') ? 'in this period' : 'yet' ?>.</td></tr>
+          <tr><td colspan="9" class="text-muted text-center py-4">No <?= h(strtolower($vt['plural'])) ?> <?= ($from !== '' || $to !== '') ? 'in this period' : 'yet' ?>.</td></tr>
         <?php endif; ?>
         </tbody>
         <?php if ($rows): ?>
@@ -124,7 +156,7 @@ require __DIR__ . '/../includes/fin_layout_header.php';
           <tr class="fw-bold">
             <td colspan="<?= $vt['party'] !== '' ? 5 : 4 ?>">Total posted (<?= count($rows) ?> shown)</td>
             <td class="v-num"><?= number_format($total, 2) ?></td>
-            <td colspan="2"></td>
+            <td colspan="<?= $type === 'si' ? 3 : 2 ?>"></td>
           </tr>
         </tfoot>
         <?php endif; ?>

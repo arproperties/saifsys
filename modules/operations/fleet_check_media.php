@@ -27,7 +27,10 @@ if ($rel === false) {
     $notFound();
 }
 
-$root = dirname(__DIR__);
+// The files sit in the app's top uploads/ folder (two levels up from here), not in
+// modules/. This page moved from hr/ (one level down) and kept the old one-level path,
+// so every check photo and voice note showed as not found.
+$root = dirname(__DIR__, 2);
 $baseDir = realpath($root . '/uploads/fleet_checks');
 $absPath = realpath($root . '/' . ltrim((string)$rel, '/'));
 if ($baseDir === false || $absPath === false || strpos($absPath, $baseDir . DIRECTORY_SEPARATOR) !== 0 || !is_file($absPath)) {

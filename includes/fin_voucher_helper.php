@@ -2,11 +2,15 @@
 /**
  * Finance > Vouchers for the new chart (fin_coa_accounts).
  *
- * Four kinds, one table (fin_vouchers):
+ * Five kinds, one table (fin_vouchers):
  *   jv  Journal Voucher  - any debits and credits, as long as they balance
  *   pc  Petty Cash       - paid out of a cash-in-hand account
  *   pv  Payment Voucher  - paid out of a cash or bank account
  *   rv  Receipt Voucher  - received into a cash or bank account
+ *   si  Supplier Invoice - a supplier's bill; saved through fin_supplier_invoice_helper.php
+ *   fj  Fixed Journal    - a monthly depreciation entry, posted when Accounts approve it
+ *   aj  Allocation Journal - a monthly prepaid / accrued entry, posted when Accounts approve it
+ * fj and aj are journals made from a schedule (fin_auto_entry_helper.php), never typed in.
  *
  * Saving a voucher posts its lines to fin_ledger_entries, so it shows in the
  * Trial Balance and the account ledger at once. A posted voucher can be edited
@@ -28,7 +32,19 @@ const FIN_VOUCHER_TYPES = [
              'party' => 'Paid to', 'cash' => 'Paid from'],
     'rv' => ['list' => 'fin_receipt_vouchers.php', 'new' => 'fin_receipt_voucher_new.php', 'label' => 'Receipt Voucher', 'plural' => 'Receipt Vouchers', 'prefix' => 'RV', 'icon' => 'bi-box-arrow-in-down-left',
              'party' => 'Received from', 'cash' => 'Received into'],
+    'si' => ['list' => 'fin_supplier_invoices.php', 'new' => 'fin_supplier_invoice_new.php', 'label' => 'Supplier Invoice', 'plural' => 'Supplier Invoices', 'prefix' => 'SI', 'icon' => 'bi-receipt',
+             'party' => 'Supplier', 'cash' => ''],
+    'fj' => ['list' => 'fin_fixed_journals.php', 'new' => 'fin_assets.php', 'label' => 'Fixed Journal Voucher', 'plural' => 'Fixed Journal Vouchers', 'prefix' => 'FJV', 'icon' => 'bi-arrow-repeat',
+             'party' => '', 'cash' => ''],
+    'aj' => ['list' => 'fin_allocation_journals.php', 'new' => 'fin_allocations.php', 'label' => 'Allocation Journal Voucher', 'plural' => 'Allocation Journal Vouchers', 'prefix' => 'AJV', 'icon' => 'bi-calendar2-range',
+             'party' => '', 'cash' => ''],
 ];
+
+/** Kinds that are journals: lines with a debit or a credit, no cash account. */
+const FIN_JOURNAL_TYPES = ['jv', 'fj', 'aj'];
+
+/** Kinds made from a schedule and posted on approval, never typed in. */
+const FIN_SCHEDULED_TYPES = ['fj', 'aj'];
 
 const FIN_VOUCHER_MAX_AMOUNT = 9999999999.99;
 
@@ -152,7 +168,7 @@ function fin_voucher_parse_amount($raw): ?float
  */
 function fin_voucher_prepare(PDO $conn, int $companyId, string $type, array $data): array
 {
-    if (!isset(FIN_VOUCHER_TYPES[$type])) {
+    if (!isset(FIN_VOUCHER_TYPES[$type]) || $type === 'si') {
         throw new InvalidArgumentException('Unknown voucher type.');
     }
     $date = trim((string)($data['date'] ?? ''));
@@ -182,7 +198,7 @@ function fin_voucher_prepare(PDO $conn, int $companyId, string $type, array $dat
         $accountId = (int)($line['account_id'] ?? 0);
         $desc = trim((string)($line['description'] ?? ''));
         $partner = trim((string)($line['partner'] ?? ''));
-        if ($type === 'jv') {
+        if (in_array($type, FIN_JOURNAL_TYPES, true)) {
             $debit = fin_voucher_parse_amount($line['debit'] ?? '');
             $credit = fin_voucher_parse_amount($line['credit'] ?? '');
         } else {
@@ -217,7 +233,7 @@ function fin_voucher_prepare(PDO $conn, int $companyId, string $type, array $dat
         $postings[] = [$accountId, $desc !== '' ? $desc : $narration, $debit, $credit, $partner !== '' ? $partner : null];
     }
 
-    if ($type === 'jv') {
+    if (in_array($type, FIN_JOURNAL_TYPES, true)) {
         if (count($postings) < 2) {
             throw new InvalidArgumentException('A journal voucher needs at least two lines.');
         }
@@ -275,6 +291,19 @@ function fin_voucher_post_lines(PDO $conn, int $companyId, int $voucherId, strin
 }
 
 /**
+ * The next number of a kind for the year of $date: PV-2026-0001. Numbers run per
+ * company, kind and year. Call inside a transaction: the lock keeps two people
+ * saving at once from taking the same number.
+ */
+function fin_voucher_next_no(PDO $conn, int $companyId, string $type, string $date): string
+{
+    $stem = FIN_VOUCHER_TYPES[$type]['prefix'] . '-' . substr($date, 0, 4) . '-';
+    $max = $conn->prepare("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(voucher_no, '-', -1) AS UNSIGNED)), 0) FROM fin_vouchers WHERE company_id = ? AND voucher_no LIKE ? FOR UPDATE");
+    $max->execute([$companyId, $stem . '%']);
+    return $stem . str_pad((string)((int)$max->fetchColumn() + 1), 4, '0', STR_PAD_LEFT);
+}
+
+/**
  * Save and post a voucher. Returns its id. $data is described at fin_voucher_prepare().
  * Throws InvalidArgumentException with a message fit to show the user.
  */
@@ -288,13 +317,7 @@ function fin_voucher_create(PDO $conn, int $companyId, string $type, array $data
         $conn->beginTransaction();
     }
     try {
-        // Numbers run per company, kind and year: PV-2026-0001. The lock keeps two
-        // people saving at once from taking the same number.
-        $stem = FIN_VOUCHER_TYPES[$type]['prefix'] . '-' . substr($date, 0, 4) . '-';
-        $max = $conn->prepare("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(voucher_no, '-', -1) AS UNSIGNED)), 0) FROM fin_vouchers WHERE company_id = ? AND voucher_no LIKE ? FOR UPDATE");
-        $max->execute([$companyId, $stem . '%']);
-        $voucherNo = $stem . str_pad((string)((int)$max->fetchColumn() + 1), 4, '0', STR_PAD_LEFT);
-
+        $voucherNo = fin_voucher_next_no($conn, $companyId, $type, $date);
         $conn->prepare("INSERT INTO fin_vouchers (company_id, type, voucher_no, voucher_date, party, reference, narration, amount, created_by) VALUES (?,?,?,?,?,?,?,?,?)")
             ->execute([$companyId, $type, $voucherNo, $date, $p['party'], $p['reference'], $p['narration'], $p['amount'], $userId]);
         $voucherId = (int)$conn->lastInsertId();
@@ -334,6 +357,19 @@ function fin_voucher_update(PDO $conn, int $companyId, int $id, array $data, ?in
         if ($v['status'] !== 'posted') {
             throw new InvalidArgumentException('A deleted voucher cannot be edited.');
         }
+        if ($v['type'] === 'si') {
+            throw new InvalidArgumentException('A supplier invoice is changed on its own form.');
+        }
+        if (in_array($v['type'], FIN_SCHEDULED_TYPES, true)) {
+            throw new InvalidArgumentException('This entry comes from a monthly schedule. Delete it to send it back to Pending Approval, or change the schedule.');
+        }
+        $links = fin_voucher_links($conn, $companyId, $id);
+        if ($links['supplier_payment']) {
+            throw new InvalidArgumentException('A supplier payment cannot be edited. Delete it and enter it again.');
+        }
+        if ($links['transfer']) {
+            throw new InvalidArgumentException('This journal moved an advance onto an invoice. Change the allocation in Supplier Allocations instead.');
+        }
         $p = fin_voucher_prepare($conn, $companyId, $v['type'], $data);
         $before = fin_voucher_snapshot($conn, $companyId, $id);
 
@@ -367,7 +403,7 @@ function fin_voucher_form_data(array $v): array
 {
     $lines = $v['lines'];
     $cashId = 0;
-    if ($v['type'] !== 'jv' && $lines) {
+    if (!in_array($v['type'], FIN_JOURNAL_TYPES, true) && $lines) {
         // A receipt posts the cash line first; payments and petty cash post it last.
         $cash = $v['type'] === 'rv' ? array_shift($lines) : array_pop($lines);
         $cashId = (int)$cash['account_id'];
@@ -412,7 +448,7 @@ function fin_voucher_snapshot(PDO $conn, int $companyId, int $id): ?array
             'credit'      => number_format((float)$l['credit'], 2, '.', ''),
         ];
     }
-    return [
+    $snap = [
         'date'      => $v['voucher_date'],
         'party'     => (string)$v['party'],
         'reference' => (string)$v['reference'],
@@ -420,6 +456,17 @@ function fin_voucher_snapshot(PDO $conn, int $companyId, int $id): ?array
         'amount'    => number_format((float)$v['amount'], 2, '.', ''),
         'lines'     => $lines,
     ];
+    if ($v['type'] === 'si') {
+        // A supplier invoice also keeps its VAT rate and the files attached to it.
+        $stmt = $conn->prepare("SELECT vat_rate FROM fin_supplier_invoices WHERE voucher_id = ? AND company_id = ?");
+        $stmt->execute([$id, $companyId]);
+        $rate = $stmt->fetchColumn();
+        $snap['vat'] = $rate === false ? '' : rtrim(rtrim((string)$rate, '0'), '.') . '%';
+        $stmt = $conn->prepare("SELECT file_name FROM fin_voucher_attachments WHERE voucher_id = ? AND company_id = ? AND removed_at IS NULL ORDER BY id");
+        $stmt->execute([$id, $companyId]);
+        $snap['files'] = implode(', ', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+    return $snap;
 }
 
 /** One line of the history: who did what to a voucher, with the voucher before and after. */
@@ -492,7 +539,7 @@ function fin_voucher_changes(?array $before, ?array $after): array
         }
         return $key === 'amount' ? number_format((float)$v, 2) : $v;
     };
-    foreach (['date' => 'Date', 'party' => 'Party', 'reference' => 'Reference', 'narration' => 'Narration', 'amount' => 'Amount'] as $key => $label) {
+    foreach (['date' => 'Date', 'party' => 'Party', 'reference' => 'Reference', 'narration' => 'Narration', 'amount' => 'Amount', 'vat' => 'VAT', 'files' => 'Attachments'] as $key => $label) {
         $b = (string)($before[$key] ?? '');
         $a = (string)($after[$key] ?? '');
         if ($b !== $a) {
@@ -572,6 +619,76 @@ function fin_voucher_list(PDO $conn, int $companyId, string $type, ?string $from
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
+/** Whether monthly scheduled entries exist here (migrations/fin_fixed_assets.sql). */
+function fin_auto_ready(PDO $conn): bool
+{
+    $chk = $conn->prepare("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fin_auto_entries'");
+    $chk->execute();
+    return (int)$chk->fetchColumn() === 1;
+}
+
+/** Whether supplier payments and allocations exist here (migrations/fin_supplier_payments.sql). */
+function fin_alloc_ready(PDO $conn): bool
+{
+    $chk = $conn->prepare("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('fin_supplier_payments', 'fin_payment_allocations')");
+    $chk->execute();
+    return (int)$chk->fetchColumn() === 2;
+}
+
+/**
+ * What else a voucher is tied to: 'supplier_payment' (paid to a supplier through
+ * Pay a Supplier), 'transfer' (the journal that moved an advance onto an invoice,
+ * made and removed only with its allocation) and 'allocated' (the amount of it
+ * allocated, as a payment or as an invoice).
+ */
+function fin_voucher_links(PDO $conn, int $companyId, int $id): array
+{
+    $out = ['supplier_payment' => false, 'transfer' => false, 'allocated' => 0.0];
+    if (!fin_alloc_ready($conn)) {
+        return $out;
+    }
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM fin_supplier_payments WHERE voucher_id = ? AND company_id = ?");
+    $stmt->execute([$id, $companyId]);
+    $out['supplier_payment'] = (int)$stmt->fetchColumn() > 0;
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM fin_payment_allocations WHERE transfer_voucher_id = ? AND company_id = ? AND removed_at IS NULL");
+    $stmt->execute([$id, $companyId]);
+    $out['transfer'] = (int)$stmt->fetchColumn() > 0;
+    $stmt = $conn->prepare("SELECT COALESCE(SUM(amount), 0) FROM fin_payment_allocations WHERE (payment_voucher_id = ? OR invoice_voucher_id = ?) AND company_id = ? AND removed_at IS NULL");
+    $stmt->execute([$id, $id, $companyId]);
+    $out['allocated'] = round((float)$stmt->fetchColumn(), 2);
+    return $out;
+}
+
+/**
+ * Take off every allocation of a payment or invoice that is being deleted, and
+ * delete the transfer journals that went with them. Call inside the transaction.
+ */
+function fin_voucher_release_allocations(PDO $conn, int $companyId, int $id, ?int $userId): void
+{
+    if (!fin_alloc_ready($conn)) {
+        return;
+    }
+    $stmt = $conn->prepare("SELECT id, transfer_voucher_id FROM fin_payment_allocations WHERE (payment_voucher_id = ? OR invoice_voucher_id = ?) AND company_id = ? AND removed_at IS NULL FOR UPDATE");
+    $stmt->execute([$id, $id, $companyId]);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $a) {
+        $conn->prepare("UPDATE fin_payment_allocations SET removed_by = ?, removed_at = NOW() WHERE id = ?")->execute([$userId, $a['id']]);
+        if ($a['transfer_voucher_id'] !== null) {
+            fin_voucher_void($conn, $companyId, (int)$a['transfer_voucher_id'], $userId);
+        }
+    }
+}
+
+/** Marks a voucher and its lines deleted and records it. Call inside the transaction. */
+function fin_voucher_void(PDO $conn, int $companyId, int $id, ?int $userId): void
+{
+    $before = fin_voucher_snapshot($conn, $companyId, $id);
+    $conn->prepare("UPDATE fin_vouchers SET status = 'void', voided_by = ?, voided_at = NOW() WHERE id = ? AND company_id = ? AND status = 'posted'")
+        ->execute([$userId, $id, $companyId]);
+    $conn->prepare("UPDATE fin_ledger_entries SET is_void = 1 WHERE voucher_id = ? AND company_id = ?")
+        ->execute([$id, $companyId]);
+    fin_voucher_log($conn, $companyId, $id, 'deleted', $userId, $before, null);
+}
+
 /** Delete a posted voucher: it and its lines stay on record (status 'void') but leave every balance. */
 function fin_voucher_delete(PDO $conn, int $companyId, int $id, ?int $userId = null): void
 {
@@ -584,17 +701,23 @@ function fin_voucher_delete(PDO $conn, int $companyId, int $id, ?int $userId = n
     if ($status !== 'posted') {
         throw new InvalidArgumentException('This voucher is already deleted.');
     }
+    if (fin_voucher_links($conn, $companyId, $id)['transfer']) {
+        throw new InvalidArgumentException('This journal moved an advance onto an invoice. Remove that allocation in Supplier Allocations instead.');
+    }
 
     $ownTx = !$conn->inTransaction();
     if ($ownTx) {
         $conn->beginTransaction();
     }
     try {
-        $conn->prepare("UPDATE fin_vouchers SET status = 'void', voided_by = ?, voided_at = NOW() WHERE id = ? AND company_id = ?")
-            ->execute([$userId, $id, $companyId]);
-        $conn->prepare("UPDATE fin_ledger_entries SET is_void = 1 WHERE voucher_id = ? AND company_id = ?")
-            ->execute([$id, $companyId]);
-        fin_voucher_log($conn, $companyId, $id, 'deleted', $userId, fin_voucher_snapshot($conn, $companyId, $id), null);
+        // A payment or invoice going away takes its allocations with it.
+        fin_voucher_release_allocations($conn, $companyId, $id, $userId);
+        fin_voucher_void($conn, $companyId, $id, $userId);
+        // A deleted monthly entry goes back to Pending Approval.
+        if (fin_auto_ready($conn)) {
+            $conn->prepare("UPDATE fin_auto_entries SET status = 'pending', voucher_id = NULL, decided_by = NULL, decided_at = NULL WHERE voucher_id = ? AND company_id = ?")
+                ->execute([$id, $companyId]);
+        }
         if ($ownTx) {
             $conn->commit();
         }

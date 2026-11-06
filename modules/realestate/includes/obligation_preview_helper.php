@@ -135,6 +135,206 @@ if (!function_exists('re_obligation_monthly_periods')) {
     }
 }
 
+if (!function_exists('re_obligation_calendar_periods')) {
+    /**
+     * Calendar-month rent periods: a part month at each end, full months between.
+     *
+     * @return list<array{start:string,end:string,due:string,days:int,dim:int}>
+     */
+    function re_obligation_calendar_periods(string $startDate, string $endDate): array
+    {
+        try {
+            $cursor = new DateTimeImmutable($startDate);
+            $leaseEnd = new DateTimeImmutable($endDate);
+        } catch (Throwable $e) {
+            return [];
+        }
+
+        $periods = [];
+        $guard = 0;
+        while ($cursor <= $leaseEnd && $guard < 240) {
+            $monthEnd = $cursor->modify('last day of this month');
+            $periodEnd = $monthEnd > $leaseEnd ? $leaseEnd : $monthEnd;
+            $periods[] = [
+                'start' => $cursor->format('Y-m-d'),
+                'end' => $periodEnd->format('Y-m-d'),
+                'due' => $cursor->format('Y-m-d'),
+                'days' => (int)$cursor->diff($periodEnd)->days + 1,
+                'dim' => (int)$cursor->format('t'),
+            ];
+            $cursor = $monthEnd->modify('+1 day');
+            $guard++;
+        }
+
+        return $periods;
+    }
+}
+
+if (!function_exists('re_obligation_rent_coverage')) {
+    /**
+     * Rent rows that must not be rebuilt: billed, paid, cancelled or waived.
+     * Their days are left out of the new schedule and their amounts count
+     * towards the lease total.
+     *
+     * @return array{intervals:list<array{0:string,1:string}>,subtotal:float,vat:float}
+     */
+    function re_obligation_rent_coverage(PDO $conn, int $companyId, int $leaseId): array
+    {
+        $coverage = ['intervals' => [], 'subtotal' => 0.0, 'vat' => 0.0];
+        if (!re_obligation_table_exists($conn, 're_obligations')) {
+            return $coverage;
+        }
+        $stmt = $conn->prepare("
+            SELECT o.period_start, o.period_end, o.subtotal_amount, o.vat_amount
+            FROM re_obligations o
+            WHERE o.company_id = ? AND o.lease_id = ?
+              AND o.obligation_type = 'rent'
+              AND o.period_start IS NOT NULL AND o.period_end IS NOT NULL
+              AND (
+                    COALESCE(o.allocated_amount, 0) > 0
+                    OR o.invoice_id IS NOT NULL
+                    OR o.status IN ('partially_allocated', 'settled', 'cancelled', 'waived')
+                    OR EXISTS (
+                        SELECT 1
+                        FROM re_invoice_items ii
+                        INNER JOIN re_invoices i ON i.id = ii.invoice_id AND i.company_id = ii.company_id
+                        WHERE ii.company_id = o.company_id AND ii.obligation_id = o.id AND i.status <> 'cancelled'
+                    )
+              )
+        ");
+        $stmt->execute([$companyId, $leaseId]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $coverage['intervals'][] = [(string)$row['period_start'], (string)$row['period_end']];
+            $coverage['subtotal'] += (float)$row['subtotal_amount'];
+            $coverage['vat'] += (float)$row['vat_amount'];
+        }
+        return $coverage;
+    }
+}
+
+if (!function_exists('re_obligation_calendar_rent_rows')) {
+    /**
+     * Rent by calendar month: monthly rent x days / days in that month.
+     * Days already covered by billed rows are skipped; the last new row takes
+     * the rounding so the lease total stays equal to the contract rent.
+     *
+     * @return list<array<string,mixed>>
+     */
+    function re_obligation_calendar_rent_rows(
+        string $startDate,
+        string $endDate,
+        float $annualRent,
+        array $rentTax,
+        bool $separateVatPayment,
+        float $rentVatTotal,
+        array $coverage,
+        int $leaseId
+    ): array {
+        $periods = re_obligation_calendar_periods($startDate, $endDate);
+        if ($annualRent <= 0 || !$periods) {
+            return [];
+        }
+
+        $leaseMonths = 0.0;
+        foreach ($periods as $period) {
+            $leaseMonths += $period['days'] / $period['dim'];
+        }
+        $monthlyRent = $annualRent / $leaseMonths;
+        $taxTreatment = $separateVatPayment ? 'exempt' : (string)$rentTax['treatment'];
+        $taxRate = $separateVatPayment ? 0.0 : (float)$rentTax['rate'];
+        $vatRatio = $annualRent > 0 ? $rentVatTotal / $annualRent : 0.0;
+
+        // Split each calendar month into the runs of days nobody has billed yet.
+        $pieces = [];
+        foreach ($periods as $idx => $period) {
+            $runStart = null;
+            $runs = [];
+            $day = new DateTimeImmutable($period['start']);
+            $last = new DateTimeImmutable($period['end']);
+            while ($day <= $last) {
+                $ymd = $day->format('Y-m-d');
+                $covered = false;
+                foreach ($coverage['intervals'] as [$coverFrom, $coverTo]) {
+                    if ($ymd >= $coverFrom && $ymd <= $coverTo) {
+                        $covered = true;
+                        break;
+                    }
+                }
+                if (!$covered && $runStart === null) {
+                    $runStart = $ymd;
+                }
+                if ($covered && $runStart !== null) {
+                    $runs[] = [$runStart, $day->modify('-1 day')->format('Y-m-d')];
+                    $runStart = null;
+                }
+                $day = $day->modify('+1 day');
+            }
+            if ($runStart !== null) {
+                $runs[] = [$runStart, $period['end']];
+            }
+            foreach ($runs as $runIdx => [$from, $to]) {
+                $days = (int)(new DateTimeImmutable($from))->diff(new DateTimeImmutable($to))->days + 1;
+                $pieces[] = [
+                    'index' => $idx + 1,
+                    'part' => $runIdx + 1,
+                    'start' => $from,
+                    'end' => $to,
+                    'subtotal' => re_obligation_money($monthlyRent * $days / $period['dim']),
+                ];
+            }
+        }
+        if (!$pieces) {
+            return [];
+        }
+
+        // The last piece absorbs rounding only when it runs to the lease end.
+        $lastIdx = count($pieces) - 1;
+        if ($pieces[$lastIdx]['end'] === $periods[count($periods) - 1]['end']) {
+            $others = 0.0;
+            foreach ($pieces as $i => $piece) {
+                if ($i !== $lastIdx) {
+                    $others += $piece['subtotal'];
+                }
+            }
+            $remainder = re_obligation_money($annualRent - $coverage['subtotal'] - $others);
+            if ($remainder >= 0 && $remainder <= $pieces[$lastIdx]['subtotal'] + $monthlyRent) {
+                $pieces[$lastIdx]['subtotal'] = $remainder;
+            }
+        }
+
+        $rows = [];
+        $vatOthers = 0.0;
+        foreach ($pieces as $i => $piece) {
+            $vat = re_obligation_money($piece['subtotal'] * $vatRatio);
+            if ($i === $lastIdx && $vatRatio > 0) {
+                $vatRemainder = re_obligation_money($rentVatTotal - $coverage['vat'] - $vatOthers);
+                if ($vatRemainder >= 0 && $vatRemainder <= $vat + $monthlyRent * $vatRatio) {
+                    $vat = $vatRemainder;
+                }
+            }
+            $vatOthers += $vat;
+            $row = re_obligation_preview_row(
+                'rent',
+                'revenue',
+                'Monthly rent recognition period ' . $piece['index'] . ($piece['part'] > 1 ? ' part ' . $piece['part'] : ''),
+                $piece['start'],
+                $piece['subtotal'],
+                $taxTreatment,
+                $taxRate,
+                $piece['start'],
+                $piece['end'],
+                'lease',
+                $leaseId
+            );
+            $row['vat_amount'] = $vat;
+            $row['total_amount'] = re_obligation_money($piece['subtotal'] + $vat);
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+}
+
 if (!function_exists('re_obligation_tax_for_rent')) {
     /**
      * @return array{treatment:string,rate:float}
@@ -624,37 +824,22 @@ if (!function_exists('re_obligation_preview_generate')) {
             : 0.0;
 
         if ($annualRent > 0 && !empty($periods)) {
-            $monthly = re_obligation_money($annualRent / count($periods));
             $rentVatTotal = ($separateVatPayment || $rentTax['treatment'] !== 'standard')
                 ? 0.0
                 : re_obligation_money((float)($lease['rent_vat_amount'] ?? ($annualRent * ((float)$rentTax['rate'] / 100))));
-            $monthlyVat = count($periods) > 0 ? re_obligation_money($rentVatTotal / count($periods)) : 0.0;
-            $allocated = 0.0;
-            $allocatedVat = 0.0;
-            foreach ($periods as $idx => $period) {
-                $subtotal = ($idx === count($periods) - 1)
-                    ? re_obligation_money($annualRent - $allocated)
-                    : $monthly;
-                $allocated += $subtotal;
-                $vatAmount = ($idx === count($periods) - 1)
-                    ? re_obligation_money($rentVatTotal - $allocatedVat)
-                    : $monthlyVat;
-                $allocatedVat += $vatAmount;
-                $rentRow = re_obligation_preview_row(
-                    'rent',
-                    'revenue',
-                    'Monthly rent recognition period ' . ($idx + 1),
-                    $period['due'],
-                    $subtotal,
-                    $separateVatPayment ? 'exempt' : $rentTax['treatment'],
-                    $separateVatPayment ? 0.0 : $rentTax['rate'],
-                    $period['start'],
-                    $period['end'],
-                    'lease',
-                    $leaseId
-                );
-                $rentRow['vat_amount'] = $vatAmount;
-                $rentRow['total_amount'] = re_obligation_money($subtotal + $vatAmount);
+            // Rent follows calendar months so each month's P&L carries its own days.
+            // Fee splits below still follow the lease-anniversary periods (cheque rows).
+            $rentRows = re_obligation_calendar_rent_rows(
+                $startDate,
+                $endDate,
+                $annualRent,
+                $rentTax,
+                $separateVatPayment,
+                $rentVatTotal,
+                re_obligation_rent_coverage($conn, $companyId, $leaseId),
+                $leaseId
+            );
+            foreach ($rentRows as $rentRow) {
                 $obligations[] = $rentRow;
             }
         }

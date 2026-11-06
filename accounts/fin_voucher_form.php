@@ -10,7 +10,7 @@ require_once __DIR__ . '/../includes/fin_context.php';
 require_once __DIR__ . '/../includes/fin_voucher_helper.php';
 
 $type = (string)($finVoucherType ?? $_GET['type'] ?? 'jv');
-if (!isset(FIN_VOUCHER_TYPES[$type])) {
+if (!isset(FIN_VOUCHER_TYPES[$type]) || $type === 'si' || in_array($type, FIN_SCHEDULED_TYPES, true)) {
     $type = 'jv';
 }
 $vt = FIN_VOUCHER_TYPES[$type];
@@ -116,6 +116,12 @@ require __DIR__ . '/../includes/fin_layout_header.php';
     <div class="alert alert-info">This company has no active accounts yet. <a href="fin_chart_of_accounts.php">Set up the chart of accounts</a> first.</div>
   <?php else: ?>
 
+  <?php if ($type === 'pv' && !$edit): ?>
+  <ul class="nav nav-tabs mb-3 fin-noprint">
+    <li class="nav-item"><a class="nav-link active" aria-current="page" href="fin_payment_voucher_new.php">General payment</a></li>
+    <li class="nav-item"><a class="nav-link" href="fin_supplier_payment_new.php">Pay a supplier</a></li>
+  </ul>
+  <?php endif; ?>
   <form method="post" action="<?= h($formAction) ?>" id="vForm">
     <?php csrf_field(); ?>
     <div class="card mb-3">

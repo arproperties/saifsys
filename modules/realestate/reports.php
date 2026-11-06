@@ -75,6 +75,7 @@ $reports = [
         ['Bank Reconciliation Summary Report', 'Opening/closing/matched/unmatched/difference report.', 'Statement lines + matches + GL', 'New Engine', 'accounting/bank_reconciliation_report.php', 'To add'],
     ],
     'Security Deposit Reports' => [
+        ['Security Deposit Outstanding', 'Tenancies whose deposit is not fully received, with move-ins where keys were released before the deposit (payment confirmed manually).', 'Deposit obligations + allocations + move-ins', 'Combined', 'reports_deposit_outstanding.php', 'CSV/Print'],
         ['Security Deposit Liability Report', 'Expected, received, liability posted, refunded, deducted, refundable balance.', 'Deposit obligations + receipts + GL', 'Combined', 'accounting/security_deposit_diagnostics.php', 'Diagnostic'],
         ['Deposit Exceptions Report', 'Missing deposit obligations, missing liability journals, refund/deduction exceptions.', 'Phase 7 deposit controls', 'Diagnostic', 'accounting/security_deposit_diagnostics.php', 'Diagnostic'],
     ],

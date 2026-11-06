@@ -24,6 +24,7 @@ require_once __DIR__ . '/lease_vat_calculator.php';
 require_once __DIR__ . '/billing_helper.php';
 require_once __DIR__ . '/re_income_account_roles.php';
 require_once __DIR__ . '/../accounting/accounting_integration.php';
+require_once __DIR__ . '/rent_cutoff_engine.php';
 
 const RE_INVOICE_ENGINE_VERSION = 'phase3.2';
 const RE_INVOICE_CANDIDATE_SOURCE = 'invoice_candidate_phase3';
@@ -706,7 +707,11 @@ if (!function_exists('re_invoice_engine_issue_candidate_for_lease')) {
             ")->execute([$invoiceId, $candidateId, $companyId]);
 
             // Auto-apply only when credit fully settles the new invoice — never chip leftover fils.
-            $creditApplication = function_exists('apply_tenant_credit_to_invoice_accounting')
+            // Side-charge invoices (Extra Service Charges and Penalties — both billing_item
+            // obligations) are skipped: pooled tenant credit is mostly rent cheque overpayment
+            // and must not pay a side charge out of the rental amount.
+            $isSideChargeInvoice = (string)($candidate['source_type'] ?? '') === 'billing_item';
+            $creditApplication = (!$isSideChargeInvoice && function_exists('apply_tenant_credit_to_invoice_accounting'))
                 ? apply_tenant_credit_to_invoice_accounting($invoiceId, $companyId, $userId, true)
                 : ['success' => true, 'applied' => 0.0];
             if (empty($creditApplication['success'])) {
@@ -827,6 +832,12 @@ if (!function_exists('re_invoice_engine_void_unpaid_invoice')) {
                 notes = TRIM(CONCAT(COALESCE(notes, ''), CASE WHEN COALESCE(notes, '') = '' THEN '' ELSE ' | ' END, ?))
             WHERE company_id = ? AND invoice_id = ?
         ")->execute([$reason, $companyId, $invoiceId]);
+
+        // A voided rent invoice no longer needs its month-end cut-off journals.
+        $cutoff = re_rent_cutoff_sync_invoice($conn, $companyId, $invoiceId, $userId);
+        if (empty($cutoff['success'])) {
+            return ['success' => false, 'error' => 'Could not reverse rent cut-off: ' . ($cutoff['error'] ?? 'unknown error')];
+        }
 
         return ['success' => true, 'invoice_id' => $invoiceId, 'journal_reversed' => $journalId > 0];
     }

@@ -20,6 +20,13 @@ $finVoucherNav = [];
 foreach (FIN_VOUCHER_TYPES as $finNavKey => $finNavType) {
     $finVoucherNav[$finNavKey] = [$finNavType['plural'], $finNavType['list'], $finNavType['icon']];
 }
+// Monthly entries waiting for Accounts, shown beside Pending Approval.
+$finPendingCount = 0;
+if (!empty($companyId) && fin_auto_ready($conn)) {
+    $finPendingStmt = $conn->prepare("SELECT COUNT(*) FROM fin_auto_entries WHERE company_id = ? AND status = 'pending'");
+    $finPendingStmt->execute([$companyId]);
+    $finPendingCount = (int)$finPendingStmt->fetchColumn();
+}
 // Where the company switcher comes back to. A page showing one company's record
 // (a voucher, an account) sets $finReturnPath to a page that exists for any company.
 $finSelfPath = $finReturnPath ?? strtok($_SERVER['REQUEST_URI'] ?? '', '?');
@@ -64,8 +71,14 @@ $finSelfPath = $finReturnPath ?? strtok($_SERVER['REQUEST_URI'] ?? '', '?');
     <?php foreach ($finVoucherNav as $finNavKey => [$finNavLabel, $finNavFile, $finNavIcon]): ?>
     <a href="<?= h($appBase) ?>/accounts/<?= h($finNavFile) ?>" class="slink <?= $finActive === $finNavKey ? 'active' : '' ?>"><span class="sicon"><i class="bi <?= h($finNavIcon) ?>"></i></span><span class="slabel"><?= h($finNavLabel) ?></span></a>
     <?php endforeach; ?>
+    <a href="<?= h($appBase) ?>/accounts/fin_pending_entries.php" class="slink <?= $finActive === 'pending' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-hourglass-split"></i></span><span class="slabel">Pending Approval<?php if ($finPendingCount): ?> <span class="badge rounded-pill text-bg-warning"><?= $finPendingCount ?></span><?php endif; ?></span></a>
+    <a href="<?= h($appBase) ?>/accounts/fin_allocations.php" class="slink <?= $finActive === 'alc' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-calendar2-range"></i></span><span class="slabel">Allocations</span></a>
+    <a href="<?= h($appBase) ?>/accounts/fin_assets.php" class="slink <?= $finActive === 'assets' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-truck"></i></span><span class="slabel">Fixed Assets</span></a>
+    <a href="<?= h($appBase) ?>/accounts/fin_supplier_allocations.php" class="slink <?= $finActive === 'alloc' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-link-45deg"></i></span><span class="slabel">Supplier Allocations</span></a>
     <a href="<?= h($appBase) ?>/accounts/fin_lease_posting.php" class="slink <?= $finActive === 'lease' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-building-check"></i></span><span class="slabel">Lease Posting</span></a>
     <a href="<?= h($appBase) ?>/accounts/fin_voucher_history.php" class="slink <?= $finActive === 'history' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-clock-history"></i></span><span class="slabel">Voucher History</span></a>
+
+    <a href="<?= h($appBase) ?>/accounts/fin_settings.php" class="slink <?= $finActive === 'settings' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-gear"></i></span><span class="slabel">Finance Settings</span></a>
 
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Switch Module</span></a>

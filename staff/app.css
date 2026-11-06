@@ -410,3 +410,34 @@ body.viewing { overflow: hidden; }
 .gas-kg { display: flex; align-items: center; gap: 10px; }
 .gas-kg .field { font-size: 28px; font-weight: 700; text-align: center; letter-spacing: .02em; }
 .gas-kg span { font-size: 22px; font-weight: 700; color: var(--text-2); }
+
+/* ---------------------------------------------------------------------------
+   Purchase (js/purchase.js)
+   --------------------------------------------------------------------------- */
+.pur-icon { width: 48px; height: 48px; border-radius: 14px; background: var(--navy-800); color: var(--gold-500); display: grid; place-items: center; flex: none; }
+.pur-nums { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pur-nums label { display: block; }
+.pur-nums .field { margin-top: 4px; font-size: 22px; font-weight: 700; text-align: center; }
+.pur-line .row .field { font-weight: 600; }
+.pur-kv { padding: 8px 0; border-bottom: 1px solid var(--cream-200); }
+.pur-kv:last-child { border-bottom: 0; }
+.pur-kv > span:last-child { white-space: nowrap; font-weight: 700; }
+
+/* ---------------------------------------------------------------------------
+   Store (js/store.js)
+   --------------------------------------------------------------------------- */
+.st-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.st-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; min-height: 150px; padding: 18px 16px; border-radius: 20px; background: var(--cream-0); box-shadow: var(--shadow); border: 2px solid transparent; color: var(--text); }
+.st-tile:active { border-color: var(--gold-500); background: var(--gold-50); }
+.st-tile .icon.xl { width: 40px; height: 40px; }
+.st-tile.st-in .icon, .pur-icon.st-in { color: var(--success); }
+.st-tile.st-out .icon, .pur-icon.st-out { color: var(--danger); }
+.st-tile.st-move .icon, .pur-icon.st-move { color: var(--info); }
+.st-tile.st-count .icon, .pur-icon.st-count { color: var(--warning); }
+.pur-icon.st-in, .pur-icon.st-out, .pur-icon.st-move, .pur-icon.st-count { background: var(--cream-200); }
+.st-qty { font-size: 20px; font-weight: 800; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.st-num { font-size: 28px; font-weight: 800; text-align: center; margin-top: 4px; min-height: 60px; }
+.card.st-chosen { box-shadow: 0 0 0 2px var(--gold-500); }
+.st-stores { display: grid; gap: 10px; margin-top: 8px; }
+.qbtn.st-reason { background: var(--navy-800); }
+.qbtn.st-reason.on { background: var(--gold-600); }

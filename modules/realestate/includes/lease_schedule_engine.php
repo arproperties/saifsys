@@ -175,6 +175,9 @@ if (!function_exists('lease_compute_totals')) {
         if ($in['vat_distribution_type'] === 'first_installment' && $in['total_vat'] > 0) {
             $toFirst += $in['total_vat'];
         }
+        // Extra services merged into the 1st-fees cheque (re_lease_first_extras_total()), VAT
+        // included. Only callers that pass it get it: Lease View's comparison adds the bills itself.
+        $toFirst += max(0.0, (float)($src['first_extras_total'] ?? 0));
 
         // Fees getting their own separate cheque.
         $toSeparate = 0.0;

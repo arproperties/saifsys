@@ -2,6 +2,17 @@
 /**
  * Real Estate Layout Header - Shared sidebar and top navigation for all Real Estate pages
  * Include this at the start of each Real Estate page after requiring auth/db
+ *
+ * Menu:
+ *  - Desktop (992px and wider): sidebar beside the page; the menu button folds it
+ *    to an icon rail and back (remembered per browser).
+ *  - Tablet and phone: the sidebar is a drawer that slides in over the page from
+ *    the menu button, and closes on a link, the backdrop, the close button or Esc.
+ *  - The menu is defined once in $reNav below; links are absolute, so they work
+ *    from every folder (accounting/, admin/, ...). The group of the current page
+ *    is open on every page load (no other section), and its link highlighted, also on
+ *    the page's detail pages (e.g. lease_view.php highlights Leases). Sections work as
+ *    an accordion: opening one closes the others.
  */
 
 // Align session company to a Real Estate business before any UI/company-scoped chrome
@@ -38,15 +49,219 @@ $appBase = (strpos($_SERVER['PHP_SELF'] ?? '', '/herosysgro') !== false) ? '/her
 // Determine base path for navigation links (handle accounting subdirectory)
 $isInAccounting = strpos($_SERVER['PHP_SELF'], '/accounting/') !== false;
 $navBasePath = $isInAccounting ? '../' : '';
+// Web path of modules/realestate/ so menu links work from any sub folder
+$reSelf = (string)($_SERVER['PHP_SELF'] ?? '');
+$reRootPos = strpos($reSelf, '/modules/realestate/');
+$reWebBase = $reRootPos !== false ? substr($reSelf, 0, $reRootPos + strlen('/modules/realestate/')) : $navBasePath;
+
+require_once __DIR__ . '/../../../includes/rbac_department.php';
+$hasCore = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_CORE, $conn);
+$hasFinancial = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_FINANCIAL, $conn);
+$hasMaintenance = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_MAINTENANCE, $conn);
+$hasOperations = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_OPERATIONS, $conn);
+$hasCompliance = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_COMPLIANCE, $conn);
+$isOwnerUser = function_exists('has_role') ? has_role('Owner', $conn) : false;
+$hasTasks = isset($conn) && $conn instanceof PDO && tasks_nav_user_can_access($conn);
+
+// Switch Module: only for users with more than one company/module
+if (!function_exists('get_user_companies')) {
+    require_once dirname(__DIR__, 2) . '/includes/company_helper.php';
+}
+$userId = function_exists('current_user_id') ? current_user_id() : null;
+$userCompanies = ($userId && function_exists('get_user_companies')) ? get_user_companies($conn, $userId) : [];
+$hasMultipleCompanies = count($userCompanies) > 1;
+
+/*
+ * The menu. Item forms:
+ *   ['Label', 'bi-icon', 'path.php', ['page.php', 'prefix_*', ...]]   link (pages that light it up)
+ *   ['head' => 'Section title']                                        small heading
+ *   ['group' => 'id', 'label' => ..., 'icon' => ..., 'items' => [...]] nested group
+ * Paths are relative to modules/realestate/; a path starting with "/" is from the app root.
+ */
+$reNav = [];
+if ($hasCore) {
+    $reNav[] = ['id' => 'core', 'label' => 'Core Management', 'icon' => 'bi-grid-1x2', 'items' => [
+        ['Dashboard', 'bi-speedometer2', 'index.php', ['index.php']],
+        ['Buildings', 'bi-building', 'buildings.php', ['buildings.php', 'building_*', 'affection_site_plan_*', 'title_deed_*']],
+        ['Units', 'bi-door-open', 'units.php', ['units.php', 'units_add.php', 'unit_view.php', 'unit_public_media_*']],
+        ['Tenants', 'bi-people', 'tenants.php', ['tenants.php', 'tenant_add.php', 'tenant_view.php', 'tenant_issue_add.php']],
+        ['Leases', 'bi-file-text', 'leases.php', ['leases.php', 'deleted_leases.php', 'lease_add.php', 'lease_view.php', 'lease_terminate.php', 'lease_contract_generate.php', 'lease_payments_manage.php', 'lease_payment_schedule_audit.php', 'installment_payment_history.php']],
+        ['Expiry Reminders', 'bi-bell', 'lease_expiry_reminders.php', ['lease_expiry_reminders.php']],
+        ['Renewal Workflow', 'bi-arrow-repeat', 'lease_renewal_workflow.php', ['lease_renewal_workflow*']],
+        ['Communication Center', 'bi-megaphone', 'tenant_communication_center.php', ['tenant_communication_center.php', 'customer_push_notifications.php']],
+        ['Viewing Requests', 'bi-calendar-check', 'unit_viewing_requests.php', ['unit_viewing_requests.php']],
+        ['Lease Applications', 'bi-file-earmark-person', 'unit_lease_applications.php', ['unit_lease_applications.php']],
+        ['Contract Templates', 'bi-file-earmark-text', 'lease_templates.php', ['lease_templates.php', 'create_tanacey_template.php']],
+        ['Tenant Portal', 'bi-person-badge', 'tenant_portal_approvals.php', ['tenant_portal_approvals.php']],
+    ]];
+}
+if ($hasFinancial) {
+    $reNav[] = ['id' => 'financial', 'label' => 'Financial', 'icon' => 'bi-wallet2', 'items' => [
+        ['Payments', 'bi-cash-coin', 'payments.php', ['payments.php', 'payment_*']],
+        ['Cash verification', 'bi-patch-check', 'cash_verification.php', ['cash_verification.php']],
+        ['Billing', 'bi-receipt', 'billing.php', ['billing*']],
+        ['Collections', 'bi-exclamation-triangle', 'collections.php', ['collections*']],
+    ]];
+    $reNav[] = ['id' => 'accounting', 'label' => 'Accounting', 'icon' => 'bi-calculator', 'items' => [
+        ['head' => 'Purchases & Expenses'],
+        ['Vendors', 'bi-truck', 'vendors.php', ['vendors.php', 'vendors_add.php', 'vendors_view.php', 'vendor_agreements.php', 'vendor_performance.php']],
+        ['Vendor Bills', 'bi-file-text', 'accounting/vendor_bills.php', ['vendor_bills.php', 'vendor_bill_view.php']],
+        ['New Bill', 'bi-file-earmark-plus', 'accounting/bill_entry_add.php', ['bill_entry_add.php']],
+        ['Payments Made', 'bi-cash-stack', 'accounting/vendor_payments.php', ['vendor_payments.php', 'vendor_payment_add.php']],
+        ['Advance VAT Docs', 'bi-receipt', 'accounting/vendor_advance_vat_documents.php', ['vendor_advance_vat_document*']],
+        ['Advance Refunds', 'bi-arrow-counterclockwise', 'accounting/vendor_advance_refunds.php', ['vendor_advance_refund*']],
+        ['AP Aging', 'bi-clock-history', 'accounting/ap_aging.php', ['ap_aging.php']],
+        ['Vendor Ledger', 'bi-journal-bookmark', 'accounting/vendor_ledger.php', ['vendor_ledger.php']],
+        ['Vendor SOA', 'bi-file-earmark-ruled', 'accounting/vendor_statement.php', ['vendor_statement.php']],
+        ['Building Expenses', 'bi-building', 'accounting/building_expense_report.php', ['building_expense_report.php']],
+        ['Vendor/AP Diagnostics', 'bi-clipboard-data', 'accounting/vendor_ap_diagnostics.php', ['vendor_ap_diagnostics.php']],
+        ['QPE/AP Duplicates', 'bi-intersect', 'accounting/qpe_ap_duplicate_finder.php', ['qpe_ap_duplicate_finder.php']],
+        ['Recurring Bills', 'bi-arrow-repeat', 'accounting/vendor_recurring_bills.php', ['vendor_recurring_bills.php']],
+        ['Quick Paid Expenses', 'bi-receipt-cutoff', 'expenses.php', ['expenses.php', 'expense_*']],
+        ['head' => 'Income'],
+        ['Obligation Preview', 'bi-diagram-3', 'accounting/obligation_preview.php', ['obligation_preview.php']],
+        ['Invoice Preview', 'bi-file-earmark-text', 'accounting/invoice_preview.php', ['invoice_preview.php']],
+        ['Receipt Allocation', 'bi-cash-coin', 'accounting/receipt_allocation.php', ['receipt_allocation.php']],
+        ['Receipt Diagnostics', 'bi-clipboard-data', 'accounting/receipt_diagnostics.php', ['receipt_diagnostics.php']],
+        ['head' => 'Setup & Controls'],
+        ['Chart of Accounts', 'bi-list-columns-reverse', 'accounting/chart_of_accounts.php', ['chart_of_accounts.php']],
+        ['Journal Entries', 'bi-journal-text', 'accounting/journal_entry_list.php', ['journal_entry_*']],
+        ['Bank Accounts', 'bi-bank2', 'accounting/bank_accounts.php', ['bank_accounts.php']],
+        ['group' => 'bank-reco', 'label' => 'Bank Reconciliations', 'icon' => 'bi-bank', 'items' => [
+            ['Dashboard', 'bi-grid-1x2', 'accounting/bank_reconciliation_accounts.php', ['bank_reconciliation_accounts.php']],
+            ['Reconcile', 'bi-bank', 'accounting/bank_reconciliation.php', ['bank_reconciliation.php']],
+            ['Statement Import', 'bi-file-earmark-arrow-up', 'accounting/bank_reconciliation_import.php', ['bank_reconciliation_import.php', 'bank_reconciliation_match.php']],
+            ['Cash Coding', 'bi-table', 'accounting/bank_reconciliation_cash_coding.php', ['bank_reconciliation_cash_coding.php']],
+            ['Bank Rules', 'bi-sliders', 'accounting/bank_reconciliation_rules.php', ['bank_reconciliation_rules.php']],
+            ['Report', 'bi-file-earmark-bar-graph', 'accounting/bank_reconciliation_report.php', ['bank_reconciliation_report.php']],
+            ['History', 'bi-clock-history', 'accounting/bank_reconciliation_history.php', ['bank_reconciliation_history.php']],
+            ['Settings', 'bi-gear', 'accounting/bank_reconciliation_settings.php', ['bank_reconciliation_settings.php']],
+            ['Bank Feeds', 'bi-cloud-download', 'accounting/bank_reconciliation_feeds.php', ['bank_reconciliation_feeds.php']],
+            ['Diagnostics', 'bi-clipboard-data', 'accounting/bank_reconciliation_diagnostics.php', ['bank_reconciliation_diagnostics.php']],
+        ]],
+        ['Period Management', 'bi-calendar-range', 'accounting/periods.php', ['periods.php', 'period_close.php']],
+        ['VAT Configuration', 'bi-receipt-cutoff', 'accounting/vat_config.php', ['vat_config.php']],
+        ['Accounting Settings', 'bi-sliders', 'accounting/accounting_settings.php', ['accounting_settings.php']],
+        ['Document Settings', 'bi-file-earmark-richtext', 'document_settings.php', ['document_settings.php']],
+        ['Credit Note', 'bi-arrow-counterclockwise', 'accounting/credit_note_add.php', ['credit_note_add.php']],
+        ['Migrate Data', 'bi-database', 'accounting/migrate_existing_data.php', ['migrate_existing_data.php']],
+    ]];
+}
+if ($hasMaintenance) {
+    $reNav[] = ['id' => 'maintenance', 'label' => 'Maintenance', 'icon' => 'bi-tools', 'items' => [
+        ['Maintenance', 'bi-tools', 'maintenance.php', ['maintenance.php', 'maintenance_add.php', 'maintenance_view.php', 'maintenance_queue.php', 'material_request_*', 'my_material_requests.php']],
+        ['Maintenance Schedule', 'bi-calendar3-week', 'maintenance_schedule.php', ['maintenance_schedule*']],
+        ['Tenant extra services', 'bi-plus-circle', 'extra_service_requests.php', ['extra_service_*', 'cleaning_*', 'pest_control_*']],
+        ['Preventive Maint.', 'bi-calendar-check', 'preventive_maintenance.php', ['preventive_maintenance*']],
+        ['AMC Contracts', 'bi-file-earmark-check', 'amc.php', ['amc*']],
+    ]];
+}
+if ($hasOperations) {
+    $reNav[] = ['id' => 'operations', 'label' => 'Operations', 'icon' => 'bi-kanban', 'items' => [
+        ['Cash payment requests', 'bi-cash-coin', 'cash_payment_requests.php', ['cash_payment_requests.php']],
+        ['Cashier session', 'bi-box', 'cashier_session.php', ['cashier_session.php']],
+        ['Move-Ins', 'bi-box-arrow-in-right', 'move_in.php', ['move_in*', 'form_letterhead.php']],
+        ['Move-Outs', 'bi-box-arrow-right', 'move_out.php', ['move_out*']],
+        ['Tasks', 'bi-list-check', 'tasks.php', ['tasks.php', 'tasks_add.php', 'tasks_view.php', 'tasks_categories.php']],
+        ['Reminders', 'bi-bell', 'reminders.php', ['reminders.php']],
+        ['Bulk Tenant Email', 'bi-envelope-paper', 'bulk_tenant_email.php', ['bulk_tenant_email*']],
+    ]];
+}
+if ($hasCompliance) {
+    $reNav[] = ['id' => 'compliance', 'label' => 'Compliance & Reports', 'icon' => 'bi-shield-check', 'items' => [
+        ['Compliance', 'bi-shield-check', 'compliance.php', ['compliance*']],
+        ['Documents', 'bi-folder', 'documents.php', ['documents*']],
+        ['Reports', 'bi-graph-up', 'reports.php', ['reports*']],
+    ]];
+}
+$reNav[] = ['id' => 'settings', 'label' => 'Settings', 'icon' => 'bi-gear', 'items' => array_merge(
+    $hasTasks ? [['Shared Tasks', 'bi-list-check', '/modules/tasks/tasks.php', []]] : [],
+    [
+        ['Settings', 'bi-sliders', '/settings', []],
+        ['Profile', 'bi-person-circle', '/profile', []],
+    ]
+)];
+if ($isOwnerUser) {
+    $reNav[] = ['id' => 'owner-tools', 'label' => 'Owner Tools', 'icon' => 'bi-shield-lock', 'items' => [
+        ['Installments Cleanup', 'bi-wrench-adjustable-circle', 'installments_cleanup_admin.php', ['installments_cleanup_admin.php']],
+        ['Orphan GL Cleanup', 'bi-bandaid', 'admin/orphan_accounting_cleanup.php', ['orphan_accounting_cleanup.php']],
+        ['Lease Financial Reset', 'bi-arrow-repeat', 'admin/lease_financial_reset_convert.php', ['lease_financial_reset_convert.php']],
+        ['Income Mispost Report', 'bi-exclamation-diamond', 'accounting/income_mispost_report.php', ['income_mispost_report.php']],
+        ['Income Repair Sessions', 'bi-journal-check', 'accounting/income_reclass_sessions.php', ['income_reclass_session*']],
+    ]];
+}
+
+/** The one link that matches the current page: an exact page name wins, else the longest prefix. */
+if (!function_exists('re_nav_find_active')) {
+    function re_nav_find_active(array $items, string $page, array &$best, array $groupPath): void
+    {
+        foreach ($items as $it) {
+            if (isset($it['group'])) {
+                re_nav_find_active($it['items'], $page, $best, array_merge($groupPath, [$it['group']]));
+                continue;
+            }
+            if (isset($it['head'])) {
+                continue;
+            }
+            foreach ($it[3] as $pat) {
+                $score = 0;
+                if ($pat === $page) {
+                    $score = 1000;
+                } elseif (substr($pat, -1) === '*' && strncmp($page, substr($pat, 0, -1), strlen($pat) - 1) === 0) {
+                    $score = strlen($pat);
+                }
+                if ($score > $best['score']) {
+                    $best = ['score' => $score, 'href' => $it[2], 'groups' => $groupPath];
+                }
+            }
+        }
+    }
+}
+$reNavActive = ['score' => 0, 'href' => null, 'groups' => []];
+foreach ($reNav as $g) {
+    re_nav_find_active($g['items'], $currentPage, $reNavActive, [$g['id']]);
+}
+$reNavHref = static fn(string $p): string => $p !== '' && $p[0] === '/' ? $appBase . $p : $reWebBase . $p;
+
+/** Links, headings and nested groups of one menu group. */
+if (!function_exists('re_nav_items_html')) {
+    function re_nav_items_html(array $items, array $active, callable $href): string
+    {
+        $out = '';
+        foreach ($items as $it) {
+            if (isset($it['head'])) {
+                $out .= '<div class="nav-sect">' . h($it['head']) . '</div>';
+                continue;
+            }
+            if (isset($it['group'])) {
+                $open = in_array($it['group'], $active['groups'], true);
+                $id = 'nav-' . $it['group'];
+                $out .= '<div class="nav-group nav-sub" data-nav-id="' . h($it['group']) . '">'
+                    . '<button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#' . $id . '" aria-controls="' . $id . '" aria-expanded="' . ($open ? 'true' : 'false') . '" data-tip="' . h($it['label']) . '">'
+                    . '<span class="sicon"><i class="bi ' . h($it['icon']) . '"></i></span><span class="nav-sect-text">' . h($it['label']) . '</span><i class="bi bi-chevron-down nav-chevron"></i></button>'
+                    . '<div class="collapse' . ($open ? ' show' : '') . ($open ? ' is-current' : '') . '" id="' . $id . '">' . re_nav_items_html($it['items'], $active, $href) . '</div></div>';
+                continue;
+            }
+            $isActive = $active['href'] === $it[2];
+            $out .= '<a href="' . h($href($it[2])) . '" class="slink' . ($isActive ? ' active' : '') . '"' . ($isActive ? ' aria-current="page"' : '') . ' data-tip="' . h($it[0]) . '">'
+                . '<span class="sicon"><i class="bi ' . h($it[1]) . '"></i></span><span class="slabel">' . h($it[0]) . '</span></a>';
+        }
+        return $out;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title><?= isset($pageTitle) ? h($pageTitle) . ' - Real Estate | ' : 'Real Estate | ' ?><?= h($brand['system_name']) ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+    <script>
+    // Folded menu (desktop) before the first paint, so the page does not jump
+    try { if (localStorage.getItem('re_nav_rail') === '1') document.documentElement.classList.add('re-rail'); } catch (e) {}
+    </script>
     <style>
         :root {
             --primary: <?= $brand['primary_color'] ?>;
@@ -60,132 +275,242 @@ $navBasePath = $isInAccounting ? '../' : '';
             --shadow-sm: 0 2px 4px rgba(0,0,0,0.08);
             --shadow: 0 4px 12px rgba(0,0,0,0.1);
             --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+            --sb-w: 264px;
+            --sb-rail: 76px;
+            --topbar-h: 60px;
         }
-        
+
         body {
             background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
             min-height: 100vh;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
-        
-        /* Sidebar */
+
+        /* ---------- Sidebar ---------- */
+        .re-shell { min-height: 100vh; }
         .sidebar {
-            min-height: 100vh;
-            max-height: 100vh;
-            width: 240px;
+            width: var(--sb-w);
             flex-shrink: 0;
-            background: linear-gradient(180deg, var(--primary), var(--primary-light));
-            color: #fff;
+            height: 100vh;
+            height: 100dvh;
             position: sticky;
             top: 0;
-            z-index: 1030;
-            transition: width 0.2s ease;
-            overflow-y: auto;
-            overflow-x: hidden;
+            z-index: 1040;
+            display: flex;
+            flex-direction: column;
+            background: linear-gradient(180deg, var(--primary), var(--primary-light));
+            color: #fff;
+            transition: width .2s ease, transform .25s ease;
         }
-        .sidebar.collapsed { width: 84px; }
+        .sb-head {
+            display: flex;
+            align-items: center;
+            gap: .6rem;
+            padding: .9rem .9rem .4rem;
+            min-height: 64px;
+        }
+        .sb-logo { width: 38px; height: 38px; object-fit: contain; border-radius: 9px; background: rgba(255,255,255,.95); padding: 3px; flex-shrink: 0; }
         .brand {
             font-weight: 800;
-            letter-spacing: 0.3px;
+            letter-spacing: .3px;
             color: var(--accent);
-            opacity: 0.95;
+            line-height: 1.15;
+            font-size: 1.02rem;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
         }
+        .sb-close {
+            margin-left: auto;
+            display: none;
+            width: 38px; height: 38px;
+            border: 0; border-radius: 10px;
+            background: rgba(255,255,255,.12);
+            color: #fff; font-size: 1.15rem;
+        }
+        .sb-close:hover { background: rgba(255,255,255,.22); }
+        .sb-scroll {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            overscroll-behavior: contain;
+            padding: 0 .35rem 1rem;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,.3) transparent;
+        }
+        .sb-scroll::-webkit-scrollbar { width: 6px; }
+        .sb-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.28); border-radius: 6px; }
+        .sb-foot { padding: .5rem .35rem calc(.75rem + env(safe-area-inset-bottom)); border-top: 1px solid rgba(255,255,255,.12); }
+
         .nav-sect {
-            font-size: 0.75rem;
+            font-size: .68rem;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
+            letter-spacing: .09em;
             color: #ffefc4;
-            opacity: 0.7;
-            margin: 0.5rem 0 0.25rem 0.75rem;
+            opacity: .65;
+            margin: .75rem 0 .2rem .9rem;
         }
-        /* Collapsible nav groups */
-        .nav-group { margin-bottom: 0.25rem; }
+        .nav-group { margin-top: .15rem; }
         .nav-sect-toggle {
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            gap: .65rem;
             width: 100%;
-            padding: 0.4rem 0.75rem;
-            margin: 0.15rem 0.25rem 0 0.5rem;
-            border: none;
+            min-height: 42px;
+            padding: .35rem .65rem;
+            border: 0;
             border-radius: 10px;
             background: transparent;
             color: #ffefc4;
-            font-size: 0.75rem;
+            font-size: .74rem;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
+            letter-spacing: .08em;
+            text-align: left;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: background .15s;
         }
-        .nav-sect-toggle:hover {
-            background: rgba(255,255,255,0.08);
-            color: #fff;
-        }
-        .nav-sect-toggle .nav-chevron {
-            font-size: 0.9rem;
-            transition: transform 0.2s ease;
-        }
-        .nav-sect-toggle[aria-expanded="false"] .nav-chevron {
-            transform: rotate(-90deg);
-        }
-        .nav-group .collapse .slink { margin-left: 0; }
-        .sidebar.collapsed .nav-sect-toggle .nav-sect-text,
-        .sidebar.collapsed .nav-chevron { display: none !important; }
-        .sidebar.collapsed .nav-sect-toggle { padding: 0.5rem; justify-content: center; }
+        .nav-sect-toggle .sicon { background: rgba(255,255,255,.1); color: #fff; }
+        .nav-sect-toggle .nav-sect-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nav-sect-toggle:hover { background: rgba(255,255,255,.08); color: #fff; }
+        .nav-sect-toggle .nav-chevron { font-size: .85rem; transition: transform .2s ease; }
+        .nav-sect-toggle[aria-expanded="false"] .nav-chevron { transform: rotate(-90deg); }
+        .nav-group.has-current > .nav-sect-toggle { color: #fff; }
+        .nav-group.has-current > .nav-sect-toggle .sicon { background: var(--accent); color: var(--primary-dark); }
+        .nav-group .collapse, .nav-group .collapsing { padding-left: .55rem; margin-left: 1.15rem; border-left: 1px solid rgba(255,255,255,.14); }
+        .nav-sub { margin-top: .25rem; }
+        .nav-sub > .nav-sect-toggle { text-transform: none; letter-spacing: 0; font-size: .9rem; font-weight: 500; color: #fff; }
+
         .slink {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            padding: 0.6rem 0.9rem;
-            margin: 0.15rem 0.5rem;
+            gap: .65rem;
+            min-height: 42px;
+            padding: .35rem .6rem;
+            margin: .1rem 0;
             border-radius: 10px;
-            color: #fff;
+            color: rgba(255,255,255,.92);
             text-decoration: none;
-            transition: all 0.2s;
+            font-size: .92rem;
+            transition: background .15s, color .15s;
         }
-        .slink:hover {
-            background: rgba(255,255,255,0.08);
-            transform: translateX(2px);
-        }
-        .slink.active {
-            background: rgba(255,255,255,0.16);
-        }
+        .slink:hover { background: rgba(255,255,255,.1); color: #fff; }
+        .slink.active { background: rgba(255,255,255,.2); color: #fff; font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
+        .slink.active .sicon { background: var(--accent); color: var(--primary-dark); }
         .sicon {
-            width: 28px;
-            height: 28px;
+            width: 30px;
+            height: 30px;
+            flex-shrink: 0;
             display: grid;
             place-items: center;
-            background: rgba(255,255,255,0.15);
+            background: rgba(255,255,255,.14);
             border-radius: 8px;
+            font-size: .95rem;
         }
-        .slabel { white-space: nowrap; }
-        .sidebar.collapsed .slabel { display: none; }
-        .sidebar.collapsed .nav-sect { display: none; }
-        .collapse-btn {
-            position: absolute;
-            right: -12px;
-            top: 12px;
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
+        .slabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+        .slink-switch { background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.22); }
+        .sidebar :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .sidebar .ns-box { margin: .35rem .55rem .6rem; }
+
+        /* ---------- Top bar ---------- */
+        .re-topbar {
+            position: sticky;
+            top: 0;
+            z-index: 1020;
+            min-height: var(--topbar-h);
+            display: flex;
+            align-items: center;
+            gap: .6rem;
+            padding: .5rem 1rem;
+            background: rgba(255,255,255,.96);
+            -webkit-backdrop-filter: saturate(160%) blur(8px);
+            backdrop-filter: saturate(160%) blur(8px);
+            box-shadow: 0 1px 0 rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.04);
+        }
+        .re-menu-btn {
+            width: 42px; height: 42px;
+            flex-shrink: 0;
+            display: grid; place-items: center;
+            border: 1px solid rgba(0,0,0,.08);
+            border-radius: 11px;
             background: #fff;
             color: var(--primary);
-            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
-            display: grid;
-            place-items: center;
-            cursor: pointer;
+            font-size: 1.35rem;
         }
+        .re-menu-btn:hover { background: #f3f5f9; }
+        .re-topbar-title { min-width: 0; font-weight: 700; color: var(--primary); font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .re-topbar-title small { display: block; font-size: .72rem; font-weight: 600; color: #6c757d; text-transform: uppercase; letter-spacing: .06em; }
+        .re-user { margin-left: auto; flex-shrink: 0; }
+        .re-user > a { display: flex; align-items: center; gap: .5rem; padding: .25rem .4rem; border-radius: 12px; color: #212529; text-decoration: none; }
+        .re-user > a:hover { background: #f3f5f9; }
         .avatar {
             width: 36px;
             height: 36px;
             border-radius: 50%;
-            background: #eee;
+            background: #eef1f7;
             display: grid;
             place-items: center;
             font-weight: 700;
             color: var(--primary);
+            flex-shrink: 0;
         }
-        
+        .re-user-name { max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .re-backdrop { display: none; }
+
+        /* ---------- Desktop: folded icon rail ---------- */
+        @media (min-width: 992px) {
+            html.re-rail .sidebar { width: var(--sb-rail); }
+            html.re-rail .sidebar .brand,
+            html.re-rail .sidebar .slabel,
+            html.re-rail .sidebar .nav-sect,
+            html.re-rail .sidebar .nav-sect-text,
+            html.re-rail .sidebar .nav-chevron,
+            html.re-rail .sidebar .ns-box,
+            html.re-rail .sidebar .nav-group > .collapse,
+            html.re-rail .sidebar .nav-group > .collapsing { display: none !important; }
+            html.re-rail .sidebar .sb-head { justify-content: center; padding-left: .5rem; padding-right: .5rem; }
+            html.re-rail .sidebar .nav-sect-toggle,
+            html.re-rail .sidebar .slink { justify-content: center; padding-left: 0; padding-right: 0; }
+            html.re-rail .sidebar .sicon { width: 36px; height: 36px; font-size: 1.05rem; }
+        }
+
+        /* ---------- Tablet and phone: drawer ---------- */
+        @media (max-width: 991.98px) {
+            .sidebar {
+                position: fixed;
+                left: 0; top: 0; bottom: 0;
+                width: min(var(--sb-w), 86vw);
+                transform: translateX(-102%);
+                box-shadow: 0 0 40px rgba(0,0,0,.25);
+                visibility: hidden;
+                transition: transform .25s ease, visibility 0s linear .25s;
+            }
+            body.re-nav-open .sidebar { transform: none; visibility: visible; transition: transform .25s ease, visibility 0s; }
+            .sb-close { display: grid; place-items: center; }
+            .re-backdrop {
+                display: block;
+                position: fixed; inset: 0;
+                z-index: 1035;
+                background: rgba(15,23,42,.45);
+                opacity: 0; pointer-events: none;
+                transition: opacity .25s ease;
+            }
+            body.re-nav-open .re-backdrop { opacity: 1; pointer-events: auto; }
+            body.re-nav-open { overflow: hidden; }
+            body.re-nav-open .as-bar { display: none !important; } /* check-out bar would cover the menu */
+            .slink, .nav-sect-toggle { min-height: 46px; }
+        }
+        @media (max-width: 575.98px) {
+            .re-topbar { padding: .45rem .75rem; gap: .5rem; }
+            .re-topbar-title { font-size: .98rem; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .sidebar, .re-backdrop, .nav-chevron { transition: none !important; }
+        }
+
         /* Cards */
         .card-round {
             border: 0;
@@ -197,13 +522,13 @@ $navBasePath = $isInAccounting ? '../' : '';
             transform: translateY(-2px);
             box-shadow: var(--shadow-lg);
         }
-        
+
         .page-header-label {
             font-size: 1.85rem;
             font-weight: 700;
             color: var(--primary);
         }
-        
+
         /* Dark Mode */
         body.dark-mode {
             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
@@ -212,13 +537,12 @@ $navBasePath = $isInAccounting ? '../' : '';
         body.dark-mode .sidebar {
             background: linear-gradient(180deg, var(--primary-dark), var(--primary));
         }
-        body.dark-mode .navbar {
-            background: rgba(30, 41, 59, 0.95) !important;
-            border-bottom: 1px solid #334155;
+        body.dark-mode .re-topbar {
+            background: rgba(30, 41, 59, 0.95);
+            box-shadow: 0 1px 0 #334155;
         }
-        body.dark-mode .navbar-brand {
-            color: #e4e4e7 !important;
-        }
+        body.dark-mode .re-topbar-title, body.dark-mode .re-user > a { color: #e4e4e7; }
+        body.dark-mode .re-menu-btn { background: #1e293b; border-color: #334155; color: #e4e4e7; }
         body.dark-mode .card-round {
             background: #1e293b;
             color: #e4e4e7;
@@ -230,11 +554,13 @@ $navBasePath = $isInAccounting ? '../' : '';
         body.dark-mode .text-dark {
             color: #e4e4e7 !important;
         }
-        
+
         /* Print: hide nav/sidebar and no-print elements; clean report layout */
         @media print {
             .sidebar,
             .navbar,
+            .re-topbar,
+            .re-backdrop,
             .no-print {
                 display: none !important;
             }
@@ -272,7 +598,7 @@ $navBasePath = $isInAccounting ? '../' : '';
                 content: none !important;
             }
         }
-        
+
         <?php if (isset($pageStyles)) echo $pageStyles; ?>
         <?php
         if (!empty($reApUiEnhanced)) {
@@ -290,301 +616,72 @@ $navBasePath = $isInAccounting ? '../' : '';
 $asWidget = dirname(__DIR__, 3) . '/includes/attendance_self_widget.php';
 if (is_file($asWidget)) { require $asWidget; }
 ?>
-<div class="d-flex">
+<div class="d-flex re-shell">
+    <div class="re-backdrop no-print" id="reNavBackdrop" aria-hidden="true"></div>
     <!-- Sidebar -->
-    <aside id="sb" class="sidebar no-print d-flex flex-column p-3">
-        <div class="d-flex align-items-center gap-2 mb-2">
+    <aside id="sb" class="sidebar no-print" aria-label="Real Estate menu">
+        <div class="sb-head">
             <?php if ($logoSrc = brand_logo_src($brand)): ?>
-                <img src="<?= h($logoSrc) ?>" alt="<?= h($brand['system_name']) ?>" style="width: 40px; height: 40px; object-fit: contain; border-radius: 8px;">
+                <img src="<?= h($logoSrc) ?>" alt="" class="sb-logo">
             <?php endif; ?>
-            <span class="brand ms-1"><?= h($brand['system_name']) ?></span>
+            <span class="brand"><?= h($brand['system_name']) ?></span>
+            <button type="button" class="sb-close" id="sbClose" aria-label="Close menu"><i class="bi bi-x-lg"></i></button>
         </div>
-        <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
         <?php require_once __DIR__ . '/../../../includes/nav_search.php'; ?>
         <?= nav_search_box() ?>
-
-        <?php
-        require_once __DIR__ . '/../../../includes/rbac_department.php';
-        $hasCore = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_CORE, $conn);
-        $hasFinancial = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_FINANCIAL, $conn);
-        $hasMaintenance = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_MAINTENANCE, $conn);
-        $hasOperations = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_OPERATIONS, $conn);
-        $hasCompliance = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_COMPLIANCE, $conn);
-        $isOwnerUser = function_exists('has_role') ? has_role('Owner', $conn) : false;
-        ?>
-        
-        <?php
-        $corePages = ['index.php','buildings.php','units.php','tenants.php','leases.php','deleted_leases.php','lease_expiry_reminders.php','lease_renewal_workflow.php','lease_renewal_workflow_view.php','lease_templates.php','tenant_portal_approvals.php','unit_viewing_requests.php','unit_lease_applications.php','customer_push_notifications.php','tenant_communication_center.php'];
-        $coreActive = in_array($currentPage, $corePages);
-        if ($hasCore): ?>
-        <div class="nav-group mt-3" data-nav-id="core">
-            <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-core" aria-expanded="<?= $coreActive ? 'true' : 'false' ?>">
-                <span class="nav-sect-text">Core Management</span>
-                <i class="bi bi-chevron-down nav-chevron"></i>
-            </button>
-            <div class="collapse <?= $coreActive ? 'show' : '' ?>" id="nav-core">
-                <a href="<?= $navBasePath ?>index.php" class="slink <?= $currentPage === 'index.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-speedometer2"></i></span><span class="slabel">Dashboard</span></a>
-                <a href="<?= $navBasePath ?>buildings.php" class="slink <?= $currentPage === 'buildings.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-building"></i></span><span class="slabel">Buildings</span></a>
-                <a href="<?= $navBasePath ?>units.php" class="slink <?= $currentPage === 'units.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-door-open"></i></span><span class="slabel">Units</span></a>
-                <a href="<?= $navBasePath ?>tenants.php" class="slink <?= $currentPage === 'tenants.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-people"></i></span><span class="slabel">Tenants</span></a>
-                <a href="<?= $navBasePath ?>leases.php" class="slink <?= in_array($currentPage, ['leases.php', 'deleted_leases.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-text"></i></span><span class="slabel">Leases</span></a>
-                <a href="<?= $navBasePath ?>lease_expiry_reminders.php" class="slink <?= in_array($currentPage, ['lease_expiry_reminders.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-bell"></i></span><span class="slabel">Expiry Reminders</span></a>
-                <a href="<?= $navBasePath ?>lease_renewal_workflow.php" class="slink <?= in_array($currentPage, ['lease_renewal_workflow.php', 'lease_renewal_workflow_view.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-arrow-repeat"></i></span><span class="slabel">Renewal Workflow</span></a>
-                <a href="<?= $navBasePath ?>tenant_communication_center.php" class="slink <?= in_array($currentPage, ['tenant_communication_center.php', 'customer_push_notifications.php'], true) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-megaphone"></i></span><span class="slabel">Communication Center</span></a>
-                <a href="<?= $navBasePath ?>unit_viewing_requests.php" class="slink <?= $currentPage === 'unit_viewing_requests.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-calendar-check"></i></span><span class="slabel">Viewing Requests</span></a>
-                <a href="<?= $navBasePath ?>unit_lease_applications.php" class="slink <?= $currentPage === 'unit_lease_applications.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-person"></i></span><span class="slabel">Lease Applications</span></a>
-                <a href="<?= $navBasePath ?>lease_templates.php" class="slink <?= $currentPage === 'lease_templates.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-text"></i></span><span class="slabel">Contract Templates</span></a>
-                <a href="<?= $navBasePath ?>tenant_portal_approvals.php" class="slink <?= $currentPage === 'tenant_portal_approvals.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-person-badge"></i></span><span class="slabel">Tenant Portal</span></a>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <?php if (isset($conn) && $conn instanceof PDO && tasks_nav_user_can_access($conn)): ?>
-        <a href="<?= h($appBase) ?>/modules/tasks/tasks.php" class="slink <?= strpos($_SERVER['PHP_SELF'], '/modules/tasks/') !== false ? 'active' : '' ?>">
-            <span class="sicon"><i class="bi bi-list-check"></i></span>
-            <span class="slabel">Shared Tasks</span>
-        </a>
-        <?php endif; ?>
-
-        <?php
-        $financialPages = ['payments.php','billing.php','collections.php','cash_verification.php','expenses.php','expense_add.php','expense_edit.php'];
-        $financialActive = in_array($currentPage, $financialPages);
-        $accountingActive = $isInAccounting;
-        if ($hasFinancial): ?>
-        <div class="nav-group" data-nav-id="financial">
-            <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-financial" aria-expanded="<?= $financialActive ? 'true' : 'false' ?>">
-                <span class="nav-sect-text">Financial</span>
-                <i class="bi bi-chevron-down nav-chevron"></i>
-            </button>
-            <div class="collapse <?= $financialActive ? 'show' : '' ?>" id="nav-financial">
-                <a href="<?= $navBasePath ?>payments.php" class="slink <?= $currentPage === 'payments.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Payments</span></a>
-                <a href="<?= $navBasePath ?>cash_verification.php" class="slink <?= $currentPage === 'cash_verification.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-patch-check"></i></span><span class="slabel">Cash verification</span></a>
-                <a href="<?= $navBasePath ?>billing.php" class="slink <?= $currentPage === 'billing.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-receipt"></i></span><span class="slabel">Billing</span></a>
-                <a href="<?= $navBasePath ?>collections.php" class="slink <?= $currentPage === 'collections.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-exclamation-triangle"></i></span><span class="slabel">Collections</span></a>
-            </div>
-        </div>
-        <?php
-        $incomePages = ['obligation_preview.php','invoice_preview.php','receipt_allocation.php','receipt_diagnostics.php'];
-        $ownerIncomeRepairPages = ['income_mispost_report.php','income_reclass_sessions.php','income_reclass_session_view.php'];
-        $purchasePages = ['vendors.php','vendors_add.php','vendors_view.php','vendor_agreements.php','vendor_performance.php','bill_entry_add.php','vendor_bills.php','vendor_payment_add.php','vendor_payments.php','vendor_advance_vat_documents.php','vendor_advance_vat_document_edit.php','vendor_advance_vat_document_view.php','vendor_advance_refunds.php','vendor_advance_refund_add.php','vendor_advance_refund_view.php','ap_aging.php','vendor_ledger.php','vendor_statement.php','building_expense_report.php','vendor_ap_diagnostics.php','qpe_ap_duplicate_finder.php','vendor_recurring_bills.php','expenses.php','expense_add.php','expense_edit.php'];
-        $bankRecoPages = ['bank_reconciliation.php','bank_reconciliation_accounts.php','bank_reconciliation_import.php','bank_reconciliation_history.php','bank_reconciliation_match.php','bank_reconciliation_rules.php','bank_reconciliation_cash_coding.php','bank_reconciliation_settings.php','bank_reconciliation_feeds.php','bank_reconciliation_diagnostics.php','bank_reconciliation_report.php'];
-        $accountingSetupPages = ['chart_of_accounts.php','journal_entry_list.php','journal_entry_add.php','journal_entry_view.php','bank_accounts.php','periods.php','period_close.php','vat_config.php','accounting_settings.php','document_settings.php','credit_note_add.php','migrate_existing_data.php'];
-        // Owner income-repair pages live under /accounting/ but belong in Owner Tools, not Accounting expand
-        $accountingActive = ($isInAccounting && !in_array($currentPage, $ownerIncomeRepairPages, true)) || in_array($currentPage, $purchasePages, true) || $currentPage === 'document_settings.php';
-        $bankRecoActive = in_array($currentPage, $bankRecoPages, true);
-        $incomeActive = in_array($currentPage, $incomePages, true);
-        $purchaseActive = in_array($currentPage, $purchasePages, true);
-        ?>
-        <div class="nav-group" data-nav-id="accounting">
-            <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-accounting" aria-expanded="<?= $accountingActive ? 'true' : 'false' ?>">
-                <span class="nav-sect-text">Accounting</span>
-                <i class="bi bi-chevron-down nav-chevron"></i>
-            </button>
-            <div class="collapse <?= $accountingActive ? 'show' : '' ?>" id="nav-accounting">
-                <div class="nav-sect mt-2">Purchases &amp; Expenses</div>
-                <a href="<?= $navBasePath ?>vendors.php" class="slink <?= in_array($currentPage, ['vendors.php','vendors_add.php','vendors_view.php','vendor_agreements.php','vendor_performance.php'], true) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-truck"></i></span><span class="slabel">Vendors</span></a>
-                <a href="<?= $navBasePath ?>accounting/vendor_bills.php" class="slink <?= in_array($currentPage, ['vendor_bills.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-text"></i></span><span class="slabel">Vendor Bills</span></a>
-                <a href="<?= $navBasePath ?>accounting/bill_entry_add.php" class="slink <?= in_array($currentPage, ['bill_entry_add.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-plus"></i></span><span class="slabel">New Bill</span></a>
-                <a href="<?= $navBasePath ?>accounting/vendor_payments.php" class="slink <?= in_array($currentPage, ['vendor_payments.php','vendor_payment_add.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-cash-stack"></i></span><span class="slabel">Payments Made</span></a>
-                <a href="<?= $navBasePath ?>accounting/vendor_advance_vat_documents.php" class="slink <?= in_array($currentPage, ['vendor_advance_vat_documents.php','vendor_advance_vat_document_edit.php','vendor_advance_vat_document_view.php'], true) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-receipt"></i></span><span class="slabel">Advance VAT Docs</span></a>
-                <a href="<?= $navBasePath ?>accounting/vendor_advance_refunds.php" class="slink <?= in_array($currentPage, ['vendor_advance_refunds.php','vendor_advance_refund_add.php','vendor_advance_refund_view.php'], true) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-arrow-counterclockwise"></i></span><span class="slabel">Advance Refunds</span></a>
-                <a href="<?= $navBasePath ?>accounting/ap_aging.php" class="slink <?= in_array($currentPage, ['ap_aging.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-clock-history"></i></span><span class="slabel">AP Aging</span></a>
-                <a href="<?= $navBasePath ?>accounting/vendor_ledger.php" class="slink <?= in_array($currentPage, ['vendor_ledger.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-journal-bookmark"></i></span><span class="slabel">Vendor Ledger</span></a>
-                <a href="<?= $navBasePath ?>accounting/vendor_statement.php" class="slink <?= in_array($currentPage, ['vendor_statement.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-ruled"></i></span><span class="slabel">Vendor SOA</span></a>
-                <a href="<?= $navBasePath ?>accounting/building_expense_report.php" class="slink <?= in_array($currentPage, ['building_expense_report.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-building"></i></span><span class="slabel">Building Expenses</span></a>
-                <a href="<?= $navBasePath ?>accounting/vendor_ap_diagnostics.php" class="slink <?= in_array($currentPage, ['vendor_ap_diagnostics.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-clipboard-data"></i></span><span class="slabel">Vendor/AP Diagnostics</span></a>
-                <a href="<?= $navBasePath ?>accounting/qpe_ap_duplicate_finder.php" class="slink <?= in_array($currentPage, ['qpe_ap_duplicate_finder.php'], true) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-intersect"></i></span><span class="slabel">QPE/AP Duplicates</span></a>
-                <a href="<?= $navBasePath ?>accounting/vendor_recurring_bills.php" class="slink <?= in_array($currentPage, ['vendor_recurring_bills.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-arrow-repeat"></i></span><span class="slabel">Recurring Bills</span></a>
-                <a href="<?= $navBasePath ?>expenses.php" class="slink <?= in_array($currentPage, ['expenses.php','expense_add.php','expense_edit.php'], true) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-receipt-cutoff"></i></span><span class="slabel">Quick Paid Expenses</span></a>
-
-                <div class="nav-sect mt-3">Income</div>
-                <a href="<?= $navBasePath ?>accounting/obligation_preview.php" class="slink <?= in_array($currentPage, ['obligation_preview.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-diagram-3"></i></span><span class="slabel">Obligation Preview</span></a>
-                <a href="<?= $navBasePath ?>accounting/invoice_preview.php" class="slink <?= in_array($currentPage, ['invoice_preview.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-text"></i></span><span class="slabel">Invoice Preview</span></a>
-                <a href="<?= $navBasePath ?>accounting/receipt_allocation.php" class="slink <?= in_array($currentPage, ['receipt_allocation.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Receipt Allocation</span></a>
-                <a href="<?= $navBasePath ?>accounting/receipt_diagnostics.php" class="slink <?= in_array($currentPage, ['receipt_diagnostics.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-clipboard-data"></i></span><span class="slabel">Receipt Diagnostics</span></a>
-
-                <div class="nav-sect mt-3">Setup &amp; Controls</div>
-                <a href="<?= $navBasePath ?>accounting/chart_of_accounts.php" class="slink <?= in_array($currentPage, ['chart_of_accounts.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-list-columns-reverse"></i></span><span class="slabel">Chart of Accounts</span></a>
-                <a href="<?= $navBasePath ?>accounting/journal_entry_list.php" class="slink <?= in_array($currentPage, ['journal_entry_list.php', 'journal_entry_add.php', 'journal_entry_view.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-journal-text"></i></span><span class="slabel">Journal Entries</span></a>
-                <a href="<?= $navBasePath ?>accounting/bank_accounts.php" class="slink <?= in_array($currentPage, ['bank_accounts.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-bank2"></i></span><span class="slabel">Bank Accounts</span></a>
-
-                <div class="nav-group mt-2 ms-1" data-nav-id="bank-reco">
-                    <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-bank-reco" aria-expanded="<?= $bankRecoActive ? 'true' : 'false' ?>">
-                        <span class="nav-sect-text">Bank Reconciliations</span>
-                        <i class="bi bi-chevron-down nav-chevron"></i>
-                    </button>
-                    <div class="collapse <?= $bankRecoActive ? 'show' : '' ?>" id="nav-bank-reco">
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_accounts.php" class="slink <?= in_array($currentPage, ['bank_reconciliation_accounts.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-grid-1x2"></i></span><span class="slabel">Dashboard</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation.php" class="slink <?= in_array($currentPage, ['bank_reconciliation.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-bank"></i></span><span class="slabel">Reconcile</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_import.php" class="slink <?= in_array($currentPage, ['bank_reconciliation_import.php', 'bank_reconciliation_match.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-arrow-up"></i></span><span class="slabel">Statement Import</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_cash_coding.php" class="slink <?= $currentPage === 'bank_reconciliation_cash_coding.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-table"></i></span><span class="slabel">Cash Coding</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_rules.php" class="slink <?= $currentPage === 'bank_reconciliation_rules.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-sliders"></i></span><span class="slabel">Bank Rules</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_report.php" class="slink <?= in_array($currentPage, ['bank_reconciliation_report.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-bar-graph"></i></span><span class="slabel">Report</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_history.php" class="slink <?= in_array($currentPage, ['bank_reconciliation_history.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-clock-history"></i></span><span class="slabel">History</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_settings.php" class="slink <?= $currentPage === 'bank_reconciliation_settings.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-gear"></i></span><span class="slabel">Settings</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_feeds.php" class="slink <?= $currentPage === 'bank_reconciliation_feeds.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-cloud-download"></i></span><span class="slabel">Bank Feeds</span></a>
-                        <a href="<?= $navBasePath ?>accounting/bank_reconciliation_diagnostics.php" class="slink <?= in_array($currentPage, ['bank_reconciliation_diagnostics.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-clipboard-data"></i></span><span class="slabel">Diagnostics</span></a>
-                    </div>
+        <nav class="sb-scroll" id="sbNav">
+            <?php foreach ($reNav as $g):
+                $open = in_array($g['id'], $reNavActive['groups'], true);
+                $gid = 'nav-' . $g['id']; ?>
+            <div class="nav-group<?= $open ? ' has-current' : '' ?>" data-nav-id="<?= h($g['id']) ?>">
+                <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#<?= h($gid) ?>" aria-controls="<?= h($gid) ?>" aria-expanded="<?= $open ? 'true' : 'false' ?>" data-tip="<?= h($g['label']) ?>">
+                    <span class="sicon"><i class="bi <?= h($g['icon']) ?>"></i></span>
+                    <span class="nav-sect-text"><?= h($g['label']) ?></span>
+                    <i class="bi bi-chevron-down nav-chevron"></i>
+                </button>
+                <div class="collapse<?= $open ? ' show is-current' : '' ?>" id="<?= h($gid) ?>" data-bs-parent="#sbNav">
+                    <?= re_nav_items_html($g['items'], $reNavActive, $reNavHref) ?>
                 </div>
-
-                <a href="<?= $navBasePath ?>accounting/periods.php" class="slink <?= in_array($currentPage, ['periods.php', 'period_close.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-calendar-range"></i></span><span class="slabel">Period Management</span></a>
-                <a href="<?= $navBasePath ?>accounting/vat_config.php" class="slink <?= in_array($currentPage, ['vat_config.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-receipt-cutoff"></i></span><span class="slabel">VAT Configuration</span></a>
-                <a href="<?= $navBasePath ?>accounting/accounting_settings.php" class="slink <?= in_array($currentPage, ['accounting_settings.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-sliders"></i></span><span class="slabel">Accounting Settings</span></a>
-                <a href="<?= $navBasePath ?>document_settings.php" class="slink <?= $currentPage === 'document_settings.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-richtext"></i></span><span class="slabel">Document Settings</span></a>
-                <a href="<?= $navBasePath ?>accounting/credit_note_add.php" class="slink <?= in_array($currentPage, ['credit_note_add.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-arrow-counterclockwise"></i></span><span class="slabel">Credit Note</span></a>
-                <a href="<?= $navBasePath ?>accounting/migrate_existing_data.php" class="slink <?= in_array($currentPage, ['migrate_existing_data.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-database"></i></span><span class="slabel">Migrate Data</span></a>
             </div>
-        </div>
-        <?php endif; ?>
-
-        <?php
-        $maintPages = ['maintenance.php','maintenance_schedule.php','maintenance_schedule_pdf.php','maintenance_schedule_ical.php','preventive_maintenance.php','amc.php','amc_add.php','amc_view.php','amc_visits.php','amc_certificates.php','amc_alerts.php','amc_payments.php','amc_set_alert_email.php','extra_service_rates.php','extra_service_requests.php','cleaning_rates.php','cleaning_requests.php','pest_control_rates.php','pest_control_requests.php'];
-        $maintActive = in_array($currentPage, $maintPages);
-        if ($hasMaintenance): ?>
-        <div class="nav-group" data-nav-id="maintenance">
-            <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-maintenance" aria-expanded="<?= $maintActive ? 'true' : 'false' ?>">
-                <span class="nav-sect-text">Maintenance</span>
-                <i class="bi bi-chevron-down nav-chevron"></i>
-            </button>
-            <div class="collapse <?= $maintActive ? 'show' : '' ?>" id="nav-maintenance">
-                <a href="<?= $navBasePath ?>maintenance.php" class="slink <?= $currentPage === 'maintenance.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-tools"></i></span><span class="slabel">Maintenance</span></a>
-                <a href="<?= $navBasePath ?>maintenance_schedule.php" class="slink <?= in_array($currentPage, ['maintenance_schedule.php', 'maintenance_schedule_pdf.php', 'maintenance_schedule_ical.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-calendar3-week"></i></span><span class="slabel">Maintenance Schedule</span></a>
-                <a href="<?= $navBasePath ?>extra_service_requests.php" class="slink <?= in_array($currentPage, ['extra_service_requests.php', 'extra_service_rates.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-plus-circle"></i></span><span class="slabel">Tenant extra services</span></a>
-                <a href="<?= $navBasePath ?>preventive_maintenance.php" class="slink <?= $currentPage === 'preventive_maintenance.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-calendar-check"></i></span><span class="slabel">Preventive Maint.</span></a>
-                <a href="<?= $navBasePath ?>amc.php" class="slink <?= in_array($currentPage, ['amc.php', 'amc_add.php', 'amc_view.php', 'amc_visits.php', 'amc_certificates.php', 'amc_alerts.php', 'amc_payments.php', 'amc_set_alert_email.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-file-earmark-check"></i></span><span class="slabel">AMC Contracts</span></a>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <?php
-        $opsPages = ['move_in.php','move_out.php','tasks.php','reminders.php','cash_payment_requests.php','cashier_session.php','bulk_tenant_email.php','bulk_tenant_email_preview.php','bulk_tenant_email_history.php','bulk_tenant_email_view.php'];
-        $opsActive = in_array($currentPage, $opsPages);
-        if ($hasOperations): ?>
-        <div class="nav-group" data-nav-id="operations">
-            <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-operations" aria-expanded="<?= $opsActive ? 'true' : 'false' ?>">
-                <span class="nav-sect-text">Operations</span>
-                <i class="bi bi-chevron-down nav-chevron"></i>
-            </button>
-            <div class="collapse <?= $opsActive ? 'show' : '' ?>" id="nav-operations">
-                <a href="<?= $navBasePath ?>cash_payment_requests.php" class="slink <?= in_array($currentPage, ['cash_payment_requests.php']) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Cash payment requests</span></a>
-                <a href="<?= $navBasePath ?>cashier_session.php" class="slink <?= $currentPage === 'cashier_session.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-box"></i></span><span class="slabel">Cashier session</span></a>
-                <a href="<?= $navBasePath ?>move_in.php" class="slink <?= $currentPage === 'move_in.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-box-arrow-in-right"></i></span><span class="slabel">Move-Ins</span></a>
-                <a href="<?= $navBasePath ?>move_out.php" class="slink <?= $currentPage === 'move_out.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-box-arrow-right"></i></span><span class="slabel">Move-Outs</span></a>
-                <a href="<?= $navBasePath ?>tasks.php" class="slink <?= $currentPage === 'tasks.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-list-check"></i></span><span class="slabel">Tasks</span></a>
-                <a href="<?= $navBasePath ?>reminders.php" class="slink <?= $currentPage === 'reminders.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-bell"></i></span><span class="slabel">Reminders</span></a>
-                <a href="<?= $navBasePath ?>bulk_tenant_email.php" class="slink <?= in_array($currentPage, ['bulk_tenant_email.php','bulk_tenant_email_preview.php','bulk_tenant_email_history.php','bulk_tenant_email_view.php'], true) ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-envelope-paper"></i></span><span class="slabel">Bulk Tenant Email</span></a>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <?php
-        $complPages = ['compliance.php','documents.php','reports.php'];
-        $complActive = in_array($currentPage, $complPages);
-        if ($hasCompliance): ?>
-        <div class="nav-group" data-nav-id="compliance">
-            <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-compliance" aria-expanded="<?= $complActive ? 'true' : 'false' ?>">
-                <span class="nav-sect-text">Compliance & Reports</span>
-                <i class="bi bi-chevron-down nav-chevron"></i>
-            </button>
-            <div class="collapse <?= $complActive ? 'show' : '' ?>" id="nav-compliance">
-                <a href="<?= $navBasePath ?>compliance.php" class="slink <?= $currentPage === 'compliance.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-shield-check"></i></span><span class="slabel">Compliance</span></a>
-                <a href="<?= $navBasePath ?>documents.php" class="slink <?= $currentPage === 'documents.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-folder"></i></span><span class="slabel">Documents</span></a>
-                <a href="<?= $navBasePath ?>reports.php" class="slink <?= $currentPage === 'reports.php' ? 'active' : '' ?>"><span class="sicon"><i class="bi bi-graph-up"></i></span><span class="slabel">Reports</span></a>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <?php
-        // Switch Module — show when user has access to more than one company/module
-        if (!function_exists('get_user_companies')) {
-            require_once dirname(__DIR__, 2) . '/includes/company_helper.php';
-        }
-        $userId = function_exists('current_user_id') ? current_user_id() : null;
-        $userCompanies = ($userId && function_exists('get_user_companies')) ? get_user_companies($conn, $userId) : [];
-        $hasMultipleCompanies = count($userCompanies) > 1;
-        if ($hasMultipleCompanies): ?>
-        <div class="nav-sect mt-3">Switch Module</div>
-        <a href="<?= h($appBase) ?>/select-module" class="slink" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);">
-            <span class="sicon"><i class="bi bi-arrow-left-right"></i></span>
-            <span class="slabel">Switch Module</span>
-        </a>
-        <?php endif; ?>
-
-        <div class="nav-group" data-nav-id="settings">
-            <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-settings" aria-expanded="false">
-                <span class="nav-sect-text">Settings</span>
-                <i class="bi bi-chevron-down nav-chevron"></i>
-            </button>
-            <div class="collapse" id="nav-settings">
-                <a href="<?= h($appBase) ?>/settings" class="slink"><span class="sicon"><i class="bi bi-sliders"></i></span><span class="slabel">Settings</span></a>
-                <a href="<?= h($appBase) ?>/profile" class="slink"><span class="sicon"><i class="bi bi-person-circle"></i></span><span class="slabel">Profile</span></a>
-            </div>
-        </div>
-
-        <?php if ($isOwnerUser): ?>
-        <?php
-        $ownerToolPages = [
-            'installments_cleanup_admin.php',
-            'orphan_accounting_cleanup.php',
-            'lease_financial_reset_convert.php',
-            'income_mispost_report.php',
-            'income_reclass_sessions.php',
-            'income_reclass_session_view.php',
-        ];
-        $ownerToolsActive = in_array($currentPage, $ownerToolPages, true);
-        ?>
-        <div class="nav-group" data-nav-id="owner-tools">
-            <button type="button" class="nav-sect-toggle" data-bs-toggle="collapse" data-bs-target="#nav-owner-tools" aria-expanded="<?= $ownerToolsActive ? 'true' : 'false' ?>">
-                <span class="nav-sect-text">Owner Tools</span>
-                <i class="bi bi-chevron-down nav-chevron"></i>
-            </button>
-            <div class="collapse <?= $ownerToolsActive ? 'show' : '' ?>" id="nav-owner-tools">
-                <a href="<?= $navBasePath ?>installments_cleanup_admin.php" class="slink <?= $currentPage === 'installments_cleanup_admin.php' ? 'active' : '' ?>">
-                    <span class="sicon"><i class="bi bi-wrench-adjustable-circle"></i></span>
-                    <span class="slabel">Installments Cleanup</span>
-                </a>
-                <a href="<?= $navBasePath ?>admin/orphan_accounting_cleanup.php" class="slink <?= $currentPage === 'orphan_accounting_cleanup.php' ? 'active' : '' ?>">
-                    <span class="sicon"><i class="bi bi-bandaid"></i></span>
-                    <span class="slabel">Orphan GL Cleanup</span>
-                </a>
-                <a href="<?= $navBasePath ?>admin/lease_financial_reset_convert.php" class="slink <?= $currentPage === 'lease_financial_reset_convert.php' ? 'active' : '' ?>">
-                    <span class="sicon"><i class="bi bi-arrow-repeat"></i></span>
-                    <span class="slabel">Lease Financial Reset</span>
-                </a>
-                <a href="<?= $navBasePath ?>accounting/income_mispost_report.php" class="slink <?= $currentPage === 'income_mispost_report.php' ? 'active' : '' ?>">
-                    <span class="sicon"><i class="bi bi-exclamation-diamond"></i></span>
-                    <span class="slabel">Income Mispost Report</span>
-                </a>
-                <a href="<?= $navBasePath ?>accounting/income_reclass_sessions.php" class="slink <?= in_array($currentPage, ['income_reclass_sessions.php', 'income_reclass_session_view.php'], true) ? 'active' : '' ?>">
-                    <span class="sicon"><i class="bi bi-journal-check"></i></span>
-                    <span class="slabel">Income Repair Sessions</span>
-                </a>
-            </div>
+            <?php endforeach; ?>
+        </nav>
+        <?php if ($hasMultipleCompanies): ?>
+        <div class="sb-foot">
+            <a href="<?= h($appBase) ?>/select-module" class="slink slink-switch" data-tip="Switch Module">
+                <span class="sicon"><i class="bi bi-arrow-left-right"></i></span>
+                <span class="slabel">Switch Module</span>
+            </a>
         </div>
         <?php endif; ?>
     </aside>
 
     <!-- Main Content -->
     <div class="flex-grow-1" style="min-width:0">
-        <!-- Top Navbar -->
-        <nav class="navbar navbar-expand navbar-light bg-white shadow-sm no-print">
-            <div class="container-fluid">
-                <span class="navbar-brand fw-bold" style="color:var(--primary)"><?= h($brand['system_name']) ?> - Real Estate</span>
-                <div class="dropdown ms-auto">
-                    <a href="#" class="d-flex align-items-center text-dark text-decoration-none dropdown-toggle" data-bs-toggle="dropdown">
-                        <div class="avatar me-2"><?= h($avatarInitial) ?></div>
-                        <span class="me-2"><?= h($fullName) ?></span>
-                    </a>
-                    <ul class="dropdown-menu dropdown-menu-end shadow">
-                        <li><span class="dropdown-item-text"><strong><?= h($userName) ?></strong></span></li>
-                        <li><hr class="dropdown-divider"></li>
-                        <li><a class="dropdown-item" href="/profile"><i class="bi bi-person-circle me-2"></i>Profile</a></li>
-                        <li><a class="dropdown-item" href="/settings"><i class="bi bi-sliders me-2"></i>Settings</a></li>
-                        <li><a class="dropdown-item text-danger" href="/logout"><i class="bi bi-box-arrow-right me-2"></i>Logout</a></li>
-                    </ul>
-                </div>
+        <!-- Top bar -->
+        <header class="re-topbar no-print">
+            <button type="button" class="re-menu-btn" id="sbToggle" aria-controls="sb" aria-expanded="false" aria-label="Menu" title="Menu"><i class="bi bi-list"></i></button>
+            <div class="re-topbar-title">
+                <small>Real Estate</small>
+                <?= h(isset($pageTitle) && $pageTitle !== '' ? $pageTitle : $brand['system_name']) ?>
             </div>
-        </nav>
+            <div class="dropdown re-user">
+                <a href="#" class="dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Account menu">
+                    <span class="avatar"><?= h($avatarInitial) ?></span>
+                    <span class="re-user-name d-none d-md-inline"><?= h($fullName) ?></span>
+                </a>
+                <ul class="dropdown-menu dropdown-menu-end shadow">
+                    <li><span class="dropdown-item-text"><strong><?= h($fullName) ?></strong><?php if ($userName !== ''): ?><br><small class="text-muted"><?= h($userName) ?></small><?php endif; ?></span></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item" href="<?= h($appBase) ?>/profile"><i class="bi bi-person-circle me-2"></i>Profile</a></li>
+                    <li><a class="dropdown-item" href="<?= h($appBase) ?>/settings"><i class="bi bi-sliders me-2"></i>Settings</a></li>
+                    <?php if ($hasMultipleCompanies): ?>
+                    <li><a class="dropdown-item" href="<?= h($appBase) ?>/select-module"><i class="bi bi-arrow-left-right me-2"></i>Switch Module</a></li>
+                    <?php endif; ?>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item text-danger" href="<?= h($appBase) ?>/logout"><i class="bi bi-box-arrow-right me-2"></i>Logout</a></li>
+                </ul>
+            </div>
+        </header>
 
         <!-- Page Content (full width by default; set $reLayoutFluid = false before including this header for a narrow centred page) -->
         <div class="<?= (!isset($reLayoutFluid) || $reLayoutFluid) ? 'container-fluid px-3 px-lg-4' : 'container' ?> my-4">

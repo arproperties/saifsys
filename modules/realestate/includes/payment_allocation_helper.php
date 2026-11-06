@@ -616,6 +616,32 @@ function update_installment_status_from_allocations(PDO $conn, int $installmentI
     ");
     $stmt->execute([$newStatus, $newStatus, $installmentId]);
     sync_pdc_status_for_paid_installment($conn, $installmentId);
+    sync_merged_billing_items_for_installment($conn, $installmentId);
+}
+
+/**
+ * Extra Services merged into this cheque follow its collection (see
+ * get_merged_billing_item_paid_from_installment): refresh their stored paid / status.
+ */
+function sync_merged_billing_items_for_installment(PDO $conn, int $installmentId): void {
+    try {
+        $stmt = $conn->prepare("
+            SELECT bi.id
+            FROM re_billing_items bi
+            JOIN re_service_charges sc ON sc.id = bi.service_charge_id AND sc.company_id = bi.company_id
+            WHERE bi.installment_id = ?
+              AND bi.item_type = 'service_charge'
+              AND bi.status <> 'waived'
+              AND sc.apply_mode IN ('merge_first_installment', 'split_all_installments')
+        ");
+        $stmt->execute([$installmentId]);
+        $ids = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    } catch (Throwable $e) {
+        return;
+    }
+    foreach ($ids as $billId) {
+        update_billing_item_status_from_allocations($conn, (int)$billId);
+    }
 }
 
 /**
@@ -628,6 +654,43 @@ function billing_item_allocations_table_exists(PDO $conn): bool {
     } catch (Throwable $e) {
         return false;
     }
+}
+
+/**
+ * An Extra Service merged or split into a rent / fees cheque is paid with that cheque, not on
+ * its own: its collected amount is its share of what the cheque collected (all of it once the
+ * cheque is paid). Null when the bill is not merged into a cheque.
+ */
+function get_merged_billing_item_paid_from_installment(PDO $conn, int $billingItemId): ?float {
+    try {
+        $stmt = $conn->prepare("
+            SELECT bi.total_amount, li.id AS installment_id, li.amount AS installment_amount, li.status AS installment_status
+            FROM re_billing_items bi
+            JOIN re_service_charges sc ON sc.id = bi.service_charge_id AND sc.company_id = bi.company_id
+            JOIN re_lease_installments li ON li.id = bi.installment_id AND li.lease_id = bi.lease_id
+            WHERE bi.id = ?
+              AND bi.item_type = 'service_charge'
+              AND sc.apply_mode IN ('merge_first_installment', 'split_all_installments')
+            LIMIT 1
+        ");
+        $stmt->execute([$billingItemId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        return null; // No apply_mode column yet: no merged extras.
+    }
+    if (!$row) {
+        return null;
+    }
+    $due = (float)$row['total_amount'];
+    $instAmount = (float)$row['installment_amount'];
+    if ((string)$row['installment_status'] === 'paid') {
+        $share = 1.0;
+    } elseif ($instAmount > 0.005) {
+        $share = min(1.0, get_installment_total_paid($conn, (int)$row['installment_id']) / $instAmount);
+    } else {
+        $share = 0.0;
+    }
+    return round($due * $share, 2);
 }
 
 /**
@@ -652,6 +715,11 @@ function get_billing_item_total_paid(PDO $conn, int $billingItemId): float {
 
     if ($hasAllocRows) {
         return round($total, 2);
+    }
+
+    $fromCheque = get_merged_billing_item_paid_from_installment($conn, $billingItemId);
+    if ($fromCheque !== null) {
+        return $fromCheque;
     }
 
     try {

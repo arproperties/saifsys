@@ -30,6 +30,16 @@ function attendance_self_enabled(): bool
 }
 
 /**
+ * Whether the web app shows the check-in bar, its pop-ups and the check-in
+ * wall. Off: hidden on the web only — the feature itself stays on, so the
+ * cameras and everything else built on it keep working.
+ */
+function attendance_self_web_visible(): bool
+{
+    return false;
+}
+
+/**
  * Whether a person who has not checked in is stopped from using the system.
  * Only has any effect while attendance_self_enabled() is true.
  *
@@ -1004,7 +1014,7 @@ function attendance_self_gate_enforce(PDO $conn): void
     }
     $done = true;
 
-    if (!attendance_self_enabled()) {
+    if (!attendance_self_enabled() || !attendance_self_web_visible()) {
         return;
     }
     if (PHP_SAPI === 'cli') {

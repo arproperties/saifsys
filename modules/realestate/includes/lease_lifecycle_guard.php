@@ -550,3 +550,60 @@ function re_lease_activate_due_renewals(PDO $conn, int $companyId, ?int $userId 
 
     return $result;
 }
+
+/**
+ * Every unit of a lease: its main unit plus the extra units of a multi-unit
+ * lease (re_lease_units). Move-in / move-out update all of them.
+ */
+function re_lease_unit_ids(PDO $conn, int $leaseId): array
+{
+    $ids = [];
+    $st = $conn->prepare("SELECT unit_id FROM re_leases WHERE id = ?");
+    $st->execute([$leaseId]);
+    if ($u = (int)$st->fetchColumn()) {
+        $ids[] = $u;
+    }
+    try {
+        $st = $conn->prepare("SELECT unit_id FROM re_lease_units WHERE lease_id = ? ORDER BY sort_order, id");
+        $st->execute([$leaseId]);
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $u) {
+            $ids[] = (int)$u;
+        }
+    } catch (Throwable $e) {
+        // Multi-unit table may not exist on older environments.
+    }
+    return array_values(array_unique(array_filter($ids)));
+}
+
+/** Mark every unit of the lease occupied (tenant moved in). */
+function re_lease_units_set_occupied(PDO $conn, int $companyId, int $leaseId): void
+{
+    $upd = $conn->prepare("UPDATE re_units SET status = 'occupied' WHERE id = ? AND company_id = ?");
+    foreach (re_lease_unit_ids($conn, $leaseId) as $unitId) {
+        $upd->execute([$unitId, $companyId]);
+    }
+}
+
+/**
+ * Mark the lease's units vacant (tenant moved out), except a unit another
+ * active, not-deleted lease still holds. Returns how many were vacated.
+ */
+function re_lease_units_set_vacant(PDO $conn, int $companyId, int $leaseId): int
+{
+    $held = $conn->prepare("
+        SELECT COUNT(*) FROM re_leases l
+        LEFT JOIN re_lease_units lu ON lu.lease_id = l.id
+        WHERE l.company_id = ? AND l.id <> ? AND l.status = 'active' AND " . re_lease_not_deleted_sql($conn, 'l') . "
+          AND (l.unit_id = ? OR lu.unit_id = ?)
+    ");
+    $upd = $conn->prepare("UPDATE re_units SET status = 'vacant' WHERE id = ? AND company_id = ?");
+    $n = 0;
+    foreach (re_lease_unit_ids($conn, $leaseId) as $unitId) {
+        $held->execute([$companyId, $leaseId, $unitId, $unitId]);
+        if ((int)$held->fetchColumn() === 0) {
+            $upd->execute([$unitId, $companyId]);
+            $n++;
+        }
+    }
+    return $n;
+}

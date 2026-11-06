@@ -191,3 +191,19 @@ function fin_test_load_journals(PDO $conn, int $companyId): int
     }
     return $n;
 }
+
+/**
+ * Removes what hangs off the vouchers of two companies (fixed assets and their
+ * monthly entries, supplier payments and their allocations, supplier invoices, their files, the finance settings), so a test can clear the vouchers and the chart.
+ * Inside the test's rolled-back transaction, like the rest.
+ */
+function fin_test_clear_extras(PDO $conn, int $a, int $b): void
+{
+    foreach (['fin_auto_entries', 'fin_assets', 'fin_alloc_schedules', 'fin_payment_allocations', 'fin_supplier_payments', 'fin_voucher_attachments', 'fin_supplier_invoices', 'fin_settings'] as $table) {
+        $exists = $conn->prepare("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?");
+        $exists->execute([$table]);
+        if ((int)$exists->fetchColumn() === 1) {
+            $conn->prepare("DELETE FROM {$table} WHERE company_id IN (?, ?)")->execute([$a, $b]);
+        }
+    }
+}

@@ -113,6 +113,7 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
         <i class="bi bi-graph-up"></i> Profit & Loss Statement
     </div>
     <div>
+        <a href="profit_loss_monthly.php" class="btn btn-outline-primary"><i class="bi bi-calendar3"></i> Month by month</a>
         <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
             <i class="bi bi-printer"></i> Print
         </button>

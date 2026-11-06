@@ -214,7 +214,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $reason = trim($_POST['reason'] ?? '');
         $result = reverse_journal($journalId, $reason, $userId);
         if ($result['success']) {
-            $_SESSION['success'] = 'Journal entry reversed successfully. Reversal Journal #: ' . $result['reversal_journal_id'];
+            $_SESSION['success'] = 'Journal entry reversed successfully. Reversal Journal #: ' . $result['reversal_journal_id']
+                . (($journal['reference_type'] ?? '') === 'security_deposit_settlement' && empty($result['warning'])
+                    ? '. The security deposit settlement is back to draft: correct it on the move-out, then approve and process it again.' : '');
+            if (!empty($result['warning'])) {
+                $_SESSION['error'] = $result['warning'];
+            }
             header('Location: journal_entry_view.php?id=' . $journalId);
             exit;
         } else {

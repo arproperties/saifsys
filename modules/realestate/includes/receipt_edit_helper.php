@@ -281,11 +281,11 @@ if (!function_exists('re_receipt_edit_repost_journal')) {
         }
 
         $posting = post_invoice_mode_receipt_to_accounting($paymentId, $companyId, $userId);
-        if (empty($posting['success']) || empty($posting['journal_id'])) {
+        if (empty($posting['success']) || (empty($posting['journal_id']) && empty($posting['deposit_only']))) {
             throw new RuntimeException('Receipt accounting posting failed: ' . ($posting['error'] ?? 'Unknown error'));
         }
 
-        return ['journal_id' => (int)$posting['journal_id'], 'reversed_journal_id' => $liveJournalId ?: null];
+        return ['journal_id' => (int)($posting['journal_id'] ?? 0), 'reversed_journal_id' => $liveJournalId ?: null];
     }
 }
 

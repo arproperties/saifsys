@@ -314,6 +314,15 @@ try {
                 echo json_encode(['success' => false, 'error' => 'Only confirmed bookings can be checked in.']);
                 exit;
             }
+            // Long stays (and units set to always use it): check-in only through the Move-In process (Key Handover)
+            require_once __DIR__ . '/includes/ars_move_process.php';
+            if (amp_ready($conn) && amp_process_on($conn, $arsCompanyId, $booking, 'in')) {
+                $ampIn = amp_record($conn, $arsCompanyId, $bookingId, 'in');
+                if (!$ampIn || empty($ampIn['keys_handed_over'])) {
+                    echo json_encode(['success' => false, 'error' => 'Check-in is done through the Move-In process: open Move-In and hand over the keys.', 'move_in_url' => 'move_in_view.php?booking_id=' . $bookingId]);
+                    exit;
+                }
+            }
             $conn->prepare("UPDATE ars_bookings SET status = 'checked_in', updated_at = NOW() WHERE id = ? AND company_id = ?")
                  ->execute([$bookingId, $arsCompanyId]);
             ars_booking_activity_log($conn, [
@@ -335,6 +344,15 @@ try {
             if ($booking['status'] !== 'checked_in') {
                 echo json_encode(['success' => false, 'error' => 'Only checked-in bookings can be checked out.']);
                 exit;
+            }
+            // Long stays (and units set to always use it): check-out only through the Move-Out process (Key Return)
+            require_once __DIR__ . '/includes/ars_move_process.php';
+            if (amp_ready($conn) && amp_process_on($conn, $arsCompanyId, $booking, 'out')) {
+                $ampOut = amp_record($conn, $arsCompanyId, $bookingId, 'out');
+                if (!$ampOut || empty($ampOut['keys_returned'])) {
+                    echo json_encode(['success' => false, 'error' => 'Check-out is done through the Move-Out process: open Move-Out and confirm the key return.', 'move_out_url' => 'move_out_view.php?booking_id=' . $bookingId]);
+                    exit;
+                }
             }
             require_once __DIR__ . '/includes/ars_early_checkout.php';
             ars_early_checkout_ensure_schema($conn);
@@ -494,6 +512,12 @@ try {
         case 'complete':
             if ($booking['status'] !== 'checked_out') {
                 echo json_encode(['success' => false, 'error' => 'Only checked-out bookings can be marked complete.']);
+                exit;
+            }
+            // An open Move-Out is finished first (settlement, signed report, ...)
+            require_once __DIR__ . '/includes/ars_move_process.php';
+            if (amp_ready($conn) && amp_process_on($conn, $arsCompanyId, $booking, 'out') && ($ampOut = amp_record($conn, $arsCompanyId, $bookingId, 'out')) && $ampOut['status'] !== 'completed') {
+                echo json_encode(['success' => false, 'error' => 'Finish the Move-Out first (inspection report, damages, deposit settlement), then complete it.', 'move_out_url' => 'move_out_view.php?booking_id=' . $bookingId]);
                 exit;
             }
             $conn->prepare("UPDATE ars_bookings SET status = 'completed', updated_at = NOW() WHERE id = ? AND company_id = ?")

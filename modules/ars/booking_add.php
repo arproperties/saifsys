@@ -445,16 +445,129 @@ ars_shell_begin([
     <div class="ars-card mb-4 ars-wizard-step" data-ars-wizard-panel="3">
       <div class="card-header">Guest</div>
       <div class="card-body">
-        <label class="form-label fw-semibold">Guest *</label>
-        <select name="guest_id" id="guestSelect" class="form-select">
+        <div class="d-flex justify-content-between align-items-end gap-2 mb-2">
+          <label class="form-label fw-semibold mb-0" for="guestSearch">Guest *</label>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="guestNewBtn"><i class="bi bi-person-plus me-1"></i>New guest</button>
+        </div>
+        <!-- Searchable picker over the select below (the select is still what is submitted) -->
+        <div class="ars-gpick" id="guestPick">
+          <div class="ars-gpick-box">
+            <i class="bi bi-search ars-gpick-ico" aria-hidden="true"></i>
+            <input type="text" id="guestSearch" class="form-control" autocomplete="off" placeholder="Type a name, phone or email to search…"
+                   role="combobox" aria-expanded="false" aria-controls="guestList" aria-autocomplete="list">
+            <button type="button" class="ars-gpick-clear" id="guestClear" title="Clear" aria-label="Clear guest" hidden><i class="bi bi-x-lg"></i></button>
+          </div>
+          <div class="ars-gpick-list" id="guestList" role="listbox" hidden></div>
+        </div>
+        <select name="guest_id" id="guestSelect" class="form-select d-none" tabindex="-1" aria-hidden="true">
           <option value="">— Select guest —</option>
           <?php foreach ($guests as $g): ?>
-          <option value="<?= $g['id'] ?>" <?= ((int)($_POST['guest_id'] ?? $_GET['guest_id'] ?? 0) === (int)$g['id']) ? 'selected' : '' ?>>
+          <option value="<?= $g['id'] ?>" data-phone="<?= h($g['phone'] ?? '') ?>" data-email="<?= h($g['email'] ?? '') ?>" <?= ((int)($_POST['guest_id'] ?? $_GET['guest_id'] ?? 0) === (int)$g['id']) ? 'selected' : '' ?>>
             <?= h($g['first_name'] . ' ' . $g['last_name']) ?> <?= $g['phone'] ? '(' . h($g['phone']) . ')' : '' ?>
           </option>
           <?php endforeach; ?>
         </select>
-        <p class="small text-muted mt-2 mb-0">Need a new guest? <a href="guests.php">Add in Guests</a>, then return here.</p>
+        <p class="small text-muted mt-2 mb-0">Guest not in the list? Click <strong>New guest</strong> to add them here; the booking details you entered stay.</p>
+        <style>
+          .ars-gpick { position: relative; }
+          .ars-gpick-box { position: relative; }
+          .ars-gpick-ico { position: absolute; left: .8rem; top: 50%; transform: translateY(-50%); color: #8a8580; pointer-events: none; }
+          .ars-gpick-box .form-control { padding-left: 2.2rem; padding-right: 2.2rem; }
+          .ars-gpick-clear { position: absolute; right: .5rem; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: #8a8580; padding: .25rem .4rem; }
+          /* In the page flow, not a pop-up: the wizard card clips anything outside it */
+          .ars-gpick-list { position: relative; margin-top: 4px; max-height: 320px; overflow-y: auto; background: #fff;
+                            border: 1px solid rgba(15,23,42,.12); border-radius: 12px; box-shadow: 0 12px 30px rgba(15,23,42,.14); padding: .3rem; }
+          .ars-gpick-opt { display: flex; justify-content: space-between; gap: .75rem; width: 100%; text-align: left; border: 0; background: transparent; border-radius: 8px; padding: .5rem .65rem; font-size: .92rem; color: inherit; }
+          .ars-gpick-opt small { color: #8a8580; white-space: nowrap; }
+          .ars-gpick-opt.is-on, .ars-gpick-opt:hover { background: rgba(176,125,43,.12); }
+          .ars-gpick-opt mark { background: rgba(176,125,43,.28); padding: 0; border-radius: 2px; color: inherit; }
+          .ars-gpick-empty { padding: .6rem .65rem; color: #8a8580; font-size: .9rem; }
+        </style>
+        <script>
+        (function () {
+          var sel = document.getElementById('guestSelect'), input = document.getElementById('guestSearch');
+          var list = document.getElementById('guestList'), clear = document.getElementById('guestClear');
+          if (!sel || !input || !list) return;
+          var opts = Array.prototype.slice.call(sel.options).filter(function (o) { return o.value !== ''; }).map(function (o) {
+            var name = o.textContent.replace(/\s*\([^)]*\)\s*$/, '').trim();
+            return { value: o.value, name: name, phone: o.dataset.phone || '', email: o.dataset.email || '',
+                     hay: (name + ' ' + (o.dataset.phone || '') + ' ' + (o.dataset.email || '')).toLowerCase() };
+          });
+          var shown = [], active = -1;
+          var esc = function (t) { return String(t).replace(/[&<>"]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; }); };
+          var mark = function (t, q) {
+            if (!q) return esc(t);
+            var i = t.toLowerCase().indexOf(q);
+            return i < 0 ? esc(t) : esc(t.slice(0, i)) + '<mark>' + esc(t.slice(i, i + q.length)) + '</mark>' + esc(t.slice(i + q.length));
+          };
+          function current() { return opts.find(function (o) { return o.value === sel.value; }); }
+          function showSelected() {
+            var c = current();
+            input.value = c ? c.name + (c.phone ? ' (' + c.phone + ')' : '') : '';
+            clear.hidden = !c;
+          }
+          function render(q) {
+            q = (q || '').trim().toLowerCase();
+            // Every word must match (name, phone or email); phone digits match without spaces too
+            var words = q.split(/\s+/).filter(Boolean);
+            var digits = q.replace(/\D/g, '');
+            shown = opts.filter(function (o) {
+              if (!words.length) return true;
+              var ok = words.every(function (w) { return o.hay.indexOf(w) !== -1; });
+              return ok || (digits.length >= 3 && o.phone.replace(/\D/g, '').indexOf(digits) !== -1);
+            }).slice(0, 100);
+            active = shown.length ? 0 : -1;
+            list.innerHTML = shown.length ? shown.map(function (o, i) {
+              return '<button type="button" class="ars-gpick-opt' + (i === active ? ' is-on' : '') + '" role="option" data-i="' + i + '">'
+                + '<span>' + mark(o.name, words[0] || '') + '</span><small>' + esc(o.phone || o.email) + '</small></button>';
+            }).join('') + (opts.length > 100 && shown.length === 100 ? '<div class="ars-gpick-empty">Type more to narrow the list…</div>' : '')
+              : '<div class="ars-gpick-empty">No guest found. <button type="button" class="btn btn-sm btn-ars ms-1" data-gpick-new>Add "' + esc(input.value.trim()) + '" as a new guest</button></div>';
+            open(true);
+          }
+          function open(on) { list.hidden = !on; input.setAttribute('aria-expanded', on ? 'true' : 'false'); }
+          function choose(o) {
+            sel.value = o.value;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            showSelected();
+            open(false);
+          }
+          function move(d) {
+            if (!shown.length) return;
+            active = (active + d + shown.length) % shown.length;
+            list.querySelectorAll('.ars-gpick-opt').forEach(function (b, i) { b.classList.toggle('is-on', i === active); if (i === active) b.scrollIntoView({ block: 'nearest' }); });
+          }
+          input.addEventListener('focus', function () { input.select(); render(''); });
+          input.addEventListener('input', function () { if (sel.value) { sel.value = ''; clear.hidden = true; } render(input.value); });
+          input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); list.hidden ? render(input.value) : move(1); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+            else if (e.key === 'Enter') { if (!list.hidden && shown[active]) { e.preventDefault(); choose(shown[active]); } }
+            else if (e.key === 'Escape') { open(false); showSelected(); }
+          });
+          list.addEventListener('mousedown', function (e) { e.preventDefault(); });
+          list.addEventListener('click', function (e) {
+            if (e.target.closest('[data-gpick-new]')) { open(false); window.arsGuestNew(input.value.trim()); return; }
+            var b = e.target.closest('.ars-gpick-opt'); if (b) choose(shown[+b.dataset.i]);
+          });
+          // A guest added with New guest: into the list and selected
+          window.arsGuestPickAdd = function (g) {
+            var id = String(g.id), o = opts.find(function (x) { return x.value === id; });
+            if (!o) {
+              var el = document.createElement('option');
+              el.value = id; el.dataset.phone = g.phone || ''; el.dataset.email = g.email || '';
+              el.textContent = g.name + (g.phone ? ' (' + g.phone + ')' : '');
+              sel.appendChild(el);
+              o = { value: id, name: g.name, phone: g.phone || '', email: g.email || '', hay: (g.name + ' ' + (g.phone || '') + ' ' + (g.email || '')).toLowerCase() };
+              opts.push(o);
+            }
+            choose(o);
+          };
+          document.getElementById('guestNewBtn').addEventListener('click', function () { window.arsGuestNew(sel.value ? '' : input.value.trim()); });
+          input.addEventListener('blur', function () { setTimeout(function () { open(false); showSelected(); }, 120); });
+          clear.addEventListener('click', function () { sel.value = ''; sel.dispatchEvent(new Event('change', { bubbles: true })); input.value = ''; clear.hidden = true; input.focus(); });
+          showSelected();
+        })();
+        </script>
       </div>
     </div>
 
@@ -613,6 +726,72 @@ ars_shell_begin([
 </div>
 </form>
 </div>
+
+<!-- New guest from the wizard (saved by ajax_guest_quick_add.php, then selected) -->
+<div class="modal fade" id="guestNewModal" tabindex="-1" aria-labelledby="guestNewTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form class="modal-content" id="guestNewForm" novalidate>
+      <div class="modal-header" style="background:var(--ars-primary);color:#fff">
+        <h5 class="modal-title" id="guestNewTitle"><i class="bi bi-person-plus me-2"></i>New guest</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger py-2 d-none" id="guestNewErr"></div>
+        <div class="row g-3">
+          <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="gnFirst">First name *</label><input type="text" name="first_name" id="gnFirst" class="form-control" maxlength="100" required></div>
+          <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="gnLast">Last name *</label><input type="text" name="last_name" id="gnLast" class="form-control" maxlength="100" required></div>
+          <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="gnPhone">Phone</label><input type="text" name="phone" id="gnPhone" class="form-control" maxlength="50" placeholder="+971…"></div>
+          <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="gnEmail">Email</label><input type="email" name="email" id="gnEmail" class="form-control" maxlength="190" placeholder="guest@email.com"></div>
+          <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="gnNat">Nationality</label><input type="text" name="nationality" id="gnNat" class="form-control" maxlength="100"></div>
+          <div class="col-12 col-sm-6"><label class="form-label fw-semibold" for="gnIdType">ID type</label>
+            <select name="id_type" id="gnIdType" class="form-select"><option value="">—</option><option value="emirates_id">Emirates ID</option><option value="passport">Passport</option><option value="visa">Visa</option><option value="driving_license">Driving License</option><option value="other">Other</option></select></div>
+          <div class="col-12"><label class="form-label fw-semibold" for="gnIdNo">ID number</label><input type="text" name="id_number" id="gnIdNo" class="form-control" maxlength="100"></div>
+        </div>
+        <p class="small text-muted mt-3 mb-0">ID copies (Emirates ID, passport) can be uploaded later on the guest's page.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-ars" id="guestNewSave"><i class="bi bi-check-lg me-1"></i>Add &amp; select guest</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+(function () {
+  var modalEl = document.getElementById('guestNewModal'), form = document.getElementById('guestNewForm');
+  var err = document.getElementById('guestNewErr'), save = document.getElementById('guestNewSave');
+  if (!modalEl || !form) return;
+  // Bootstrap loads at the end of the page, so the modal is looked up when used
+  var modal = function () { return window.bootstrap ? bootstrap.Modal.getOrCreateInstance(modalEl) : null; };
+  // Opened from the picker: what was typed fills the name (or the phone / email when it looks like one)
+  window.arsGuestNew = function (typed) {
+    form.reset(); err.classList.add('d-none');
+    typed = (typed || '').trim();
+    if (/@/.test(typed)) { form.email.value = typed; }
+    else if (/^[+\d][\d\s-]{5,}$/.test(typed)) { form.phone.value = typed; }
+    else if (typed) { var p = typed.split(/\s+/); form.first_name.value = p.shift(); form.last_name.value = p.join(' '); }
+    var m = modal(); if (m) { m.show(); } else { modalEl.classList.add('show'); modalEl.style.display = 'block'; }
+    setTimeout(function () { (form.first_name.value ? (form.last_name.value ? form.phone : form.last_name) : form.first_name).focus(); }, 250);
+  };
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!form.first_name.value.trim() || !form.last_name.value.trim()) { err.textContent = 'First and last name are required.'; err.classList.remove('d-none'); return; }
+    var fd = new FormData(form);
+    fd.append('_csrf', window.ARS_CSRF || (document.querySelector('meta[name="ars-csrf"]') || {}).content || '');
+    save.disabled = true;
+    fetch('ajax_guest_quick_add.php', { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) { return r.text().then(function (t) { try { return JSON.parse(t); } catch (x) { throw new Error(t.slice(0, 200) || ('HTTP ' + r.status)); } }); })
+      .then(function (d) {
+        save.disabled = false;
+        if (!d.success) { err.textContent = d.error || 'Could not add the guest.'; err.classList.remove('d-none'); return; }
+        window.arsGuestPickAdd(d.guest);
+        var m = modal(); if (m) { m.hide(); } else { modalEl.classList.remove('show'); modalEl.style.display = 'none'; }
+        if (d.existing) alert(d.message);
+      })
+      .catch(function (x) { save.disabled = false; err.textContent = 'Could not add the guest: ' + x.message; err.classList.remove('d-none'); });
+  });
+})();
+</script>
 
 <?php
 $vatRate = (float)($settings['default_vat_rate'] ?? 5);

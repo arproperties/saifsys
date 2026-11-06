@@ -25,12 +25,28 @@ if (!function_exists('re_obligation_engine_schema_ready')) {
 }
 
 if (!function_exists('re_obligation_engine_is_protected')) {
-    function re_obligation_engine_is_protected(array $existing): bool
+    function re_obligation_engine_is_protected(array $existing, ?PDO $conn = null): bool
     {
         $status = (string)($existing['status'] ?? '');
-        return (float)($existing['allocated_amount'] ?? 0) > 0
+        if ((float)($existing['allocated_amount'] ?? 0) > 0
             || !empty($existing['invoice_id'])
-            || in_array($status, ['partially_allocated', 'settled', 'cancelled', 'waived'], true);
+            || in_array($status, ['partially_allocated', 'settled', 'cancelled', 'waived'], true)) {
+            return true;
+        }
+        // An issued invoice is never deleted by a rebuild, paid or not
+        // (re_obligation_rent_coverage counts its days as already billed).
+        if ($conn && !empty($existing['id']) && !empty($existing['company_id'])) {
+            $stmt = $conn->prepare("
+                SELECT 1
+                FROM re_invoice_items ii
+                INNER JOIN re_invoices i ON i.id = ii.invoice_id AND i.company_id = ii.company_id
+                WHERE ii.company_id = ? AND ii.obligation_id = ? AND i.status <> 'cancelled'
+                LIMIT 1
+            ");
+            $stmt->execute([(int)$existing['company_id'], (int)$existing['id']]);
+            return (bool)$stmt->fetchColumn();
+        }
+        return false;
     }
 }
 
@@ -93,7 +109,7 @@ if (!function_exists('re_obligation_engine_current_by_key')) {
     function re_obligation_engine_current_by_key(PDO $conn, int $companyId, string $key): ?array
     {
         $stmt = $conn->prepare("
-            SELECT id, status, allocated_amount, invoice_id
+            SELECT id, company_id, status, allocated_amount, invoice_id
             FROM re_obligations
             WHERE company_id = ? AND obligation_key = ?
             LIMIT 1
@@ -240,7 +256,7 @@ if (!function_exists('re_obligation_engine_cleanup_obsolete_unallocated')) {
                 continue;
             }
             $stats['obsolete_found']++;
-            if (re_obligation_engine_is_protected($row)) {
+            if (re_obligation_engine_is_protected($row, $conn)) {
                 $stats['protected']++;
                 continue;
             }
@@ -367,7 +383,7 @@ if (!function_exists('re_obligation_engine_generate_for_lease')) {
                     continue;
                 }
 
-                if (re_obligation_engine_is_protected($existing)) {
+                if (re_obligation_engine_is_protected($existing, $conn)) {
                     $stats['protected']++;
                     continue;
                 }

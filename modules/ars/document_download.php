@@ -41,8 +41,11 @@ if ($attachmentId > 0) {
         echo h($res['error'] ?? 'Not found');
         exit;
     }
+    // inline=1 opens a PDF / photo in the browser (View); any other type is always downloaded
+    $inline = !empty($_GET['inline']) && in_array($res['mime'], ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'], true);
     header('Content-Type: ' . $res['mime']);
-    header('Content-Disposition: attachment; filename="' . str_replace('"', '', (string)$res['filename']) . '"');
+    header('Content-Disposition: ' . ($inline ? 'inline' : 'attachment') . '; filename="' . str_replace('"', '', (string)$res['filename']) . '"');
+    header('Cache-Control: private, no-store');
     header('X-Content-Type-Options: nosniff');
     header('Content-Length: ' . (string)filesize((string)$res['path']));
     readfile((string)$res['path']);

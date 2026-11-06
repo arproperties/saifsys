@@ -151,6 +151,11 @@ require_once __DIR__ . '/includes/construction_layout_header.php';
                         <td class="text-end">
                             <div class="btn-group btn-group-sm">
                                 <a href="client_invoice_pdf.php?id=<?= (int)$i['id'] ?>" target="_blank" class="btn btn-outline-secondary">PDF</a>
+                                <?php if (!empty($i['source_id'])): ?>
+                                <span class="btn btn-outline-secondary disabled" title="Generated from a contract schedule - edit it from the contract">Edit</span>
+                                <?php elseif (($i['status'] ?? '') !== 'cancelled'): ?>
+                                <a href="client_invoice_edit.php?id=<?= (int)$i['id'] ?>" class="btn btn-outline-primary">Edit</a>
+                                <?php endif; ?>
                                 <?php if ($bal > 0.005): ?>
                                 <a href="client_payment_add.php?invoice_id=<?= (int)$i['id'] ?>&amp;amount=<?= h(number_format($bal, 2, '.', '')) ?>" class="btn btn-outline-primary">Allocate / Receipt</a>
                                 <?php else: ?>
