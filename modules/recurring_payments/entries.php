@@ -18,6 +18,9 @@ $code = rpay_boot($conn);
 
 $rpayBase = get_application_web_root() . '/modules/recurring_payments';
 $selfUrl = $rpayBase . '/entries.php';
+// One income head only (an id, or "none" for no head); kept after Pause, Create now and the rest.
+$headFilter = is_string($_GET['head'] ?? null) ? $_GET['head'] : '';
+$listUrl = $selfUrl . ($headFilter !== '' ? '?head=' . urlencode($headFilter) : '');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -38,7 +41,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } catch (BinvError $e) {
         binv_flash($e->getMessage(), 'danger');
     }
-    header('Location: ' . $selfUrl);
+    header('Location: ' . $listUrl);
     exit;
 }
 
@@ -48,6 +51,12 @@ try {
     rpay_stop($e);
 }
 $entries = $data['entries'] ?? [];
+
+if ($headFilter !== '') {
+    $entries = array_values(array_filter($entries, function ($e) use ($headFilter) {
+        return $headFilter === 'none' ? empty($e['head']) : (string)($e['head']['id'] ?? '') === $headFilter;
+    }));
+}
 
 $pageTitle = 'Entries';
 require __DIR__ . '/includes/rpay_layout_header.php';
@@ -63,6 +72,33 @@ require __DIR__ . '/includes/rpay_layout_header.php';
   </a>
 </div>
 
+<div class="card card-round mb-3">
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end" action="<?= h($selfUrl) ?>">
+      <div class="col-12 col-md-4">
+        <label class="form-label small fw-semibold mb-1">Income head</label>
+        <select name="head" class="form-select" data-search onchange="this.form.submit()">
+          <option value="">All</option>
+          <?php foreach ($data['heads'] ?? [] as $hd): ?>
+            <option value="<?= (int)$hd['id'] ?>"<?= $headFilter === (string)$hd['id'] ? ' selected' : '' ?>><?= h($hd['name']) ?></option>
+          <?php endforeach; ?>
+          <option value="none"<?= $headFilter === 'none' ? ' selected' : '' ?>>No income head</option>
+        </select>
+      </div>
+      <div class="col-6 col-md-2">
+        <button class="btn btn-light border w-100"><i class="bi bi-funnel"></i> Show</button>
+      </div>
+      <?php if ($headFilter !== ''): ?>
+        <div class="col-12 col-md-6 d-flex flex-wrap align-items-center gap-3 pb-2">
+          <span class="text-muted small"><?= count($entries) ?> entr<?= count($entries) === 1 ? 'y' : 'ies' ?></span>
+          <a class="small text-decoration-none" href="<?= h($rpayBase) ?>/index.php?head=<?= h(urlencode($headFilter)) ?>">See payments</a>
+          <a class="small text-decoration-none" href="<?= h($selfUrl) ?>">Show all entries</a>
+        </div>
+      <?php endif; ?>
+    </form>
+  </div>
+</div>
+
 <div class="card card-round">
   <div class="table-responsive">
     <table class="table rpay-table align-middle">
@@ -71,7 +107,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       </thead>
       <tbody>
         <?php if (!$entries): ?>
-          <tr><td colspan="8" class="text-muted text-center py-5">No entries yet. Add the first one.</td></tr>
+          <tr><td colspan="8" class="text-muted text-center py-5"><?= $headFilter !== '' ? 'No entries under this income head.' : 'No entries yet. Add the first one.' ?></td></tr>
         <?php endif; ?>
         <?php foreach ($entries as $e): ?>
           <?php $active = !empty($e['active']); $auto = !empty($e['auto_create']); ?>
@@ -100,7 +136,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             <td><span class="badge text-bg-<?= $active ? 'success' : 'secondary' ?>"><?= $active ? 'Active' : 'Paused' ?></span></td>
             <td class="text-end text-nowrap">
               <?php if ($active): ?>
-                <form method="post" action="<?= h($selfUrl) ?>" class="d-inline-flex gap-1 align-middle">
+                <form method="post" action="<?= h($listUrl) ?>" class="d-inline-flex gap-1 align-middle">
                   <?php csrf_field(); ?>
                   <input type="hidden" name="entry" value="<?= (int)$e['id'] ?>">
                   <input type="hidden" name="action" value="create">
@@ -108,14 +144,14 @@ require __DIR__ . '/includes/rpay_layout_header.php';
                   <button class="btn btn-sm btn-light border" title="Create a payment now: this month's, or the one for the date picked">Create now</button>
                 </form>
               <?php endif; ?>
-              <form method="post" action="<?= h($selfUrl) ?>" class="d-inline">
+              <form method="post" action="<?= h($listUrl) ?>" class="d-inline">
                 <?php csrf_field(); ?>
                 <input type="hidden" name="entry" value="<?= (int)$e['id'] ?>">
                 <input type="hidden" name="action" value="<?= $active ? 'pause' : 'resume' ?>">
                 <button class="btn btn-sm btn-light border"><?= $active ? 'Pause' : 'Resume' ?></button>
               </form>
               <?php if ((int)($e['payments'] ?? 0) === 0): ?>
-                <form method="post" action="<?= h($selfUrl) ?>" class="d-inline" onsubmit="return confirm('Delete this entry? This cannot be undone.');">
+                <form method="post" action="<?= h($listUrl) ?>" class="d-inline" onsubmit="return confirm('Delete this entry? This cannot be undone.');">
                   <?php csrf_field(); ?>
                   <input type="hidden" name="entry" value="<?= (int)$e['id'] ?>">
                   <input type="hidden" name="action" value="delete">
