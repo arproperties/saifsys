@@ -27,6 +27,16 @@
  *        renewal workflow, and no later lease for the same tenant on the same unit. Without
  *        from/to it gives all of them; with them, only those that ended between the two.
  *        Same fields as renewals_due, plus the move-out date and saifsys's last workflow.
+ *
+ *   ?module=realestate&action=buildings_3d
+ *        every active building with how many floors and units saifsys has for it: the
+ *        list Reem's 3D Buildings screen picks from.
+ *
+ *   ?module=realestate&action=building_3d&id=N
+ *        one building as Reem draws it in 3D: its floors, every unit on them (number, type,
+ *        size, status, asking rent a year), and the active lease on each unit (tenant, end date,
+ *        yearly rent). Tenant names and rents are given because tapping a unit shows them;
+ *        Reem shows this screen only to the people the master grants it to.
  */
 
 declare(strict_types=1);
@@ -190,6 +200,109 @@ if ($action === 'renewals_expired') {
             'ejari' => (string)($r['ejari_registration_number'] ?? ''),
             'saifsys_last' => $r['saifsys_last'] !== null ? (string)$r['saifsys_last'] : null,
         ], $st->fetchAll(PDO::FETCH_ASSOC)),
+    ]);
+}
+
+if ($action === 'buildings_3d') {
+    $rows = $conn->query("
+        SELECT b.id, b.name, b.address, b.total_floors,
+               (SELECT COUNT(*) FROM re_floors f WHERE f.building_id = b.id) AS floors,
+               (SELECT COUNT(*) FROM re_units u WHERE u.building_id = b.id) AS units
+        FROM re_buildings b
+        WHERE b.is_active = 1
+        ORDER BY b.name
+    ")->fetchAll(PDO::FETCH_ASSOC);
+
+    jarvis_api_send([
+        'ok' => true,
+        'buildings' => array_map(static fn($b) => [
+            'id' => (int)$b['id'],
+            'name' => (string)$b['name'],
+            'address' => (string)($b['address'] ?? ''),
+            // The floors saifsys has set up; with none, the number typed on the building.
+            'floors' => (int)$b['floors'] ?: (int)($b['total_floors'] ?? 0),
+            'units' => (int)$b['units'],
+        ], $rows),
+    ]);
+}
+
+if ($action === 'building_3d') {
+    $id = (int)($_GET['id'] ?? 0);
+    $st = $conn->prepare("SELECT id, name, address, total_floors FROM re_buildings WHERE id = ? AND is_active = 1");
+    $st->execute([$id]);
+    $b = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$b) {
+        jarvis_api_error('not_found', 'No such building.', 404);
+    }
+
+    $st = $conn->prepare("SELECT floor_number, name FROM re_floors WHERE building_id = ? ORDER BY floor_number");
+    $st->execute([$id]);
+    $floors = $st->fetchAll(PDO::FETCH_ASSOC);
+
+    // The asking rent is a year's on the live table; older copies of saifsys may not have it.
+    $has = static function (string $column) use ($conn): bool {
+        $st = $conn->prepare("SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 're_units' AND COLUMN_NAME = ? LIMIT 1");
+        $st->execute([$column]);
+        return (bool)$st->fetchColumn();
+    };
+    $rent = $has('annual_rent') ? 'u.annual_rent' : 'NULL';
+
+    $st = $conn->prepare("
+        SELECT u.id, u.unit_number, u.unit_type, u.area_sqm, u.status, $rent AS annual_rent,
+               f.floor_number, f.name AS floor_name
+        FROM re_units u
+        LEFT JOIN re_floors f ON f.id = u.floor_id
+        WHERE u.building_id = ?
+        ORDER BY f.floor_number, u.unit_number
+    ");
+    $st->execute([$id]);
+    $units = $st->fetchAll(PDO::FETCH_ASSOC);
+
+    // The lease running on each unit today: the latest active one, if a unit has two.
+    $st = $conn->prepare("
+        SELECT l.unit_id, l.start_date, l.end_date,
+               COALESCE(NULLIF(l.annual_rent, 0), l.monthly_rent * 12) AS annual_rent,
+               t.first_name, t.last_name, t.company_name
+        FROM re_leases l
+        JOIN re_units u ON u.id = l.unit_id
+        JOIN re_tenants t ON t.id = l.tenant_id
+        WHERE u.building_id = ? AND l.status = 'active'
+        ORDER BY l.start_date
+    ");
+    $st->execute([$id]);
+    $leases = [];
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $l) {
+        $leases[(int)$l['unit_id']] = [
+            'tenant' => trim((string)($l['company_name'] ?? '')) !== '' ? trim((string)$l['company_name']) : trim($l['first_name'] . ' ' . $l['last_name']),
+            'start_date' => (string)$l['start_date'],
+            'end_date' => (string)$l['end_date'],
+            'annual_rent' => round((float)$l['annual_rent'], 2),
+        ];
+    }
+
+    jarvis_api_send([
+        'ok' => true,
+        'building' => [
+            'id' => (int)$b['id'],
+            'name' => (string)$b['name'],
+            'address' => (string)($b['address'] ?? ''),
+            'total_floors' => $b['total_floors'] !== null ? (int)$b['total_floors'] : null,
+        ],
+        'floors' => array_map(static fn($f) => [
+            'number' => (int)$f['floor_number'],
+            'name' => (string)($f['name'] ?? ''),
+        ], $floors),
+        'units' => array_map(static fn($u) => [
+            'id' => (int)$u['id'],
+            'unit' => (string)$u['unit_number'],
+            'type' => (string)($u['unit_type'] ?? ''),
+            'area_sqm' => $u['area_sqm'] !== null ? (float)$u['area_sqm'] : null,
+            'status' => (string)$u['status'],
+            'annual_rent' => $u['annual_rent'] !== null ? round((float)$u['annual_rent'], 2) : null,
+            'floor' => $u['floor_number'] !== null ? (int)$u['floor_number'] : null,
+            'floor_name' => (string)($u['floor_name'] ?? ''),
+            'lease' => $leases[(int)$u['id']] ?? null,
+        ], $units),
     ]);
 }
 
