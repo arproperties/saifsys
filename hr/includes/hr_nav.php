@@ -123,6 +123,13 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'pages' => ['attendance_missing.php'],
                 ],
                 [
+                    'key' => 'attendance_camera_log',
+                    'label' => 'Camera log',
+                    'icon' => 'cctv',
+                    'href' => $hrBase . '/attendance_camera_log',
+                    'pages' => ['attendance_camera_log.php'],
+                ],
+                [
                     'key' => 'overtime',
                     'label' => 'Overtime',
                     'icon' => 'timer',

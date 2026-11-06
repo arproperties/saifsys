@@ -75,6 +75,19 @@ require_once __DIR__ . '/../includes/attendance_self.php';
 
 function attendance_camera_send(array $body, int $code = 200): void
 {
+    // A match being answered goes in HR's camera log first, with what it did to the day.
+    if (isset($GLOBALS['att_cam_log'])) {
+        $log = $GLOBALS['att_cam_log'];
+        unset($GLOBALS['att_cam_log']);
+        $result = empty($body['ok']) ? 'Error: ' . ($body['error'] ?? 'not saved')
+            : (isset($body['skipped']) ? 'Not recorded: ' . $body['skipped']
+            : (!empty($body['changed']) ? ($log['what'] ?? 'Recorded') : 'No change (time already recorded)'));
+        try {
+            hr_camera_log_write($log, $result, $log['jpeg']);
+        } catch (Throwable $e) {
+            // The log never stops the attendance answer.
+        }
+    }
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
@@ -299,6 +312,22 @@ if (!$employee || !in_array((string)$employee['status'], ['active', 'on_leave', 
 }
 $employeeId = (int)$employee['id'];
 
+// HR's camera log: this match, whatever it does to the day (written when it is answered).
+require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
+$logCamId = ((int)($in['camera_id'] ?? 0)) ?: null;
+$logCamName = '';
+if ($logCamId && hr_cameras_ready($conn)) {
+    $lc = $conn->prepare("SELECT name FROM hr_attendance_cameras WHERE id = ?");
+    $lc->execute([$logCamId]);
+    $logCamName = (string)$lc->fetchColumn();
+}
+$GLOBALS['att_cam_log'] = [
+    'seen_at' => $seenAt, 'employee_id' => $employeeId, 'employee_code' => (string)$employee['employee_code'],
+    'employee_name' => (string)$employee['full_name'], 'camera_id' => $logCamId, 'camera' => $logCamName,
+    'score' => isset($in['score']) && is_numeric($in['score']) ? (float)$in['score'] : null,
+    'jpeg' => hr_camera_photo_decode($in['snapshot'] ?? null),
+];
+
 // Only people HR ticked under Cameras -> People. Everyone else is on the staff
 // app, and a camera passing them in the corridor must not touch their day.
 require_once __DIR__ . '/../hr/includes/hr_attendance_cameras.php';
@@ -364,6 +393,7 @@ if ($staffCheckedIn) {
         hr_camera_photo_save((int)$row['id'], 'out', $jpeg);
     }
     hr_camera_photo_cleanup();
+    $GLOBALS['att_cam_log']['what'] = 'Check-out updated (checked in on the staff app)';
     attendance_camera_send(['ok' => true, 'check_in' => $selfIn, 'check_out' => $time, 'changed' => true]);
 }
 
@@ -494,4 +524,7 @@ if ($arrival) {
     );
 }
 
+if (isset($GLOBALS['att_cam_log'])) {
+    $GLOBALS['att_cam_log']['what'] = $arrival ? 'Check-in' : 'Check-out updated';
+}
 attendance_camera_send(['ok' => true, 'check_in' => $checkIn, 'check_out' => $checkOut, 'changed' => true]);

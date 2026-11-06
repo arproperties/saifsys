@@ -140,7 +140,7 @@ def load_learned(recognizer, folder=LEARNED, detector=None):
     """Employee code -> features of the faces in faces_learned/ (or faces_rejected/).
 
     These are 112x112 face crops. With a detector, a larger picture counts too
-    (a check-in photo HR marked "Different person"): its face is found first.
+    (a camera photo HR picked on the Camera log): its face is found first.
     """
     learned = {}
     for name in learned_signature(folder):
@@ -435,10 +435,12 @@ def snapshot(frame, face, label):
     return base64.b64encode(jpg.tobytes()).decode() if ok else None
 
 
-def send(cfg, code, seen_at, cam_id=None, photo=None):
+def send(cfg, code, seen_at, cam_id=None, photo=None, score=None):
     payload = {"employee_code": code, "seen_at": int(seen_at), "camera_id": cam_id}
     if photo:
         payload["snapshot"] = photo
+    if score is not None:
+        payload["score"] = round(float(score), 3)  # for HR's camera log
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
         cfg["saifsys_url"] + "/api/attendance_camera.php",
@@ -712,8 +714,9 @@ def main():
     det_path, rec_path = ensure_models()
     detector = cv2.FaceDetectorYN.create(det_path, "", (320, 320), 0.8, 0.3, 5000)
     recognizer = cv2.FaceRecognizerSF.create(rec_path, "")
-    # For check-in photos HR marked "Different person": the cropped photo is
-    # known to show a face, which the stricter detector can miss once cropped.
+    # For camera photos HR picked on the Camera log ("Different person" or a
+    # reference): the cropped photo is known to show a face, which the stricter
+    # detector can miss once cropped.
     photo_detector = cv2.FaceDetectorYN.create(det_path, "", (320, 320), 0.6, 0.3, 5000)
 
     photos_seen = faces_signature()
@@ -742,7 +745,7 @@ def main():
         log(f"Cameras from HR: {', '.join(wanted) or 'none switched on'}")
         use_resend(cfg, resend)
     learned_seen = learned_signature()
-    learned = load_learned(recognizer)
+    learned = load_learned(recognizer, LEARNED, photo_detector)
     rejected_seen = learned_signature(REJECTED)
     rejected = load_learned(recognizer, REJECTED, photo_detector)
     active = only_ticked(with_learned(known, learned), people)
@@ -788,7 +791,7 @@ def main():
             # Reference faces kept or deleted in saifsys.
             if learned_signature() != learned_seen:
                 learned_seen = learned_signature()
-                learned = load_learned(recognizer)
+                learned = load_learned(recognizer, LEARNED, photo_detector)
                 refresh = True
             if learned_signature(REJECTED) != rejected_seen:
                 rejected_seen = learned_signature(REJECTED)
@@ -867,10 +870,10 @@ def main():
         for code in [c for c, m in held.items() if time.time() >= m["until"]]:
             m = held.pop(code)
             last_sent[code] = m["seen_at"]
-            ok, answer = send(cfg, code, m["seen_at"], m["cam_id"], m["photo"])
+            ok, answer = send(cfg, code, m["seen_at"], m["cam_id"], m["photo"], m["score"])
             log(f"{m['name']}: saw {code} (match {m['score']:.2f}) -> {answer}")
             if not ok:
-                pending.append((code, m["seen_at"], m["cam_id"], m["photo"]))
+                pending.append((code, m["seen_at"], m["cam_id"], m["photo"], m["score"]))
             # Closer to their own photo than any before: HR's "Best match so far".
             if m["own"] > best_seen.get(code, 0.0):
                 best_seen[code] = m["own"]

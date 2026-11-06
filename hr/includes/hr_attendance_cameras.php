@@ -268,6 +268,136 @@ function hr_camera_photo_cleanup(): void
             @unlink($file);
         }
     }
+    // The match log keeps HR_CAMERA_LOG_DAYS: the day's CSV and its photo folder go together.
+    $logCutoff = date('Y-m-d', time() - HR_CAMERA_LOG_DAYS * 86400);
+    foreach (glob(hr_camera_log_dir() . '/*.csv') ?: [] as $csv) {
+        $day = basename($csv, '.csv');
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $day) && $day < $logCutoff) {
+            foreach (glob(hr_camera_log_dir() . '/' . $day . '/*.jpg') ?: [] as $jpg) {
+                @unlink($jpg);
+            }
+            @rmdir(hr_camera_log_dir() . '/' . $day);
+            @unlink($csv);
+        }
+    }
+}
+
+/*
+ * The camera match log (HR -> Attendance -> Camera log): every match the camera
+ * PC sends, with its photo, whether it changed the day or not. One CSV per day
+ * (log/2026-11-06.csv) and that day's photos beside it (log/2026-11-06/*.jpg),
+ * inside the photo folder that refuses direct requests. No database table.
+ */
+
+/** Days the match log is kept. */
+const HR_CAMERA_LOG_DAYS = 30;
+
+/** Longest side of a log photo: small enough for a month of matches. */
+const HR_CAMERA_LOG_PHOTO_PX = 400;
+
+const HR_CAMERA_LOG_COLUMNS = ['time', 'employee_id', 'employee_code', 'employee_name', 'camera_id', 'camera', 'score', 'result', 'photo'];
+
+function hr_camera_log_dir(): string
+{
+    return hr_camera_photo_dir() . '/log';
+}
+
+/** A log photo's file, or null for a name that is not one. */
+function hr_camera_log_photo_path(string $day, string $file): ?string
+{
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day) || !preg_match('/^\d{6}_[A-Za-z0-9_-]{1,40}_[0-9a-f]{6}\.jpg$/', $file)) {
+        return null;
+    }
+    return hr_camera_log_dir() . '/' . $day . '/' . $file;
+}
+
+/**
+ * Add one match to its day's CSV, with the photo made smaller.
+ * $entry: seen_at (unix), employee_id, employee_code, employee_name, camera_id, camera, score.
+ */
+function hr_camera_log_write(array $entry, string $result, ?string $jpeg): void
+{
+    if (!hr_camera_photo_prepare_dir()) {
+        return;
+    }
+    $seen = (new DateTimeImmutable('@' . (int)$entry['seen_at']))->setTimezone(new DateTimeZone('Asia/Dubai'));
+    $day = $seen->format('Y-m-d');
+    $dir = hr_camera_log_dir() . '/' . $day;
+    if (!is_dir($dir) && !@mkdir($dir, 0755, true)) {
+        return;
+    }
+    $photo = '';
+    if ($jpeg !== null) {
+        $code = preg_replace('/[^A-Za-z0-9_-]/', '', (string)$entry['employee_code']) ?: 'x';
+        $photo = $seen->format('His') . '_' . substr($code, 0, 40) . '_' . bin2hex(random_bytes(3)) . '.jpg';
+        $small = null;
+        if (function_exists('imagecreatefromstring') && ($img = @imagecreatefromstring($jpeg))) {
+            $w = imagesx($img);
+            $h = imagesy($img);
+            $scale = min(1, HR_CAMERA_LOG_PHOTO_PX / max($w, $h));
+            $out = imagecreatetruecolor(max(1, (int)round($w * $scale)), max(1, (int)round($h * $scale)));
+            imagecopyresampled($out, $img, 0, 0, 0, 0, imagesx($out), imagesy($out), $w, $h);
+            ob_start();
+            imagejpeg($out, null, 75);
+            $small = ob_get_clean();
+        }
+        if (@file_put_contents($dir . '/' . $photo, $small ?: $jpeg) === false) {
+            $photo = '';
+        }
+    }
+    $fh = @fopen(hr_camera_log_dir() . '/' . $day . '.csv', 'a');
+    if (!$fh) {
+        return;
+    }
+    flock($fh, LOCK_EX);
+    if (fstat($fh)['size'] === 0) {
+        fputcsv($fh, HR_CAMERA_LOG_COLUMNS);
+    }
+    fputcsv($fh, [
+        $seen->format('H:i:s'), (int)$entry['employee_id'], (string)$entry['employee_code'], (string)$entry['employee_name'],
+        $entry['camera_id'] !== null ? (int)$entry['camera_id'] : '', (string)($entry['camera'] ?? ''),
+        $entry['score'] !== null ? number_format((float)$entry['score'], 2, '.', '') : '', $result, $photo,
+    ]);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+}
+
+/** One logged match by its photo, or null: what HR picked on the Camera log. */
+function hr_camera_log_find(string $day, string $photo): ?array
+{
+    if (hr_camera_log_photo_path($day, $photo) === null) {
+        return null;
+    }
+    foreach (hr_camera_log_read($day, $day) as $r) {
+        if ($r['photo'] === $photo) {
+            return $r;
+        }
+    }
+    return null;
+}
+
+/** Every logged match from $from to $to (Y-m-d), each row keyed by the columns plus 'date'; newest first. */
+function hr_camera_log_read(string $from, string $to): array
+{
+    $rows = [];
+    for ($d = $to; $d >= $from; $d = date('Y-m-d', strtotime($d . ' -1 day'))) {
+        $fh = @fopen(hr_camera_log_dir() . '/' . $d . '.csv', 'r');
+        if (!$fh) {
+            continue;
+        }
+        $head = fgetcsv($fh);
+        $day = [];
+        while (($r = fgetcsv($fh)) !== false) {
+            if ($head && count($r) === count($head)) {
+                $day[] = ['date' => $d] + array_combine($head, $r);
+            }
+        }
+        fclose($fh);
+        // By the time seen, newest first: a match sent late (internet was down) comes in out of order.
+        usort($day, static fn($a, $b) => strcmp($b['time'], $a['time']));
+        $rows = array_merge($rows, $day);
+    }
+    return $rows;
 }
 
 /* ---------- Live view on the Cameras page ----------
@@ -583,12 +713,16 @@ function hr_camera_learned(int $employeeId): array
 }
 
 /** Keep a face the camera matched, when it is among the person's closest. False when not kept. */
-function hr_camera_learned_add(int $employeeId, string $jpeg, float $score): bool
+function hr_camera_learned_add(int $employeeId, string $jpeg, float $score, bool $byHr = false): bool
 {
     $score = max(0.0, min(1.0, $score));
     $have = hr_camera_learned($employeeId);
     if (count($have) >= HR_CAMERA_LEARNED_KEEP && $score <= $have[count($have) - 1]['score']) {
-        return false;
+        // HR chose this one (Camera log): it takes the place of the least alike.
+        if (!$byHr) {
+            return false;
+        }
+        @unlink(hr_camera_learned_dir($employeeId) . '/' . $have[count($have) - 1]['name']);
     }
     $dir = hr_camera_learned_dir($employeeId);
     if (!hr_camera_face_prepare_dir() || (!is_dir($dir) && !@mkdir($dir, 0755, true))) {

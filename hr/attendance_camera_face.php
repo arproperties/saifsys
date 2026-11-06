@@ -105,22 +105,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 $_SESSION['cam_face_flash'] = ['err', !empty(hr_camera_best($id)['used'])
                     ? 'This best match is already a reference photo.' : 'Only a best match of 0.40 or more can be used as a reference.'];
             }
-        } elseif (($_POST['action'] ?? '') === 'attendance_reject') {
-            // A check-in / check-out photo of this person's day that is someone else.
-            // Staff photos: HR only, like the photos themselves.
-            [$attId, $which] = array_pad(explode(':', (string)($_POST['name'] ?? ''), 2), 2, '');
-            $attId = (int)$attId;
-            $which = $which === 'out' ? 'out' : 'in';
-            $own = $conn->prepare("SELECT work_date FROM attendance WHERE id = ? AND employee_id = ?");
-            $own->execute([$attId, $id]);
-            $workDate = $own->fetchColumn();
-            if (has_role('HR', $conn) && $workDate && hr_camera_reject($id, hr_camera_photo_path($attId, $which))) {
-                audit_bridge_hr_ops('attendance_camera_face_rejected', 'employees', $id,
-                    'Camera ' . ($which === 'out' ? 'check-out' : 'check-in') . ' photo of ' . $workDate . ' marked "Different person" for ' . $label,
-                    isset($emp['company_id']) ? (int)$emp['company_id'] : null,
-                    ['employee_id' => $id, 'attendance_id' => $attId, 'which' => $which, 'from' => 'attendance photo'], $label, $userId);
-                $_SESSION['cam_face_flash'] = ['ok', 'Marked "Different person" for ' . $label . '. The cameras stop matching that face to them within 15 seconds.'];
-            }
         } elseif (in_array($_POST['action'] ?? '', ['best_reject', 'learned_reject'], true)) {
             $from = $_POST['action'] === 'best_reject' ? (hr_camera_best($id)['path'] ?? '')
                 : (string)hr_camera_learned_path($id, (string)($_POST['name'] ?? ''));
