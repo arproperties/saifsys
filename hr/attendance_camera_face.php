@@ -108,6 +108,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         } elseif (in_array($_POST['action'] ?? '', ['best_reject', 'learned_reject'], true)) {
             $from = $_POST['action'] === 'best_reject' ? (hr_camera_best($id)['path'] ?? '')
                 : (string)hr_camera_learned_path($id, (string)($_POST['name'] ?? ''));
+            // A best match already used as a reference: its copy in the reference
+            // photos goes too, or the cameras would keep matching that face.
+            if ($_POST['action'] === 'best_reject' && !empty(hr_camera_best($id)['used']) && is_file($from)) {
+                $sum = md5_file($from);
+                foreach (hr_camera_learned($id) as $l) {
+                    $lp = hr_camera_learned_path($id, (string)$l['name']);
+                    if ($lp !== null && is_file($lp) && md5_file($lp) === $sum) {
+                        hr_camera_learned_delete($id, (string)$l['name']);
+                    }
+                }
+            }
             if (hr_camera_reject($id, $from)) {
                 audit_bridge_hr_ops('attendance_camera_face_rejected', 'employees', $id, 'Camera face marked "Different person" for ' . $label,
                     isset($emp['company_id']) ? (int)$emp['company_id'] : null, ['employee_id' => $id, 'from' => $_POST['action'] === 'best_reject' ? 'best match' : 'reference'], $label, $userId);

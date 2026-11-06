@@ -213,6 +213,7 @@ echo hr_ui_page_header(
         ['label' => 'Cameras'],
     ],
     '<a class="btn btn-outline-secondary" href="attendance.php?source=camera">Camera attendance</a>'
+    . '<a class="btn btn-outline-secondary" href="attendance_camera_log.php"><i class="bi bi-list-ul me-1"></i>Camera log</a>'
 );
 ?>
 
