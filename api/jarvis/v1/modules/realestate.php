@@ -21,6 +21,12 @@
  *        the number of cheques, and whether saifsys already has a renewal workflow for it
  *        (Reem leaves those to the staff). The one action here that gives names and rents,
  *        because a renewal cannot be offered without them.
+ *
+ *   ?module=realestate&action=renewals_expired[&from=YYYY-MM-DD][&to=YYYY-MM-DD]
+ *        every lease whose end date has passed and that was not renewed: no converted
+ *        renewal workflow, and no later lease for the same tenant on the same unit. Without
+ *        from/to it gives all of them; with them, only those that ended between the two.
+ *        Same fields as renewals_due, plus the move-out date and saifsys's last workflow.
  */
 
 declare(strict_types=1);
@@ -113,6 +119,76 @@ if ($action === 'renewals_due') {
             'saifsys_renewal' => $r['saifsys_renewal'] !== null ? (string)$r['saifsys_renewal'] : null,
             // Staff rejected the renewal (the tenant is leaving): Reem lists it apart, not as not started.
             'saifsys_rejected' => $r['saifsys_renewal'] === null && $r['saifsys_last'] === 'rejected',
+        ], $st->fetchAll(PDO::FETCH_ASSOC)),
+    ]);
+}
+
+if ($action === 'renewals_expired') {
+    $date = static function (string $k): ?string {
+        $v = trim((string)($_GET[$k] ?? ''));
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) ? $v : null;
+    };
+    $from = $date('from');
+    $to = $date('to');
+    $has = static function (string $table, string $column) use ($conn): bool {
+        $st = $conn->prepare("SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1");
+        $st->execute([$table, $column]);
+        return (bool)$st->fetchColumn();
+    };
+    $bedrooms = $has('re_units', 'bedrooms') ? 'u.bedrooms' : 'NULL';
+
+    $where = '';
+    $params = [];
+    if ($from) { $where .= ' AND l.end_date >= ?'; $params[] = $from; }
+    if ($to) { $where .= ' AND l.end_date <= ?'; $params[] = $to; }
+
+    // Renewed leases are marked expired too, so "not renewed" means: no converted workflow
+    // and no newer lease for the same tenant on the same unit (staff may renew by hand).
+    $st = $conn->prepare("
+        SELECT l.id AS lease_id, l.company_id, l.lease_number, l.start_date, l.end_date, l.status, l.move_out_date,
+               COALESCE(NULLIF(l.annual_rent, 0), l.monthly_rent * 12) AS annual_rent,
+               l.number_of_installments, l.payment_method, l.ejari_registration_number,
+               u.unit_number AS unit, u.unit_type, $bedrooms AS bedrooms, u.premises_number,
+               b.name AS building, b.dewa_premises,
+               t.first_name, t.last_name, t.company_name, LOWER(TRIM(t.email)) AS email,
+               (SELECT rw.status FROM re_lease_renewal_workflows rw
+                 WHERE rw.lease_id = l.id ORDER BY rw.id DESC LIMIT 1) AS saifsys_last
+        FROM re_leases l
+        JOIN re_units u ON u.id = l.unit_id
+        JOIN re_buildings b ON b.id = u.building_id
+        JOIN re_tenants t ON t.id = l.tenant_id
+        WHERE l.status IN ('active', 'expired')
+          AND l.end_date < CURDATE() $where
+          AND NOT EXISTS (SELECT 1 FROM re_lease_renewal_workflows rw WHERE rw.lease_id = l.id AND rw.status = 'converted')
+          AND NOT EXISTS (SELECT 1 FROM re_leases n
+                          WHERE n.unit_id = l.unit_id AND n.tenant_id = l.tenant_id AND n.id <> l.id
+                            AND n.start_date > l.start_date AND n.status NOT IN ('cancelled', 'terminated'))
+        ORDER BY l.end_date DESC, b.name, u.unit_number
+    ");
+    $st->execute($params);
+
+    jarvis_api_send([
+        'ok' => true,
+        'leases' => array_map(static fn($r) => [
+            'lease_id' => (int)$r['lease_id'],
+            'company_id' => (int)$r['company_id'],
+            'lease_number' => (string)$r['lease_number'],
+            'building' => (string)$r['building'],
+            'unit' => (string)$r['unit'],
+            'unit_type' => (string)($r['unit_type'] ?? ''),
+            'bedrooms' => $r['bedrooms'] !== null ? (int)$r['bedrooms'] : null,
+            'premises_number' => (string)($r['premises_number'] ?: ($r['dewa_premises'] ?? '')),
+            'tenant' => trim((string)($r['company_name'] ?? '')) !== '' ? trim((string)$r['company_name']) : trim($r['first_name'] . ' ' . $r['last_name']),
+            'email' => (string)($r['email'] ?? ''),
+            'start_date' => (string)$r['start_date'],
+            'end_date' => (string)$r['end_date'],
+            'status' => (string)$r['status'],
+            'move_out_date' => $r['move_out_date'] ? (string)$r['move_out_date'] : null,
+            'annual_rent' => round((float)$r['annual_rent'], 2),
+            'cheques' => (int)($r['number_of_installments'] ?: 4),
+            'payment_method' => (string)($r['payment_method'] ?? ''),
+            'ejari' => (string)($r['ejari_registration_number'] ?? ''),
+            'saifsys_last' => $r['saifsys_last'] !== null ? (string)$r['saifsys_last'] : null,
         ], $st->fetchAll(PDO::FETCH_ASSOC)),
     ]);
 }
