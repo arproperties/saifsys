@@ -2,7 +2,9 @@
 /**
  * Operations — one purchase: what was bought, the photos, and the office's
  * changes. The buyer can change his own only on the day he made it; after that
- * it is done here. ?edit=1 shows the form.
+ * it is done here. ?edit=1 shows the form. Nothing is deleted: Owner / Admin /
+ * HR inactivate (with a reason) and activate again; others cannot open an
+ * inactive one.
  * Rules: includes/ops_purchases.php.
  */
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -35,6 +37,7 @@ $who = [
     'name' => (string)($U['full_name'] ?? $U['fullname'] ?? $_SESSION['fullname'] ?? $U['username'] ?? 'Office'),
     'office' => true,
 ];
+$canInactive = ops_can_inactivate($conn);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -59,10 +62,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'lines' => $lines,
             ]);
             ops_flash($r ? 'Purchase saved.' : 'That purchase is not there any more.', $r ? 'success' : 'danger');
-        } elseif ($do === 'delete') {
-            $r = pur_delete($conn, $who, $id);
-            ops_flash($r ? 'Purchase deleted.' : 'That purchase is not there any more.', $r ? 'success' : 'danger');
-            $back = $list;
+        } elseif (($do === 'inactivate' || $do === 'activate') && $canInactive) {
+            $r = pur_set_active($conn, $who, $id, $do === 'activate', (string)($_POST['reason'] ?? ''));
+            ops_flash($r ? ($do === 'activate' ? 'Purchase is active again. The buyer sees it.' : 'Purchase is inactive. The buyer no longer sees it.') : 'That purchase is not there any more.', $r ? 'success' : 'danger');
         } elseif ($do === 'received') {
             pur_mark_received($conn, $who, $id, pur_uploaded_files('photos'));
             ops_flash('Marked as received.');
@@ -87,7 +89,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $p = pur_get($conn, $who, $id);
-if (!$p) {
+if (!$p || (!$p['active'] && !$canInactive)) {
     ops_flash('That purchase is not there any more.', 'danger');
     header('Location: ' . $list);
     exit;
@@ -102,14 +104,19 @@ require __DIR__ . '/includes/ops_layout_header.php';
 
 <div class="d-flex flex-wrap align-items-start gap-2 mb-3">
   <div>
-    <a href="<?= h($list) ?>" class="small text-muted text-decoration-none"><i class="bi bi-arrow-left"></i> Purchases</a>
+    <a href="<?= h($list . ($p['active'] ? '' : '?tab=inactive')) ?>" class="small text-muted text-decoration-none"><i class="bi bi-arrow-left"></i> Purchases</a>
     <div class="page-header-label mt-1"><?= h($p['supplier']['name']) ?> <span class="text-muted fw-normal">#<?= (int)$p['id'] ?></span></div>
     <div class="text-muted small">
       <?= h($p['kind'] === 'cash' ? PUR_KINDS['cash'] : PUR_KINDS['order'] . ' · ' . PUR_STATUSES[$p['status']]) ?> · bought <?= h(date('d M Y', strtotime($p['bought_on']))) ?> by <?= h($p['by']['name']) ?>
       <?php if ($p['received_on']): ?> · received <?= h(date('d M Y', strtotime($p['received_on']))) ?><?php endif; ?>
     </div>
   </div>
-  <?php if (!$editing): ?>
+  <?php if (!$editing && !$p['active'] && $canInactive): ?>
+  <div class="ms-auto d-flex flex-wrap gap-2">
+    <form method="post" class="m-0" onsubmit="return confirm('Make this purchase active again? The buyer will see it.');"><?php csrf_field(); ?><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="do" value="activate">
+      <button class="btn btn-sm btn-success"><i class="bi bi-arrow-counterclockwise me-1"></i>Activate</button></form>
+  </div>
+  <?php elseif (!$editing && $p['active']): ?>
   <div class="ms-auto d-flex flex-wrap gap-2">
     <?php if ($p['status'] === 'ordered'): ?>
       <form method="post" class="m-0"><?php csrf_field(); ?><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="do" value="received">
@@ -119,10 +126,41 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-counterclockwise me-1"></i>Not received</button></form>
     <?php endif; ?>
     <a href="<?= h($self) ?>&amp;edit=1" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil me-1"></i>Edit</a>
-    <form method="post" class="m-0" onsubmit="return confirm('Delete this purchase and its photos?');"><?php csrf_field(); ?><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="do" value="delete">
-      <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button></form>
+    <?php if ($canInactive): ?>
+      <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="collapse" data-bs-target="#pur-inactivate"><i class="bi bi-slash-circle me-1"></i>Inactivate</button>
+    <?php endif; ?>
   </div>
   <?php endif; ?>
+</div>
+
+<?php if (!$editing && $p['active'] && $canInactive): ?>
+<form method="post" id="pur-inactivate" class="collapse card card-round border-danger-subtle mb-3">
+  <div class="card-body d-flex flex-wrap gap-2 align-items-end">
+    <?php csrf_field(); ?><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="do" value="inactivate">
+    <div class="flex-grow-1">
+      <label class="form-label small text-muted mb-1">Why is it being made inactive?</label>
+      <input name="reason" maxlength="<?= PUR_REASON_MAX ?>" class="form-control form-control-sm" placeholder="e.g. Duplicate entry" required>
+    </div>
+    <button class="btn btn-sm btn-danger">Inactivate</button>
+  </div>
+  <div class="card-footer small text-muted">The buyer no longer sees it. It stays here, in the Inactive tab, with its photos.</div>
+</form>
+<?php endif; ?>
+
+<?php if (!$p['active']): ?>
+<div class="alert alert-warning d-flex gap-2">
+  <i class="bi bi-exclamation-triangle"></i>
+  <div>
+    <strong>Inactive</strong> — by <?= h($p['inactive']['by']) ?> on <?= h(date('d M Y, H:i', strtotime($p['inactive']['at']))) ?>
+    <div>Reason: <?= h($p['inactive']['reason']) ?></div>
+    <div class="small text-muted">The buyer does not see it. Activate it to change it.</div>
+  </div>
+</div>
+<?php endif; ?>
+
+<div class="alert alert-light border small py-2">
+  <i class="bi bi-info-circle me-1"></i>Added by <strong><?= h($p['by']['name']) ?></strong> on <?= h(date('d M Y, H:i', strtotime($p['created_at']))) ?> (staff app)
+  <?php if ($p['updated_by'] && $p['updated_at'] !== $p['created_at']): ?><div class="ms-4">Last changed by <?= h($p['updated_by']) ?> on <?= h(date('d M Y, H:i', strtotime($p['updated_at']))) ?></div><?php endif; ?>
 </div>
 
 <?php if ($editing): ?>
@@ -211,10 +249,6 @@ document.getElementById('pur-add-line').addEventListener('click', function () {
     <?php if ($p['notes']): ?>
       <div class="card card-round mt-3"><div class="card-body"><div class="small text-muted">Note</div><?= nl2br(h($p['notes'])) ?></div></div>
     <?php endif; ?>
-    <div class="small text-muted mt-2">
-      Recorded <?= h(date('d M Y H:i', strtotime($p['created_at']))) ?>
-      <?php if ($p['updated_by'] && $p['updated_at'] !== $p['created_at']): ?> · last changed <?= h(date('d M Y H:i', strtotime($p['updated_at']))) ?> by <?= h($p['updated_by']) ?><?php endif; ?>
-    </div>
   </div>
   <div class="col-lg-5">
     <?php foreach (PUR_FILE_KINDS as $kind => $label): ?>

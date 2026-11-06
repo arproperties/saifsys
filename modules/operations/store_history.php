@@ -1,11 +1,14 @@
 <?php
 /**
  * Operations → Store → History: every goods in, goods out, move and count
- * correction, newest first. Open one to change or delete it.
+ * correction, newest first. Open one to change it. Owner / Admin / HR also
+ * see the Inactive tab: entries made inactive, with their stock put back.
  */
 require_once __DIR__ . '/includes/ops_store_page.php';
 
 $pageTitle = 'Store history';
+$canInactive = ops_can_inactivate($conn);
+$showInactive = $canInactive && ($_GET['tab'] ?? '') === 'inactive';
 $f = [
     'from' => $_GET['from'] ?? null,
     'to' => $_GET['to'] ?? null,
@@ -13,8 +16,9 @@ $f = [
     'item' => (int)($_GET['item'] ?? 0),
     'person' => (int)($_GET['person'] ?? 0),
     'kind' => (string)($_GET['kind'] ?? ''),
+    'inactive' => $showInactive,
 ];
-$data = $stReady ? st_list_all($conn, $f) : ['from' => date('Y-m-d', strtotime('-30 days')), 'to' => date('Y-m-d'), 'moves' => [], 'people' => []];
+$data = $stReady ? st_list_all($conn, $f) : ['from' => date('Y-m-d', strtotime('-30 days')), 'to' => date('Y-m-d'), 'moves' => [], 'inactive_count' => 0, 'people' => []];
 $stores = $stReady ? st_stores($conn, false) : [];
 $items = $stReady ? st_items($conn, '', false) : [];
 
@@ -29,8 +33,17 @@ require __DIR__ . '/includes/ops_layout_header.php';
 <?= st_page_tabs($opsBase, 'store_history.php') ?>
 <?php if (!$stReady): ?><?= st_not_ready_alert() ?><?php endif; ?>
 
+<?php if ($canInactive): ?>
+  <?php $tabQuery = static fn(string $tab): string => http_build_query(array_merge(array_diff_key($_GET, ['tab' => 1]), $tab === 'inactive' ? ['tab' => 'inactive'] : [])); ?>
+  <ul class="nav nav-pills nav-sm mb-3">
+    <li class="nav-item"><a class="nav-link py-1 <?= $showInactive ? '' : 'active' ?>" href="?<?= h($tabQuery('active')) ?>">Active</a></li>
+    <li class="nav-item"><a class="nav-link py-1 <?= $showInactive ? 'active' : '' ?>" href="?<?= h($tabQuery('inactive')) ?>">Inactive <span class="badge bg-secondary-subtle text-secondary-emphasis"><?= (int)$data['inactive_count'] ?></span></a></li>
+  </ul>
+<?php endif; ?>
+
 <form method="get" class="card card-round mb-3">
   <div class="card-body row g-2 align-items-end">
+    <?php if ($showInactive): ?><input type="hidden" name="tab" value="inactive"><?php endif; ?>
     <div class="col-6 col-md-2"><label class="form-label small text-muted mb-1">From</label>
       <input type="date" name="from" value="<?= h($data['from']) ?>" class="form-control form-control-sm"></div>
     <div class="col-6 col-md-2"><label class="form-label small text-muted mb-1">To</label>
@@ -58,10 +71,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
 <div class="card card-round">
   <div class="table-responsive">
     <table class="table ops-table align-middle">
-      <thead><tr><th>When</th><th>What</th><th>Store</th><th>Items</th><th>Details</th><th>By</th><th></th></tr></thead>
+      <thead><tr><th>When</th><th>What</th><th>Store</th><th>Items</th><th>Details</th><th>Added by</th><?php if ($showInactive): ?><th>Inactivated by</th><th>Reason</th><?php endif; ?><th></th></tr></thead>
       <tbody>
         <?php if (!$data['moves']): ?>
-          <tr><td colspan="7" class="text-center text-muted py-5">Nothing recorded in this range.</td></tr>
+          <tr><td colspan="<?= $showInactive ? 9 : 7 ?>" class="text-center text-muted py-5"><?= $showInactive ? 'No inactive entries in this range.' : 'Nothing recorded in this range.' ?></td></tr>
         <?php endif; ?>
         <?php foreach ($data['moves'] as $m): ?>
           <?php
@@ -81,6 +94,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
             </td>
             <td class="small"><?= h($details) ?><?php if ($m['photo']): ?> <i class="bi bi-image text-muted"></i><?php endif; ?></td>
             <td class="small"><?= h($m['by']['name']) ?></td>
+            <?php if ($showInactive): ?>
+              <td class="small text-nowrap"><?= h($m['inactive']['by'] ?? '') ?><div class="text-muted"><?= $m['inactive'] ? h(date('d M Y H:i', strtotime($m['inactive']['at']))) : '' ?></div></td>
+              <td class="small"><?= h($m['inactive']['reason'] ?? '') ?></td>
+            <?php endif; ?>
             <td><a class="btn btn-sm btn-outline-primary" href="<?= h($opsBase) ?>/store_entry.php?id=<?= (int)$m['id'] ?>">Open</a></td>
           </tr>
         <?php endforeach; ?>

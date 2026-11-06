@@ -2,13 +2,16 @@
 /**
  * Operations → Store → one entry: what it moved, and the office's changes.
  * The store keeper can change his own only on the day he made it; after that
- * it is done here. A count cannot be changed, only deleted. ?edit=1 shows the form.
+ * it is done here. A count cannot be changed, only made inactive. ?edit=1 shows the form.
+ * Nothing is deleted: Owner / Admin / HR inactivate (the stock is put back) and
+ * activate again (the stock is applied again); others cannot open an inactive one.
  */
 require_once __DIR__ . '/includes/ops_store_page.php';
 
 $id = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
 $self = $opsBase . '/store_entry.php?id=' . $id;
 $list = $opsBase . '/store_history.php';
+$canInactive = ops_can_inactivate($conn);
 
 if (!$stReady) {
     ops_flash('The store tables are not set up yet. Run migrations/staff_store.sql.', 'danger');
@@ -42,10 +45,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'lines' => $lines,
             ]) : null;
             ops_flash($r ? 'Entry saved. The stock was changed to match.' : 'That entry is not there any more.', $r ? 'success' : 'danger');
-        } elseif ($do === 'delete') {
-            $r = st_delete($conn, $stWho, $id);
-            ops_flash($r ? 'Entry deleted. The stock went back to what it was before it.' : 'That entry is not there any more.', $r ? 'success' : 'danger');
-            $back = $list;
+        } elseif (($do === 'inactivate' || $do === 'activate') && $canInactive) {
+            $r = st_set_active($conn, $stWho, $id, $do === 'activate', (string)($_POST['reason'] ?? ''));
+            ops_flash($r ? ($do === 'activate' ? 'Entry is active again. The stock was applied again.' : 'Entry is inactive. The stock went back to what it was before it.') : 'That entry is not there any more.', $r ? 'success' : 'danger');
         }
     } catch (StError $e) {
         ops_flash($e->getMessage(), 'danger');
@@ -58,12 +60,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $m = st_get($conn, $stWho, $id);
-if (!$m) {
+if (!$m || (!$m['active'] && !$canInactive)) {
     ops_flash('That entry is not there any more.', 'danger');
     header('Location: ' . $list);
     exit;
 }
-$editing = isset($_GET['edit']) && $m['kind'] !== 'count';
+$editing = isset($_GET['edit']) && $m['kind'] !== 'count' && $m['active'];
 $pageTitle = 'Store entry #' . $id;
 $stores = st_stores($conn, false);
 $items = st_items($conn, '', false);
@@ -77,7 +79,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
 
 <div class="d-flex flex-wrap align-items-start gap-2 mb-3">
   <div>
-    <a href="<?= h($list) ?>" class="small text-muted text-decoration-none"><i class="bi bi-arrow-left"></i> Store history</a>
+    <a href="<?= h($list . ($m['active'] ? '' : '?tab=inactive')) ?>" class="small text-muted text-decoration-none"><i class="bi bi-arrow-left"></i> Store history</a>
     <div class="page-header-label mt-1"><?= h(ST_KINDS[$m['kind']]) ?> <span class="text-muted fw-normal">#<?= (int)$m['id'] ?></span></div>
     <div class="text-muted small">
       <?= h($m['store']['name']) ?><?php if ($m['to_store']): ?> → <?= h($m['to_store']['name']) ?><?php endif; ?>
@@ -85,17 +87,48 @@ require __DIR__ . '/includes/ops_layout_header.php';
       <?php if ($m['updated_by'] && $m['updated_at'] !== $m['created_at']): ?> · last changed <?= h(date('d M Y H:i', strtotime($m['updated_at']))) ?> by <?= h($m['updated_by']) ?><?php endif; ?>
     </div>
   </div>
-  <?php if (!$editing): ?>
+  <?php if (!$editing && !$m['active']): ?>
+  <div class="ms-auto d-flex gap-2">
+    <form method="post" class="m-0" onsubmit="return confirm('Make this entry active again? The stock is applied again and the store keeper will see it.');">
+      <?php csrf_field(); ?><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="do" value="activate">
+      <button class="btn btn-sm btn-success"><i class="bi bi-arrow-counterclockwise me-1"></i>Activate</button></form>
+  </div>
+  <?php elseif (!$editing): ?>
   <div class="ms-auto d-flex gap-2">
     <?php if ($m['kind'] !== 'count'): ?>
       <a href="<?= h($self) ?>&amp;edit=1" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil me-1"></i>Edit</a>
     <?php endif; ?>
-    <form method="post" class="m-0" onsubmit="return confirm('Delete this entry? The stock goes back to what it was before it.');">
-      <?php csrf_field(); ?><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="do" value="delete">
-      <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button></form>
+    <?php if ($canInactive): ?>
+      <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="collapse" data-bs-target="#st-inactivate"><i class="bi bi-slash-circle me-1"></i>Inactivate</button>
+    <?php endif; ?>
   </div>
   <?php endif; ?>
 </div>
+
+<?php if (!$editing && $m['active'] && $canInactive): ?>
+<form method="post" id="st-inactivate" class="collapse card card-round border-danger-subtle mb-3">
+  <div class="card-body d-flex flex-wrap gap-2 align-items-end">
+    <?php csrf_field(); ?><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="do" value="inactivate">
+    <div class="flex-grow-1">
+      <label class="form-label small text-muted mb-1">Why is it being made inactive?</label>
+      <input name="reason" maxlength="<?= ST_REASON_MAX ?>" class="form-control form-control-sm" placeholder="e.g. Wrong store" required>
+    </div>
+    <button class="btn btn-sm btn-danger">Inactivate</button>
+  </div>
+  <div class="card-footer small text-muted">The stock goes back to what it was before it, and the store keeper no longer sees it. It stays in the Inactive tab.</div>
+</form>
+<?php endif; ?>
+
+<?php if (!$m['active']): ?>
+<div class="alert alert-warning d-flex gap-2">
+  <i class="bi bi-exclamation-triangle"></i>
+  <div>
+    <strong>Inactive</strong> — by <?= h($m['inactive']['by']) ?> on <?= h(date('d M Y, H:i', strtotime($m['inactive']['at']))) ?>
+    <div>Reason: <?= h($m['inactive']['reason']) ?></div>
+    <div class="small text-muted">Stock was put back. The store keeper does not see it. Activate it to apply the stock again.</div>
+  </div>
+</div>
+<?php endif; ?>
 
 <?php if ($editing): ?>
 <form method="post" class="card card-round mb-3">
@@ -198,7 +231,7 @@ document.getElementById('st-add-line').addEventListener('click', function () {
       <?php if ($m['source']): ?><div><span class="text-muted">From:</span> <?= h($m['source']) ?></div><?php endif; ?>
       <?php if ($m['reason']): ?><div><span class="text-muted">Why:</span> <?= h(ST_REASONS[$m['reason']] ?? $m['reason']) ?></div><?php endif; ?>
       <?php if ($m['notes']): ?><div><span class="text-muted">Note:</span> <?= nl2br(h($m['notes'])) ?></div><?php endif; ?>
-      <?php if ($m['kind'] === 'count'): ?><div class="text-muted mt-2">A count cannot be changed. Delete it and the store keeper counts again.</div><?php endif; ?>
+      <?php if ($m['kind'] === 'count'): ?><div class="text-muted mt-2">A count cannot be changed. Inactivate it and the store keeper counts again.</div><?php endif; ?>
     </div></div>
   </div>
   <?php if ($m['photo']): ?>

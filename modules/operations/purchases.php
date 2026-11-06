@@ -26,6 +26,8 @@ $opsBase = $appBase . '/modules/operations';
 $pageTitle = 'Purchases';
 
 $ready = pur_tables_ready($conn);
+$canInactive = ops_can_inactivate($conn);
+$showInactive = $canInactive && ($_GET['tab'] ?? '') === 'inactive';
 $f = [
     'from' => $_GET['from'] ?? null,
     'to' => $_GET['to'] ?? null,
@@ -34,8 +36,9 @@ $f = [
     'kind' => (string)($_GET['kind'] ?? ''),
     'status' => (string)($_GET['status'] ?? ''),
     'q' => (string)($_GET['q'] ?? ''),
+    'inactive' => $showInactive,
 ];
-$data = $ready ? pur_list_all($conn, $f) : ['from' => date('Y-m-01'), 'to' => date('Y-m-d'), 'purchases' => [], 'total' => 0, 'people' => [], 'suppliers' => []];
+$data = $ready ? pur_list_all($conn, $f) : ['from' => date('Y-m-01'), 'to' => date('Y-m-d'), 'purchases' => [], 'total' => 0, 'inactive_count' => 0, 'people' => [], 'suppliers' => []];
 $rows = $data['purchases'];
 $cashTotal = array_sum(array_map(static fn(array $p): float => $p['kind'] === 'cash' ? $p['total'] : 0.0, $rows));
 $waiting = count(array_filter($rows, static fn(array $p): bool => $p['status'] === 'ordered'));
@@ -62,8 +65,17 @@ require __DIR__ . '/includes/ops_layout_header.php';
   <div class="alert alert-warning">The purchase tables are not set up yet. Run migrations/staff_purchases.sql.</div>
 <?php endif; ?>
 
+<?php if ($canInactive): ?>
+  <?php $tabQuery = static fn(string $tab): string => http_build_query(array_merge(array_diff_key($_GET, ['tab' => 1]), $tab === 'inactive' ? ['tab' => 'inactive'] : [])); ?>
+  <ul class="nav ops-tabs mb-3">
+    <li class="nav-item"><a class="nav-link <?= $showInactive ? '' : 'active' ?>" href="?<?= h($tabQuery('active')) ?>">Active</a></li>
+    <li class="nav-item"><a class="nav-link <?= $showInactive ? 'active' : '' ?>" href="?<?= h($tabQuery('inactive')) ?>">Inactive <span class="badge bg-secondary-subtle text-secondary-emphasis"><?= (int)$data['inactive_count'] ?></span></a></li>
+  </ul>
+<?php endif; ?>
+
 <form method="get" class="card card-round mb-3">
   <div class="card-body row g-2 align-items-end">
+    <?php if ($showInactive): ?><input type="hidden" name="tab" value="inactive"><?php endif; ?>
     <div class="col-6 col-md-2">
       <label class="form-label small text-muted mb-1">From</label>
       <input type="date" name="from" value="<?= h($data['from']) ?>" class="form-control form-control-sm">
@@ -125,6 +137,8 @@ require __DIR__ . '/includes/ops_layout_header.php';
           <th>Shop / supplier</th>
           <th>Items</th>
           <th>Buyer</th>
+          <th>Added on</th>
+          <?php if ($showInactive): ?><th>Inactivated by</th><th>Reason</th><?php endif; ?>
           <th>Status</th>
           <th class="text-end">Total</th>
           <th></th>
@@ -132,7 +146,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
       </thead>
       <tbody>
         <?php if (!$rows): ?>
-          <tr><td colspan="7" class="text-center text-muted py-5">No purchases in this range.</td></tr>
+          <tr><td colspan="<?= $showInactive ? 10 : 8 ?>" class="text-center text-muted py-5"><?= $showInactive ? 'No inactive purchases in this range.' : 'No purchases in this range.' ?></td></tr>
         <?php endif; ?>
         <?php foreach ($rows as $p): ?>
           <?php
@@ -146,6 +160,11 @@ require __DIR__ . '/includes/ops_layout_header.php';
             </td>
             <td class="small"><?= h($itemText) ?></td>
             <td><?= h($p['by']['name']) ?></td>
+            <td class="small text-nowrap"><?= h(date('d M Y H:i', strtotime($p['created_at']))) ?></td>
+            <?php if ($showInactive): ?>
+              <td class="small text-nowrap"><?= h($p['inactive']['by'] ?? '') ?><div class="text-muted"><?= $p['inactive'] ? h(date('d M Y H:i', strtotime($p['inactive']['at']))) : '' ?></div></td>
+              <td class="small"><?= h($p['inactive']['reason'] ?? '') ?></td>
+            <?php endif; ?>
             <td><?= $statusBadge($p['status']) ?><?php if ($p['received_on']): ?><div class="small text-muted"><?= h(date('d M', strtotime($p['received_on']))) ?></div><?php endif; ?></td>
             <td class="num text-end fw-bold text-nowrap"><?= h($money($p['total'])) ?></td>
             <td class="text-nowrap">

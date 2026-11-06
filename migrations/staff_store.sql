@@ -92,3 +92,15 @@ CREATE TABLE IF NOT EXISTS `st_move_lines` (
 INSERT INTO `st_stores` (`name`, `active`, `created_at`)
 SELECT 'Main store', 1, NOW() FROM DUAL
 WHERE NOT EXISTS (SELECT 1 FROM `st_stores`);
+
+-- Inactive instead of deleted (added later; runs on a database that already has
+-- the tables, adds only the missing columns, changes no rows). The store
+-- keeper's Delete makes an entry inactive ("Tried deleting on same day") and
+-- puts its stock back; Owner / Admin / HR inactivate and activate in
+-- Operations → Store → History.
+ALTER TABLE `st_moves`
+    ADD COLUMN IF NOT EXISTS `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '0 = inactive: stock put back, hidden from the store keeper',
+    ADD COLUMN IF NOT EXISTS `inactive_at` DATETIME NULL,
+    ADD COLUMN IF NOT EXISTS `inactive_by` INT(11) NULL COMMENT 'user.id',
+    ADD COLUMN IF NOT EXISTS `inactive_by_name` VARCHAR(120) NULL,
+    ADD COLUMN IF NOT EXISTS `inactive_reason` VARCHAR(255) NULL;
