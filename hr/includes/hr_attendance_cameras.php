@@ -376,6 +376,203 @@ function hr_camera_log_find(string $day, string $photo): ?array
     return null;
 }
 
+/** A logged match that saw the person (it set or confirmed a time), not one skipped or failed. */
+function hr_camera_log_counts(array $r): bool
+{
+    return strpos($r['result'], 'Not recorded') !== 0 && strpos($r['result'], 'Error') !== 0;
+}
+
+/**
+ * For "Different person": which logged matches are the day's check-in or
+ * check-out time in attendance, so HR can change that time as well.
+ * Returns [ 'date|photo' => ['att_id', 'role' => 'in'|'out', 'status', 'time' => 'H:i'] ].
+ */
+function hr_camera_log_attendance_roles(PDO $conn, array $rows): array
+{
+    $days = [];
+    foreach ($rows as $r) {
+        if ($r['photo'] !== '' && hr_camera_log_counts($r)) {
+            $days[(int)$r['employee_id'] . '|' . $r['date']] = true;
+        }
+    }
+    $att = [];
+    $stmt = $conn->prepare('SELECT id, check_in, check_out, status FROM attendance WHERE employee_id = ? AND work_date = ?');
+    foreach (array_keys($days) as $key) {
+        [$emp, $date] = explode('|', $key);
+        $stmt->execute([(int)$emp, $date]);
+        if ($a = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $att[$key] = $a;
+        }
+    }
+    $out = [];
+    foreach ($rows as $r) {
+        $a = $att[(int)$r['employee_id'] . '|' . $r['date']] ?? null;
+        if (!$a || $r['photo'] === '' || !hr_camera_log_counts($r)) {
+            continue;
+        }
+        $t = substr($r['time'], 0, 5);
+        $role = $a['check_in'] && substr((string)$a['check_in'], 0, 5) === $t ? 'in'
+            : ($a['check_out'] && substr((string)$a['check_out'], 0, 5) === $t ? 'out' : null);
+        if ($role !== null) {
+            $out[$r['date'] . '|' . $r['photo']] = ['att_id' => (int)$a['id'], 'role' => $role, 'status' => (string)$a['status'], 'time' => $t];
+        }
+    }
+    return $out;
+}
+
+/**
+ * "Different person" on the day's check-in or check-out: change that time too,
+ * as HR chose in the popup. $choices: [att_id => ['in' => keep|change|remove,
+ * 'in_time' => 'H:i', 'out' => …, 'out_time' => …]]. Only for the ticked
+ * matches that are that day's time, and only on a Pending day (an approved day
+ * is changed on the Attendance page). Everything is checked before anything is
+ * saved. Returns ['error' => ?string, 'note' => what changed, for the message].
+ */
+function hr_camera_log_fix_attendance(PDO $conn, array $picks, array $choices, ?int $userId): array
+{
+    require_once dirname(__DIR__, 2) . '/includes/hr_attendance_attachments.php';
+    require_once dirname(__DIR__, 2) . '/includes/audit_bridge.php';
+    $rows = $ticked = [];
+    foreach ($picks as $pick) {
+        [$day, $photo] = array_pad(explode('|', (string)$pick, 2), 2, '');
+        if ($r = hr_camera_log_find($day, $photo)) {
+            $rows[] = $r;
+            $ticked[$day . '|' . $photo] = true;
+        }
+    }
+    $label = ['in' => 'check-in', 'out' => 'check-out'];
+    $plan = [];
+    foreach (hr_camera_log_attendance_roles($conn, $rows) as $ro) {
+        $c = (array)($choices[$ro['att_id']] ?? []);
+        $what = (string)($c[$ro['role']] ?? 'keep');
+        if ($ro['status'] !== 'pending' || !in_array($what, ['change', 'remove'], true)) {
+            continue;
+        }
+        $time = null;
+        if ($what === 'change') {
+            $time = (string)($c[$ro['role'] . '_time'] ?? '');
+            if (!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $time)) {
+                return ['error' => 'Write the new ' . $label[$ro['role']] . ' time as HH:MM.', 'note' => ''];
+            }
+        }
+        $plan[$ro['att_id']][$ro['role']] = $time;
+    }
+    if (!$plan) {
+        return ['error' => null, 'note' => ''];
+    }
+
+    $stmt = $conn->prepare('SELECT a.id, a.employee_id, a.work_date, a.check_in, a.check_out, a.status, e.full_name, e.employee_code, e.company_id
+        FROM attendance a JOIN employees e ON e.id = a.employee_id WHERE a.id = ?');
+    $updates = [];
+    foreach ($plan as $attId => $set) {
+        $stmt->execute([$attId]);
+        $a = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$a || $a['status'] !== 'pending') {
+            continue;
+        }
+        $old = ['in' => $a['check_in'] ? substr((string)$a['check_in'], 0, 5) : null, 'out' => $a['check_out'] ? substr((string)$a['check_out'], 0, 5) : null];
+        $new = array_merge($old, $set);
+        $who = trim($a['full_name'] . ' (' . $a['employee_code'] . ')');
+        if (hr_attendance_same_time($new['in'], $new['out'], 'pending')) {
+            return ['error' => $who . ': check-in and check-out cannot be the same time.', 'note' => ''];
+        }
+        $updates[] = [$a, $old, $new, $set, $who];
+    }
+
+    $said = [];
+    foreach ($updates as [$a, $old, $new, $set, $who]) {
+        $attId = (int)$a['id'];
+        $conn->prepare("UPDATE attendance SET check_in = ?, check_out = ?, hours = ?, updated_by = ?, updated_at = NOW() WHERE id = ? AND status = 'pending'")
+            ->execute([$new['in'], $new['out'], hr_attendance_hours($new['in'], $new['out']), $userId, $attId]);
+        $parts = [];
+        foreach ($set as $role => $time) {
+            // The day's photo follows its time: the photo of the camera sighting at the new time, else none (the old one is the other person).
+            $photo = null;
+            if ($time !== null) {
+                foreach (hr_camera_log_sightings(hr_camera_log_read($a['work_date'], $a['work_date']))[(int)$a['employee_id'] . '|' . $a['work_date']] ?? [] as $s) {
+                    if ($s['time'] === $time && !isset($ticked[$s['key']])) {
+                        $photo = hr_camera_log_photo_path(...explode('|', $s['key'], 2));
+                        break;
+                    }
+                }
+            }
+            if ($photo !== null && is_file($photo)) {
+                hr_camera_photo_save($attId, $role, (string)file_get_contents($photo));
+            } else {
+                hr_camera_photo_delete($attId, $role);
+            }
+            $parts[] = $label[$role] . ' ' . ($old[$role] ?? '—') . ' → ' . ($time ?? 'removed');
+        }
+        $text = $who . ' on ' . date('j M', strtotime($a['work_date'])) . ': ' . implode(', ', $parts);
+        $said[] = $text;
+        audit_bridge_hr_ops('attendance_updated', 'attendance', $attId,
+            'Camera log "Different person": ' . $text,
+            (int)$a['company_id'] > 0 ? (int)$a['company_id'] : null,
+            ['employee_id' => (int)$a['employee_id'], 'work_date' => $a['work_date'], 'check_in' => $new['in'], 'check_out' => $new['out'],
+                'from_check_in' => $old['in'], 'from_check_out' => $old['out'], 'from' => 'camera log'],
+            $who . ' @ ' . $a['work_date'], $userId);
+    }
+    return ['error' => null, 'note' => $said ? ' Attendance changed: ' . implode('; ', $said) . '.' : ''];
+}
+
+/** The times each person was seen each day: [ 'employee_id|date' => [['time' => 'H:i', 'key' => 'date|photo'], …] ], earliest first. */
+function hr_camera_log_sightings(array $rows): array
+{
+    $out = [];
+    foreach ($rows as $r) {
+        if ($r['photo'] !== '' && hr_camera_log_counts($r)) {
+            $out[(int)$r['employee_id'] . '|' . $r['date']][] = ['time' => substr($r['time'], 0, 5), 'key' => $r['date'] . '|' . $r['photo']];
+        }
+    }
+    foreach ($out as &$list) {
+        usort($list, static fn($a, $b) => strcmp($a['time'], $b['time']));
+    }
+    return $out;
+}
+
+/**
+ * Take one match off the log: its row out of the day's CSV, and its photo if
+ * still there. For a match HR marked "Different person". Attendance is not touched.
+ */
+function hr_camera_log_remove(string $day, string $photo): bool
+{
+    $path = hr_camera_log_photo_path($day, $photo);
+    if ($path === null) {
+        return false;
+    }
+    $fh = @fopen(hr_camera_log_dir() . '/' . $day . '.csv', 'r+');
+    if (!$fh) {
+        return false;
+    }
+    // The same lock the camera API writes under, so a match coming in now is not lost.
+    flock($fh, LOCK_EX);
+    $head = fgetcsv($fh);
+    $keep = [];
+    $found = false;
+    while (($r = fgetcsv($fh)) !== false) {
+        if ($head && count($r) === count($head) && array_combine($head, $r)['photo'] === $photo) {
+            $found = true;
+            continue;
+        }
+        $keep[] = $r;
+    }
+    if ($found) {
+        ftruncate($fh, 0);
+        rewind($fh);
+        fputcsv($fh, $head ?: HR_CAMERA_LOG_COLUMNS);
+        foreach ($keep as $r) {
+            fputcsv($fh, $r);
+        }
+        fflush($fh);
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    if (is_file($path)) {
+        @unlink($path);
+    }
+    return $found;
+}
+
 /** Every logged match from $from to $to (Y-m-d), each row keyed by the columns plus 'date'; newest first. */
 function hr_camera_log_read(string $from, string $to): array
 {
