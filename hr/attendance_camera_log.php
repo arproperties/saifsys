@@ -10,7 +10,10 @@
  *
  * HR can tick matches and use their photos: "Reference" (the cameras also
  * recognise the person from it) or "Different person" (the cameras stop
- * matching faces like it to them). The log itself stays as it was.
+ * matching faces like it to them). A match marked "Different person" is taken
+ * off the log: its photo moves to the person's "Different person" faces, and
+ * its row goes. When the match is the day's check-in or last check-out, a popup
+ * asks whether to change or remove that time too (Pending days only).
  */
 
 declare(strict_types=1);
@@ -46,8 +49,26 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     csrf_verify();
     $action = in_array($_POST['action'] ?? '', ['reference', 'reject'], true) ? $_POST['action'] : '';
     $userId = function_exists('current_user_id') ? (current_user_id() ?: null) : null;
+    $back = (string)($_POST['back'] ?? '');
+    $backUrl = 'attendance_camera_log.php' . ($back !== '' && preg_match('/^[A-Za-z0-9_=&%:.+-]*$/', $back) ? '?' . $back : '');
+    $picks = array_slice((array)($_POST['pick'] ?? []), 0, 50);
+
+    // "Different person" on a match that is the day's check-in or check-out:
+    // HR chose to keep, change or remove that time too (the popup). All of it
+    // is checked first; if anything is wrong nothing changes.
+    $attNote = '';
+    if ($action === 'reject' && $canSeePhotos) {
+        $attDone = hr_camera_log_fix_attendance($conn, $picks, (array)($_POST['att'] ?? []), $userId);
+        if ($attDone['error'] !== null) {
+            $_SESSION['cam_log_flash'] = ['danger', $attDone['error'] . ' Nothing was changed.'];
+            header('Location: ' . $backUrl);
+            exit;
+        }
+        $attNote = $attDone['note'];
+    }
+
     $done = $failed = 0;
-    foreach (array_slice((array)($_POST['pick'] ?? []), 0, 50) as $pick) {
+    foreach ($picks as $pick) {
         [$day, $photo] = array_pad(explode('|', (string)$pick, 2), 2, '');
         $row = ($canSeePhotos && $action !== '') ? hr_camera_log_find($day, $photo) : null;
         $path = $row ? hr_camera_log_photo_path($day, $photo) : null;
@@ -64,10 +85,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             $auditAction = 'attendance_camera_reference_added';
             $summary = 'Camera log photo of ' . $when . ' used as a reference face for ' . $label;
         } else {
-            // A copy: the log keeps its photo.
-            $copy = hr_camera_photo_dir() . '/reject_' . bin2hex(random_bytes(6)) . '.tmp';
-            $ok = @copy($path, $copy) && hr_camera_reject($id, $copy);
-            @unlink($copy);
+            // The photo moves to their "Different person" faces, and the match leaves the log.
+            $ok = hr_camera_reject($id, $path);
+            if ($ok) {
+                hr_camera_log_remove($day, $photo);
+            }
             $auditAction = 'attendance_camera_face_rejected';
             $summary = 'Camera log photo of ' . $when . ' marked "Different person" for ' . $label;
         }
@@ -80,11 +102,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         }
     }
     $_SESSION['cam_log_flash'] = $done > 0
-        ? ['success', $done . ' photo' . ($done === 1 ? '' : 's') . ($action === 'reference' ? ' added as reference' : ' marked "Different person"')
-            . '. The camera PC picks ' . ($done === 1 ? 'it' : 'them') . ' up within 15 seconds.' . ($failed ? ' ' . $failed . ' could not be used.' : '')]
+        ? ['success', $done . ' photo' . ($done === 1 ? '' : 's') . ($action === 'reference' ? ' added as reference' : ' marked "Different person" and taken off the log')
+            . '. The camera PC picks ' . ($done === 1 ? 'it' : 'them') . ' up within 15 seconds.' . ($failed ? ' ' . $failed . ' could not be used.' : '') . $attNote]
         : ['danger', 'Nothing was changed. Tick at least one photo first.'];
-    $back = (string)($_POST['back'] ?? '');
-    header('Location: attendance_camera_log.php' . ($back !== '' && preg_match('/^[A-Za-z0-9_=&%:.+-]*$/', $back) ? '?' . $back : ''));
+    header('Location: ' . $backUrl);
     exit;
 }
 $logFlash = $_SESSION['cam_log_flash'] ?? null;
@@ -147,6 +168,21 @@ if (($_GET['export'] ?? '') === 'csv') {
 }
 
 $shown = array_slice($rows, 0, 500);
+// Which shown matches are the day's check-in / check-out, and every sighting of
+// the period (not only the filtered ones): the popup suggests the next time.
+$attRoles = $canSeePhotos ? hr_camera_log_attendance_roles($conn, $shown) : [];
+$sightings = $canSeePhotos ? hr_camera_log_sightings($all) : [];
+$attTimes = [];
+if ($attRoles) {
+    $st = $conn->prepare('SELECT check_in, check_out FROM attendance WHERE id = ?');
+    foreach ($attRoles as $ro) {
+        if (!isset($attTimes[$ro['att_id']])) {
+            $st->execute([$ro['att_id']]);
+            $t = $st->fetch(PDO::FETCH_ASSOC) ?: [];
+            $attTimes[$ro['att_id']] = ['in' => $t['check_in'] ? substr((string)$t['check_in'], 0, 5) : '', 'out' => $t['check_out'] ? substr((string)$t['check_out'], 0, 5) : ''];
+        }
+    }
+}
 $query = $_GET;
 unset($query['export']);
 
@@ -233,8 +269,7 @@ echo hr_ui_page_header(
       <button name="action" value="reference" class="btn btn-sm btn-outline-success" disabled
               onclick="return confirm('Use the ticked photos as reference photos? The cameras will also recognise each person from them.');">
         <i class="bi bi-check2-circle me-1"></i>Reference</button>
-      <button name="action" value="reject" class="btn btn-sm btn-outline-danger" disabled
-              onclick="return confirm('Different person? The cameras will stop matching faces like these to the employee shown on each row.');">
+      <button name="action" value="reject" class="btn btn-sm btn-outline-danger" disabled onclick="return camLogReject();">
         <i class="bi bi-person-x me-1"></i>Different person</button>
     <?php endif; ?>
   </div>
@@ -254,7 +289,14 @@ echo hr_ui_page_header(
         ?>
           <tr>
             <?php if ($canSeePhotos): ?>
-              <td><?php if ($url !== ''): ?><input type="checkbox" class="form-check-input cam-log-tick" name="pick[]" value="<?= h($r['date'] . '|' . $r['photo']) ?>" aria-label="Tick this photo"><?php endif; ?></td>
+              <td><?php if ($url !== ''):
+                $ro = $attRoles[$r['date'] . '|' . $r['photo']] ?? null; ?>
+                <input type="checkbox" class="form-check-input cam-log-tick" name="pick[]" value="<?= h($r['date'] . '|' . $r['photo']) ?>" aria-label="Tick this photo"
+                  <?php if ($ro): ?>data-role="<?= h($ro['role']) ?>" data-att="<?= (int)$ro['att_id'] ?>" data-status="<?= h($ro['status']) ?>"
+                  data-time="<?= h($ro['time']) ?>" data-day="<?= h((int)$r['employee_id'] . '|' . $r['date']) ?>"
+                  data-in="<?= h($attTimes[$ro['att_id']]['in']) ?>" data-out="<?= h($attTimes[$ro['att_id']]['out']) ?>"
+                  data-who="<?= h($r['employee_name'] . ' (' . $r['employee_code'] . ') · ' . date('j M Y', strtotime($r['date']))) ?>"<?php endif; ?>>
+              <?php endif; ?></td>
             <?php endif; ?>
             <td>
               <?php if ($url !== ''): ?>
@@ -290,7 +332,80 @@ echo hr_ui_page_header(
     </div>
   </div>
 </div>
+<!-- "Different person" on the day's check-in / check-out: change that time as well? -->
+<div class="modal fade" id="camLogAtt" tabindex="-1" aria-labelledby="camLogAttTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title fs-6" id="camLogAttTitle"><i class="bi bi-person-x me-1"></i>Different person</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="camLogAttBody"></div>
+      <div class="modal-footer">
+        <span class="small text-muted me-auto">The ticked matches are taken off the log.</span>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm btn-danger" id="camLogAttGo">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
 <script>
+// Every camera sighting per person per day, for the time the popup suggests.
+var camLogSightings = <?= json_encode($sightings, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+function camLogReject() {
+  var form = document.getElementById('camLogPick');
+  var ticked = Array.prototype.slice.call(document.querySelectorAll('.cam-log-tick:checked'));
+  var pickedKeys = {};
+  ticked.forEach(function (t) { pickedKeys[t.value] = true; });
+  var items = ticked.filter(function (t) { return t.dataset.role; });
+  if (!items.length) {
+    return confirm('Different person? The cameras will stop matching faces like these to the employee shown on each row, and the matches are taken off the log.');
+  }
+  var esc = function (s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+  var html = '';
+  items.forEach(function (t, i) {
+    var role = t.dataset.role, name = role === 'in' ? 'check-in' : 'last check-out';
+    html += '<div class="border rounded p-2 mb-2"><div class="fw-semibold">' + esc(t.dataset.who) + '</div>' +
+      '<div class="mb-2">' + esc(t.dataset.time) + ' is marked as the <strong>' + name.toUpperCase() + '</strong> time.</div>';
+    if (t.dataset.status !== 'pending') {
+      html += '<div class="small text-muted">This day is ' + esc(t.dataset.status) + ': change it on the Attendance page.</div></div>';
+      return;
+    }
+    // Suggest the next sighting for a check-in, the one before for a check-out — not a ticked one, and not the other end of the day.
+    var left = (camLogSightings[t.dataset.day] || []).filter(function (s) {
+      return !pickedKeys[s.key] && (role === 'in' ? (!t.dataset.out || s.time < t.dataset.out) : (!t.dataset.in || s.time > t.dataset.in));
+    });
+    var hint = left.length ? (role === 'in' ? left[0].time : left[left.length - 1].time) : '';
+    var f = 'att[' + t.dataset.att + '][' + role + ']';
+    html += '<div class="small mb-1">Do you want to change the ' + name + ' as well?</div>' +
+      '<div class="form-check"><input class="form-check-input" type="radio" name="' + f + '" value="change" id="ca' + i + 'c"' + (hint ? ' checked' : '') + '>' +
+      '<label class="form-check-label" for="ca' + i + 'c">Change ' + name + ' to</label> ' +
+      '<input type="time" class="form-control form-control-sm d-inline-block ms-1" style="width:120px" name="' + f.slice(0, -1) + '_time]" value="' + esc(hint) + '">' +
+      (hint ? ' <span class="small text-muted">' + (role === 'in' ? 'next' : 'previous') + ' camera sighting</span>' : '') + '</div>' +
+      '<div class="form-check"><input class="form-check-input" type="radio" name="' + f + '" value="remove" id="ca' + i + 'r">' +
+      '<label class="form-check-label" for="ca' + i + 'r">Remove the ' + name + '</label></div>' +
+      '<div class="form-check"><input class="form-check-input" type="radio" name="' + f + '" value="keep" id="ca' + i + 'k"' + (hint ? '' : ' checked') + '>' +
+      '<label class="form-check-label" for="ca' + i + 'k">Keep ' + esc(t.dataset.time) + '</label>' +
+      (hint ? '' : ' <span class="small text-muted">(no other camera sighting that day)</span>') + '</div></div>';
+  });
+  document.getElementById('camLogAttBody').innerHTML = html;
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('camLogAtt')).show();
+  return false;
+}
+document.getElementById('camLogAttGo') && document.getElementById('camLogAttGo').addEventListener('click', function () {
+  var form = document.getElementById('camLogPick');
+  form.querySelectorAll('.cam-log-att-sent').forEach(function (n) { n.remove(); });
+  var add = function (name, value) {
+    var i = document.createElement('input');
+    i.type = 'hidden'; i.name = name; i.value = value; i.className = 'cam-log-att-sent';
+    form.appendChild(i);
+  };
+  add('action', 'reject');
+  document.querySelectorAll('#camLogAttBody input').forEach(function (inp) {
+    if ((inp.type === 'radio' && inp.checked) || inp.type === 'time') add(inp.name, inp.value);
+  });
+  form.submit();
+});
 (function () {
   var ticks = document.querySelectorAll('.cam-log-tick'), all = document.getElementById('camLogAll');
   function refresh() {
