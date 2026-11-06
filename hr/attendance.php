@@ -14,6 +14,57 @@ require_role(['Owner','Admin','HR'], $conn);
 // Camera arrival/departure photos are staff photos: the HR role only.
 $canSeeCamPhotos = has_role('HR', $conn);
 
+// View my attendance: the signed-in person's own day today, whoever they are
+// (HR, Admin and Owner are employees too), with their own camera photos.
+require_once __DIR__ . '/../includes/attendance_self.php';
+$myEmp = attendance_self_employee($conn);
+$myRow = $myEmp ? attendance_self_today_row($conn, (int)$myEmp['id'], attendance_self_now()->format('Y-m-d')) : null;
+if (isset($_GET['my_photo'])) {
+    $myPath = $myRow ? hr_camera_photo_path((int)$myRow['id'], $_GET['my_photo'] === 'out' ? 'out' : 'in') : '';
+    if ($myPath === '' || !is_file($myPath)) {
+        http_response_code(404);
+        exit;
+    }
+    header('Content-Type: image/jpeg');
+    header('Content-Length: ' . filesize($myPath));
+    header('Cache-Control: private, no-store');
+    header('X-Content-Type-Options: nosniff');
+    readfile($myPath);
+    exit;
+}
+
+/**
+ * Where a day's in and out came from, as "from Room 1" / "from the staff app" / "by HR".
+ * The camera's notes read "Camera in: Room 1 (C8c · BK1745709) · out: ..."; only
+ * "out" there means the check-in was on the staff app.
+ */
+function att_my_from(array $row): array
+{
+    $src = (string)($row['source'] ?? '');
+    $notes = trim((string)($row['notes'] ?? ''));
+    $camIn = $camOut = null;
+    if (preg_match('/^Camera (?:in: (.*?))?(?:(?: · )?out: (.*))?$/u', $notes, $m)) {
+        // Without the device part: "(C8c · BK1745709)" or a bare serial "(BK1745709)".
+        $name = static function ($s) {
+            $s = trim((string)preg_replace('/\s*\((?:[^()]*·[^()]*|[A-Za-z0-9_-]{6,})\)$/u', '', (string)$s));
+            return $s !== '' ? 'from ' . $s . ' camera' : null;
+        };
+        $camIn = $name($m[1] ?? '');
+        $camOut = $name($m[2] ?? '');
+    }
+    $other = ['self' => 'from the staff app', 'import' => 'by import'][$src] ?? 'by HR';
+    if ($src === 'camera' || $camIn !== null || $camOut !== null) {
+        $in = $camIn ?? 'from the staff app';
+        $out = $camOut ?? ($src === 'camera' ? 'from the camera' : $other);
+    } else {
+        $in = $out = $other;
+        if (strpos($notes, 'Auto check-out') !== false) {
+            $out = 'automatic check-out';
+        }
+    }
+    return ['in' => $in, 'out' => $out];
+}
+
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
 
 $me_id = $_SESSION['user']['id'] ?? null;
@@ -400,6 +451,79 @@ echo hr_ui_page_header(
       Run <code>migrations/hr_attendance_excused_absent.sql</code> to add
       <?= count($missingStatuses) === 1 ? 'it' : 'them' ?>.
     </div>
+  <?php endif; ?>
+
+  <?php if ($myEmp):
+    $myIn = $myRow && $myRow['check_in'] ? date('g:i A', strtotime($myRow['check_in'])) : '';
+    $myOut = $myRow && $myRow['check_out'] ? date('g:i A', strtotime($myRow['check_out'])) : '';
+    $myFrom = $myRow ? att_my_from($myRow) : ['in' => '', 'out' => ''];
+    // The camera's check-out moves on all day while the day is Pending: it is the last time they were seen.
+    $myOutWord = ($myRow && $myRow['status'] === 'pending' && strpos($myFrom['out'], 'camera') !== false) ? 'Last seen' : 'Checked out';
+    $myPhotos = $myRow ? hr_camera_photos_for((int)$myRow['id']) : ['in' => false, 'out' => false];
+    $myStatus = $myRow ? ($attStatuses[(string)$myRow['status']] ?? ucfirst(str_replace('_', ' ', (string)$myRow['status']))) : '';
+    $myMarkedBy = $myRow ? (['self' => 'from the staff app', 'camera' => 'from the camera', 'import' => 'by import'][(string)$myRow['source']] ?? 'by HR') : '';
+  ?>
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body d-flex flex-wrap align-items-center gap-3">
+      <div>
+        <div class="small text-muted"><i class="bi bi-person-check me-1"></i>View my attendance &middot; today, <?= h(attendance_self_now()->format('j M Y')) ?></div>
+        <?php if ($myIn !== ''): ?>
+          <div class="fw-semibold">Checked in at <?= h($myIn) ?> <span class="fw-normal text-muted"><?= h($myFrom['in']) ?></span></div>
+          <?php if ($myOut !== ''): ?>
+            <div class="small"><?= h($myOutWord) ?> at <?= h($myOut) ?> <span class="text-muted"><?= h($myFrom['out']) ?></span></div>
+          <?php endif; ?>
+        <?php elseif ($myRow): ?>
+          <div class="fw-semibold"><?= h($myStatus) ?> <span class="fw-normal text-muted">marked <?= h($myMarkedBy) ?></span></div>
+        <?php else: ?>
+          <div class="fw-semibold">Not checked in yet today</div>
+        <?php endif; ?>
+        <?php if ($myRow && $myIn !== ''): ?>
+          <span class="badge text-bg-light border mt-1"><?= h($myStatus) ?></span>
+        <?php endif; ?>
+      </div>
+      <?php if ($myRow): ?>
+        <button type="button" class="btn btn-sm btn-outline-primary ms-auto" data-bs-toggle="modal" data-bs-target="#myAttModal">
+          <i class="bi bi-eye me-1"></i>View details
+        </button>
+      <?php endif; ?>
+    </div>
+  </div>
+  <?php if ($myRow): ?>
+  <div class="modal fade" id="myAttModal" tabindex="-1" aria-labelledby="myAttTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="myAttTitle">My attendance today</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted mb-3"><?= h($myEmp['full_name']) ?> &middot; <?= h(attendance_self_now()->format('l, j M Y')) ?>
+            &middot; <span class="badge text-bg-light border"><?= h($myStatus) ?></span></p>
+          <div class="row g-3">
+            <?php foreach (['in' => ['Check-in', $myIn], 'out' => [$myOutWord, $myOut]] as $myK => [$myLabel, $myTime]): ?>
+              <div class="col-6">
+                <div class="fw-semibold"><?= h($myLabel) ?> <?= h($myTime !== '' ? $myTime : '—') ?></div>
+                <div class="small text-muted mb-2"><?= h($myTime !== '' ? $myFrom[$myK] : '') ?></div>
+                <?php if ($myPhotos[$myK]): ?>
+                  <img src="?my_photo=<?= $myK ?>&amp;v=<?= h(rawurlencode((string)$myRow['check_' . $myK])) ?>" alt="<?= h($myLabel) ?> photo" loading="lazy"
+                       style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;border:1px solid #dee2e6">
+                <?php else: ?>
+                  <div class="d-flex align-items-center justify-content-center text-muted small"
+                       style="aspect-ratio:1;border-radius:10px;border:1px dashed #ced4da">No camera photo</div>
+                <?php endif; ?>
+              </div>
+            <?php endforeach; ?>
+          </div>
+          <div class="alert alert-info small mt-3 mb-2 py-2">
+            <i class="bi bi-info-circle me-1"></i>The check-out details (time and photo) are overwritten on the next check-out capture,
+            so the last one of the day is what stays.
+          </div>
+          <p class="small text-muted mb-0">Not you in the photo, or a time is wrong? Tell HR.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <?php endif; ?>
   <?php endif; ?>
 
   <?php
