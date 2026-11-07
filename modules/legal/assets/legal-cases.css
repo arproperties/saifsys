@@ -1,0 +1,81 @@
+/* Legal Cases screen — extends assets/legal.css */
+.lc-page .lw-st-green { --c: #16a34a; }
+.lc-page .lw-seg.lc-zero .lw-seg-big { color: rgba(255,255,255,.55); }
+.lc-page .lw-seg.lc-zero .lw-seg-ico { color: #9a9cb4; animation: none; }
+.lc-page a.lw-alert-btn { display: block; }
+
+.lc-need-stat { font-size: .8rem; color: #4b4e72; font-weight: 600; margin-top: .2rem; }
+.lc-page .lw-tab { display: inline-flex; align-items: center; gap: .35rem; }
+.lc-page .lw-tab b { font-weight: 700; }
+.lc-page .lw-tabs { gap: .4rem 1.2rem; }
+.lc-need-tools .select2-container--bootstrap-5 .select2-selection { border-radius: 10px; min-height: 37px; font-size: .82rem; }
+
+.lc-need-list { max-height: 560px; overflow: auto; border: 1px solid #f0f1f8; border-radius: 16px; }
+.lc-need-list .lw-table thead th { position: sticky; top: 0; z-index: 2; background: #fff; color: #9a9cb4; font-size: .68rem; font-weight: 700; }
+.lc-need-list .lw-table td { font-size: .84rem; border-color: #f2f3f8; padding: .75rem .75rem; }
+.lc-need-list .lw-table tr.lw-sev-3 td:first-child { border-left-color: #e11d48; }
+.lc-need-list .lw-table tr.lw-sev-2 td:first-child { border-left-color: #f59e0b; }
+.lc-need-list .lw-lease a { font-family: "Outfit", sans-serif; font-size: .95rem; color: #4338ca; }
+.lc-need-list .lw-status { border-radius: 999px; padding: .12rem .5rem; font-size: .62rem; }
+.lc-owed { font-family: "Outfit", sans-serif; font-size: 1.02rem; font-weight: 700; color: #1f2140; }
+.lc-owed::before { content: "AED "; font-size: .7rem; color: #9a9cb4; font-weight: 600; }
+.lc-b { color: #e11d48; font-weight: 600; } .lc-o { color: #d97706; font-weight: 600; }
+.lc-page .lw-actions .btn { border-radius: 10px; }
+.lc-page .lw-actions .btn-outline-secondary { border-color: #e7e8f2; color: #4b4e72; }
+.lc-open-case { background: linear-gradient(135deg, #55307a, #8e2f7a); color: #fff !important; border: 0; box-shadow: 0 4px 12px rgba(142,47,122,.28); }
+.lc-open-case:hover { filter: brightness(1.08); }
+.lc-need-foot { padding: .6rem .2rem 0; }
+.lc-need-foot a { margin-left: .35rem; }
+
+/* Filters */
+.lc-filters { background: #fbfbfe; border: 1px solid #f0f1f8; border-radius: 16px; padding: .8rem .9rem 1rem; margin-left: 0; margin-right: 0; }
+.lc-filters .select2-container--bootstrap-5 .select2-selection { border-radius: 10px; border-color: #e7e8f2; min-height: 34px; font-size: .82rem; }
+.lc-filters .lw-search-box input { padding-top: .42rem; padding-bottom: .42rem; }
+
+/* Cases table */
+.lc-cases-table td { font-size: .84rem; border-color: #f2f3f8; padding: .8rem .75rem; }
+.lc-cases-table thead th { background: #fff; color: #9a9cb4; font-size: .68rem; font-weight: 700; }
+.lc-cases-table tr.lc-sev-late td:first-child { border-left-color: #e11d48; }
+.lc-cases-table tr.lc-sev-urgent td:first-child { border-left-color: #f97316; }
+.lc-cases-table tr.lc-sev-high td:first-child { border-left-color: #f59e0b; }
+.lc-case-no a { font-family: "Outfit", sans-serif; font-size: 1rem; font-weight: 700; color: #4338ca !important; }
+.lc-title { font-weight: 700; color: #1f2140; line-height: 1.25; margin-bottom: .2rem; }
+.lc-type { font-size: .68rem; font-weight: 700; padding: .12rem .5rem; border-radius: 6px; background: #f1f0fb; color: #6d28d9; }
+.lc-pill { display: inline-flex; align-items: center; gap: .3rem; font-size: .7rem; font-weight: 700; padding: .2rem .6rem; border-radius: 999px;
+    margin-bottom: .25rem; border: 1px solid transparent; white-space: nowrap; }
+.lc-st-draft, .lc-st-withdrawn { background: #f1f5f9; color: #475569; border-color: #e2e8f0; }
+.lc-st-open        { background: #e0e7ff; color: #3730a3; border-color: #c7d2fe; }
+.lc-st-notice_sent { background: #ede9fe; color: #5b21b6; border-color: #ddd6fe; }
+.lc-st-filed       { background: #e0f2fe; color: #0369a1; border-color: #bae6fd; }
+.lc-st-in_hearing  { background: #fce7f6; color: #9d174d; border-color: #f9cfe9; }
+.lc-st-judgment    { background: #fff4dc; color: #b45309; border-color: #fde4ae; }
+.lc-st-execution   { background: #e8ebf2; color: #1a2332; border-color: #d5dae6; }
+.lc-st-settled, .lc-st-closed { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+.lc-pr-urgent { background: #ffe4ea; color: #be123c; border-color: #fecdd6; }
+.lc-pr-high   { background: #fff4dc; color: #b45309; border-color: #fde4ae; }
+.lc-pr-medium { background: #e0f2fe; color: #0369a1; border-color: #bae6fd; }
+.lc-pr-low    { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+.lc-lease-link { font-size: .78rem; display: inline-block; }
+.lc-owes { display: inline-block; margin-top: .15rem; font-size: .7rem; font-weight: 700; color: #be123c !important; background: #ffe4ea; border-radius: 999px; padding: .1rem .5rem; }
+.lc-dl-date { font-weight: 600; color: #1f2140; }
+.lc-dl { display: inline-flex; align-items: center; gap: .25rem; font-size: .68rem; font-weight: 700; padding: .12rem .5rem; border-radius: 999px; margin-top: .2rem; }
+.lc-dl-late { background: #ffe4ea; color: #be123c; }
+.lc-dl-soon { background: #fff4dc; color: #b45309; }
+.lc-dl-ok   { background: #e0f2fe; color: #0369a1; }
+.lc-dl-done { background: #dcfce7; color: #166534; }
+.lc-claim { font-family: "Outfit", sans-serif; font-weight: 700; font-size: .98rem; color: #1f2140; white-space: nowrap; }
+.lc-rec-track { width: 110px; height: 6px; border-radius: 999px; background: #eef0f6; overflow: hidden; margin: .25rem 0 .2rem; }
+.lc-rec-track span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #34d399, #059669); }
+.lc-assignee { display: inline-flex; align-items: center; gap: .4rem; font-size: .8rem; font-weight: 600; color: #4b4e72; white-space: nowrap; }
+.lc-av-xs { width: 26px; height: 26px; font-size: .62rem; }
+.lc-view-btn { border: 1px solid #e7e8f2; background: #fff; color: #4b4e72; border-radius: 10px; }
+.lc-view-btn:hover { color: #6d28d9; border-color: #ddd6fe; background: #f6f5ff; }
+
+/* Empty state */
+.lc-empty { text-align: center; padding: 2.4rem 1rem 2rem; border: 2px dashed #e9e5fb; border-radius: 18px; background: linear-gradient(180deg, #fbfaff, #fff); }
+.lc-empty-ico { width: 64px; height: 64px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.6rem; color: #fff;
+    background: linear-gradient(135deg, #55307a, #8e2f7a); box-shadow: 0 10px 24px rgba(142,47,122,.3), 0 0 0 6px #f1ecfd; margin-bottom: .9rem; }
+.lc-empty h3 { font-family: "Outfit", sans-serif; font-size: 1.25rem; font-weight: 700; color: #1f2140; margin-bottom: .35rem; }
+.lc-empty p { color: #6b6e8f; font-size: .88rem; max-width: 560px; margin: 0 auto 1rem; }
+.lc-need-table .lc-why { min-width: 330px; max-width: 420px; }
+.lc-need-table .lc-why .lw-flag { margin-bottom: .2rem; }
