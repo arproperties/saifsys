@@ -551,7 +551,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
                 break;
-                
+
+            case 'set_login_access':
+                // Switches sign-in on or off without touching the employee record.
+                // account_login_block_reason() refuses web, PIN and app sign-ins while is_active = 0.
+                $user_id = (int)($_POST['user_id'] ?? 0);
+                $enable = ($_POST['enable'] ?? '') === '1' ? 1 : 0;
+
+                if ($user_id <= 0) {
+                    break;
+                }
+                if (!$enable && $user_id === (int)current_user_id()) {
+                    $message = 'You cannot disable your own access.';
+                    $messageType = 'danger';
+                    break;
+                }
+
+                $stmt = $conn->prepare("SELECT fullname FROM `user` WHERE id = ?");
+                $stmt->execute([$user_id]);
+                $targetName = $stmt->fetchColumn();
+                if ($targetName === false) {
+                    $message = 'User not found.';
+                    $messageType = 'danger';
+                    break;
+                }
+
+                $conn->prepare("UPDATE `user` SET is_active = ? WHERE id = ?")->execute([$enable, $user_id]);
+
+                require_once __DIR__ . '/includes/AuditService.php';
+                AuditService::log([
+                    'action' => 'update',
+                    'object_type' => 'user',
+                    'object_id' => (string)$user_id,
+                    'summary' => ($enable ? 'Enabled' : 'Disabled') . " sign-in access for {$targetName}",
+                    'new_data' => ['is_active' => $enable],
+                    'success' => true
+                ]);
+
+                $message = $enable
+                    ? "Access enabled for {$targetName}."
+                    : "Access disabled for {$targetName}. They can no longer sign in to the system or the apps.";
+                $messageType = 'success';
+                break;
+
             case 'create_role':
                 $role_name = trim($_POST['role_name'] ?? '');
                 $role_description = trim($_POST['role_description'] ?? '');
@@ -1142,7 +1184,7 @@ $taskPermSelect = $hasUserTaskPermissionsTable
 $taskPermJoin = $hasUserTaskPermissionsTable ? "LEFT JOIN user_task_permissions utp ON utp.user_id = u.id" : "";
 
 $users = $conn->query("
-    SELECT u.id, u.username, u.fullname, u.email, u.contactnumber, u.status,
+    SELECT u.id, u.username, u.fullname, u.email, u.contactnumber, u.status, u.is_active,
            GROUP_CONCAT(DISTINCT r.name) as roles,
            GROUP_CONCAT(DISTINCT CONCAT(c.id, ':', c.name, ':', c.business_type, ':', IFNULL(uc.is_primary, 0)) SEPARATOR '||') as companies,
            {$taskPermSelect}
@@ -1877,9 +1919,13 @@ require __DIR__ . '/includes/admin/admin_layout_header.php';
                           <div class="fw-bold text-dark"><?= h($user['fullname']) ?></div>
                           <small class="text-muted">@<?= h($user['username']) ?></small>
                           <div class="mt-1">
-                            <span class="badge <?= $user['status'] ? 'bg-success' : 'bg-secondary' ?>">
-                              <?= $user['status'] ? 'Active' : 'Inactive' ?>
-                            </span>
+                            <?php if ((int)$user['is_active'] !== 1): ?>
+                              <span class="badge bg-danger"><i class="bi bi-slash-circle me-1"></i>Access disabled</span>
+                            <?php else: ?>
+                              <span class="badge <?= $user['status'] ? 'bg-success' : 'bg-secondary' ?>">
+                                <?= $user['status'] ? 'Active' : 'Inactive' ?>
+                              </span>
+                            <?php endif; ?>
                           </div>
                         </div>
                       </div>
@@ -1981,6 +2027,22 @@ require __DIR__ . '/includes/admin/admin_layout_header.php';
                           <i class="bi bi-pencil"></i> Edit
                         </button>
                       </div>
+                      <?php if ((int)$user['id'] !== (int)current_user_id()): ?>
+                        <?php $accessOn = (int)$user['is_active'] === 1; ?>
+                        <form method="post" class="mt-2"
+                              onsubmit="return confirm(<?= h(json_encode(($accessOn ? 'Disable access for ' : 'Enable access for ') . $user['fullname'] . '?')) ?>);">
+                          <?php csrf_field(); ?>
+                          <input type="hidden" name="tab" value="users">
+                          <input type="hidden" name="action" value="set_login_access">
+                          <input type="hidden" name="user_id" value="<?= (int)$user['id'] ?>">
+                          <input type="hidden" name="enable" value="<?= $accessOn ? '0' : '1' ?>">
+                          <?php if ($accessOn): ?>
+                            <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-slash-circle"></i> Disable access</button>
+                          <?php else: ?>
+                            <button type="submit" class="btn btn-sm btn-success"><i class="bi bi-check-circle"></i> Enable access</button>
+                          <?php endif; ?>
+                        </form>
+                      <?php endif; ?>
                     </td>
                   </tr>
                 <?php endforeach; ?>
