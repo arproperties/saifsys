@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BED SPACE RENTAL AGREEMENT</title>
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+}
+body {
+    font-family: dejavusans, sans-serif;
+    font-size: 10.5px;
+    line-height: 1.45;
+    color: #000;
+}
+table {
+    border-collapse: collapse;
+    border-spacing: 0;
+}
+.contract-title {
+    margin: 0 0 18px 0;
+}
+.contract-title h1 {
+    font-size: 16px;
+    font-weight: bold;
+    text-align: center;
+    margin: 0 0 8px 0;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+.contract-title h2 {
+    font-size: 15px;
+    font-weight: bold;
+    text-align: center;
+    margin: 0 0 10px 0;
+    direction: rtl;
+}
+.date-plot-table {
+    width: 100%;
+    margin-bottom: 18px;
+    font-size: 10.5px;
+    font-weight: bold;
+}
+.date-plot-table td {
+    width: 50%;
+    vertical-align: top;
+}
+.plot-no {
+    text-align: left;
+    padding-left: 5px;
+}
+.date-section {
+    text-align: right;
+    padding-right: 5px;
+}
+.contract-details {
+    width: 100%;
+    table-layout: fixed;
+    margin-bottom: 18px;
+}
+.contract-details td {
+    padding: 5px 6px;
+    vertical-align: middle;
+    font-size: 10px;
+}
+.contract-details .label {
+    width: 35%;
+    text-align: left;
+    font-weight: bold;
+    padding-right: 8px;
+}
+.contract-details .value {
+    width: 30%;
+    text-align: center;
+    font-weight: normal;
+    border-bottom: 1px solid #000;
+    padding-bottom: 2px;
+}
+.contract-details .label-ar {
+    width: 35%;
+    text-align: right;
+    font-weight: bold;
+    direction: rtl;
+    padding-left: 8px;
+}
+.clauses-title-table,
+.clauses-table {
+    width: 100%;
+    table-layout: fixed;
+}
+.clauses-title-table {
+    margin-bottom: 8px;
+}
+.clauses-title-table td,
+.clauses-table td {
+    vertical-align: top;
+}
+.clauses-title-en {
+    width: 50%;
+    font-size: 11px;
+    font-weight: bold;
+    text-align: left;
+    padding: 0 14px 8px 0;
+    border-right: 1px solid #cfcfcf;
+}
+.clauses-title-ar {
+    width: 50%;
+    font-size: 11px;
+    font-weight: bold;
+    text-align: right;
+    direction: rtl;
+    padding: 0 0 8px 14px;
+}
+.section-row {
+    page-break-inside: avoid;
+}
+.section-en {
+    width: 50%;
+    font-size: 10.5px;
+    font-weight: bold;
+    text-align: left;
+    padding: 10px 14px 2px 0;
+    border-right: 1px solid #cfcfcf;
+}
+.section-ar {
+    width: 50%;
+    font-size: 10.5px;
+    font-weight: bold;
+    text-align: right;
+    direction: rtl;
+    padding: 10px 0 2px 14px;
+}
+.clause-row {
+    page-break-inside: avoid;
+}
+.clause-col-en {
+    width: 50%;
+    border-right: 1px solid #cfcfcf;
+    padding: 5px 14px 5px 0;
+}
+.clause-col-ar {
+    width: 50%;
+    padding: 5px 0 5px 14px;
+    direction: rtl;
+    text-align: right;
+}
+.clause-inner {
+    width: 100%;
+    table-layout: fixed;
+}
+.clause-inner td {
+    vertical-align: top;
+}
+.num-en {
+    width: 34px;
+    font-size: 10px;
+    line-height: 1.55;
+    font-weight: bold;
+    text-align: left;
+    padding-right: 6px;
+    white-space: nowrap;
+}
+.txt-en {
+    font-size: 10px;
+    line-height: 1.55;
+    text-align: left;
+}
+.num-ar {
+    width: 34px;
+    font-size: 10px;
+    line-height: 1.55;
+    font-weight: bold;
+    text-align: right;
+    padding-left: 6px;
+    white-space: nowrap;
+    direction: ltr;
+}
+.txt-ar {
+    font-size: 10px;
+    line-height: 1.55;
+    text-align: right;
+    direction: rtl;
+}
+.handover-section,
+.remarks-section {
+    margin-top: 12px;
+    border-top: 1px solid #000;
+    padding-top: 8px;
+    page-break-inside: avoid;
+}
+.remarks-title {
+    font-size: 11px;
+    font-weight: bold;
+    margin-bottom: 3px;
+    text-transform: uppercase;
+}
+.form-lines {
+    width: 100%;
+    table-layout: fixed;
+}
+.form-lines td {
+    vertical-align: bottom;
+    font-size: 10px;
+    height: 22px;
+}
+.form-label {
+    width: 32%;
+    font-weight: bold;
+    white-space: nowrap;
+    padding-right: 8px;
+}
+.form-line {
+    border-bottom: 1px solid #000;
+}
+.remarks-text {
+    font-size: 10px;
+    line-height: 1.55;
+    margin: 4px 0 6px 0;
+}
+.signature-section {
+    margin-top: 14px;
+    page-break-inside: avoid;
+}
+.signature-table {
+    width: 100%;
+    table-layout: fixed;
+}
+.signature-table td {
+    vertical-align: bottom;
+}
+.signature-label {
+    font-weight: bold;
+    font-size: 10.5px;
+    padding-bottom: 4px;
+}
+.signature-line {
+    border-bottom: 1px solid #000;
+    height: 34px;
+}
+</style>
+</head>
+<body>
+
+<div class="contract-title">
+    <h2 dir="rtl">اتفاقية ايجار سرير</h2>
+    <h1>BED SPACE RENTAL AGREEMENT</h1>
+</div>
+
+<table class="date-plot-table" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+        <td class="plot-no">Plot No: {{PLOT_NO}}</td>
+        <td class="date-section">Date: {{TODAY_DATE}}</td>
+    </tr>
+</table>
+
+<table class="contract-details" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+        <td class="label">Landlord Name:</td>
+        <td class="value">{{LANDLORD_NAME}}</td>
+        <td class="label-ar" dir="rtl">المؤجر:</td>
+    </tr>
+    <tr>
+        <td class="label">Tenant Name:</td>
+        <td class="value">{{TENANT_NAME}}</td>
+        <td class="label-ar" dir="rtl">المستأجر:</td>
+    </tr>
+    <tr>
+        <td class="label">Subject of Tenancy:</td>
+        <td class="value">{{PROPERTY_NAME}}</td>
+        <td class="label-ar" dir="rtl">موضوع الايجار:</td>
+    </tr>
+    <tr>
+        <td class="label">Period of Tenancy:</td>
+        <td class="value">{{START_DATE}} - {{END_DATE}}</td>
+        <td class="label-ar" dir="rtl">مدة الايجار:</td>
+    </tr>
+    <tr>
+        <td class="label">Unit No:</td>
+        <td class="value">{{UNIT_NO}}</td>
+        <td class="label-ar" dir="rtl">رقم الوحدة:</td>
+    </tr>
+    <tr>
+        <td class="label">Bed Space Number:</td>
+        <td class="value">{{BED_SPACE_NO}}</td>
+        <td class="label-ar" dir="rtl">رقم السرير:</td>
+    </tr>
+    <tr>
+        <td class="label">Rent:</td>
+        <td class="value">AED {{ANNUAL_RENT}}</td>
+        <td class="label-ar" dir="rtl">قيمة الايجار:</td>
+    </tr>
+    <tr>
+        <td class="label">Terms of Payment:</td>
+        <td class="value">{{TERMS_OF_PAYMENT}}</td>
+        <td class="label-ar" dir="rtl">اقساط الدفع:</td>
+    </tr>
+    <tr>
+        <td class="label">Security Deposit:</td>
+        <td class="value">AED {{SECURITY_DEPOSIT}}</td>
+        <td class="label-ar" dir="rtl">وديعة التامين:</td>
+    </tr>
+</table>
+
+<table class="clauses-title-table" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+        <td class="clauses-title-en">Conditions Mutually Agreed Upon as Under:</td>
+        <td class="clauses-title-ar" dir="rtl">الشروط المتفق عليها كما يلي:</td>
+    </tr>
+</table>
+
+<table class="clauses-table" cellpadding="0" cellspacing="0" border="0">
+        <tr class="section-row">
+            <td class="section-en">1. SUBJECT MATTER AND ALLOCATION OF BED SPACE</td>
+            <td class="section-ar" dir="rtl">البند الأول: موضوع العقد وتخصيص السرير</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">1.1.</td><td class="txt-en">This Agreement relates exclusively to the occupancy of the designated bed space and does not grant the Tenant exclusive possession of the entire room or any other part of the premises.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">1.1.</td><td class="txt-ar" dir="rtl">يقتصر حق الطرف الثاني بموجب هذا العقد على إشغال السرير المخصص له، ولا يمنحه هذا العقد حق الحيازة أو الانتفاع الحصري بالغرفة بالكامل أو بأي جزء آخر من العقار.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">1.2.</td><td class="txt-en">The Tenant shall occupy only the bed space allocated to them and shall comply with the approved occupancy capacity of the room and accommodation.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">1.2.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بعدم تجاوز العدد المعتمد لشاغلي الغرفة أو السكن، وباستخدام السرير المخصص له فقط.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">1.3.</td><td class="txt-en">The Tenant shall not transfer, assign, sublet, share, or otherwise permit another person to use or occupy the allocated bed space without the Landlord’s prior written consent.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">1.3.</td><td class="txt-ar" dir="rtl">يُحظر على الطرف الثاني التنازل عن السرير أو نقله إلى الغير أو تأجيره من الباطن أو السماح لأي شخص آخر بإشغاله، كليًا أو جزئيًا، دون الحصول على موافقة خطية مسبقة من الطرف الأول.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">2. TERM OF THE AGREEMENT</td>
+            <td class="section-ar" dir="rtl">البند الثاني: مدة العقد</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">2.1.</td><td class="txt-en">This Agreement shall commence on {{START_DATE}} and shall expire on {{END_DATE}}, unless terminated earlier in accordance with this Agreement and applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">2.1.</td><td class="txt-ar" dir="rtl">تبدأ مدة هذا العقد بتاريخ {{START_DATE}} وتنتهي بتاريخ {{END_DATE}}، ما لم يتم إنهاؤه قبل ذلك وفقًا لأحكام هذا العقد والقوانين المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">2.2.</td><td class="txt-en">Any renewal or extension of this Agreement shall be subject to the Parties’ written agreement and the applicable laws and regulations.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">2.2.</td><td class="txt-ar" dir="rtl">يخضع تجديد العقد أو تمديده لاتفاق كتابي بين الطرفين، مع مراعاة التشريعات واللوائح المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">2.3.</td><td class="txt-en">The Tenant shall have no right to continue occupying the bed space after the expiry or lawful termination of this Agreement unless the Parties have agreed in writing to an extension or continued occupancy is otherwise permitted by law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">2.3.</td><td class="txt-ar" dir="rtl">لا يحق للطرف الثاني الاستمرار في إشغال السرير بعد انتهاء مدة العقد أو إنهائه بصورة قانونية، ما لم يتفق الطرفان كتابةً على التمديد أو يكن الاستمرار جائزًا بموجب القانون.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">3. RENT AND PAYMENT TERMS</td>
+            <td class="section-ar" dir="rtl">البند الثالث: الأجرة وشروط السداد</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">3.1.</td><td class="txt-en">The Tenant shall pay the monthly rent in advance, on or before the second (2nd) calendar day of each month, unless otherwise agreed in writing by the Parties.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">3.1.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بسداد الأجرة الشهرية مقدمًا، في موعد أقصاه اليوم الثاني (2) من كل شهر ميلادي، ما لم يتفق الطرفان كتابةً على خلاف ذلك.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">3.2.</td><td class="txt-en">The Tenant shall pay the rent in full and shall not deduct, withhold, or set off any amount against the rent except as permitted by applicable law or agreed in writing by the Parties.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">3.2.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بسداد الأجرة كاملة دون خصم أو حسم أو مقاصة، إلا إذا كان ذلك مسموحًا به قانونًا أو متفقًا عليه كتابةً بين الطرفين.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">3.3.</td><td class="txt-en">Failure to pay the rent when due shall constitute a breach of this Agreement, subject to applicable law and the Landlord’s lawful rights and remedies.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">3.3.</td><td class="txt-ar" dir="rtl">يُعد التأخر عن سداد الأجرة المستحقة إخلالًا بأحكام هذا العقد، مع مراعاة الحقوق والإجراءات القانونية المقررة للطرف الأول بموجب التشريعات المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">3.4.</td><td class="txt-en">Electricity and water charges shall be included in the agreed monthly rent in accordance with Clause 4 of this Agreement.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">3.4.</td><td class="txt-ar" dir="rtl">تشمل الأجرة الشهرية رسوم الكهرباء والمياه وفقًا لأحكام البند الرابع من هذا العقد.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">4. ELECTRICITY, WATER AND UTILITIES</td>
+            <td class="section-ar" dir="rtl">البند الرابع: الكهرباء والمياه والخدمات</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">4.1.</td><td class="txt-en">The agreed monthly rent shall include electricity and water charges for the duration of this Agreement. The Tenant shall not be charged additional amounts for these utilities unless otherwise expressly agreed in writing by the Parties or required under applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">4.1.</td><td class="txt-ar" dir="rtl">اتفق الطرفان على أن الأجرة الشهرية المتفق عليها تشمل رسوم استهلاك الكهرباء والمياه طوال مدة العقد، ولا يجوز تحميل الطرف الثاني رسومًا إضافية مقابل هاتين الخدمتين، ما لم يتفق الطرفان صراحةً على خلاف ذلك كتابةً أو يقتضِ القانون خلاف ذلك.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">4.2.</td><td class="txt-en">The Tenant shall use electricity and water responsibly and shall not misuse, waste, tamper with, or interfere with any utility connection, meter, installation, or equipment.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">4.2.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بالاستخدام المسؤول والمعقول للكهرباء والمياه، ويحظر عليه إساءة استخدامهما أو إهدارهما أو العبث بالعدادات أو التوصيلات أو التجهيزات الخاصة بهما.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">4.3.</td><td class="txt-en">The Tenant shall immediately report any leakage, electrical fault, damage, or other utility-related issue to the Landlord or Camp Management.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">4.3.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بإبلاغ الطرف الأول أو إدارة السكن فور اكتشاف أي تسرب للمياه أو عطل كهربائي أو تلف أو خلل متعلق بالخدمات.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">4.4.</td><td class="txt-en">The inclusion of electricity and water in the rent shall not exempt the Tenant from liability for damage or loss proven to have resulted from the Tenant’s negligence, misuse, or unauthorized interference, subject to applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">4.4.</td><td class="txt-ar" dir="rtl">لا يعفي شمول الكهرباء والمياه ضمن الأجرة الطرف الثاني من المسؤولية عن الأضرار التي يثبت أنها نتجت عن إهماله أو سوء استخدامه أو تدخله غير المصرح به، وذلك وفقًا للقانون.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">5. USE OF THE BED SPACE AND PROHIBITED ACTIVITIES</td>
+            <td class="section-ar" dir="rtl">البند الخامس: استخدام السرير والأنشطة المحظورة</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">5.1.</td><td class="txt-en">The Tenant shall use the allocated bed space solely for residential accommodation and shall not use it for commercial activities, storage of hazardous materials, or any unlawful purpose.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">5.1.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني باستخدام السرير المخصص له لأغراض الإقامة الشخصية فقط، ويحظر استخدامه لأغراض تجارية أو لتخزين المواد الخطرة أو لأي غرض غير مشروع.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">5.2.</td><td class="txt-en">Cooking within the sleeping room is strictly prohibited. The Tenant may use designated cooking facilities only where such use is expressly permitted by Camp Management.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">5.2.</td><td class="txt-ar" dir="rtl">يُحظر الطهي داخل غرفة النوم، ولا يجوز استخدام مرافق الطهي إلا في الأماكن المخصصة لذلك، متى كان استخدامها مسموحًا به من قبل إدارة السكن.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">5.3.</td><td class="txt-en">The Tenant shall not bring, install, or operate unauthorized electrical appliances, heating devices, cooking equipment, or other equipment that may create a fire, electrical, or safety hazard.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">5.3.</td><td class="txt-ar" dir="rtl">يُحظر على الطرف الثاني إحضار أو تركيب أو تشغيل أي أجهزة كهربائية أو أجهزة تسخين أو معدات طهي غير مصرح بها، أو أي أجهزة من شأنها التسبب في حريق أو خطر كهربائي أو تهديد سلامة شاغلي السكن.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">5.4.</td><td class="txt-en">Smoking, alcoholic beverages, pets, and other restricted activities shall be governed by applicable laws and the written rules of the accommodation. Any activity prohibited by law shall remain prohibited regardless of any purported permission.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">5.4.</td><td class="txt-ar" dir="rtl">يخضع التدخين والمشروبات الكحولية والحيوانات الأليفة وغيرها من الأنشطة المقيدة للقوانين المعمول بها واللوائح المكتوبة الخاصة بالسكن. ويحظر أي نشاط يمنعه القانون، ولو صدرت بشأنه موافقة مخالفة للقانون.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">5.5.</td><td class="txt-en">Overnight guests and the accommodation of unauthorized persons are prohibited without the prior written approval of Camp Management, subject to applicable laws and occupancy requirements.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">5.5.</td><td class="txt-ar" dir="rtl">يُحظر استقبال الزوار للمبيت أو السماح لأي شخص غير مصرح له بالإقامة داخل السكن دون موافقة خطية مسبقة من إدارة السكن، مع مراعاة القوانين ومتطلبات الإشغال المعتمدة.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">5.6.</td><td class="txt-en">The Tenant shall not engage in any conduct that disturbs other occupants, compromises security, damages property, or interferes with the peaceful use of the shared accommodation.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">5.6.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بعدم القيام بأي تصرف من شأنه إزعاج شاغلي السكن الآخرين أو الإخلال بالأمن أو إلحاق الضرر بالممتلكات أو التأثير على حق الآخرين في الانتفاع الهادئ بالسكن.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">6. CLEANLINESS AND USE OF SHARED FACILITIES</td>
+            <td class="section-ar" dir="rtl">البند السادس: النظافة واستخدام المرافق المشتركة</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">6.1.</td><td class="txt-en">The Tenant shall keep the allocated bed space and personal belongings clean, hygienic, and orderly.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">6.1.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بالمحافظة على السرير المخصص له ومقتنياته الشخصية في حالة نظيفة وصحية ومرتبة.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">6.2.</td><td class="txt-en">The Tenant shall use shared bathrooms, kitchens where permitted, corridors, laundry areas, and other common facilities responsibly and in accordance with the rules of the accommodation.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">6.2.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني باستخدام دورات المياه والمطابخ، حيثما كان استخدامها مسموحًا به، والممرات ومناطق الغسيل وسائر المرافق المشتركة بطريقة مسؤولة، ووفقًا للقواعد المعتمدة في السكن.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">6.3.</td><td class="txt-en">The Tenant shall not obstruct common areas, store personal belongings in unauthorized locations, or dispose of waste except in designated areas.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">6.3.</td><td class="txt-ar" dir="rtl">يُحظر على الطرف الثاني إعاقة الممرات أو تخزين متعلقاته الشخصية في الأماكن غير المخصصة لذلك أو التخلص من النفايات خارج الأماكن المحددة.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">6.4.</td><td class="txt-en">The Tenant shall respect the rights of other occupants and shall not cause unreasonable noise, disturbance, or inconvenience.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">6.4.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني باحترام حقوق شاغلي السكن الآخرين وعدم التسبب في ضوضاء أو إزعاج أو مضايقات غير معقولة.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">6.5.</td><td class="txt-en">The Tenant shall promptly notify the Landlord or Camp Management of any maintenance issue, damage, safety hazard, or unsanitary condition affecting the bed space or shared facilities.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">6.5.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بإبلاغ الطرف الأول أو إدارة السكن فورًا عن أي عطل أو تلف أو خطر يتعلق بالسلامة أو النظافة في السرير أو المرافق المشتركة.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">7. MAINTENANCE AND LIABILITY FOR DAMAGE</td>
+            <td class="section-ar" dir="rtl">البند السابع: الصيانة والمسؤولية عن الأضرار</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">7.1.</td><td class="txt-en">The Tenant shall take reasonable care of the allocated bed space, bed frame, mattress, furniture, fixtures, fittings, and any other items provided for the Tenant’s use.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">7.1.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بالمحافظة على السرير والمرتبة والأثاث والتجهيزات والملحقات الموضوعة تحت تصرفه، وباستخدامها بعناية معقولة.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">7.2.</td><td class="txt-en">The Tenant shall not remove, alter, damage, or replace any item provided by the Landlord without prior written authorization.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">7.2.</td><td class="txt-ar" dir="rtl">لا يجوز للطرف الثاني إزالة أي من الممتلكات التي وفرها الطرف الأول أو تغييرها أو إتلافها أو استبدالها دون الحصول على موافقة خطية مسبقة.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">7.3.</td><td class="txt-en">The Tenant shall be liable for the reasonable cost of repairing or replacing property where loss or damage is proven to have resulted from the Tenant’s misuse, negligence, or unauthorized acts.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">7.3.</td><td class="txt-ar" dir="rtl">يتحمل الطرف الثاني التكلفة المعقولة للإصلاح أو الاستبدال إذا ثبت أن الفقد أو التلف ناتج عن سوء استخدامه أو إهماله أو قيامه بأفعال غير مصرح بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">7.4.</td><td class="txt-en">The Tenant shall not be held responsible for damage caused by other occupants unless the Tenant’s responsibility for such damage is established.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">7.4.</td><td class="txt-ar" dir="rtl">لا يتحمل الطرف الثاني مسؤولية الأضرار التي يتسبب فيها شاغلون آخرون، ما لم تثبت مسؤوليته عنها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">7.5.</td><td class="txt-en">The Tenant shall not be liable for ordinary wear and tear arising from normal and proper use.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">7.5.</td><td class="txt-ar" dir="rtl">لا يُسأل الطرف الثاني عن الاستهلاك أو التلف الطبيعي الناتج عن الاستعمال المعتاد والسليم.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">8. ACKNOWLEDGMENT OF RECEIPT AND CONDITION OF THE BED</td>
+            <td class="section-ar" dir="rtl">البند الثامن: الإقرار باستلام السرير بحالة جيدة</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">8.1.</td><td class="txt-en">The Tenant hereby acknowledges that they have inspected and received the allocated bed space, including the bed frame, mattress, and any related furniture, fittings, or accessories listed in the handover record, in good condition and fit for their intended use.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">8.1.</td><td class="txt-ar" dir="rtl">يُقر الطرف الثاني بأنه عاين السرير المخصص له، بما في ذلك هيكل السرير والمرتبة وأي أثاث أو تجهيزات أو ملحقات مرتبطة به ومثبتة في محضر الاستلام، وأنه تسلمه بحالة جيدة وصالحة للاستعمال المخصص له.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">8.2.</td><td class="txt-en">The Tenant confirms that no visible defects or damage were observed at the time of handover, except for any defects or damage specifically recorded in writing in the handover record attached to or forming part of this Agreement.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">8.2.</td><td class="txt-ar" dir="rtl">يُقر الطرف الثاني بعدم وجود عيوب أو أضرار ظاهرة عند الاستلام، باستثناء ما يتم إثباته صراحةً في محضر الاستلام المرفق بهذا العقد أو الملحق به.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">8.3.</td><td class="txt-en">The Tenant undertakes to maintain the bed space and all items provided in good condition and to use them solely for their intended purpose.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">8.3.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بالمحافظة على السرير وجميع المستلزمات المسلّمة إليه، واستخدامها للغرض المخصص لها فقط.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">8.4.</td><td class="txt-en">Upon expiry or termination of this Agreement, the Tenant shall return the allocated bed space and all items provided in substantially the same condition as received, subject to fair wear and tear arising from normal use.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">8.4.</td><td class="txt-ar" dir="rtl">عند انتهاء العقد أو إنهائه، يلتزم الطرف الثاني بإعادة السرير والمستلزمات المسلّمة إليه بالحالة التي تسلّمها عليها، مع مراعاة الاستهلاك والتلف الطبيعي الناتجين عن الاستعمال المعتاد.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">8.5.</td><td class="txt-en">The Tenant shall be liable for any loss or damage proven to have resulted from misuse, negligence, or unauthorized acts, in accordance with this Agreement and applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">8.5.</td><td class="txt-ar" dir="rtl">يتحمل الطرف الثاني المسؤولية عن أي فقد أو تلف يثبت أنه ناتج عن سوء الاستخدام أو الإهمال أو الأفعال غير المصرح بها، وفقًا لأحكام هذا العقد والقوانين المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">9. COMPLIANCE WITH ACCOMMODATION RULES</td>
+            <td class="section-ar" dir="rtl">البند التاسع: الالتزام بقواعد وأنظمة السكن</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">9.1.</td><td class="txt-en">The Tenant shall comply with all applicable laws, safety requirements, occupancy limits, security procedures, and reasonable rules issued by the Landlord or Camp Management from time to time.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">9.1.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بجميع القوانين ومتطلبات السلامة وحدود الإشغال وإجراءات الأمن والقواعد المشروعة التي يضعها الطرف الأول أو إدارة السكن من وقت لآخر.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">9.2.</td><td class="txt-en">Any rules introduced or amended during the term of this Agreement shall be communicated to the Tenant and shall be consistent with applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">9.2.</td><td class="txt-ar" dir="rtl">يجب إبلاغ الطرف الثاني بأي قواعد جديدة أو تعديلات تطرأ على قواعد السكن خلال مدة العقد، على أن تكون متوافقة مع التشريعات المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">9.3.</td><td class="txt-en">Any breach of the accommodation rules may be addressed in accordance with this Agreement and applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">9.3.</td><td class="txt-ar" dir="rtl">يجوز التعامل مع أي مخالفة لقواعد السكن وفقًا لأحكام هذا العقد والقانون.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">9.4.</td><td class="txt-en">Nothing in this Agreement shall authorize the Landlord or Camp Management to undertake an unlawful eviction, seize or dispose of the Tenant’s belongings, or disconnect essential services in violation of applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">9.4.</td><td class="txt-ar" dir="rtl">لا يجوز تفسير أي حكم من أحكام هذا العقد على أنه يمنح الطرف الأول أو إدارة السكن الحق في إخلاء الطرف الثاني بالمخالفة للقانون، أو الاستيلاء على متعلقاته أو التصرف فيها، أو قطع الخدمات الأساسية عنه على نحو مخالف للتشريعات المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">10. TERMINATION AND NOTICE</td>
+            <td class="section-ar" dir="rtl">البند العاشر: إنهاء العقد والإخطار المسبق</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">10.1.</td><td class="txt-en">Either Party may terminate this Agreement by giving the other Party thirty (30) days’ prior written notice, subject to applicable law and any mandatory legal requirements.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">10.1.</td><td class="txt-ar" dir="rtl">يجوز لأي من الطرفين إنهاء هذا العقد بموجب إخطار كتابي مسبق يوجه إلى الطرف الآخر قبل ثلاثين (30) يومًا، مع مراعاة أحكام هذا العقد وأي متطلبات قانونية إلزامية.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">10.2.</td><td class="txt-en">The notice shall be delivered by hand against acknowledgment of receipt, by email to the address designated by the receiving Party, or by another written method agreed upon by the Parties that provides reasonable evidence of delivery.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">10.2.</td><td class="txt-ar" dir="rtl">يُسلّم الإخطار باليد مقابل إثبات الاستلام، أو عبر البريد الإلكتروني المعتمد لدى الطرف المستلم، أو بأي وسيلة كتابية أخرى يتفق عليها الطرفان وتوفر دليلًا معقولًا على التسليم.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">10.3.</td><td class="txt-en">Upon expiry or lawful termination of this Agreement, the Tenant shall vacate the allocated bed space, remove all personal belongings, return any keys or access cards provided, and settle all outstanding amounts properly due.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">10.3.</td><td class="txt-ar" dir="rtl">عند انتهاء مدة العقد أو إنهائه بصورة قانونية، يلتزم الطرف الثاني بإخلاء السرير وإزالة جميع متعلقاته الشخصية وإعادة المفاتيح أو بطاقات الدخول المسلّمة إليه، وسداد جميع المبالغ المستحقة عليه قانونًا.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">10.4.</td><td class="txt-en">The Tenant shall leave the allocated bed space and the items provided in a clean and proper condition, subject to fair wear and tear.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">10.4.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الثاني بتسليم السرير والمستلزمات المسلّمة إليه بحالة نظيفة وسليمة، مع مراعاة الاستهلاك الطبيعي الناتج عن الاستعمال المعتاد.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">10.5.</td><td class="txt-en">Termination shall not release either Party from obligations or liabilities that accrued before the effective termination date.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">10.5.</td><td class="txt-ar" dir="rtl">لا يترتب على انتهاء العقد أو إنهائه إعفاء أي من الطرفين من الالتزامات أو المسؤوليات التي نشأت قبل تاريخ الإنهاء الفعلي.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">10.6.</td><td class="txt-en">Where a breach gives rise to a right of termination or other remedy, the affected Party may exercise such rights in accordance with this Agreement and applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">10.6.</td><td class="txt-ar" dir="rtl">في حال وقوع إخلال يجيز الإنهاء أو يترتب عليه أي إجراء قانوني آخر، يجوز للطرف المتضرر اتخاذ الإجراءات المقررة بموجب هذا العقد والقانون.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">11. RENEWAL OF THE AGREEMENT</td>
+            <td class="section-ar" dir="rtl">البند الحادي عشر: تجديد العقد</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">11.1.</td><td class="txt-en">Either Party wishing to renew this Agreement shall notify the other Party in writing at least three (3) months before the expiry date, where the Agreement’s duration and applicable law permit such a notice period.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">11.1.</td><td class="txt-ar" dir="rtl">يلتزم الطرف الراغب في تجديد هذا العقد بإخطار الطرف الآخر كتابةً برغبته في التجديد قبل ثلاثة (3) أشهر على الأقل من تاريخ انتهاء العقد، متى كانت مدة العقد وطبيعة العلاقة القانونية تسمحان بهذه المدة، وبما لا يتعارض مع التشريعات المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">11.2.</td><td class="txt-en">Any renewal shall be subject to written agreement between the Parties and compliance with applicable laws and regulations.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">11.2.</td><td class="txt-ar" dir="rtl">يخضع تجديد العقد لاتفاق كتابي بين الطرفين، مع الالتزام بالقوانين واللوائح المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">11.3.</td><td class="txt-en">If the Agreement is entered into for a period shorter than three (3) months, the Parties shall agree in writing on an appropriate renewal notice period, subject to applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">11.3.</td><td class="txt-ar" dir="rtl">إذا كانت مدة العقد أقل من ثلاثة أشهر، يتفق الطرفان كتابةً على مدة إخطار مناسبة للتجديد، بما يتوافق مع القانون.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">12. NOTICES AND COMMUNICATIONS</td>
+            <td class="section-ar" dir="rtl">البند الثاني عشر: الإخطارات والمراسلات</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">12.1.</td><td class="txt-en">Any notice required under this Agreement shall be made in writing and delivered to the contact details stated in this Agreement or to any updated contact details subsequently notified in writing.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">12.1.</td><td class="txt-ar" dir="rtl">تُوجَّه جميع الإخطارات المطلوبة بموجب هذا العقد كتابةً إلى بيانات الاتصال الموضحة فيه، أو إلى أي بيانات بديلة يتم إبلاغ الطرف الآخر بها كتابةً.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">12.2.</td><td class="txt-en">Each Party shall promptly notify the other of any change in their contact details that may affect the delivery of notices.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">12.2.</td><td class="txt-ar" dir="rtl">يلتزم كل طرف بإخطار الطرف الآخر بأي تغيير يطرأ على بيانات الاتصال الخاصة به متى كان من شأن ذلك التأثير على تسليم الإخطارات.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">12.3.</td><td class="txt-en">The Parties shall retain copies of notices and written communications relating to rent payments, renewal, termination, and other material matters under this Agreement.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">12.3.</td><td class="txt-ar" dir="rtl">يحتفظ الطرفان بنسخ من الإخطارات والمراسلات المتعلقة بسداد الأجرة والتجديد والإنهاء وأي مسائل جوهرية أخرى تتعلق بهذا العقد.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">13. GOVERNING LAW AND DISPUTE RESOLUTION</td>
+            <td class="section-ar" dir="rtl">البند الثالث عشر: القانون الواجب التطبيق وتسوية المنازعات</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">13.1.</td><td class="txt-en">This Agreement shall be governed by the applicable laws and regulations in force in the United Arab Emirates and the Emirate of Dubai.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">13.1.</td><td class="txt-ar" dir="rtl">يخضع هذا العقد للقوانين واللوائح المعمول بها في دولة الإمارات العربية المتحدة وإمارة دبي.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">13.2.</td><td class="txt-en">Any dispute arising out of or in connection with this Agreement shall be referred to the Rental Disputes Center in Dubai, provided that the dispute and the underlying legal relationship fall within its statutory jurisdiction.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">13.2.</td><td class="txt-ar" dir="rtl">تُحال أي منازعة تنشأ عن هذا العقد أو تتعلق به إلى مركز فض المنازعات الإيجارية في إمارة دبي، شريطة أن تكون العلاقة القانونية محل العقد والمنازعة الناشئة عنها داخلتين ضمن الاختصاص القانوني للمركز.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">13.3.</td><td class="txt-en">If the Rental Disputes Center does not have jurisdiction over the dispute, the matter shall be referred to the competent court or judicial authority in accordance with applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">13.3.</td><td class="txt-ar" dir="rtl">في حال عدم اختصاص مركز فض المنازعات الإيجارية بنظر المنازعة، تُحال إلى المحكمة أو الجهة القضائية المختصة وفقًا للتشريعات المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="section-row">
+            <td class="section-en">14. GENERAL PROVISIONS</td>
+            <td class="section-ar" dir="rtl">البند الرابع عشر: أحكام عامة</td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">14.1.</td><td class="txt-en">This Agreement constitutes the written agreement between the Parties concerning the allocated bed space and supersedes any prior arrangements concerning the same subject matter, to the extent permitted by law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">14.1.</td><td class="txt-ar" dir="rtl">يشكل هذا العقد الاتفاق المكتوب بين الطرفين بشأن السرير المخصص، ويلغي أي ترتيبات سابقة تتعلق بذات الموضوع في حدود ما يسمح به القانون.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">14.2.</td><td class="txt-en">Any amendment or additional condition shall be valid only if recorded in writing and agreed upon by both Parties, subject to applicable law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">14.2.</td><td class="txt-ar" dir="rtl">لا يُعتد بأي تعديل أو شرط إضافي على هذا العقد إلا إذا تم إثباته كتابةً ووافق عليه الطرفان، مع مراعاة التشريعات المعمول بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">14.3.</td><td class="txt-en">If any provision of this Agreement is held invalid or unenforceable, the remaining provisions shall continue in effect to the extent permitted by law.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">14.3.</td><td class="txt-ar" dir="rtl">إذا تقرر بطلان أو عدم قابلية تنفيذ أي حكم من أحكام هذا العقد، تظل بقية الأحكام سارية بالقدر الذي يسمح به القانون.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">14.4.</td><td class="txt-en">The Tenant confirms that they have read and understood the terms and conditions of this Agreement and agree to comply with them.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">14.4.</td><td class="txt-ar" dir="rtl">يُقر الطرف الثاني بأنه قرأ أحكام هذا العقد وشروطه وفهم مضمونها ووافق على الالتزام بها.</td></tr></table></td>
+        </tr>
+        <tr class="clause-row">
+            <td class="clause-col-en"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-en">14.5.</td><td class="txt-en">This Agreement shall be executed in two counterparts, with each Party retaining one signed copy.</td></tr></table></td>
+            <td class="clause-col-ar" dir="rtl"><table class="clause-inner" cellpadding="0" cellspacing="0" border="0"><tr><td class="num-ar">14.5.</td><td class="txt-ar" dir="rtl">حُرر هذا العقد من نسختين أصليتين، تسلّم كل طرف نسخة للعمل بموجبها.</td></tr></table></td>
+        </tr>
+</table>
+
+<div class="handover-section">
+    <div class="remarks-title">Bed Space Handover Record</div>
+    <table class="form-lines" cellpadding="0" cellspacing="0" border="0">
+        <tr><td class="form-label" width="32%">Accommodation / Room No.:</td><td class="form-line" width="68%">&nbsp;</td></tr>
+        <tr><td class="form-label">Allocated Bed No.:</td><td class="form-line">&nbsp;</td></tr>
+        <tr><td class="form-label">Date of Handover:</td><td class="form-date">___ / ___ / ______</td></tr>
+        <tr><td class="form-label">Condition of Bed Frame:</td><td class="form-line">&nbsp;</td></tr>
+        <tr><td class="form-label">Condition of Mattress:</td><td class="form-line">&nbsp;</td></tr>
+        <tr><td class="form-label" colspan="2">Furniture / Accessories Provided:</td></tr>
+        <tr><td class="form-line" colspan="2">&nbsp;</td></tr>
+    </table>
+</div>
+
+<div class="remarks-section">
+    <div class="remarks-title">Remarks:</div>
+    <div class="remarks-text">I confirm that I have inspected and received the allocated bed space and the items listed above in the condition recorded in this handover record.</div>
+
+    <table class="form-lines" cellpadding="0" cellspacing="0" border="0">
+        <tr><td class="form-label" width="32%">Email:</td><td class="form-line" width="68%">&nbsp;</td></tr>
+        <tr><td class="form-label">Phone:</td><td class="form-line">&nbsp;</td></tr>
+        <tr><td class="form-label">Emirates ID:</td><td class="form-line">&nbsp;</td></tr>
+    </table>
+</div>
+
+<div class="signature-section">
+    <table class="signature-table" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+            <td class="signature-label" width="46%">Landlord / Camp Management Representative:</td>
+            <td width="8%">&nbsp;</td>
+            <td class="signature-label" width="46%">Tenant’s Signature:</td>
+        </tr>
+        <tr>
+            <td class="signature-line">&nbsp;</td>
+            <td>&nbsp;</td>
+            <td class="signature-line">&nbsp;</td>
+        </tr>
+    </table>
+</div>
+
+</body>
+</html>
