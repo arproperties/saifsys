@@ -52,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (trim((string)$name) === '' && trim((string)$qty) === '' && trim((string)$price) === '') {
                     continue; // an empty row left in the form
                 }
-                $lines[] = ['name' => $name, 'qty' => $qty, 'price' => $price, 'unit' => $_POST['line_unit'][$i] ?? ''];
+                $lines[] = ['name' => $name, 'qty' => $qty, 'price' => $price, 'unit' => $_POST['line_unit'][$i] ?? '', 'note' => $_POST['line_note'][$i] ?? ''];
             }
             $r = pur_save($conn, $who, $id, [
                 'kind' => $_POST['kind'] ?? '',
@@ -190,14 +190,15 @@ require __DIR__ . '/includes/ops_layout_header.php';
     </div>
 
     <table class="table table-sm align-middle mt-3 mb-2" id="pur-lines">
-      <thead><tr><th>Item</th><th style="width:110px">Qty</th><th style="width:100px">Unit</th><th style="width:140px">Price for one</th><th style="width:40px"></th></tr></thead>
+      <thead><tr><th>Item</th><th style="width:110px">Qty</th><th style="width:100px">Unit</th><th style="width:140px">Price for one</th><th style="width:200px">Note</th><th style="width:40px"></th></tr></thead>
       <tbody>
-        <?php foreach (array_merge($p['lines'], [['name' => '', 'qty' => '', 'unit' => '', 'price' => '']]) as $l): ?>
+        <?php foreach (array_merge($p['lines'], [['name' => '', 'qty' => '', 'unit' => '', 'price' => '', 'note' => '']]) as $l): ?>
         <tr>
           <td><input name="line_name[]" maxlength="<?= PUR_LINE_MAX ?>" value="<?= h($l['name']) ?>" class="form-control form-control-sm"></td>
           <td><input name="line_qty[]" inputmode="decimal" value="<?= $l['qty'] === '' ? '' : h(pur_qty($l['qty'])) ?>" class="form-control form-control-sm text-end"></td>
           <td><input name="line_unit[]" maxlength="<?= PUR_UNIT_MAX ?>" value="<?= h($l['unit'] ?? '') ?>" class="form-control form-control-sm"></td>
           <td><input name="line_price[]" inputmode="decimal" value="<?= $l['price'] === '' ? '' : h(number_format((float)$l['price'], 2, '.', '')) ?>" class="form-control form-control-sm text-end"></td>
+          <td><input name="line_note[]" maxlength="<?= PUR_NOTE_MAX ?>" value="<?= h($l['note'] ?? '') ?>" class="form-control form-control-sm"></td>
           <td><button type="button" class="btn btn-sm btn-link text-danger p-0" onclick="this.closest('tr').remove()" title="Remove"><i class="bi bi-x-lg"></i></button></td>
         </tr>
         <?php endforeach; ?>
@@ -235,7 +236,7 @@ document.getElementById('pur-add-line').addEventListener('click', function () {
           <tbody>
             <?php foreach ($p['lines'] as $l): ?>
               <tr>
-                <td><?= h($l['name']) ?></td>
+                <td><?= h($l['name']) ?><?php if ($l['note']): ?><div class="small text-muted"><?= h($l['note']) ?></div><?php endif; ?></td>
                 <td class="num text-end text-nowrap"><?= h(pur_qty($l['qty']) . ($l['unit'] ? ' ' . $l['unit'] : '')) ?></td>
                 <td class="num text-end text-nowrap"><?= h($money($l['price'])) ?></td>
                 <td class="num text-end text-nowrap fw-semibold"><?= h($money($l['amount'])) ?></td>
@@ -246,6 +247,9 @@ document.getElementById('pur-add-line').addEventListener('click', function () {
         </table>
       </div>
     </div>
+    <?php if ($p['outsource']): ?>
+      <div class="card card-round mt-3"><div class="card-body"><span class="badge bg-info-subtle text-info-emphasis">For outsource</span><?php if ($p['outsource']['note'] !== ''): ?> <?= h($p['outsource']['note']) ?><?php endif; ?></div></div>
+    <?php endif; ?>
     <?php if ($p['notes']): ?>
       <div class="card card-round mt-3"><div class="card-body"><div class="small text-muted">Note</div><?= nl2br(h($p['notes'])) ?></div></div>
     <?php endif; ?>

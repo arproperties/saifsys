@@ -32,7 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ((int)$itemId <= 0 && $qty === '') {
                     continue; // an empty row left in the form
                 }
-                $lines[] = ['item_id' => (int)$itemId, 'qty' => $qty];
+                $lines[] = ['item_id' => (int)$itemId, 'qty' => $qty, 'note' => $_POST['line_note'][$i] ?? ''];
             }
             $r = $current ? st_save($conn, $stWho, $id, [
                 'kind' => $current['kind'],
@@ -65,12 +65,13 @@ if (!$m || (!$m['active'] && !$canInactive)) {
     header('Location: ' . $list);
     exit;
 }
-$editing = isset($_GET['edit']) && $m['kind'] !== 'count' && $m['active'];
+$hasOutcome = $m['kind'] === 'broken' && array_filter(array_column($m['lines'], 'outcome'));
+$editing = isset($_GET['edit']) && $m['kind'] !== 'count' && !$hasOutcome && $m['active'];
 $pageTitle = 'Store entry #' . $id;
 $stores = st_stores($conn, false);
 $items = st_items($conn, '', false);
-$people = $m['kind'] === 'out' ? st_people($conn) : [];
-if ($m['kind'] === 'out' && $m['given_to'] && !in_array($m['given_to']['id'], array_column($people, 'id'), true)) {
+$people = $m['kind'] === 'out' && !$m['outsource'] ? st_people($conn) : [];
+if ($m['kind'] === 'out' && !$m['outsource'] && $m['given_to'] && !in_array($m['given_to']['id'], array_column($people, 'id'), true)) {
     $people[] = ['id' => (int)$m['given_to']['id'], 'name' => $m['given_to']['name'], 'code' => '']; // someone who has since left
 }
 
@@ -95,7 +96,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
   </div>
   <?php elseif (!$editing): ?>
   <div class="ms-auto d-flex gap-2">
-    <?php if ($m['kind'] !== 'count'): ?>
+    <?php if ($m['kind'] !== 'count' && !$hasOutcome): ?>
       <a href="<?= h($self) ?>&amp;edit=1" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil me-1"></i>Edit</a>
     <?php endif; ?>
     <?php if ($canInactive): ?>
@@ -150,6 +151,15 @@ require __DIR__ . '/includes/ops_layout_header.php';
           <?php foreach ($stores as $s): ?><option value="<?= (int)$s['id'] ?>" <?= ($m['to_store']['id'] ?? 0) === $s['id'] ? 'selected' : '' ?>><?= h($s['name']) ?></option><?php endforeach; ?>
         </select>
       </div>
+      <?php elseif ($m['kind'] === 'out' && $m['outsource']): ?>
+      <div class="col-md-4">
+        <label class="form-label small text-muted mb-1">Taken by</label>
+        <div class="form-control form-control-sm bg-light">Outsource</div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label small text-muted mb-1">Who / what for</label>
+        <input name="for_note" maxlength="<?= ST_NOTE_MAX ?>" value="<?= h($m['for_note'] ?? '') ?>" class="form-control form-control-sm">
+      </div>
       <?php elseif ($m['kind'] === 'out'): ?>
       <div class="col-md-4">
         <label class="form-label small text-muted mb-1">Taken by</label>
@@ -161,7 +171,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
         <label class="form-label small text-muted mb-1">For</label>
         <input name="for_note" maxlength="<?= ST_NOTE_MAX ?>" value="<?= h($m['for_note'] ?? '') ?>" class="form-control form-control-sm">
       </div>
-      <?php else: ?>
+      <?php elseif ($m['kind'] === 'in'): ?>
       <div class="col-md-4">
         <label class="form-label small text-muted mb-1">From</label>
         <input name="source" maxlength="120" value="<?= h($m['source'] ?? '') ?>" class="form-control form-control-sm">
@@ -170,14 +180,15 @@ require __DIR__ . '/includes/ops_layout_header.php';
     </div>
 
     <table class="table table-sm align-middle mt-3 mb-2" id="st-lines">
-      <thead><tr><th>Item</th><th style="width:160px">How many</th><th style="width:40px"></th></tr></thead>
+      <thead><tr><th>Item</th><th style="width:160px">How many</th><th style="width:220px">Note</th><th style="width:40px"></th></tr></thead>
       <tbody>
-        <?php foreach (array_merge($m['lines'], [['item_id' => 0, 'qty' => '']]) as $l): ?>
+        <?php foreach (array_merge($m['lines'], [['item_id' => 0, 'qty' => '', 'note' => '']]) as $l): ?>
         <tr>
           <td><select name="line_item[]" class="form-select form-select-sm"><option value="">—</option>
             <?php foreach ($items as $it): ?><option value="<?= (int)$it['id'] ?>" <?= $l['item_id'] === $it['id'] ? 'selected' : '' ?>><?= h($it['name'] . ($it['unit'] ? ' (' . $it['unit'] . ')' : '')) ?></option><?php endforeach; ?>
           </select></td>
           <td><input name="line_qty[]" inputmode="decimal" value="<?= $l['qty'] === '' ? '' : h(st_qty($l['qty'])) ?>" class="form-control form-control-sm text-end"></td>
+          <td><input name="line_note[]" maxlength="<?= ST_NOTE_MAX ?>" value="<?= h($l['note'] ?? '') ?>" class="form-control form-control-sm"></td>
           <td><button type="button" class="btn btn-sm btn-link text-danger p-0" onclick="this.closest('tr').remove()" title="Remove"><i class="bi bi-x-lg"></i></button></td>
         </tr>
         <?php endforeach; ?>
@@ -200,7 +211,7 @@ document.getElementById('st-add-line').addEventListener('click', function () {
   var body = document.querySelector('#st-lines tbody');
   var row = body.lastElementChild.cloneNode(true);
   row.querySelector('select').value = '';
-  row.querySelector('input').value = '';
+  row.querySelectorAll('input').forEach(function (i) { i.value = ''; });
   body.appendChild(row);
 });
 </script>
@@ -214,7 +225,10 @@ document.getElementById('st-add-line').addEventListener('click', function () {
           <tbody>
             <?php foreach ($m['lines'] as $l): ?>
               <tr>
-                <td><?= h($l['name']) ?></td>
+                <td><?= h($l['name']) ?>
+                  <?php if ($l['note']): ?><div class="small text-muted"><?= h($l['note']) ?></div><?php endif; ?>
+                  <?php if ($m['kind'] === 'broken'): ?><div class="small"><?= $l['outcome'] ? h(ST_OUTCOMES[$l['outcome']['what']] . ' · ' . $l['outcome']['by'] . ' · ' . date('d M Y, H:i', strtotime($l['outcome']['at']))) : '<span class="text-danger">Still not working</span>' ?></div><?php endif; ?>
+                </td>
                 <td class="num text-end text-nowrap fw-semibold">
                   <?= $m['kind'] === 'count' ? h(st_qty($l['counted'])) . ' (' . ($l['qty'] > 0 ? '+' : '') . h(st_qty($l['qty'])) . ')' : h(st_qty($l['qty'])) ?>
                   <?= $l['unit'] ? h($l['unit']) : '' ?>
