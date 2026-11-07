@@ -6,7 +6,13 @@
  *   Goods out   items → who took them (for what) → Save     stock goes down
  *   Move        items → which store → Save                  down here, up there
  *   Count       items with the real number → why → Save     stock set to it
+ *   Not working items → Save                                off the usable stock;
+ *               the Not working list marks each one Repaired (back to stock)
+ *               or Thrown away
  *   Stock       search an item: how many in each store, its photo
+ *
+ * Goods out goes to a staff member or to Outsource (a free text says who /
+ * what for). Every item line has an optional note.
  *
  * He picks the store he is in once; the phone remembers it. One step per
  * screen, big buttons, like the Driver daily check. The draft is kept on the
@@ -40,9 +46,24 @@
       out: { title: 'Goods out', hint: 'Someone took things', icon: 'upload' },
       move: { title: 'Move to another store', hint: 'Send things to a different store', icon: 'truck' },
       count: { title: 'Correct a count', hint: 'The real number is different', icon: 'list' },
+      broken: { title: 'Not working', hint: 'Broken items, off the stock', icon: 'wrench' },
     },
     stock: 'Stock',
     stockHint: 'How many of each item',
+    broken: {
+      title: 'Not working',
+      hint: 'Broken items: repaired or thrown away',
+      count: function (n) { return n === 1 ? '1 item not working' : n + ' items not working'; },
+      add: 'Add not working items',
+      none: 'Nothing is marked not working in this store.',
+      repaired: 'Repaired',
+      thrown: 'Thrown away',
+      repairedSheet: { title: 'Mark as repaired?', body: 'It goes back into the store stock.', confirm: 'Yes, repaired', cancel: 'Back' },
+      thrownSheet: { title: 'Mark as thrown away?', body: 'It stays off the stock and leaves this list.', confirm: 'Yes, thrown away', cancel: 'Back' },
+      doneRepaired: 'Back in stock.',
+      doneThrown: 'Marked thrown away.',
+      still: 'Still not working',
+    },
     recent: 'My entries',
     none: 'Nothing recorded yet.',
     more: 'Show older',
@@ -58,6 +79,9 @@
       itemsOut: 'What did they take?',
       itemsMove: 'What are you moving?',
       itemsCount: 'Count the items',
+      itemsBroken: 'What is not working?',
+      lineNote: 'Note (optional)',
+      lineNoteBroken: 'What is wrong? (optional)',
       addItem: 'Add an item',
       howMany: 'How many',
       unit: 'Unit',
@@ -72,6 +96,10 @@
       camera: 'Camera',
       gallery: 'Gallery',
       who: 'Who took them?',
+      ourStaff: 'Our staff',
+      outsource: 'Outsource',
+      outsourceNote: 'Who / what for (optional)',
+      outsourcePlaceholder: 'e.g. Ali – painting villa 12',
       whoSearch: 'Search a name',
       forNote: 'For (optional)',
       forPlaceholder: 'Building, unit or job',
@@ -133,6 +161,7 @@
   Object.assign(S.ICON, {
     trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
     edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    wrench: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
   });
 
   var KEYS = { store: 'staff.store.storeId.v1', draft: 'staff.store.draft.v1' };
@@ -155,6 +184,8 @@
     pick: null,        // the item picker {q, unit}
     whoQ: '',
     stockQ: '',
+    broken: null,      // the Not working lines of this store
+    brokenError: null,
   };
 
   function signedIn() { return !!S.token('store'); }
@@ -227,6 +258,7 @@
     if (d.kind === 'in') return d.id ? ['items', 'from', 'check'] : ['items', 'from', 'check'];
     if (d.kind === 'out') return ['items', 'who', 'check'];
     if (d.kind === 'move') return ['items', 'to', 'check'];
+    if (d.kind === 'broken') return ['items', 'check'];
     return ['items', 'reason', 'check'];
   }
 
@@ -236,7 +268,7 @@
     state.pick = null;
     state.whoQ = '';
     state.error = null;
-    saveDraft({ ref: S.uid(), id: null, kind: kind, storeId: storeId(), toStoreId: null, lines: [], givenId: null, givenName: '', forNote: '', source: '', reason: '', notes: '', step: 'items' });
+    saveDraft({ ref: S.uid(), id: null, kind: kind, storeId: storeId(), toStoreId: null, lines: [], outsource: false, givenId: null, givenName: '', forNote: '', source: '', reason: '', notes: '', step: 'items' });
     S.go({ app: 'store', view: 'flow' });
   }
 
@@ -247,8 +279,9 @@
     state.error = null;
     saveDraft({
       ref: S.uid(), id: m.id, kind: m.kind, storeId: m.store.id, toStoreId: m.to_store ? m.to_store.id : null,
-      lines: m.lines.map(function (l) { return { item_id: l.item_id, qty: qtyText(l.qty) }; }),
-      givenId: m.given_to ? m.given_to.id : null, givenName: m.given_to ? m.given_to.name : '',
+      lines: m.lines.map(function (l) { return { item_id: l.item_id, qty: qtyText(l.qty), note: l.note || '' }; }),
+      outsource: !!m.outsource,
+      givenId: m.given_to && !m.outsource ? m.given_to.id : null, givenName: m.given_to && !m.outsource ? m.given_to.name : '',
       forNote: m.for_note || '', source: m.source || '', reason: m.reason || '', notes: m.notes || '', step: 'items',
     });
     S.go({ app: 'store', view: 'flow' });
@@ -274,17 +307,20 @@
         } else {
           if (!(q > 0)) return T.need.qty(name);
           // Changing a saved entry: what it already took is back on the shelf for this check.
-          if ((d.kind === 'out' || d.kind === 'move') && !d.id && it && q > stockOf(it, d.storeId)) {
+          if (takesOut(d.kind) && !d.id && it && q > stockOf(it, d.storeId)) {
             return T.need.notEnough(name, unitText(it, stockOf(it, d.storeId)));
           }
         }
       }
     }
-    if (step === 'who' && !d.givenId) return T.need.who;
+    if (step === 'who' && !d.outsource && !d.givenId) return T.need.who;
     if (step === 'to' && !d.toStoreId) return T.need.toStore;
     if (step === 'reason' && !d.reason) return T.need.reason;
     return null;
   }
+
+  /** Kinds that take items out of this store: only what it has. */
+  function takesOut(kind) { return kind === 'out' || kind === 'move' || kind === 'broken'; }
 
   function moveStep(by) {
     var d = draft();
@@ -363,6 +399,43 @@
     });
   }
 
+  var loadingBroken = false;
+  function loadBroken() {
+    if (loadingBroken || !storeId()) return;
+    loadingBroken = true;
+    api('/broken?store=' + storeId()).then(function (r) {
+      state.broken = { storeId: storeId(), lines: r.lines };
+      state.brokenError = null;
+    }, function (e) {
+      state.brokenError = e.message || T.genericBody;
+    }).then(function () { loadingBroken = false; S.render(); });
+  }
+
+  function brokenHere() {
+    return state.broken && state.broken.storeId === storeId() ? state.broken.lines : null;
+  }
+
+  function setOutcome(lineId, outcome) {
+    var sheet = outcome === 'repaired' ? T.broken.repairedSheet : T.broken.thrownSheet;
+    S.sheet({
+      title: sheet.title,
+      body: sheet.body,
+      confirm: sheet.confirm,
+      cancel: sheet.cancel,
+      danger: outcome === 'thrown',
+      onConfirm: function () {
+        api('/broken/' + lineId, { method: 'POST', json: { outcome: outcome } }).then(function (r) {
+          delete state.detail[r.move_id];
+          S.toast(outcome === 'repaired' ? T.broken.doneRepaired : T.broken.doneThrown);
+          if (state.broken) state.broken.lines = state.broken.lines.filter(function (l) { return l.line_id !== lineId; });
+          loadStart();
+          loadBroken();
+          loadList();
+        }, function (e) { S.toast(e.message || T.genericBody); loadBroken(); });
+      },
+    });
+  }
+
   function addNewItem(name, unit) {
     state.busy = true;
     S.render();
@@ -403,7 +476,8 @@
       kind: d.kind,
       store_id: d.storeId,
       to_store_id: d.toStoreId || undefined,
-      given_to_employee_id: d.givenId || undefined,
+      outsource: d.kind === 'out' ? !!d.outsource : undefined,
+      given_to_employee_id: d.kind === 'out' && !d.outsource ? d.givenId || undefined : undefined,
       for_note: d.forNote,
       source: d.source,
       reason: d.reason || undefined,
@@ -411,7 +485,7 @@
       client_ref: d.ref,
       lines: d.lines.map(function (l) {
         var it = item(l.item_id);
-        var line = { item_id: l.item_id, qty: num(l.qty) };
+        var line = { item_id: l.item_id, qty: num(l.qty), note: l.note || '' };
         if (it && !it.unit) line.unit = String(lineUnit(it, l)).trim() || DEFAULT_UNIT;
         return line;
       }),
@@ -437,6 +511,7 @@
       S.toast(T.entry.saved);
       loadStart();
       loadList();
+      if (m.kind === 'broken') loadBroken();
       S.go({ app: 'store', view: 'entry', id: m.id }, true);
     }, function (e) {
       state.busy = false;
@@ -479,6 +554,7 @@
 
   function entryLine(m) {
     if (m.kind === 'out') return (m.given_to ? m.given_to.name : '') + (m.for_note ? ' · ' + m.for_note : '');
+    if (m.kind === 'broken') return m.store.name;
     if (m.kind === 'move') return m.store.name + ' → ' + (m.to_store ? m.to_store.name : '');
     if (m.kind === 'count') return T.step.reasons[m.reason] || '';
     return m.source || m.store.name;
@@ -529,6 +605,14 @@
         '<span class="grow"><span class="h2" style="display:block">' + esc(T.stock) + '</span><span class="secondary" style="display:block">' + esc(T.stockHint) + '</span></span>' +
         icon('chevron') + '</button>';
 
+      var broken = brokenHere();
+      if (here && broken === null && !state.brokenError) loadBroken();
+      body += '<button type="button" class="app-tile" data-action="store:broken">' +
+        '<span class="app-icon st-broken">' + icon('wrench', 'xl') + '</span>' +
+        '<span class="grow"><span class="h2" style="display:block">' + esc(T.broken.title) + '</span><span class="secondary" style="display:block">' +
+        esc(broken && broken.length ? T.broken.count(broken.length) : T.broken.hint) + '</span></span>' +
+        icon('chevron') + '</button>';
+
       if (state.list === null) loadList();
       else {
         body += '<h2 class="h3 section-title mt-5">' + esc(T.recent) + '</h2>';
@@ -559,7 +643,7 @@
     var shown = all.filter(function (it) {
       if (ql && it.name.toLowerCase().indexOf(ql) === -1) return false;
       // Going out or moving: only what this store has.
-      if ((d.kind === 'out' || d.kind === 'move') && !d.id && stockOf(it, d.storeId) <= 0) return false;
+      if (takesOut(d.kind) && !d.id && stockOf(it, d.storeId) <= 0) return false;
       return true;
     }).slice(0, 40);
     var exact = all.some(function (it) { return it.name.toLowerCase() === ql; });
@@ -597,7 +681,7 @@
     var footer = button(T.step.next, 'store:step-next', { icon: 'chevron' });
 
     if (d.step === 'items') {
-      var title = d.kind === 'in' ? T.step.itemsIn : d.kind === 'out' ? T.step.itemsOut : d.kind === 'move' ? T.step.itemsMove : T.step.itemsCount;
+      var title = { in: T.step.itemsIn, out: T.step.itemsOut, move: T.step.itemsMove, count: T.step.itemsCount, broken: T.step.itemsBroken }[d.kind];
       body = '<div class="label muted mt-2">' + esc(k.title + ' · ' + storeName(d.storeId)) + '</div>' +
         '<h1 class="h2">' + esc(title) + '</h1>' +
         d.lines.map(function (l, i) {
@@ -612,7 +696,9 @@
             '<label style="width:40%"><span class="small muted">' + esc(T.step.unit) + '</span>' +
             '<input class="field" data-unit-item="' + l.item_id + '" data-i="' + i + '" type="text" list="st-units" autocomplete="off" maxlength="20" placeholder="' + esc(DEFAULT_UNIT) + '" value="' + esc(unit) + '"' +
             (it.unit ? ' disabled title="' + esc(T.step.unitFixed) + '"' : '') + '></label></div>' +
-            '<div class="small secondary mt-2">' + esc(d.kind === 'count' ? T.step.system(unitText(shown, have)) : T.step.here(unitText(shown, have))) + '</div></div>';
+            '<div class="small secondary mt-2">' + esc(d.kind === 'count' ? T.step.system(unitText(shown, have)) : T.step.here(unitText(shown, have))) + '</div>' +
+            '<input class="field mt-2 pur-note" data-note-item="' + l.item_id + '" data-i="' + i + '" type="text" maxlength="160" autocomplete="off" placeholder="' +
+            esc(d.kind === 'broken' ? T.step.lineNoteBroken : T.step.lineNote) + '" value="' + esc(l.note || '') + '"></div>';
         }).join('') + unitsList() +
         '<div class="mt-3">' + button(T.step.addItem, 'store:pick-open', { variant: 'secondary', icon: 'plus' }) + '</div>';
     } else if (d.step === 'from') {
@@ -629,17 +715,25 @@
         return !wq || p.name.toLowerCase().indexOf(wq) !== -1 || (p.code && p.code.toLowerCase().indexOf(wq) !== -1);
       }).slice(0, 30);
       body = '<h1 class="h2 mt-2">' + esc(T.step.who) + '</h1>' +
-        (d.givenId ? '<div class="card row st-chosen"><span class="pur-icon">' + icon('user', 'lg') + '</span><span class="grow h3">' + esc(d.givenName) + '</span><span class="check">' + icon('check') + '</span></div>' : '') +
-        '<label class="mt-3" style="display:block"><span class="small muted">' + esc(T.step.forNote) + '</span>' +
-        '<input class="field mt-1" id="st-for" type="text" maxlength="160" autocomplete="off" placeholder="' + esc(T.step.forPlaceholder) + '" value="' + esc(d.forNote) + '"></label>' +
-        '<input class="field mt-4" id="st-who-q" type="search" autocomplete="off" placeholder="' + esc(T.step.whoSearch) + '" value="' + esc(state.whoQ) + '">' +
-        people.map(function (p) {
-          var on = d.givenId === p.id;
-          return '<button type="button" class="card vehicle' + (on ? ' selected' : '') + '" data-key="p' + p.id + '" data-action="store:pick-person" data-id="' + p.id + '">' +
-            '<span class="veh-icon">' + icon('user') + '</span><span class="grow"><span class="h3" style="display:block">' + esc(p.name) + '</span>' +
-            (p.code ? '<span class="small muted">' + esc(p.code) + '</span>' : '') + '</span>' +
-            (on ? '<span class="check">' + icon('check') + '</span>' : '') + '</button>';
-        }).join('');
+        '<div class="action-row mt-3">' +
+        button(T.step.ourStaff, 'store:who-kind', { variant: d.outsource ? 'secondary' : '', style: 'flex:1', icon: 'user', data: 'data-outsource="0"' }) +
+        button(T.step.outsource, 'store:who-kind', { variant: d.outsource ? '' : 'secondary', style: 'flex:1', icon: 'truck', data: 'data-outsource="1"' }) + '</div>';
+      if (d.outsource) {
+        body += '<label class="mt-4" style="display:block"><span class="small muted">' + esc(T.step.outsourceNote) + '</span>' +
+          '<input class="field mt-1" id="st-for" type="text" maxlength="160" autocomplete="off" placeholder="' + esc(T.step.outsourcePlaceholder) + '" value="' + esc(d.forNote) + '"></label>';
+      } else {
+        body += (d.givenId ? '<div class="card row st-chosen mt-3"><span class="pur-icon">' + icon('user', 'lg') + '</span><span class="grow h3">' + esc(d.givenName) + '</span><span class="check">' + icon('check') + '</span></div>' : '') +
+          '<label class="mt-3" style="display:block"><span class="small muted">' + esc(T.step.forNote) + '</span>' +
+          '<input class="field mt-1" id="st-for" type="text" maxlength="160" autocomplete="off" placeholder="' + esc(T.step.forPlaceholder) + '" value="' + esc(d.forNote) + '"></label>' +
+          '<input class="field mt-4" id="st-who-q" type="search" autocomplete="off" placeholder="' + esc(T.step.whoSearch) + '" value="' + esc(state.whoQ) + '">' +
+          people.map(function (p) {
+            var on = d.givenId === p.id;
+            return '<button type="button" class="card vehicle' + (on ? ' selected' : '') + '" data-key="p' + p.id + '" data-action="store:pick-person" data-id="' + p.id + '">' +
+              '<span class="veh-icon">' + icon('user') + '</span><span class="grow"><span class="h3" style="display:block">' + esc(p.name) + '</span>' +
+              (p.code ? '<span class="small muted">' + esc(p.code) + '</span>' : '') + '</span>' +
+              (on ? '<span class="check">' + icon('check') + '</span>' : '') + '</button>';
+          }).join('');
+      }
     } else if (d.step === 'to') {
       body = '<div class="qcard"><div class="qicon">' + icon('truck', 'huge') + '</div><div class="qtext">' + esc(T.step.toStore) + '</div></div>' +
         stores().filter(function (s) { return s.id !== d.storeId; }).map(function (s) {
@@ -657,12 +751,14 @@
       body = '<h1 class="h2 mt-2">' + esc(T.step.checkTitle) + '</h1>' +
         '<div class="trip-card mt-3"><div class="label gold">' + esc(k.title) + '</div>' +
         '<div class="h2 mt-1">' + esc(storeName(d.storeId) + (d.kind === 'move' ? ' → ' + storeName(d.toStoreId) : '')) + '</div>' +
-        (d.kind === 'out' ? '<div class="on-navy-muted mt-1">' + esc(d.givenName + (d.forNote ? ' · ' + d.forNote : '')) + '</div>' : '') +
+        (d.kind === 'out' ? '<div class="on-navy-muted mt-1">' + esc((d.outsource ? T.step.outsource : d.givenName) + (d.forNote ? ' · ' + d.forNote : '')) + '</div>' : '') +
         (d.kind === 'in' && d.source ? '<div class="on-navy-muted mt-1">' + esc(d.source) + '</div>' : '') +
         (d.kind === 'count' ? '<div class="on-navy-muted mt-1">' + esc(T.step.reasons[d.reason] || '') + '</div>' : '') + '</div>' +
         '<div class="card">' + d.lines.map(function (l) {
           var it = item(l.item_id) || { name: '?', unit: null };
-          return '<div class="kv pur-kv"><span>' + esc(it.name) + '</span><span>' + esc((d.kind === 'count' ? '= ' : '') + unitText(it, num(l.qty))) + '</span></div>';
+          return '<div class="kv pur-kv"><span>' + esc(it.name) +
+            (String(l.note || '').trim() ? '<span class="small muted" style="display:block">' + esc(l.note) + '</span>' : '') + '</span>' +
+            '<span>' + esc((d.kind === 'count' ? '= ' : '') + unitText(it, num(l.qty))) + '</span></div>';
         }).join('') + '</div>' +
         '<textarea class="field mt-3" id="st-notes" rows="2" maxlength="500" placeholder="' + esc(T.step.notes) + '">' + esc(d.notes) + '</textarea>';
       footer = button(state.busy ? T.step.saving : d.id ? T.step.saveChanges : T.step.save, 'store:save', { loading: state.busy });
@@ -691,6 +787,35 @@
           (low ? '<span class="pill" style="background:#FEE2E2;color:#991B1B">' + esc(T.item.low) + '</span>' : '') +
           '<span class="st-qty' + (have <= 0 ? ' muted' : '') + '">' + esc(unitText(it, have)) + '</span></button>';
       }).join('');
+    return '<main class="screen">' + S.backBar('store:back', T.step.back) + '<div class="screen-body">' + body + '</div></main>';
+  }
+
+  function renderBroken() {
+    var here = storeId();
+    var lines = brokenHere();
+    if (lines === null && !state.brokenError) loadBroken();
+    var body = '<h1 class="h2 mt-2">' + esc(T.broken.title) + '</h1>' +
+      '<div class="small muted">' + esc(storeName(here)) + '</div>' +
+      '<div class="mt-3">' + button(T.broken.add, 'store:new', { icon: 'plus', data: 'data-kind="broken"' }) + '</div>';
+    if (state.brokenError) {
+      body += '<div class="card mt-3"><div class="body-lg">' + esc(state.brokenError) + '</div><div class="mt-3">' +
+        button(T.retry, 'store:broken-reload', { variant: 'secondary' }) + '</div></div>';
+    } else if (lines === null) {
+      body += '<div class="skel mt-3" style="height:120px"></div>';
+    } else if (!lines.length) {
+      body += '<div class="card mt-3"><div class="body-lg secondary">' + esc(T.broken.none) + '</div></div>';
+    } else {
+      body += lines.map(function (l) {
+        return '<div class="card mt-3" data-key="b' + l.line_id + '"><div class="row"><span class="grow h3">' + esc(l.name) + '</span>' +
+          '<span class="st-qty">' + esc(unitText(l, l.qty)) + '</span></div>' +
+          (l.note ? '<div class="body-lg mt-1">' + esc(l.note) + '</div>' : '') +
+          '<div class="small muted mt-1">' + esc(when(l.created_at) + ' · ' + l.by) + '</div>' +
+          '<div class="action-row mt-3">' +
+          button(T.broken.thrown, 'store:outcome', { variant: 'plain', style: 'flex:2', data: 'data-id="' + l.line_id + '" data-outcome="thrown"' }) +
+          button(T.broken.repaired, 'store:outcome', { variant: 'secondary', style: 'flex:3', icon: 'check', data: 'data-id="' + l.line_id + '" data-outcome="repaired"' }) +
+          '</div></div>';
+      }).join('');
+    }
     return '<main class="screen">' + S.backBar('store:back', T.step.back) + '<div class="screen-body">' + body + '</div></main>';
   }
 
@@ -728,7 +853,11 @@
       '<div class="on-navy-muted mt-1">' + esc(when(m.created_at)) + '</div></div>' +
       '<div class="card">' + m.lines.map(function (l) {
         var q = m.kind === 'count' ? '= ' + qtyText(l.counted) + ' (' + (l.qty > 0 ? '+' : '') + qtyText(l.qty) + ')' : qtyText(l.qty);
-        return '<div class="kv pur-kv"><span>' + esc(l.name) + '</span><span>' + esc(q + (l.unit ? ' ' + l.unit : '')) + '</span></div>';
+        var status = m.kind === 'broken' ? (l.outcome ? T.broken[l.outcome.what] + ' · ' + l.outcome.by : T.broken.still) : '';
+        return '<div class="kv pur-kv"><span>' + esc(l.name) +
+          (l.note ? '<span class="small muted" style="display:block">' + esc(l.note) + '</span>' : '') +
+          (status ? '<span class="small" style="display:block;color:' + (l.outcome ? 'var(--success)' : 'var(--danger)') + '">' + esc(status) + '</span>' : '') +
+          '</span><span>' + esc(q + (l.unit ? ' ' + l.unit : '')) + '</span></div>';
       }).join('') + '</div>' +
       '<div class="card">' + kv(T.entry.who, m.given_to && m.given_to.name) + kv(T.entry.for, m.for_note) + kv(T.entry.from, m.source) +
       kv(T.entry.reason, m.reason && T.step.reasons[m.reason]) + kv(T.entry.notes, m.notes) + kv(T.entry.store, m.store.name) + '</div>' +
@@ -737,7 +866,8 @@
     if (!m.can_change) body += '<div class="card info mt-4"><div class="small">' + esc(T.entry.locked) + '</div></div>';
     else if (m.kind === 'count') body += '<div class="card info mt-4"><div class="small">' + esc(T.entry.countLocked) + '</div></div>';
     var footer = '';
-    if (m.can_change) {
+    var closed = m.kind === 'broken' && m.lines.some(function (l) { return l.outcome; });
+    if (m.can_change && !closed) {
       footer = '<div class="action-row">' + button(T.entry.delete, 'store:delete', { variant: 'plain', style: 'flex:2', data: 'data-id="' + m.id + '"' }) +
         (m.kind !== 'count' ? button(T.entry.change, 'store:edit', { variant: 'secondary', style: 'flex:3', icon: 'edit', data: 'data-id="' + m.id + '"' }) : '') + '</div>';
     }
@@ -747,6 +877,7 @@
   function render(route) {
     if (route.view === 'flow') return renderFlow();
     if (route.view === 'stock') return renderStock();
+    if (route.view === 'broken') return renderBroken();
     if (route.view === 'item') return renderItem(route);
     if (route.view === 'entry') return renderEntry(route);
     return renderHome();
@@ -776,6 +907,17 @@
       case 'more': loadMore(); break;
       case 'stock': if (!storeId()) { chooseStore(function () { S.go({ app: 'store', view: 'stock' }); }); break; } state.stockQ = ''; S.go({ app: 'store', view: 'stock' }); break;
       case 'item': S.go({ app: 'store', view: 'item', id: id }); break;
+      case 'broken': if (!storeId()) { chooseStore(function () { S.go({ app: 'store', view: 'broken' }); }); break; } S.go({ app: 'store', view: 'broken' }); break;
+      case 'broken-reload': state.brokenError = null; state.broken = null; S.render(); break;
+      case 'outcome': setOutcome(id, el.getAttribute('data-outcome')); break;
+      case 'who-kind':
+        d = draft();
+        if (!d) break;
+        d.outsource = el.getAttribute('data-outsource') === '1';
+        saveDraft(d);
+        state.error = null;
+        S.render();
+        break;
       case 'open': state.detailError = null; S.go({ app: 'store', view: 'entry', id: id }); break;
       case 'back': S.back(); break;
       case 'step-back': moveStep(-1); break;
@@ -891,6 +1033,9 @@
     if (t.hasAttribute('data-qty-item')) {
       var l = d.lines[Number(t.getAttribute('data-i'))];
       if (l) l.qty = t.value;
+    } else if (t.hasAttribute('data-note-item')) {
+      var ln = d.lines[Number(t.getAttribute('data-i'))];
+      if (ln) ln.note = t.value;
     } else if (t.hasAttribute('data-unit-item')) {
       var lu = d.lines[Number(t.getAttribute('data-i'))];
       if (lu) lu.unit = t.value;
@@ -918,6 +1063,7 @@
       state.start = null;
       state.list = null;
       state.detail = {};
+      state.broken = null;
       return Promise.resolve();
     },
     tileStatus: function () {

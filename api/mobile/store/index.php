@@ -14,6 +14,8 @@
  *   PUT    moves/{id}                change (JSON), on the day it was made
  *   DELETE moves/{id}                on the day it was made
  *   GET    moves/{id}/photo
+ *   GET    broken?store=             items still not working (every store keeper's)
+ *   POST   broken/{line_id}          {outcome: repaired | thrown}; repaired goes back to stock
  */
 
 declare(strict_types=1);
@@ -81,6 +83,12 @@ try {
         if ($method === 'DELETE') {
             store_api_send(st_delete($conn, $keeper, $id));
         }
+    }
+    if ($route === 'broken' && $method === 'GET') {
+        customer_api_send_ok(['lines' => st_broken_open($conn, (int)($_GET['store'] ?? 0))]);
+    }
+    if ($method === 'POST' && preg_match('#^broken/(\d+)$#', $route, $m)) {
+        customer_api_send_ok(st_set_outcome($conn, $keeper, (int)$m[1], (string)(store_api_body()['outcome'] ?? '')));
     }
     if ($method === 'GET' && preg_match('#^moves/(\d+)/photo$#', $route, $m)) {
         $file = st_photo($conn, $keeper, 'move', (int)$m[1]);

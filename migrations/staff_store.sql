@@ -104,3 +104,17 @@ ALTER TABLE `st_moves`
     ADD COLUMN IF NOT EXISTS `inactive_by` INT(11) NULL COMMENT 'user.id',
     ADD COLUMN IF NOT EXISTS `inactive_by_name` VARCHAR(120) NULL,
     ADD COLUMN IF NOT EXISTS `inactive_reason` VARCHAR(255) NULL;
+
+-- Outsource, line notes and Not working (added later; adds only what is missing,
+-- changes no rows). Goods out may go to outsource instead of a staff member
+-- (given_to_name 'Outsource', for_note says who / what for). Each item line may
+-- carry a short note. "Not working" (kind broken) takes items off the usable
+-- stock; each line is later marked repaired (back to stock) or thrown away.
+ALTER TABLE `st_moves`
+    MODIFY COLUMN `kind` ENUM('in','out','move','count','broken') NOT NULL,
+    ADD COLUMN IF NOT EXISTS `is_outsource` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'out only: 1 = given to outsource / outside work';
+ALTER TABLE `st_move_lines`
+    ADD COLUMN IF NOT EXISTS `note` VARCHAR(160) NULL COMMENT 'Optional note on this item',
+    ADD COLUMN IF NOT EXISTS `outcome` ENUM('repaired','thrown') NULL COMMENT 'broken only: NULL = still not working',
+    ADD COLUMN IF NOT EXISTS `outcome_at` DATETIME NULL,
+    ADD COLUMN IF NOT EXISTS `outcome_by_name` VARCHAR(120) NULL;

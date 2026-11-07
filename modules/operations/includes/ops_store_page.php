@@ -40,7 +40,7 @@ function st_page_tabs(string $opsBase, string $current): string
 function st_kind_badge(string $kind): string
 {
     $cls = ['in' => 'bg-success-subtle text-success-emphasis', 'out' => 'bg-danger-subtle text-danger-emphasis',
-        'move' => 'bg-primary-subtle text-primary-emphasis', 'count' => 'bg-warning-subtle text-warning-emphasis'][$kind] ?? 'bg-light text-dark';
+        'move' => 'bg-primary-subtle text-primary-emphasis', 'count' => 'bg-warning-subtle text-warning-emphasis', 'broken' => 'bg-secondary-subtle text-secondary-emphasis'][$kind] ?? 'bg-light text-dark';
     return '<span class="badge ' . $cls . '">' . h(ST_KINDS[$kind] ?? $kind) . '</span>';
 }
 

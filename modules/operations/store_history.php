@@ -3,6 +3,7 @@
  * Operations → Store → History: every goods in, goods out, move and count
  * correction, newest first. Open one to change it. Owner / Admin / HR also
  * see the Inactive tab: entries made inactive, with their stock put back.
+ * Download (Excel) gives what is shown, one row per item (?download=1).
  */
 require_once __DIR__ . '/includes/ops_store_page.php';
 
@@ -21,6 +22,30 @@ $f = [
 $data = $stReady ? st_list_all($conn, $f) : ['from' => date('Y-m-d', strtotime('-30 days')), 'to' => date('Y-m-d'), 'moves' => [], 'inactive_count' => 0, 'people' => []];
 $stores = $stReady ? st_stores($conn, false) : [];
 $items = $stReady ? st_items($conn, '', false) : [];
+
+if ($stReady && ($_GET['download'] ?? '') === '1') {
+    $csv = [];
+    foreach ($data['moves'] as $m) {
+        foreach ($m['lines'] as $l) {
+            $status = $m['kind'] !== 'broken' ? '' : ($l['outcome'] ? ST_OUTCOMES[$l['outcome']['what']] . ' (' . $l['outcome']['by'] . ', ' . date('Y-m-d H:i', strtotime($l['outcome']['at'])) . ')' : 'Still not working');
+            $row = [
+                date('Y-m-d H:i', strtotime($m['created_at'])), $m['id'], ST_KINDS[$m['kind']] ?? $m['kind'], $m['store']['name'], $m['to_store']['name'] ?? '',
+                $l['name'], $m['kind'] === 'count' ? $l['counted'] : $l['qty'], $m['kind'] === 'count' ? $l['qty'] : '', $l['unit'] ?? '',
+                $m['given_to']['name'] ?? '', $m['for_note'] ?? '', $m['source'] ?? '', $m['reason'] ? (ST_REASONS[$m['reason']] ?? $m['reason']) : '',
+                $l['note'] ?? '', $status, $m['notes'] ?? '', $m['by']['name'],
+            ];
+            if ($showInactive) {
+                $row[] = $m['inactive']['reason'] ?? '';
+            }
+            $csv[] = $row;
+        }
+    }
+    ops_send_csv('store_' . $data['from'] . ($data['to'] !== $data['from'] ? '_to_' . $data['to'] : '') . ($showInactive ? '_inactive' : '') . '.csv',
+        array_merge(['When', 'Entry #', 'What', 'Store', 'To store', 'Item', 'Qty (count: the real number)', 'Count change', 'Unit',
+            'Given to', 'For / who - what for', 'From', 'Why (count)', 'Item note', 'Not working status', 'Entry note', 'Added by'],
+            $showInactive ? ['Inactive reason'] : []),
+        $csv);
+}
 
 require __DIR__ . '/includes/ops_layout_header.php';
 ?>
@@ -41,7 +66,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
   </ul>
 <?php endif; ?>
 
-<form method="get" class="card card-round mb-3">
+<form method="get" id="st-filter" class="card card-round mb-3">
   <div class="card-body row g-2 align-items-end">
     <?php if ($showInactive): ?><input type="hidden" name="tab" value="inactive"><?php endif; ?>
     <div class="col-6 col-md-2"><label class="form-label small text-muted mb-1">From</label>
@@ -68,6 +93,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
   </div>
 </form>
 
+<div class="d-flex justify-content-end mb-2">
+  <button form="st-filter" name="download" value="1" class="btn btn-sm btn-outline-success"><i class="bi bi-download me-1"></i>Download (Excel)</button>
+</div>
+
 <div class="card card-round">
   <div class="table-responsive">
     <table class="table ops-table align-middle">
@@ -89,7 +118,9 @@ require __DIR__ . '/includes/ops_layout_header.php';
               <?php foreach ($m['lines'] as $l): ?>
                 <div><?= h($l['name']) ?>:
                   <strong><?= $m['kind'] === 'count' ? '= ' . h(st_qty($l['counted'])) . ' (' . ($l['qty'] > 0 ? '+' : '') . h(st_qty($l['qty'])) . ')' : h(st_qty($l['qty'])) ?></strong>
-                  <?= $l['unit'] ? h($l['unit']) : '' ?></div>
+                  <?= $l['unit'] ? h($l['unit']) : '' ?>
+                  <?php if ($m['kind'] === 'broken'): ?><span class="<?= $l['outcome'] ? 'text-muted' : 'text-danger' ?>">· <?= h($l['outcome'] ? ST_OUTCOMES[$l['outcome']['what']] : 'Still not working') ?></span><?php endif; ?>
+                  <?php if ($l['note']): ?><div class="text-muted"><?= h($l['note']) ?></div><?php endif; ?></div>
               <?php endforeach; ?>
             </td>
             <td class="small"><?= h($details) ?><?php if ($m['photo']): ?> <i class="bi bi-image text-muted"></i><?php endif; ?></td>

@@ -17,6 +17,9 @@
  * deleting on same day") and it leaves his list. Owner / Admin / HR inactivate
  * and activate in the office (columns: migrations/staff_purchases.sql).
  *
+ * "For outsource": bought for someone outside, with a free text note (who /
+ * what for). Every item line may carry a short note and a unit, both optional.
+ *
  * "Who" is an array: ['user_id' => int, 'name' => string, 'office' => bool].
  * Every refusal is a PurError whose message is written to be shown as it is.
  */
@@ -27,6 +30,7 @@ const PUR_NAME_MAX = 80;
 const PUR_LINE_MAX = 120;
 const PUR_UNIT_MAX = 20;
 const PUR_NOTES_MAX = 500;
+const PUR_NOTE_MAX = 160;              // a line's note, the outsource note
 const PUR_LINES_MAX = 50;
 const PUR_QTY_MAX = 1000000;
 const PUR_PRICE_MAX = 10000000;
@@ -152,12 +156,12 @@ function pur_shape_many(PDO $conn, array $rows, ?string $today = null): array
     $ids = array_map(static fn(array $r): int => (int)$r['id'], $rows);
     $in = implode(',', array_fill(0, count($ids), '?'));
     $lines = $files = [];
-    $stmt = $conn->prepare("SELECT purchase_id, name, qty, unit, price, amount FROM pur_purchase_lines WHERE purchase_id IN ($in) ORDER BY position, id");
+    $stmt = $conn->prepare("SELECT purchase_id, name, qty, unit, note, price, amount FROM pur_purchase_lines WHERE purchase_id IN ($in) ORDER BY position, id");
     $stmt->execute($ids);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $l) {
         $lines[(int)$l['purchase_id']][] = [
             'name' => (string)$l['name'], 'qty' => (float)$l['qty'], 'unit' => $l['unit'] !== null ? (string)$l['unit'] : null,
-            'price' => (float)$l['price'], 'amount' => (float)$l['amount'],
+            'price' => (float)$l['price'], 'amount' => (float)$l['amount'], 'note' => $l['note'] !== null ? (string)$l['note'] : null,
         ];
     }
     $stmt = $conn->prepare("SELECT id, purchase_id, kind, file_path FROM pur_purchase_files WHERE purchase_id IN ($in) ORDER BY id");
@@ -175,6 +179,7 @@ function pur_shape_many(PDO $conn, array $rows, ?string $today = null): array
         'received_on' => $p['received_on'] !== null ? (string)$p['received_on'] : null,
         'total' => (float)$p['total'],
         'notes' => $p['notes'] !== null ? (string)$p['notes'] : null,
+        'outsource' => (int)$p['for_outsource'] === 1 ? ['note' => (string)($p['outsource_note'] ?? '')] : null,
         'by' => ['user_id' => (int)$p['user_id'], 'name' => (string)$p['person_name']],
         'lines' => $lines[(int)$p['id']] ?? [],
         'files' => $files[(int)$p['id']] ?? [],
@@ -281,7 +286,7 @@ function pur_list_all(PDO $conn, array $f, ?string $today = null): array
 // Writing
 // ---------------------------------------------------------------------------
 
-/** The lines as typed: name, quantity, price for one. Checked; the amounts worked out here. */
+/** The lines as typed: name, quantity, unit and note (optional), price for one. Checked; the amounts worked out here. */
 function pur_read_lines($raw): array
 {
     if (!is_array($raw) || $raw === []) {
@@ -306,10 +311,12 @@ function pur_read_lines($raw): array
             throw new PurError($name . ': write the price for one.');
         }
         $unit = pur_text($l['unit'] ?? '', PUR_UNIT_MAX);
+        $note = pur_text($l['note'] ?? '', PUR_NOTE_MAX);
         $out[] = [
             'name' => $name,
             'qty' => round($qty, 3),
             'unit' => $unit !== '' ? $unit : null,
+            'note' => $note !== '' ? $note : null,
             'price' => pur_money($price),
             'amount' => pur_money($qty * $price),
         ];
@@ -333,7 +340,8 @@ function pur_may_change(array $who, array $p, string $today): void
 
 /**
  * Make a purchase ($id 0), or change one. $input: kind, supplier | supplier_id,
- * lines, notes, client_ref, bought_on (office only). $files: the bill photos sent
+ * lines, notes, outsource (true / false; left out on a change = as it was),
+ * outsource_note, client_ref, bought_on (office only). $files: the bill photos sent
  * with a new one — a cash purchase from the phone needs at least one.
  * client_ref is the phone's own id for this save, so a double tap or a resend
  * makes one purchase.
@@ -392,29 +400,36 @@ function pur_save(PDO $conn, array $who, int $id, array $input, array $files = [
         }
         $supplierId = pur_supplier_for($conn, $input);
         $now = pur_now();
+        if (array_key_exists('outsource', $input) || !$p) {
+            $outsource = !empty($input['outsource']);
+            $outsourceNote = $outsource ? pur_text($input['outsource_note'] ?? '', PUR_NOTE_MAX) : '';
+        } else {
+            $outsource = (int)$p['for_outsource'] === 1;
+            $outsourceNote = (string)($p['outsource_note'] ?? '');
+        }
         if ($p) {
             // Changing cash to an order (or back) starts its status over; otherwise it stays.
             $status = $kind === $p['kind'] ? (string)$p['status'] : ($kind === 'cash' ? 'paid' : 'ordered');
-            $conn->prepare("UPDATE pur_purchases SET kind = ?, status = ?, supplier_id = ?, notes = ?, total = ?,
+            $conn->prepare("UPDATE pur_purchases SET kind = ?, status = ?, supplier_id = ?, notes = ?, for_outsource = ?, outsource_note = ?, total = ?,
                     bought_on = ?, received_on = IF(? = 'received', received_on, NULL),
                     updated_at = ?, updated_by = ?, updated_by_name = ?
                 WHERE id = ?")
-                ->execute([$kind, $status, $supplierId, $notes !== '' ? $notes : null, $total,
+                ->execute([$kind, $status, $supplierId, $notes !== '' ? $notes : null, $outsource ? 1 : 0, $outsourceNote !== '' ? $outsourceNote : null, $total,
                     $boughtOn ?? $p['bought_on'], $status, $now, (int)$who['user_id'] ?: null, (string)$who['name'], (int)$p['id']]);
             $conn->prepare('DELETE FROM pur_purchase_lines WHERE purchase_id = ?')->execute([(int)$p['id']]);
             $pid = (int)$p['id'];
         } else {
             $conn->prepare("INSERT INTO pur_purchases (user_id, person_name, kind, status, supplier_id, bought_on, created_day,
-                    total, notes, client_ref, created_at, updated_at, updated_by, updated_by_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    total, notes, for_outsource, outsource_note, client_ref, created_at, updated_at, updated_by, updated_by_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 ->execute([(int)$who['user_id'], (string)$who['name'], $kind, $kind === 'cash' ? 'paid' : 'ordered', $supplierId,
-                    $today, $today, $total, $notes !== '' ? $notes : null, $clientRef !== '' ? $clientRef : null,
+                    $today, $today, $total, $notes !== '' ? $notes : null, $outsource ? 1 : 0, $outsourceNote !== '' ? $outsourceNote : null, $clientRef !== '' ? $clientRef : null,
                     $now, $now, (int)$who['user_id'], (string)$who['name']]);
             $pid = (int)$conn->lastInsertId();
         }
-        $ins = $conn->prepare('INSERT INTO pur_purchase_lines (purchase_id, position, name, qty, unit, price, amount) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        $ins = $conn->prepare('INSERT INTO pur_purchase_lines (purchase_id, position, name, qty, unit, note, price, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         foreach ($lines as $pos => $l) {
-            $ins->execute([$pid, $pos, $l['name'], $l['qty'], $l['unit'], $l['price'], $l['amount']]);
+            $ins->execute([$pid, $pos, $l['name'], $l['qty'], $l['unit'], $l['note'], $l['price'], $l['amount']]);
         }
         pur_store_files($conn, $pid, 'bill', $photos);
         $conn->commit();

@@ -78,3 +78,12 @@ ALTER TABLE `pur_purchases`
     ADD COLUMN IF NOT EXISTS `inactive_by` INT(11) NULL COMMENT 'user.id',
     ADD COLUMN IF NOT EXISTS `inactive_by_name` VARCHAR(120) NULL,
     ADD COLUMN IF NOT EXISTS `inactive_reason` VARCHAR(255) NULL;
+
+-- Outsource and line notes (added later; adds only the missing columns, changes
+-- no rows). "For outsource": bought for someone outside (a free text note says
+-- who / what for). Each item line may carry a short note ("1 box = 2 kg").
+ALTER TABLE `pur_purchases`
+    ADD COLUMN IF NOT EXISTS `for_outsource` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = bought for outsource / outside work',
+    ADD COLUMN IF NOT EXISTS `outsource_note` VARCHAR(160) NULL COMMENT 'Who / what for, as typed';
+ALTER TABLE `pur_purchase_lines`
+    ADD COLUMN IF NOT EXISTS `note` VARCHAR(160) NULL COMMENT 'Optional note on this item';

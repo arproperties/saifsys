@@ -6,6 +6,7 @@
  * ordered from a supplier and received later, each with the photo of its bill
  * or delivery note. Filter by date, buyer, supplier and status; the total is
  * what was bought in the range. A record only — nothing here is in the accounts.
+ * Download (Excel) gives what is shown, one row per item (?download=1).
  * Who may record: HR → employee → Mobile App PIN → Purchase.
  * Rules: includes/ops_purchases.php. Tables: migrations/staff_purchases.sql.
  */
@@ -43,6 +44,29 @@ $rows = $data['purchases'];
 $cashTotal = array_sum(array_map(static fn(array $p): float => $p['kind'] === 'cash' ? $p['total'] : 0.0, $rows));
 $waiting = count(array_filter($rows, static fn(array $p): bool => $p['status'] === 'ordered'));
 
+if ($ready && ($_GET['download'] ?? '') === '1') {
+    $csv = [];
+    foreach ($rows as $p) {
+        foreach ($p['lines'] as $l) {
+            $row = [
+                $p['bought_on'], date('Y-m-d H:i', strtotime($p['created_at'])), $p['id'], $p['by']['name'], $p['supplier']['name'],
+                PUR_KINDS[$p['kind']] ?? $p['kind'], PUR_STATUSES[$p['status']] ?? $p['status'], $p['received_on'] ?? '',
+                $l['name'], $l['qty'], $l['unit'] ?? '', $l['price'], $l['amount'], $l['note'] ?? '',
+                $p['outsource'] ? 'Yes' : '', $p['outsource']['note'] ?? '', $p['notes'] ?? '', $p['total'],
+            ];
+            if ($showInactive) {
+                $row[] = $p['inactive']['reason'] ?? '';
+            }
+            $csv[] = $row;
+        }
+    }
+    ops_send_csv('purchases_' . $data['from'] . ($data['to'] !== $data['from'] ? '_to_' . $data['to'] : '') . ($showInactive ? '_inactive' : '') . '.csv',
+        array_merge(['Date bought', 'Added at', 'Purchase #', 'Bought by', 'Shop / supplier', 'Type', 'Status', 'Received on',
+            'Item', 'Qty', 'Unit', 'Price for one', 'Amount', 'Item note', 'For outsource', 'Outsource: who / what for', 'Purchase note', 'Purchase total'],
+            $showInactive ? ['Inactive reason'] : []),
+        $csv);
+}
+
 $money = static fn($n): string => 'AED ' . number_format((float)$n, 2);
 $statusBadge = static function (string $status): string {
     $cls = ['paid' => 'bg-secondary-subtle text-secondary-emphasis', 'ordered' => 'bg-warning-subtle text-warning-emphasis', 'received' => 'bg-success-subtle text-success-emphasis'][$status] ?? 'bg-light text-dark';
@@ -73,7 +97,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
   </ul>
 <?php endif; ?>
 
-<form method="get" class="card card-round mb-3">
+<form method="get" id="pur-filter" class="card card-round mb-3">
   <div class="card-body row g-2 align-items-end">
     <?php if ($showInactive): ?><input type="hidden" name="tab" value="inactive"><?php endif; ?>
     <div class="col-6 col-md-2">
@@ -120,6 +144,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
     </div>
   </div>
 </form>
+
+<div class="d-flex justify-content-end mb-2">
+  <button form="pur-filter" name="download" value="1" class="btn btn-sm btn-outline-success"><i class="bi bi-download me-1"></i>Download (Excel)</button>
+</div>
 
 <div class="row g-3 mb-3">
   <div class="col-6 col-md-3"><div class="stat-tile"><div class="stat-value"><?= h($money($data['total'])) ?></div><div class="stat-label">Total bought</div></div></div>

@@ -9,6 +9,10 @@
  *   out    given to a person (for a job/unit)   store − qty
  *   move   sent to another store                store − qty, other store + qty
  *   count  the real number after a count        store set to the counted number
+ *   broken not working: off the usable stock      store − qty; each line later
+ *          repaired (back: store + qty) or thrown away (stays off)
+ * Goods out goes to a staff member or to outsource (given_to_name 'Outsource',
+ * for_note says who / what for). Every item line may carry a short note.
  * Stock (st_stock) is changed in the same transaction as the entry and never
  * goes below 0. Quantities only — no money. Not linked to Purchase, nothing
  * from the old inventory (inv_*). No approval.
@@ -37,7 +41,9 @@ const ST_SAME_DAY_DELETE = 'Tried deleting on same day';
 const ST_LINES_MAX = 50;
 const ST_QTY_MAX = 1000000;
 const ST_FILE_BYTES = 8 * 1024 * 1024;
-const ST_KINDS = ['in' => 'Goods in', 'out' => 'Goods out', 'move' => 'Moved', 'count' => 'Count corrected'];
+const ST_KINDS = ['in' => 'Goods in', 'out' => 'Goods out', 'move' => 'Moved', 'count' => 'Count corrected', 'broken' => 'Not working'];
+const ST_OUTCOMES = ['repaired' => 'Repaired', 'thrown' => 'Thrown away'];
+const ST_OUTSOURCE = 'Outsource';
 const ST_REASONS = ['lost' => 'Lost', 'damaged' => 'Damaged', 'counted' => 'Counted'];
 const ST_FILE_TYPES = ['jpg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp'];
 
@@ -262,6 +268,12 @@ function st_effects(array $move, array $lines): array
             case 'out':
                 $out[] = [(int)$move['store_id'], $item, -$q];
                 break;
+            case 'broken':
+                // A repaired line is back on the shelf: it no longer counts.
+                if (($l['outcome'] ?? null) !== 'repaired') {
+                    $out[] = [(int)$move['store_id'], $item, -$q];
+                }
+                break;
             case 'move':
                 $out[] = [(int)$move['store_id'], $item, -$q];
                 $out[] = [(int)$move['to_store_id'], $item, $q];
@@ -274,7 +286,7 @@ function st_effects(array $move, array $lines): array
 /** Undo what a saved entry did. Refuses when the goods are already gone (stock would drop below 0). */
 function st_reverse(PDO $conn, array $move): void
 {
-    $stmt = $conn->prepare('SELECT item_id, qty FROM st_move_lines WHERE move_id = ?');
+    $stmt = $conn->prepare('SELECT item_id, qty, outcome FROM st_move_lines WHERE move_id = ?');
     $stmt->execute([(int)$move['id']]);
     $effects = st_effects($move, $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
     // Take back what was added first, so a refusal names the right item.
@@ -303,7 +315,7 @@ function st_shape_many(PDO $conn, array $rows, ?string $today = null): array
     $today = $today ?? st_today();
     $ids = array_map(static fn(array $r): int => (int)$r['id'], $rows);
     $in = implode(',', array_fill(0, count($ids), '?'));
-    $stmt = $conn->prepare("SELECT l.move_id, l.item_id, l.qty, l.counted, i.name, i.unit
+    $stmt = $conn->prepare("SELECT l.id, l.move_id, l.item_id, l.qty, l.counted, l.note, l.outcome, l.outcome_at, l.outcome_by_name, i.name, i.unit
         FROM st_move_lines l JOIN st_items i ON i.id = l.item_id WHERE l.move_id IN ($in) ORDER BY l.id");
     $stmt->execute($ids);
     $lines = [];
@@ -311,6 +323,10 @@ function st_shape_many(PDO $conn, array $rows, ?string $today = null): array
         $lines[(int)$l['move_id']][] = [
             'item_id' => (int)$l['item_id'], 'name' => (string)$l['name'], 'unit' => $l['unit'] !== null ? (string)$l['unit'] : null,
             'qty' => (float)$l['qty'], 'counted' => $l['counted'] !== null ? (float)$l['counted'] : null,
+            'line_id' => (int)$l['id'], 'note' => $l['note'] !== null ? (string)$l['note'] : null,
+            'outcome' => $l['outcome'] !== null ? [
+                'what' => (string)$l['outcome'], 'at' => (string)$l['outcome_at'], 'by' => (string)$l['outcome_by_name'],
+            ] : null,
         ];
     }
     return array_map(static fn(array $m): array => [
@@ -320,6 +336,7 @@ function st_shape_many(PDO $conn, array $rows, ?string $today = null): array
         'to_store' => $m['to_store_id'] !== null ? ['id' => (int)$m['to_store_id'], 'name' => (string)$m['to_store_name']] : null,
         'given_to' => $m['given_to_name'] !== null ? ['id' => $m['given_to_employee_id'] !== null ? (int)$m['given_to_employee_id'] : null, 'name' => (string)$m['given_to_name']] : null,
         'for_note' => $m['for_note'] !== null ? (string)$m['for_note'] : null,
+        'outsource' => (int)$m['is_outsource'] === 1,
         'source' => $m['source'] !== null ? (string)$m['source'] : null,
         'reason' => $m['reason'] !== null ? (string)$m['reason'] : null,
         'notes' => $m['notes'] !== null ? (string)$m['notes'] : null,
@@ -417,9 +434,9 @@ function st_may_change(array $who, array $m, string $today): void
 }
 
 /**
- * The lines as sent: [{item_id, qty, unit?}] (count: qty = the real number found).
- * Items must exist; the same item twice is added together. unit is used only
- * for an item that has none yet (st_save sets it).
+ * The lines as sent: [{item_id, qty, unit?, note?}] (count: qty = the real number
+ * found). Items must exist; the same item twice is added together (notes joined).
+ * unit is used only for an item that has none yet (st_save sets it).
  */
 function st_read_lines(PDO $conn, string $kind, $raw): array
 {
@@ -429,7 +446,7 @@ function st_read_lines(PDO $conn, string $kind, $raw): array
     if (count($raw) > ST_LINES_MAX) {
         throw new StError('At most ' . ST_LINES_MAX . ' items at a time.');
     }
-    $byItem = $units = [];
+    $byItem = $units = $notes = [];
     foreach (array_values($raw) as $i => $l) {
         $l = is_array($l) ? $l : [];
         $itemId = (int)($l['item_id'] ?? 0);
@@ -455,18 +472,23 @@ function st_read_lines(PDO $conn, string $kind, $raw): array
         if ($unit !== '') {
             $units[$itemId] = $unit;
         }
+        $note = st_text($l['note'] ?? '', ST_NOTE_MAX);
+        if ($note !== '') {
+            $notes[$itemId][] = $note;
+        }
     }
     $out = [];
     foreach ($byItem as $itemId => $qty) {
-        $out[] = ['item_id' => $itemId, 'qty' => $qty, 'unit' => $units[$itemId] ?? ''];
+        $out[] = ['item_id' => $itemId, 'qty' => $qty, 'unit' => $units[$itemId] ?? '', 'note' => st_text(implode('; ', $notes[$itemId] ?? []), ST_NOTE_MAX)];
     }
     return $out;
 }
 
 /**
  * Make an entry ($id 0), or change one. $input: kind, store_id, to_store_id
- * (move), given_to_employee_id (out), for_note (out), source (in), reason
- * (count), notes, client_ref, lines. $photo: one optional file (in).
+ * (move), outsource (out: true = given to outsource; left out on a change =
+ * as it was), given_to_employee_id (out, staff), for_note (out), source (in),
+ * reason (count), notes, client_ref, lines. $photo: one optional file (in).
  *
  * @param array|null $photo ['tmp' => path, 'uploaded' => bool]
  * @return array|null the entry, or null when it is not the asker's to see
@@ -477,7 +499,7 @@ function st_save(PDO $conn, array $who, int $id, array $input, ?array $photo = n
     $office = !empty($who['office']);
     $kind = (string)($input['kind'] ?? '');
     if (!isset(ST_KINDS[$kind])) {
-        throw new StError('Say if it is goods in, goods out, a move or a count.');
+        throw new StError('Say if it is goods in, goods out, a move, a count or not working.');
     }
     $clientRef = st_text($input['client_ref'] ?? '', 64);
     if ($id === 0 && $clientRef !== '' && !$office) {
@@ -504,7 +526,19 @@ function st_save(PDO $conn, array $who, int $id, array $input, ?array $photo = n
     }
     $givenId = null;
     $givenName = null;
+    $outsource = false;
     if ($kind === 'out') {
+        if (array_key_exists('outsource', $input)) {
+            $outsource = !empty($input['outsource']);
+        } elseif ($id > 0) {
+            $stmt = $conn->prepare('SELECT is_outsource FROM st_moves WHERE id = ?');
+            $stmt->execute([$id]);
+            $outsource = (int)$stmt->fetchColumn() === 1;
+        }
+    }
+    if ($kind === 'out' && $outsource) {
+        $givenName = ST_OUTSOURCE;
+    } elseif ($kind === 'out') {
         $givenId = (int)($input['given_to_employee_id'] ?? 0);
         $stmt = $conn->prepare('SELECT full_name FROM employees WHERE id = ?');
         $stmt->execute([$givenId]);
@@ -536,6 +570,9 @@ function st_save(PDO $conn, array $who, int $id, array $input, ?array $photo = n
             if ($kind !== $old['kind']) {
                 throw new StError('An entry keeps its kind. Delete it and make a new one.', 409, 'locked');
             }
+            if ($kind === 'broken' && st_has_outcome($conn, (int)$old['id'])) {
+                throw new StError('Some of it is already marked repaired or thrown away, so it cannot be changed.', 409, 'locked');
+            }
         }
         st_store_row($conn, $storeId, !$old || (int)$old['store_id'] !== $storeId);
         if ($kind === 'move') {
@@ -561,32 +598,32 @@ function st_save(PDO $conn, array $who, int $id, array $input, ?array $photo = n
                 $stmt = $conn->prepare('SELECT qty FROM st_stock WHERE store_id = ? AND item_id = ? FOR UPDATE');
                 $stmt->execute([$storeId, $l['item_id']]);
                 $have = (float)($stmt->fetchColumn() ?: 0);
-                $saved[] = ['item_id' => $l['item_id'], 'qty' => round($l['qty'] - $have, 3), 'counted' => $l['qty']];
+                $saved[] = ['item_id' => $l['item_id'], 'qty' => round($l['qty'] - $have, 3), 'counted' => $l['qty'], 'note' => $l['note']];
             } else {
-                $saved[] = ['item_id' => $l['item_id'], 'qty' => $l['qty'], 'counted' => null];
+                $saved[] = ['item_id' => $l['item_id'], 'qty' => $l['qty'], 'counted' => null, 'note' => $l['note']];
             }
         }
         $now = st_now();
         $values = [
             $storeId, $toStoreId ?: null, $givenId, $givenName, $forNote !== '' ? $forNote : null, $source !== '' ? $source : null,
-            $reason !== '' ? $reason : null, $notes !== '' ? $notes : null,
+            $reason !== '' ? $reason : null, $notes !== '' ? $notes : null, $outsource ? 1 : 0,
         ];
         if ($old) {
             $conn->prepare('UPDATE st_moves SET store_id = ?, to_store_id = ?, given_to_employee_id = ?, given_to_name = ?, for_note = ?,
-                    source = ?, reason = ?, notes = ?, updated_at = ?, updated_by_name = ? WHERE id = ?')
+                    source = ?, reason = ?, notes = ?, is_outsource = ?, updated_at = ?, updated_by_name = ? WHERE id = ?')
                 ->execute(array_merge($values, [$now, (string)$who['name'], (int)$old['id']]));
             $conn->prepare('DELETE FROM st_move_lines WHERE move_id = ?')->execute([(int)$old['id']]);
             $mid = (int)$old['id'];
         } else {
-            $conn->prepare('INSERT INTO st_moves (store_id, to_store_id, given_to_employee_id, given_to_name, for_note, source, reason, notes,
+            $conn->prepare('INSERT INTO st_moves (store_id, to_store_id, given_to_employee_id, given_to_name, for_note, source, reason, notes, is_outsource,
                     kind, user_id, person_name, created_day, client_ref, created_at, updated_at, updated_by_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
                 ->execute(array_merge($values, [$kind, (int)$who['user_id'], (string)$who['name'], $today, $clientRef !== '' ? $clientRef : null, $now, $now, (string)$who['name']]));
             $mid = (int)$conn->lastInsertId();
         }
-        $ins = $conn->prepare('INSERT INTO st_move_lines (move_id, item_id, qty, counted) VALUES (?, ?, ?, ?)');
+        $ins = $conn->prepare('INSERT INTO st_move_lines (move_id, item_id, qty, counted, note) VALUES (?, ?, ?, ?, ?)');
         foreach ($saved as $l) {
-            $ins->execute([$mid, $l['item_id'], $l['qty'], $l['counted']]);
+            $ins->execute([$mid, $l['item_id'], $l['qty'], $l['counted'], $l['note'] !== '' ? $l['note'] : null]);
         }
         $move = ['id' => $mid, 'kind' => $kind, 'store_id' => $storeId, 'to_store_id' => $toStoreId ?: null];
         // Take away first, so "only 3 in the store" is the message when it is short.
@@ -691,7 +728,7 @@ function st_set_active(PDO $conn, array $who, int $id, bool $active, string $rea
 /** Do again what an inactive entry did. Refuses when a store would go below 0. */
 function st_reapply(PDO $conn, array $move): void
 {
-    $stmt = $conn->prepare('SELECT item_id, qty FROM st_move_lines WHERE move_id = ?');
+    $stmt = $conn->prepare('SELECT item_id, qty, outcome FROM st_move_lines WHERE move_id = ?');
     $stmt->execute([(int)$move['id']]);
     $effects = st_effects($move, $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
     // Take away first, so "only 3 in the store" is the message when it is short.
@@ -714,6 +751,84 @@ function st_mark_active(PDO $conn, array $who, int $id, bool $active, string $re
     }
     $conn->prepare('UPDATE st_moves SET is_active = 0, inactive_at = ?, inactive_by = ?, inactive_by_name = ?, inactive_reason = ? WHERE id = ?')
         ->execute([st_now(), (int)$who['user_id'] ?: null, (string)$who['name'], $reason, $id]);
+}
+
+// ---------------------------------------------------------------------------
+// Not working
+// ---------------------------------------------------------------------------
+
+function st_has_outcome(PDO $conn, int $moveId): bool
+{
+    $stmt = $conn->prepare('SELECT 1 FROM st_move_lines WHERE move_id = ? AND outcome IS NOT NULL LIMIT 1');
+    $stmt->execute([$moveId]);
+    return (bool)$stmt->fetchColumn();
+}
+
+/**
+ * The lines still not working (not yet repaired or thrown away), oldest first,
+ * from every store keeper's active Not working entries. $storeId 0 = all stores.
+ */
+function st_broken_open(PDO $conn, int $storeId = 0): array
+{
+    $stmt = $conn->prepare("SELECT l.id, l.move_id, l.item_id, l.qty, l.note, i.name, i.unit, m.store_id, s.name AS store_name,
+            m.person_name, m.notes, m.created_at
+        FROM st_move_lines l
+        JOIN st_moves m ON m.id = l.move_id
+        JOIN st_items i ON i.id = l.item_id
+        JOIN st_stores s ON s.id = m.store_id
+        WHERE m.kind = 'broken' AND m.is_active = 1 AND l.outcome IS NULL AND (? = 0 OR m.store_id = ?)
+        ORDER BY m.created_at, l.id");
+    $stmt->execute([$storeId, $storeId]);
+    return array_map(static fn(array $r): array => [
+        'line_id' => (int)$r['id'],
+        'move_id' => (int)$r['move_id'],
+        'item_id' => (int)$r['item_id'],
+        'name' => (string)$r['name'],
+        'unit' => $r['unit'] !== null ? (string)$r['unit'] : null,
+        'qty' => (float)$r['qty'],
+        'note' => $r['note'] !== null ? (string)$r['note'] : null,
+        'notes' => $r['notes'] !== null ? (string)$r['notes'] : null,
+        'store' => ['id' => (int)$r['store_id'], 'name' => (string)$r['store_name']],
+        'by' => (string)$r['person_name'],
+        'created_at' => (string)$r['created_at'],
+    ], $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+}
+
+/**
+ * Close a not-working line: repaired (its stock goes back into the store) or
+ * thrown away (it stays off). Any store keeper, or the office. It cannot be
+ * undone here; the office can inactivate the whole entry.
+ */
+function st_set_outcome(PDO $conn, array $who, int $lineId, string $outcome): array
+{
+    if (!isset(ST_OUTCOMES[$outcome])) {
+        throw new StError('Say if it was repaired or thrown away.');
+    }
+    $conn->beginTransaction();
+    try {
+        $stmt = $conn->prepare("SELECT l.id, l.item_id, l.qty, l.outcome, m.id AS move_id, m.kind, m.store_id, m.is_active
+            FROM st_move_lines l JOIN st_moves m ON m.id = l.move_id WHERE l.id = ? FOR UPDATE");
+        $stmt->execute([$lineId]);
+        $l = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$l || $l['kind'] !== 'broken' || (int)$l['is_active'] !== 1) {
+            throw new StError('That item is not on the Not working list any more.', 404, 'not_found');
+        }
+        if ($l['outcome'] !== null) {
+            throw new StError('That item is already marked ' . strtolower(ST_OUTCOMES[$l['outcome']]) . '.', 409, 'conflict');
+        }
+        if ($outcome === 'repaired') {
+            st_apply($conn, (int)$l['store_id'], (int)$l['item_id'], (float)$l['qty']);
+        }
+        $conn->prepare('UPDATE st_move_lines SET outcome = ?, outcome_at = ?, outcome_by_name = ? WHERE id = ?')
+            ->execute([$outcome, st_now(), (string)$who['name'], $lineId]);
+        $conn->commit();
+    } catch (Throwable $e) {
+        if ($conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        throw $e;
+    }
+    return ['line_id' => $lineId, 'outcome' => $outcome, 'move_id' => (int)$l['move_id']];
 }
 
 // ---------------------------------------------------------------------------
