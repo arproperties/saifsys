@@ -134,13 +134,14 @@ function hr_attendance_daily_colors(string $kind): array
  * @param list<array> $employees rows with id, employee_code, full_name, company_name, department, location
  * @return list<array> one row per employee per day
  */
-function hr_attendance_daily_rows(PDO $conn, array $employees, int $year, int $month): array
+function hr_attendance_daily_rows(PDO $conn, array $employees, int $year, int $month, ?string $dayFrom = null, ?string $dayTo = null): array
 {
     if (!$employees || $month < 1 || $month > 12) {
         return [];
     }
-    $from = sprintf('%04d-%02d-01', $year, $month);
-    $to = date('Y-m-t', strtotime($from));
+    // The whole month, unless a From / To day range was picked (Y-m-d, already checked).
+    $from = $dayFrom ?? sprintf('%04d-%02d-01', $year, $month);
+    $to = $dayTo ?? date('Y-m-t', strtotime($from));
     $today = date('Y-m-d');
     $ids = implode(',', array_map('intval', array_column($employees, 'id')));
 

@@ -79,9 +79,76 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             $failed++;
         }
     }
+    // "Different person": HR can also set that employee's own check-in / check-out
+    // for the day by hand (the pop-up), for the days of the ticked photos only.
+    $timesSaved = 0;
+    $timesBad = [];
+    if ($action === 'reject' && $canSeePhotos) {
+        require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
+        $allowed = [];
+        foreach (array_slice((array)($_POST['pick'] ?? []), 0, 50) as $pick) {
+            [$day, $photo] = array_pad(explode('|', (string)$pick, 2), 2, '');
+            if ($row = hr_camera_log_find($day, $photo)) {
+                $allowed[(int)$row['employee_id'] . '|' . $day] = $row['employee_name'] . ' (' . $row['employee_code'] . ')';
+            }
+        }
+        $hm = static fn($v) => preg_match('/^\d{2}:\d{2}$/', (string)$v) ? (string)$v : null;
+        foreach ((array)($_POST['times'] ?? []) as $key => $t) {
+            if (!isset($allowed[$key]) || !is_array($t)) {
+                continue;
+            }
+            [$empIdT, $dayT] = explode('|', (string)$key, 2);
+            $label = $allowed[$key];
+            $newIn = $hm($t['in'] ?? '');
+            $newOut = $hm($t['out'] ?? '');
+            $st = $conn->prepare("SELECT a.id, a.check_in, a.check_out, e.company_id FROM employees e
+                LEFT JOIN attendance a ON a.employee_id = e.id AND a.work_date = ? WHERE e.id = ?");
+            $st->execute([$dayT, (int)$empIdT]);
+            $cur = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$cur) {
+                continue;
+            }
+            $oldIn = $cur['check_in'] ? substr((string)$cur['check_in'], 0, 5) : null;
+            $oldOut = $cur['check_out'] ? substr((string)$cur['check_out'], 0, 5) : null;
+            if ($newIn === $oldIn && $newOut === $oldOut) {
+                continue;
+            }
+            if (hr_attendance_same_time($newIn, $newOut)) {
+                $timesBad[] = $label . ' on ' . $dayT . ' (check-in and check-out are the same time)';
+                continue;
+            }
+            $hours = hr_attendance_hours($newIn, $newOut);
+            if ($cur['id']) {
+                // HR's check-in stands from now on; the note lets the camera still move the check-out on.
+                $conn->prepare("UPDATE attendance SET check_in = ?, check_out = ?, hours = ?, notes = ?, updated_by = ?, updated_at = NOW() WHERE id = ?")
+                     ->execute([$newIn, $newOut, $hours, HR_CAMERA_FIX_NOTE, $userId, (int)$cur['id']]);
+                $attId = (int)$cur['id'];
+                // The camera photo beside a time HR changed was the other person: it goes.
+                if ($newIn !== $oldIn) hr_camera_photo_delete($attId, 'in');
+                if ($newOut !== $oldOut) hr_camera_photo_delete($attId, 'out');
+            } elseif ($newIn !== null || $newOut !== null) {
+                $conn->prepare("INSERT INTO attendance (employee_id, work_date, check_in, check_out, hours, status, source, notes, created_by, updated_by, company_id)
+                                VALUES (?, ?, ?, ?, ?, 'pending', 'admin', ?, ?, ?, ?)")
+                     ->execute([(int)$empIdT, $dayT, $newIn, $newOut, $hours, HR_CAMERA_FIX_NOTE, $userId, $userId, (int)($cur['company_id'] ?: 1)]);
+                $attId = (int)$conn->lastInsertId();
+            } else {
+                continue;
+            }
+            $timesSaved++;
+            audit_bridge_hr_ops('attendance_updated', 'attendance', $attId,
+                'Times set by HR after a wrong camera match for ' . $label . ' on ' . $dayT
+                    . ': in ' . ($oldIn ?? '—') . ' → ' . ($newIn ?? '—') . ', out ' . ($oldOut ?? '—') . ' → ' . ($newOut ?? '—'),
+                isset($cur['company_id']) ? (int)$cur['company_id'] : null,
+                ['employee_id' => (int)$empIdT, 'work_date' => $dayT, 'check_in' => $newIn, 'check_out' => $newOut,
+                 'was_check_in' => $oldIn, 'was_check_out' => $oldOut, 'from' => 'camera log'],
+                $label . ' @ ' . $dayT, $userId);
+        }
+    }
+    $timesNote = ($timesSaved ? ' Times saved for ' . $timesSaved . ' day' . ($timesSaved === 1 ? '' : 's') . '.' : '')
+        . ($timesBad ? ' Times not saved for ' . implode('; ', $timesBad) . '.' : '');
     $_SESSION['cam_log_flash'] = $done > 0
-        ? ['success', $done . ' photo' . ($done === 1 ? '' : 's') . ($action === 'reference' ? ' added as reference' : ' marked "Different person"')
-            . '. The camera PC picks ' . ($done === 1 ? 'it' : 'them') . ' up within 15 seconds.' . ($failed ? ' ' . $failed . ' could not be used.' : '')]
+        ? [$timesBad ? 'warning' : 'success', $done . ' photo' . ($done === 1 ? '' : 's') . ($action === 'reference' ? ' added as reference' : ' marked "Different person"')
+            . '. The camera PC picks ' . ($done === 1 ? 'it' : 'them') . ' up within 15 seconds.' . ($failed ? ' ' . $failed . ' could not be used.' : '') . $timesNote]
         : ['danger', 'Nothing was changed. Tick at least one photo first.'];
     $back = (string)($_POST['back'] ?? '');
     header('Location: attendance_camera_log.php' . ($back !== '' && preg_match('/^[A-Za-z0-9_=&%:.+-]*$/', $back) ? '?' . $back : ''));
@@ -147,6 +214,21 @@ if (($_GET['export'] ?? '') === 'csv') {
 }
 
 $shown = array_slice($rows, 0, 500);
+// Each shown match's day as it stands now: the Different person pop-up starts from these times.
+$dayTimes = [];
+if ($canSeePhotos && $shown) {
+    $empIds = implode(',', array_unique(array_map(static fn($r) => (int)$r['employee_id'], $shown)));
+    $days = array_values(array_unique(array_column($shown, 'date')));
+    $st = $conn->prepare("SELECT employee_id, work_date, check_in, check_out FROM attendance
+        WHERE employee_id IN ($empIds) AND work_date IN (" . implode(',', array_fill(0, count($days), '?')) . ")");
+    $st->execute($days);
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $a) {
+        $dayTimes[(int)$a['employee_id'] . '|' . $a['work_date']] = [
+            $a['check_in'] ? substr((string)$a['check_in'], 0, 5) : '',
+            $a['check_out'] ? substr((string)$a['check_out'], 0, 5) : '',
+        ];
+    }
+}
 $query = $_GET;
 unset($query['export']);
 
@@ -233,8 +315,7 @@ echo hr_ui_page_header(
       <button name="action" value="reference" class="btn btn-sm btn-outline-success" disabled
               onclick="return confirm('Use the ticked photos as reference photos? The cameras will also recognise each person from them.');">
         <i class="bi bi-check2-circle me-1"></i>Reference</button>
-      <button name="action" value="reject" class="btn btn-sm btn-outline-danger" disabled
-              onclick="return confirm('Different person? The cameras will stop matching faces like these to the employee shown on each row.');">
+      <button type="button" class="btn btn-sm btn-outline-danger cam-log-act" id="camLogRejectOpen" disabled>
         <i class="bi bi-person-x me-1"></i>Different person</button>
     <?php endif; ?>
   </div>
@@ -254,7 +335,10 @@ echo hr_ui_page_header(
         ?>
           <tr>
             <?php if ($canSeePhotos): ?>
-              <td><?php if ($url !== ''): ?><input type="checkbox" class="form-check-input cam-log-tick" name="pick[]" value="<?= h($r['date'] . '|' . $r['photo']) ?>" aria-label="Tick this photo"><?php endif; ?></td>
+              <?php $dk = (int)$r['employee_id'] . '|' . $r['date']; ?>
+              <td><?php if ($url !== ''): ?><input type="checkbox" class="form-check-input cam-log-tick" name="pick[]" value="<?= h($r['date'] . '|' . $r['photo']) ?>" aria-label="Tick this photo"
+                     data-day="<?= h($dk) ?>" data-who="<?= h($r['employee_name'] . ' (' . $r['employee_code'] . ')') ?>" data-when="<?= h(date('D j M Y', strtotime($r['date']))) ?>"
+                     data-in="<?= h($dayTimes[$dk][0] ?? '') ?>" data-out="<?= h($dayTimes[$dk][1] ?? '') ?>"><?php endif; ?></td>
             <?php endif; ?>
             <td>
               <?php if ($url !== ''): ?>
@@ -277,6 +361,28 @@ echo hr_ui_page_header(
     </table>
   </div>
 </div>
+
+<?php if ($canSeePhotos): ?>
+<!-- Different person: mark the photos, and set each person's own times for that day by hand. -->
+<div class="modal fade" id="camLogReject" tabindex="-1" aria-labelledby="camLogRejectTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title fs-6" id="camLogRejectTitle"><i class="bi bi-person-x me-1 text-danger"></i>Different person</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted">The cameras will stop matching faces like these to the employee. If the camera recorded a time for them by mistake, put their real check-in and check-out below. Empty a box to remove that time; leave it as it is to keep it. After saving, the check-in stays as you set it and the camera still moves the check-out on when it sees them.</p>
+        <div id="camLogRejectDays"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button name="action" value="reject" class="btn btn-danger"><i class="bi bi-person-x me-1"></i>Different person &amp; save times</button>
+      </div>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
 </form>
 
 <div class="modal fade" id="camLogModal" tabindex="-1" aria-labelledby="camLogCaption" aria-hidden="true">
@@ -297,11 +403,49 @@ echo hr_ui_page_header(
     var n = document.querySelectorAll('.cam-log-tick:checked').length;
     var c = document.getElementById('camLogPicked');
     if (c) c.textContent = n;
-    document.querySelectorAll('#camLogPick button[name=action]').forEach(function (b) { b.disabled = n === 0; });
+    document.querySelectorAll('#camLogPick .card-header button[name=action], #camLogPick .cam-log-act').forEach(function (b) { b.disabled = n === 0; });
     if (all) all.checked = n > 0 && n === ticks.length;
   }
   ticks.forEach(function (t) { t.addEventListener('change', refresh); });
   if (all) all.addEventListener('change', function () { ticks.forEach(function (t) { t.checked = all.checked; }); refresh(); });
+
+  // Different person: one block per person and day of the ticked photos, with that day's times to correct.
+  var open = document.getElementById('camLogRejectOpen');
+  if (open) open.addEventListener('click', function () {
+    var box = document.getElementById('camLogRejectDays'), seen = {};
+    box.textContent = '';
+    document.querySelectorAll('.cam-log-tick:checked').forEach(function (t) {
+      var k = t.dataset.day;
+      if (seen[k]) return;
+      seen[k] = true;
+      var d = document.createElement('div');
+      d.className = 'border rounded p-2 mb-2';
+      var title = document.createElement('div');
+      title.className = 'fw-semibold small mb-1';
+      title.textContent = t.dataset.who + ' · ' + t.dataset.when;
+      d.appendChild(title);
+      var row = document.createElement('div');
+      row.className = 'row g-2';
+      [['in', 'Check-in'], ['out', 'Check-out']].forEach(function (f) {
+        var col = document.createElement('div');
+        col.className = 'col-6';
+        var lab = document.createElement('label');
+        lab.className = 'form-label small mb-1';
+        lab.textContent = f[1];
+        var inp = document.createElement('input');
+        inp.type = 'time';
+        inp.className = 'form-control form-control-sm';
+        inp.name = 'times[' + k + '][' + f[0] + ']';
+        inp.value = t.dataset[f[0]] || '';
+        col.appendChild(lab);
+        col.appendChild(inp);
+        row.appendChild(col);
+      });
+      d.appendChild(row);
+      box.appendChild(d);
+    });
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('camLogReject')).show();
+  });
 }());
 document.querySelectorAll('.cam-log-pic').forEach(function (pic) {
   pic.addEventListener('click', function () {

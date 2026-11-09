@@ -165,6 +165,13 @@ function hr_camera_valid_host(string $host): bool
 /** How long the photos are kept. */
 const HR_CAMERA_PHOTO_DAYS = 60;
 
+/**
+ * The note on a day HR fixed in the Camera log ("Different person" with times).
+ * The camera keeps HR's check-in and only moves the check-out later, as it does
+ * for a day the person checked in on themselves (api/attendance_camera.php).
+ */
+const HR_CAMERA_FIX_NOTE = 'Times set by HR (wrong camera match)';
+
 /** Largest picture accepted from the PC. */
 const HR_CAMERA_PHOTO_MAX_BYTES = 300 * 1024;
 
