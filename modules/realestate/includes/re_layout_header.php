@@ -92,6 +92,7 @@ if ($hasCore) {
         ['Viewing Requests', 'bi-calendar-check', 'unit_viewing_requests.php', ['unit_viewing_requests.php']],
         ['Lease Applications', 'bi-file-earmark-person', 'unit_lease_applications.php', ['unit_lease_applications.php']],
         ['Contract Templates', 'bi-file-earmark-text', 'lease_templates.php', ['lease_templates.php', 'create_tanacey_template.php']],
+        ['Bed Space Contract', 'bi-file-earmark-medical', 'bed_space_contract.php', ['bed_space_contract.php']],
         ['Tenant Portal', 'bi-person-badge', 'tenant_portal_approvals.php', ['tenant_portal_approvals.php']],
     ]];
 }

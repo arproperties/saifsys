@@ -125,9 +125,9 @@ if (is_file($asWidget)) { require $asWidget; }
         <div class="legal-topbar d-flex justify-content-between align-items-center">
             <button type="button" class="btn btn-sm btn-outline-secondary" id="legalSbToggle"><i class="bi bi-list"></i></button>
             <div class="d-flex align-items-center gap-2">
-                <span class="badge bg-dark">Legal</span>
-                <span class="text-muted small"><?= h($fullName ?: $userName) ?></span>
-                <span class="rounded-circle bg-secondary text-white d-inline-flex align-items-center justify-content-center" style="width:32px;height:32px;font-size:0.85rem"><?= h($avatarInitial) ?></span>
+                <span class="lw-top-badge">Legal</span>
+                <span class="lw-top-name"><?= h($fullName ?: $userName) ?></span>
+                <span class="lw-top-avatar"><?= h($avatarInitial) ?></span>
             </div>
         </div>
-        <div class="container-fluid py-4 px-4">
+        <div class="container-fluid py-4 px-4 lw-page lw-shell">

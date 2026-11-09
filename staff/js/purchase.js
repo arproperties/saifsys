@@ -11,6 +11,9 @@
  * does not lose it. Each save carries the draft's own id, so a double tap or a
  * resend makes one purchase.
  *
+ * Each item line has a unit and a note, both optional. On the last step the
+ * buyer can tick "For outsource" and say who / what for.
+ *
  * He may change or delete a purchase on the day he made it; after that the
  * office does it (Operations → Purchases).
  */
@@ -59,6 +62,8 @@
       itemsTitleOrder: 'What did you order?',
       itemName: 'Item, e.g. Bulb 9W',
       qty: 'How many',
+      unit: 'Unit',
+      lineNote: 'Note (optional), e.g. 1 box = 2 kg',
       price: 'Price for one',
       add: 'Add another item',
       remove: 'Remove',
@@ -70,6 +75,9 @@
       gallery: 'Gallery',
       checkTitle: 'Check and save',
       notes: 'Note (optional)',
+      outsource: 'For outsource / outside work',
+      outsourceHint: 'Not for our own use',
+      outsourceNote: 'Who / what for (optional)',
       save: 'Save',
       saveChanges: 'Save changes',
       saving: 'Saving…',
@@ -91,6 +99,7 @@
       received: 'Received',
       by: 'By',
       notes: 'Note',
+      outsource: 'For outsource',
       photos: 'Photos',
       bill: 'Bill',
       delivery: 'Delivery note',
@@ -172,6 +181,16 @@
 
   function qtyText(n) { return String(Math.round(n * 1000) / 1000); }
 
+  // Unit is optional and any text; these are only suggestions.
+  var UNITS = ['pc', 'kg', 'litre', 'box', 'bag', 'roll', 'm', 'set'];
+  function unitsList() {
+    return '<datalist id="pur-units">' + UNITS.map(function (u) { return '<option value="' + esc(u) + '">'; }).join('') + '</datalist>';
+  }
+
+  function lineQty(qty, unit) { return qtyText(qty) + (unit ? ' ' + unit : ''); }
+
+  function emptyLine() { return { name: '', qty: '', unit: '', price: '', note: '' }; }
+
   // -------------------------------------------------------------------------
   // The draft — what is being typed, kept on the phone
   // -------------------------------------------------------------------------
@@ -182,7 +201,7 @@
 
   function startDraft(kind) {
     clearPhotos();
-    saveDraft({ ref: S.uid(), id: null, kind: kind, step: 'shop', supplier: '', supplierId: null, lines: [{ name: '', qty: '', price: '' }], notes: '' });
+    saveDraft({ ref: S.uid(), id: null, kind: kind, step: 'shop', supplier: '', supplierId: null, lines: [emptyLine()], notes: '', outsource: false, outsourceNote: '' });
     state.error = null;
     S.go({ app: 'purchase', view: 'new' });
     loadSuppliers();
@@ -193,8 +212,9 @@
     clearPhotos();
     saveDraft({
       ref: S.uid(), id: p.id, kind: p.kind, step: 'shop', supplier: p.supplier.name, supplierId: p.supplier.id,
-      lines: p.lines.map(function (l) { return { name: l.name, qty: qtyText(l.qty), price: String(l.price), unit: l.unit || '' }; }),
+      lines: p.lines.map(function (l) { return { name: l.name, qty: qtyText(l.qty), price: String(l.price), unit: l.unit || '', note: l.note || '' }; }),
       notes: p.notes || '',
+      outsource: !!p.outsource, outsourceNote: p.outsource ? p.outsource.note : '',
     });
     state.error = null;
     S.go({ app: 'purchase', view: 'new' });
@@ -332,8 +352,10 @@
       kind: d.kind,
       supplier: String(d.supplier).trim(),
       supplier_id: d.supplierId || undefined,
-      lines: d.lines.map(function (l) { return { name: l.name, qty: num(l.qty), price: num(l.price), unit: l.unit || '' }; }),
+      lines: d.lines.map(function (l) { return { name: l.name, qty: num(l.qty), price: num(l.price), unit: l.unit || '', note: l.note || '' }; }),
       notes: d.notes,
+      outsource: !!d.outsource,
+      outsource_note: d.outsource ? d.outsourceNote || '' : '',
       client_ref: d.ref,
     };
     var req;
@@ -441,7 +463,7 @@
     return '<button type="button" class="card row" data-key="p' + p.id + '" data-action="purchase:open" data-id="' + p.id + '">' +
       '<span class="pur-icon">' + icon(p.kind === 'cash' ? 'cash' : 'truck', 'lg') + '</span>' +
       '<span class="grow"><span class="h3 ellipsis" style="display:block">' + esc(p.supplier.name) + '</span>' +
-      '<span class="secondary" style="display:block">' + esc(day(p.bought_on) + ' · ' + T.items(p.lines.length)) + '</span></span>' +
+      '<span class="secondary" style="display:block">' + esc(day(p.bought_on) + ' · ' + T.items(p.lines.length) + (p.outsource ? ' · ' + T.detail.outsource : '')) + '</span></span>' +
       '<span style="text-align:right"><span class="h3" style="display:block;white-space:nowrap">' + esc(money(p.total)) + '</span>' + statusPill(p) + '</span>' +
       '</button>';
   }
@@ -549,12 +571,14 @@
           return '<div class="card pur-line" data-key="l' + i + '">' +
             '<div class="row"><input class="field grow" data-line="' + i + '" data-field="name" type="text" maxlength="120" autocomplete="off" placeholder="' + esc(T.step.itemName) + '" value="' + esc(l.name) + '">' +
             (d.lines.length > 1 ? '<button type="button" class="icon-btn" data-action="purchase:line-del" data-i="' + i + '" aria-label="' + esc(T.step.remove) + '">' + icon('trash') + '</button>' : '') + '</div>' +
-            '<div class="pur-nums mt-2">' +
+            '<div class="pur-nums pur-nums3 mt-2">' +
             '<label><span class="small muted">' + esc(T.step.qty) + '</span><input class="field" data-line="' + i + '" data-field="qty" type="text" inputmode="decimal" autocomplete="off" placeholder="1" value="' + esc(l.qty) + '"></label>' +
+            '<label><span class="small muted">' + esc(T.step.unit) + '</span><input class="field" data-line="' + i + '" data-field="unit" type="text" list="pur-units" maxlength="20" autocomplete="off" placeholder="pc" value="' + esc(l.unit || '') + '"></label>' +
             '<label><span class="small muted">' + esc(T.step.price) + ' (AED)</span><input class="field" data-line="' + i + '" data-field="price" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(l.price) + '"></label>' +
             '</div>' +
+            '<input class="field mt-2 pur-note" data-line="' + i + '" data-field="note" type="text" maxlength="160" autocomplete="off" placeholder="' + esc(T.step.lineNote) + '" value="' + esc(l.note || '') + '">' +
             '<div class="secondary mt-2" style="text-align:right">' + esc(amount) + '</div></div>';
-        }).join('') +
+        }).join('') + unitsList() +
         '<div class="mt-3">' + button(T.step.add, 'purchase:line-add', { variant: 'secondary', icon: 'plus' }) + '</div>' +
         '<div class="trip-card mt-4 row between"><span class="label gold">' + esc(T.step.total) + '</span><span class="h2">' + esc(money(draftTotal(d))) + '</span></div>';
     } else if (d.step === 'photo') {
@@ -567,8 +591,15 @@
         '<div class="trip-card mt-3"><div class="label gold">' + esc(d.kind === 'cash' ? T.cash : T.order) + '</div>' +
         '<div class="h1">' + esc(d.supplier) + '</div><div class="h2 mt-2">' + esc(money(draftTotal(d))) + '</div></div>' +
         '<div class="card">' + d.lines.map(function (l) {
-          return '<div class="kv pur-kv"><span>' + esc(qtyText(num(l.qty)) + ' × ' + l.name) + '</span><span>' + esc(money(Math.round(num(l.qty) * num(l.price) * 100) / 100)) + '</span></div>';
+          return '<div class="kv pur-kv"><span>' + esc(lineQty(num(l.qty), String(l.unit || '').trim()) + ' × ' + l.name) +
+            (String(l.note || '').trim() ? '<span class="small muted" style="display:block">' + esc(l.note) + '</span>' : '') + '</span>' +
+            '<span>' + esc(money(Math.round(num(l.qty) * num(l.price) * 100) / 100)) + '</span></div>';
         }).join('') + '</div>' +
+        '<button type="button" class="card vehicle mt-3' + (d.outsource ? ' selected' : '') + '" data-action="purchase:outsource">' +
+        '<span class="veh-icon">' + icon('truck') + '</span><span class="grow"><span class="h3" style="display:block">' + esc(T.step.outsource) + '</span>' +
+        '<span class="small muted">' + esc(T.step.outsourceHint) + '</span></span>' +
+        (d.outsource ? '<span class="check">' + icon('check') + '</span>' : '') + '</button>' +
+        (d.outsource ? '<input class="field mt-2" id="pur-outsource" type="text" maxlength="160" autocomplete="off" placeholder="' + esc(T.step.outsourceNote) + '" value="' + esc(d.outsourceNote || '') + '">' : '') +
         (d.id ? '' : '<div class="card kv"><span class="secondary">' + esc(T.detail.photos) + '</span><span>' +
           esc(state.photos.length ? T.step.photos(state.photos.length) : T.step.noPhoto) + '</span></div>') +
         '<textarea class="field mt-3" id="pur-notes" rows="2" maxlength="500" placeholder="' + esc(T.step.notes) + '">' + esc(d.notes) + '</textarea>';
@@ -615,11 +646,12 @@
       '<div class="h2 mt-2">' + esc(money(p.total)) + '</div>' +
       '<div class="mt-2">' + statusPill(p) + '</div></div>' +
       '<div class="card">' + p.lines.map(function (l) {
-        return '<div class="kv pur-kv"><span>' + esc(qtyText(l.qty) + (l.unit ? ' ' + l.unit : '') + ' × ' + l.name) +
-          '<span class="small muted" style="display:block">' + esc(money(l.price)) + '</span></span><span>' + esc(money(l.amount)) + '</span></div>';
+        return '<div class="kv pur-kv"><span>' + esc(lineQty(l.qty, l.unit) + ' × ' + l.name) +
+          '<span class="small muted" style="display:block">' + esc(money(l.price) + (l.note ? ' · ' + l.note : '')) + '</span></span><span>' + esc(money(l.amount)) + '</span></div>';
       }).join('') + '</div>' +
       '<div class="card"><div class="kv"><span class="secondary">' + esc(T.detail.bought) + '</span><span>' + esc(day(p.bought_on)) + '</span></div>' +
       (p.received_on ? '<div class="kv mt-2"><span class="secondary">' + esc(T.detail.received) + '</span><span>' + esc(day(p.received_on)) + '</span></div>' : '') +
+      (p.outsource ? '<div class="kv mt-2"><span class="secondary">' + esc(T.detail.outsource) + '</span><span>' + esc(p.outsource.note || 'Yes') + '</span></div>' : '') +
       (p.notes ? '<div class="mt-2"><span class="secondary">' + esc(T.detail.notes) + '</span><div class="body-lg">' + esc(p.notes) + '</div></div>' : '') +
       '</div>';
 
@@ -699,7 +731,7 @@
       }
       case 'line-add':
         d = draft();
-        d.lines.push({ name: '', qty: '', price: '' });
+        d.lines.push(emptyLine());
         saveDraft(d);
         S.render();
         setTimeout(function () {
@@ -726,6 +758,14 @@
         S.render();
         break;
       }
+      case 'outsource':
+        d = draft();
+        if (!d) break;
+        d.outsource = !d.outsource;
+        saveDraft(d);
+        S.render();
+        if (d.outsource) setTimeout(function () { var o = document.getElementById('pur-outsource'); if (o) o.focus(); }, 50);
+        break;
       case 'save': save(); break;
       case 'receive': state.receive = null; S.go({ app: 'purchase', view: 'receive', id: id }); break;
       case 'receive-photo':
@@ -794,6 +834,8 @@
       d.supplierId = null; // typed: matched by name on the server
     } else if (t.id === 'pur-notes') {
       d.notes = t.value;
+    } else if (t.id === 'pur-outsource') {
+      d.outsourceNote = t.value;
     } else if (t.hasAttribute('data-line')) {
       var l = d.lines[Number(t.getAttribute('data-line'))];
       if (!l) return;

@@ -67,3 +67,23 @@ CREATE TABLE IF NOT EXISTS `pur_purchase_files` (
   KEY `idx_pur_files_purchase` (`purchase_id`),
   CONSTRAINT `fk_pur_files_purchase` FOREIGN KEY (`purchase_id`) REFERENCES `pur_purchases`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Inactive instead of deleted (added later; runs on a database that already has
+-- the tables, adds only the missing columns, changes no rows). The buyer's
+-- Delete makes a purchase inactive ("Tried deleting on same day"); Owner /
+-- Admin / HR inactivate and activate in Operations → Purchases.
+ALTER TABLE `pur_purchases`
+    ADD COLUMN IF NOT EXISTS `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '0 = inactive: hidden from the buyer, kept for the office',
+    ADD COLUMN IF NOT EXISTS `inactive_at` DATETIME NULL,
+    ADD COLUMN IF NOT EXISTS `inactive_by` INT(11) NULL COMMENT 'user.id',
+    ADD COLUMN IF NOT EXISTS `inactive_by_name` VARCHAR(120) NULL,
+    ADD COLUMN IF NOT EXISTS `inactive_reason` VARCHAR(255) NULL;
+
+-- Outsource and line notes (added later; adds only the missing columns, changes
+-- no rows). "For outsource": bought for someone outside (a free text note says
+-- who / what for). Each item line may carry a short note ("1 box = 2 kg").
+ALTER TABLE `pur_purchases`
+    ADD COLUMN IF NOT EXISTS `for_outsource` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = bought for outsource / outside work',
+    ADD COLUMN IF NOT EXISTS `outsource_note` VARCHAR(160) NULL COMMENT 'Who / what for, as typed';
+ALTER TABLE `pur_purchase_lines`
+    ADD COLUMN IF NOT EXISTS `note` VARCHAR(160) NULL COMMENT 'Optional note on this item';

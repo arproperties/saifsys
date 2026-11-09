@@ -24,8 +24,8 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     $title = trim($_POST['title'] ?? '');
-    $caseType = $_POST['case_type'] ?? 'other';
-    $caseSource = $_POST['case_source'] ?? 'manual';
+    $caseType = $_POST['case_type'] ?? 'cheque_bounce';
+    $caseSource = $_POST['case_source'] ?? 'bounced_cheque';
     $priority = $_POST['priority'] ?? 'medium';
     $status = $_POST['status'] ?? 'draft';
     $claimAmount = (float)($_POST['claim_amount'] ?? 0);
@@ -126,6 +126,10 @@ if ($prefChequeId > 0) {
 }
 
 $pageTitle = 'New Legal Case';
+$pageHead = '
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" rel="stylesheet">
+<style>.lw-shell .select2-container--bootstrap-5 .select2-selection{font-size:.86rem;min-height:calc(1.5em + .75rem + 2px);padding:.375rem .75rem}.select2-container--bootstrap-5 .select2-dropdown{font-size:.86rem}</style>';
 require_once __DIR__ . '/includes/legal_layout_header.php';
 ?>
         <div class="d-flex justify-content-between align-items-center mb-4">
@@ -135,7 +139,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
 
         <?php if ($error): ?><div class="alert alert-danger"><?= h($error) ?></div><?php endif; ?>
 
-        <form method="POST">
+        <form method="POST" id="caseAddForm">
             <?= csrf_field() ?>
             <input type="hidden" name="link_payment_id" value="<?= h($pf('link_payment_id')) ?>">
             <input type="hidden" name="link_installment_id" value="<?= h($pf('link_installment_id')) ?>">
@@ -158,7 +162,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                         <label class="form-label">Case Type</label>
                         <select name="case_type" class="form-select">
                             <?php foreach (legal_case_types() as $k => $v): ?>
-                                <option value="<?= h($k) ?>" <?= $pf('case_type','other') === $k ? 'selected' : '' ?>><?= h($v) ?></option>
+                                <option value="<?= h($k) ?>" <?= $pf('case_type','cheque_bounce') === $k ? 'selected' : '' ?>><?= h($v) ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -166,7 +170,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                         <label class="form-label">Source</label>
                         <select name="case_source" class="form-select">
                             <?php foreach (legal_case_sources() as $k => $v): ?>
-                                <option value="<?= h($k) ?>" <?= $pf('case_source','manual') === $k ? 'selected' : '' ?>><?= h($v) ?></option>
+                                <option value="<?= h($k) ?>" <?= $pf('case_source','bounced_cheque') === $k ? 'selected' : '' ?>><?= h($v) ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -292,13 +296,20 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
 
 <?php
 $pageScripts = <<<'HTML'
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script>
 (function () {
+    var hasS2 = !!(window.jQuery && jQuery.fn.select2);
+    // Every dropdown on the form is searchable.
+    if (hasS2) jQuery('#caseAddForm select').select2({theme: 'bootstrap-5', width: '100%'});
+
     var buildingSel = document.getElementById('buildingSel');
     var unitSel = document.getElementById('unitSel');
     if (!buildingSel || !unitSel) return;
     function loadUnits(buildingId, selected) {
         unitSel.innerHTML = '<option value="">-- None --</option>';
+        if (hasS2) jQuery(unitSel).trigger('change.select2');
         if (!buildingId) return;
         fetch('../realestate/ajax_get_units.php?building_id=' + encodeURIComponent(buildingId))
             .then(function (r) { return r.json(); })
@@ -311,10 +322,12 @@ $pageScripts = <<<'HTML'
                         if (selected && String(selected) === String(u.id)) opt.selected = true;
                         unitSel.appendChild(opt);
                     });
+                    if (hasS2) jQuery(unitSel).trigger('change.select2');
                 }
             });
     }
-    buildingSel.addEventListener('change', function () { loadUnits(this.value, ''); });
+    if (hasS2) jQuery(buildingSel).on('change', function () { loadUnits(this.value, ''); });
+    else buildingSel.addEventListener('change', function () { loadUnits(this.value, ''); });
     if (buildingSel.value) { loadUnits(buildingSel.value, unitSel.getAttribute('data-selected') || ''); }
 })();
 </script>

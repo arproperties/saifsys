@@ -221,6 +221,30 @@ function ops_require_access(PDO $conn): void {
     require_operations_supervisor_department($conn);
 }
 
+/** Owner, Admin and HR: they inactivate and activate purchases and store entries, and see the Inactive tabs. */
+function ops_can_inactivate(PDO $conn): bool {
+    return (bool)array_intersect(current_user_roles($conn), ['Owner', 'Admin', 'HR']);
+}
+
+/**
+ * Send rows as a CSV file that Excel opens (UTF-8), and end the request.
+ * Text that starts like a formula (= + - @) is kept as plain text.
+ */
+function ops_send_csv(string $filename, array $header, array $rows): void {
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . preg_replace('/[^A-Za-z0-9_.-]/', '_', $filename) . '"');
+    header('Cache-Control: no-store');
+    $out = fopen('php://output', 'w');
+    fwrite($out, "\xEF\xBB\xBF");
+    fputcsv($out, $header, ',', '"', '');
+    foreach ($rows as $r) {
+        $r = array_map(static fn($v) => is_string($v) && preg_match('/^[=+\-@\t\r]/', $v) ? "'" . $v : $v, $r);
+        fputcsv($out, $r, ',', '"', '');
+    }
+    fclose($out);
+    exit;
+}
+
 /** Company scope for every query on this module. */
 function ops_company_id(PDO $conn): int {
     $cid = (int)(current_company_id($conn) ?: 0);

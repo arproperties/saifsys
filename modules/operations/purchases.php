@@ -6,6 +6,7 @@
  * ordered from a supplier and received later, each with the photo of its bill
  * or delivery note. Filter by date, buyer, supplier and status; the total is
  * what was bought in the range. A record only — nothing here is in the accounts.
+ * Download (Excel) gives what is shown, one row per item (?download=1).
  * Who may record: HR → employee → Mobile App PIN → Purchase.
  * Rules: includes/ops_purchases.php. Tables: migrations/staff_purchases.sql.
  */
@@ -26,6 +27,8 @@ $opsBase = $appBase . '/modules/operations';
 $pageTitle = 'Purchases';
 
 $ready = pur_tables_ready($conn);
+$canInactive = ops_can_inactivate($conn);
+$showInactive = $canInactive && ($_GET['tab'] ?? '') === 'inactive';
 $f = [
     'from' => $_GET['from'] ?? null,
     'to' => $_GET['to'] ?? null,
@@ -34,11 +37,35 @@ $f = [
     'kind' => (string)($_GET['kind'] ?? ''),
     'status' => (string)($_GET['status'] ?? ''),
     'q' => (string)($_GET['q'] ?? ''),
+    'inactive' => $showInactive,
 ];
-$data = $ready ? pur_list_all($conn, $f) : ['from' => date('Y-m-01'), 'to' => date('Y-m-d'), 'purchases' => [], 'total' => 0, 'people' => [], 'suppliers' => []];
+$data = $ready ? pur_list_all($conn, $f) : ['from' => date('Y-m-01'), 'to' => date('Y-m-d'), 'purchases' => [], 'total' => 0, 'inactive_count' => 0, 'people' => [], 'suppliers' => []];
 $rows = $data['purchases'];
 $cashTotal = array_sum(array_map(static fn(array $p): float => $p['kind'] === 'cash' ? $p['total'] : 0.0, $rows));
 $waiting = count(array_filter($rows, static fn(array $p): bool => $p['status'] === 'ordered'));
+
+if ($ready && ($_GET['download'] ?? '') === '1') {
+    $csv = [];
+    foreach ($rows as $p) {
+        foreach ($p['lines'] as $l) {
+            $row = [
+                $p['bought_on'], date('Y-m-d H:i', strtotime($p['created_at'])), $p['id'], $p['by']['name'], $p['supplier']['name'],
+                PUR_KINDS[$p['kind']] ?? $p['kind'], PUR_STATUSES[$p['status']] ?? $p['status'], $p['received_on'] ?? '',
+                $l['name'], $l['qty'], $l['unit'] ?? '', $l['price'], $l['amount'], $l['note'] ?? '',
+                $p['outsource'] ? 'Yes' : '', $p['outsource']['note'] ?? '', $p['notes'] ?? '', $p['total'],
+            ];
+            if ($showInactive) {
+                $row[] = $p['inactive']['reason'] ?? '';
+            }
+            $csv[] = $row;
+        }
+    }
+    ops_send_csv('purchases_' . $data['from'] . ($data['to'] !== $data['from'] ? '_to_' . $data['to'] : '') . ($showInactive ? '_inactive' : '') . '.csv',
+        array_merge(['Date bought', 'Added at', 'Purchase #', 'Bought by', 'Shop / supplier', 'Type', 'Status', 'Received on',
+            'Item', 'Qty', 'Unit', 'Price for one', 'Amount', 'Item note', 'For outsource', 'Outsource: who / what for', 'Purchase note', 'Purchase total'],
+            $showInactive ? ['Inactive reason'] : []),
+        $csv);
+}
 
 $money = static fn($n): string => 'AED ' . number_format((float)$n, 2);
 $statusBadge = static function (string $status): string {
@@ -62,8 +89,17 @@ require __DIR__ . '/includes/ops_layout_header.php';
   <div class="alert alert-warning">The purchase tables are not set up yet. Run migrations/staff_purchases.sql.</div>
 <?php endif; ?>
 
-<form method="get" class="card card-round mb-3">
+<?php if ($canInactive): ?>
+  <?php $tabQuery = static fn(string $tab): string => http_build_query(array_merge(array_diff_key($_GET, ['tab' => 1]), $tab === 'inactive' ? ['tab' => 'inactive'] : [])); ?>
+  <ul class="nav ops-tabs mb-3">
+    <li class="nav-item"><a class="nav-link <?= $showInactive ? '' : 'active' ?>" href="?<?= h($tabQuery('active')) ?>">Active</a></li>
+    <li class="nav-item"><a class="nav-link <?= $showInactive ? 'active' : '' ?>" href="?<?= h($tabQuery('inactive')) ?>">Inactive <span class="badge bg-secondary-subtle text-secondary-emphasis"><?= (int)$data['inactive_count'] ?></span></a></li>
+  </ul>
+<?php endif; ?>
+
+<form method="get" id="pur-filter" class="card card-round mb-3">
   <div class="card-body row g-2 align-items-end">
+    <?php if ($showInactive): ?><input type="hidden" name="tab" value="inactive"><?php endif; ?>
     <div class="col-6 col-md-2">
       <label class="form-label small text-muted mb-1">From</label>
       <input type="date" name="from" value="<?= h($data['from']) ?>" class="form-control form-control-sm">
@@ -109,6 +145,10 @@ require __DIR__ . '/includes/ops_layout_header.php';
   </div>
 </form>
 
+<div class="d-flex justify-content-end mb-2">
+  <button form="pur-filter" name="download" value="1" class="btn btn-sm btn-outline-success"><i class="bi bi-download me-1"></i>Download (Excel)</button>
+</div>
+
 <div class="row g-3 mb-3">
   <div class="col-6 col-md-3"><div class="stat-tile"><div class="stat-value"><?= h($money($data['total'])) ?></div><div class="stat-label">Total bought</div></div></div>
   <div class="col-6 col-md-3"><div class="stat-tile"><div class="stat-value"><?= h($money($cashTotal)) ?></div><div class="stat-label">Paid cash</div></div></div>
@@ -125,6 +165,8 @@ require __DIR__ . '/includes/ops_layout_header.php';
           <th>Shop / supplier</th>
           <th>Items</th>
           <th>Buyer</th>
+          <th>Added on</th>
+          <?php if ($showInactive): ?><th>Inactivated by</th><th>Reason</th><?php endif; ?>
           <th>Status</th>
           <th class="text-end">Total</th>
           <th></th>
@@ -132,7 +174,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
       </thead>
       <tbody>
         <?php if (!$rows): ?>
-          <tr><td colspan="7" class="text-center text-muted py-5">No purchases in this range.</td></tr>
+          <tr><td colspan="<?= $showInactive ? 10 : 8 ?>" class="text-center text-muted py-5"><?= $showInactive ? 'No inactive purchases in this range.' : 'No purchases in this range.' ?></td></tr>
         <?php endif; ?>
         <?php foreach ($rows as $p): ?>
           <?php
@@ -146,6 +188,11 @@ require __DIR__ . '/includes/ops_layout_header.php';
             </td>
             <td class="small"><?= h($itemText) ?></td>
             <td><?= h($p['by']['name']) ?></td>
+            <td class="small text-nowrap"><?= h(date('d M Y H:i', strtotime($p['created_at']))) ?></td>
+            <?php if ($showInactive): ?>
+              <td class="small text-nowrap"><?= h($p['inactive']['by'] ?? '') ?><div class="text-muted"><?= $p['inactive'] ? h(date('d M Y H:i', strtotime($p['inactive']['at']))) : '' ?></div></td>
+              <td class="small"><?= h($p['inactive']['reason'] ?? '') ?></td>
+            <?php endif; ?>
             <td><?= $statusBadge($p['status']) ?><?php if ($p['received_on']): ?><div class="small text-muted"><?= h(date('d M', strtotime($p['received_on']))) ?></div><?php endif; ?></td>
             <td class="num text-end fw-bold text-nowrap"><?= h($money($p['total'])) ?></td>
             <td class="text-nowrap">

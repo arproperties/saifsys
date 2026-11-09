@@ -89,7 +89,14 @@ require __DIR__ . '/includes/rpay_layout_header.php';
                 <button class="btn btn-sm btn-light border text-nowrap">Save name</button>
               </form>
             </td>
-            <td class="num"><?= (int)($head['entries'] ?? 0) ?></td>
+            <td class="num text-nowrap">
+              <?php if ((int)($head['entries'] ?? 0) > 0): ?>
+                <a class="fw-semibold text-decoration-none" href="<?= h($rpayBase) ?>/entries.php?head=<?= (int)$head['id'] ?>" title="See the entries under this head"><?= (int)$head['entries'] ?></a>
+                <a class="small text-decoration-none ms-2" href="<?= h($rpayBase) ?>/index.php?head=<?= (int)$head['id'] ?>" title="See this month's payments for this head">Payments</a>
+              <?php else: ?>
+                0
+              <?php endif; ?>
+            </td>
             <td class="text-end">
               <?php if ((int)($head['entries'] ?? 0) === 0): ?>
                 <form method="post" action="<?= h($selfUrl) ?>" class="d-inline" onsubmit="return confirm('Delete this income head?');">
