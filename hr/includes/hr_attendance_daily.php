@@ -123,6 +123,7 @@ function hr_attendance_daily_colors(string $kind): array
         'leave' => ['#e0f4fb', '#0b6b86'],
         'holiday' => ['#fff7e6', '#9a6700'],
         'weekly_off' => ['#eceef1', '#4b5563'],
+        'day_off' => ['#efe8fa', '#59359a'],
         'not_employed' => ['#f8f9fa', '#9ca3af'],
         'none' => ['#ffffff', '#9ca3af'],
         'future' => ['#ffffff', '#c0c4ca'],

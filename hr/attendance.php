@@ -141,7 +141,7 @@ if (hr_attendance_post_too_large()) {
             $flash_err = 'Invalid status.';
         } elseif (!hr_attendance_status_supported($conn, $new)) {
             $flash_err = 'This database cannot store the ' . hr_attendance_status_label($new)
-                . ' status yet — run migrations/' . ($new === 'weekly_off' ? 'hr_attendance_weekly_off.sql' : 'hr_attendance_excused_absent.sql') . ' first.';
+                . ' status yet — run migrations/' . (['weekly_off' => 'hr_attendance_weekly_off.sql', 'day_off' => 'hr_attendance_day_off.sql'][$new] ?? 'hr_attendance_excused_absent.sql') . ' first.';
         } elseif ($note === '') {
             $flash_err = 'A reason is required for every status change.';
         } else {
@@ -345,7 +345,7 @@ if ($offRows) {
     usort($rows, static fn($a, $b) => [$b['work_date'], $a['full_name']] <=> [$a['work_date'], $b['full_name']]);
     $rows = array_slice($rows, 0, 500);
 }
-$statusCardColors = ['pending' => '#6c757d', 'approved' => '#198754', 'absent' => '#dc3545', 'half' => '#e0a800', 'on_leave' => '#0aa2c0', 'excused_absent' => '#fd7e14', 'weekly_off' => '#64748b'];
+$statusCardColors = ['pending' => '#6c757d', 'approved' => '#198754', 'absent' => '#dc3545', 'half' => '#e0a800', 'on_leave' => '#0aa2c0', 'excused_absent' => '#fd7e14', 'weekly_off' => '#64748b', 'day_off' => '#6f42c1'];
 $statusCardQuery = $_GET;
 unset($statusCardQuery['status']);
 
@@ -782,6 +782,13 @@ echo hr_ui_page_header(
                       <button type="button" class="btn btn-sm btn-outline-secondary w-100"
                               data-att-change data-att-id="<?= $rowId ?>" data-att-to="weekly_off"
                               data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">Weekly Off</button>
+                    </li>
+                    <?php endif; ?>
+                    <?php if (hr_attendance_status_supported($conn, 'day_off')): ?>
+                    <li class="px-3 py-1">
+                      <button type="button" class="btn btn-sm btn-outline-secondary w-100"
+                              data-att-change data-att-id="<?= $rowId ?>" data-att-to="day_off"
+                              data-att-emp="<?= h($rowEmp) ?>" data-att-date="<?= h($r['work_date']) ?>">Day Off</button>
                     </li>
                     <?php endif; ?>
                     <?php if (hr_attendance_status_supported($conn, 'pending') && $r['status'] !== 'pending'): ?>

@@ -99,6 +99,7 @@ $asStatusLabels = [
     'absent'         => 'Marked absent',
     'half'           => 'Half day',
     'excused_absent' => 'Excused absent',
+    'day_off'        => 'Day off',
 ];
 $asStatusLabel = $asStatusLabels[(string)$asState['att_status']] ?? 'Recorded by HR';
 
