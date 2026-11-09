@@ -22,6 +22,45 @@ require_once __DIR__ . '/includes/move_in_historical_helper.php';
 require_once __DIR__ . '/includes/move_in_chain_helper.php';
 require_once __DIR__ . '/includes/re_lease_picker.php';
 
+// Servers with older move-in helpers: stand-ins so this page still loads. Each is used only
+// when the helper file on the server does not define the function; the move-in buttons then
+// fall back to the plain Move-In flow.
+if (!function_exists('re_move_in_open_record')) {
+    function re_move_in_open_record(PDO $conn, int $leaseId): ?array
+    {
+        $stmt = $conn->prepare("SELECT id, status FROM re_move_ins WHERE lease_id = ? AND status != 'cancelled' ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$leaseId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+}
+if (!function_exists('re_move_in_historical_ready')) {
+    function re_move_in_historical_ready(PDO $conn): bool { return false; }
+}
+if (!function_exists('re_move_in_historical_default_date')) {
+    function re_move_in_historical_default_date(array $lease): string
+    {
+        return (string)($lease['move_in_date'] ?: ($lease['start_date'] ?: date('Y-m-d')));
+    }
+}
+if (!function_exists('re_move_in_carried_over')) {
+    function re_move_in_carried_over(PDO $conn, int $companyId, int $leaseId): ?array { return null; }
+}
+if (!function_exists('re_move_in_first_lease')) {
+    function re_move_in_first_lease(PDO $conn, int $companyId, int $leaseId): ?array { return null; }
+}
+if (!function_exists('re_lease_is_old')) {
+    function re_lease_is_old(PDO $conn, array $lease): bool { return false; }
+}
+if (!function_exists('re_move_out_superseded_by')) {
+    function re_move_out_superseded_by(PDO $conn, int $companyId, int $leaseId): ?array { return null; }
+}
+if (!function_exists('re_lease_is_draft_renewal')) {
+    function re_lease_is_draft_renewal(array $lease): bool { return false; }
+}
+if (!function_exists('re_lease_draft_popup')) {
+    function re_lease_draft_popup(): string { return ''; }
+}
+
 require_login();
 require_module_access($conn, MODULE_REALESTATE);
 
@@ -1878,6 +1917,19 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 <th>Grace Period:</th>
                                 <td><?= $lease['grace_period_days'] ?> days</td>
                             </tr>
+                            <?php endif; ?>
+                            <?php if (array_key_exists('guarantor_name', $lease)):
+                                require_once __DIR__ . '/includes/contract_v2_helper.php'; ?>
+                            <tr>
+                                <th>Occupancy:</th>
+                                <td><?= (int)($lease['max_occupants'] ?: 4) ?> persons max, <?= h(contract_v2_occupancy_text($lease['occupancy_type'] ?? '')) ?></td>
+                            </tr>
+                            <?php if (!empty($lease['guarantor_name'])): ?>
+                            <tr>
+                                <th>Guarantor:</th>
+                                <td><?= h($lease['guarantor_name']) ?><?= !empty($lease['guarantor_eid']) ? ' &middot; EID ' . h($lease['guarantor_eid']) : '' ?></td>
+                            </tr>
+                            <?php endif; ?>
                             <?php endif; ?>
                             <tr>
                                 <th>Status:</th>

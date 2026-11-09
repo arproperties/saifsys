@@ -543,6 +543,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = $scheduleValidation['error'];
     }
     
+    // Tenancy Contract v2 fields: occupants, occupancy type, guarantor.
+    require_once __DIR__ . '/includes/contract_v2_helper.php';
+    $hasContractV2Columns = false;
+    try {
+        $hasContractV2Columns = (bool)$conn->query("SHOW COLUMNS FROM re_leases LIKE 'guarantor_name'")->fetch();
+    } catch (Throwable $e) {
+        $hasContractV2Columns = false;
+    }
+    $maxOccupants = (isset($_POST['max_occupants']) && $_POST['max_occupants'] !== '') ? (int)$_POST['max_occupants'] : null;
+    $occupancyType = trim((string)($_POST['occupancy_type'] ?? ''));
+    if ($occupancyType === 'other') {
+        $occupancyType = trim((string)($_POST['occupancy_type_other'] ?? ''));
+    }
+    $occupancyType = mb_substr($occupancyType, 0, 100);
+    $guarantorName = mb_substr(trim((string)($_POST['guarantor_name'] ?? '')), 0, 200);
+    $guarantorEid = mb_substr(trim((string)($_POST['guarantor_eid'] ?? '')), 0, 50);
+    if ($hasContractV2Columns && !$error) {
+        if ($maxOccupants !== null && ($maxOccupants < 1 || $maxOccupants > 50)) {
+            $error = 'Max occupants must be between 1 and 50.';
+        } elseif ($guarantorName !== '' xor $guarantorEid !== '') {
+            $error = 'Enter both the guarantor name and the guarantor Emirates ID, or leave both empty.';
+        } elseif ($tenantId && $guarantorName === '') {
+            $ttStmt = $conn->prepare("SELECT tenant_type FROM re_tenants WHERE id = ? AND company_id = ?");
+            $ttStmt->execute([$tenantId, $currentCompanyId]);
+            if (contract_v2_guarantor_required((string)$ttStmt->fetchColumn(), (float)$annualRent)) {
+                $error = 'A guarantor is required: the tenant is a company and the annual rent is over AED '
+                    . number_format(CONTRACT_V2_GUARANTOR_RENT_LIMIT) . '. Enter the guarantor name and Emirates ID.';
+            }
+        }
+    }
+
     if ($unitId && $tenantId && $startDate && $endDate && $annualRent > 0 && !$error) {
         try {
             $conn->beginTransaction();
@@ -1946,6 +1977,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 );
             }
             
+            if ($hasContractV2Columns) {
+                $cv2 = $conn->prepare("
+                    UPDATE re_leases
+                    SET max_occupants = ?, occupancy_type = ?, guarantor_name = ?, guarantor_eid = ?
+                    WHERE id = ? AND company_id = ?
+                ");
+                $cv2->execute([
+                    $maxOccupants,
+                    $occupancyType !== '' ? $occupancyType : null,
+                    $guarantorName !== '' ? $guarantorName : null,
+                    $guarantorEid !== '' ? $guarantorEid : null,
+                    (int)$leaseId,
+                    $currentCompanyId,
+                ]);
+            }
+
             $conn->commit();
 
             // Audit History (fail-safe; does not affect lease save)
@@ -2364,6 +2411,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     }
                                 ?>
                                     <option value="<?= $t['id'] ?>"
+                                        data-tenant-type="<?= h($t['tenant_type'] ?? '') ?>"
                                         <?= ($selectedTenantId == $t['id']) ? 'selected' : '' ?>
                                         data-search="<?= h(trim($displayName . ($t['phone'] ? ' '.$t['phone'] : '') . ($t['email'] ? ' '.$t['email'] : ''))) ?>">
                                         <?= h($displayName . ($t['phone'] ? ' – ' . $t['phone'] : '')) ?>
@@ -2952,6 +3000,91 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         </div>
                     </div>
                     
+                    <?php
+                    $cv2Columns = $lease ? array_key_exists('guarantor_name', $lease) : false;
+                    if (!$cv2Columns) {
+                        try {
+                            $cv2Columns = (bool)$conn->query("SHOW COLUMNS FROM re_leases LIKE 'guarantor_name'")->fetch();
+                        } catch (Throwable $e) {
+                            $cv2Columns = false;
+                        }
+                    }
+                    if ($cv2Columns):
+                        require_once __DIR__ . '/includes/contract_v2_helper.php';
+                        $cv2Types = contract_v2_occupancy_types();
+                        $cv2Occ = (string)getFormValue('occupancy_type', '');
+                        if ($cv2Occ === 'other') {
+                            $cv2Occ = (string)getFormValue('occupancy_type_other', '');
+                        }
+                        $cv2OccIsOther = $cv2Occ !== '' && !isset($cv2Types[$cv2Occ]);
+                    ?>
+                    <h6 class="mb-2"><i class="bi bi-people"></i> Occupancy and Guarantor <small class="text-muted fw-normal">(printed on Tenancy Contract v2)</small></h6>
+                    <div class="row">
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Max Occupants</label>
+                            <input type="number" class="form-control" name="max_occupants" min="1" max="50"
+                                   value="<?= h(getFormValue('max_occupants', '')) ?>" placeholder="4">
+                            <small class="form-text text-muted">Empty = 4</small>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Occupancy Type</label>
+                            <select name="occupancy_type" id="occupancyTypeSelect" class="form-select">
+                                <option value="">Single family (default)</option>
+                                <?php foreach ($cv2Types as $k => $t): ?>
+                                    <option value="<?= h($k) ?>" <?= $cv2Occ === $k ? 'selected' : '' ?>><?= h($t['label']) ?></option>
+                                <?php endforeach; ?>
+                                <option value="other" <?= $cv2OccIsOther ? 'selected' : '' ?>>Other</option>
+                            </select>
+                            <input type="text" class="form-control mt-1 <?= $cv2OccIsOther ? '' : 'd-none' ?>" name="occupancy_type_other"
+                                   id="occupancyTypeOther" maxlength="100" value="<?= $cv2OccIsOther ? h($cv2Occ) : '' ?>"
+                                   placeholder='e.g. "a family of five"'>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Guarantor Name <span class="text-danger d-none" id="guarantorRequiredMark">*</span></label>
+                            <input type="text" class="form-control" name="guarantor_name" id="guarantorName" maxlength="200"
+                                   value="<?= h(getFormValue('guarantor_name', '')) ?>">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Guarantor Emirates ID <span class="text-danger d-none" id="guarantorRequiredMark2">*</span></label>
+                            <input type="text" class="form-control" name="guarantor_eid" id="guarantorEid" maxlength="50"
+                                   value="<?= h(getFormValue('guarantor_eid', '')) ?>" placeholder="784-XXXX-XXXXXXX-X">
+                        </div>
+                    </div>
+                    <div class="small text-muted mb-3" id="guarantorHint">
+                        A guarantor is required when the tenant is a company and the annual rent is over AED <?= number_format(CONTRACT_V2_GUARANTOR_RENT_LIMIT) ?>; otherwise optional.
+                    </div>
+                    <script>
+                    (function () {
+                        const occ = document.getElementById('occupancyTypeSelect');
+                        const other = document.getElementById('occupancyTypeOther');
+                        if (occ && other) {
+                            occ.addEventListener('change', function () { other.classList.toggle('d-none', occ.value !== 'other'); });
+                        }
+                        function refreshGuarantor() {
+                            const ts = document.getElementById('tenantSelect');
+                            const rent = parseFloat((document.getElementById('annualRent') || {}).value || '0') || 0;
+                            const opt = ts && ts.selectedOptions ? ts.selectedOptions[0] : null;
+                            const isCompany = !!opt && opt.getAttribute('data-tenant-type') === 'company';
+                            const required = isCompany && rent > <?= (int)CONTRACT_V2_GUARANTOR_RENT_LIMIT ?>;
+                            ['guarantorRequiredMark', 'guarantorRequiredMark2'].forEach(function (id) {
+                                const el = document.getElementById(id);
+                                if (el) el.classList.toggle('d-none', !required);
+                            });
+                            const hint = document.getElementById('guarantorHint');
+                            if (hint) hint.classList.toggle('text-danger', required);
+                        }
+                        document.addEventListener('change', function (e) {
+                            if (e.target && (e.target.id === 'tenantSelect' || e.target.id === 'annualRent')) refreshGuarantor();
+                        });
+                        document.addEventListener('input', function (e) {
+                            if (e.target && e.target.id === 'annualRent') refreshGuarantor();
+                        });
+                        document.addEventListener('DOMContentLoaded', refreshGuarantor);
+                        refreshGuarantor();
+                    })();
+                    </script>
+                    <?php endif; ?>
+
                     <div class="mb-3">
                         <label class="form-label">Renewal Terms</label>
                         <textarea class="form-control" name="renewal_terms" rows="3" placeholder="Renewal conditions, terms, and requirements..."><?= $lease ? h($lease['renewal_terms'] ?? '') : '' ?></textarea>
