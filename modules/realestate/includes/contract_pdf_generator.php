@@ -32,7 +32,7 @@ if (!class_exists('ContractPDFGenerator')) {
             $stmt = $this->conn->prepare("
                 SELECT l.*,
                        t.first_name, t.last_name, t.email, t.phone, t.id_number,
-                       t.company_name AS tenant_company_name,
+                       t.company_name AS tenant_company_name, t.tenant_type,
                        u.unit_number, u.unit_type, u.area_sqm, u.premises_number,
                        b.name as building_name, b.address as building_address,
                        c.name as company_name
@@ -90,10 +90,33 @@ if (!class_exists('ContractPDFGenerator')) {
             ");
             $stmt->execute([$pdfPath, $leaseId, $this->companyId]);
 
+            // Record which contract version the PDF was made from (column added by the v2 migration).
+            try {
+                $stmt = $this->conn->prepare("UPDATE re_leases SET contract_template_version = ? WHERE id = ? AND company_id = ?");
+                $stmt->execute([(string)($template['template_code'] ?? '') ?: ('template_' . (int)$template['id']), $leaseId, $this->companyId]);
+            } catch (Throwable $e) {
+                // Column not there yet: the PDF is still fine.
+            }
+
             return $pdfPath;
         }
 
         private function replacePlaceholders($html, $lease, $template) {
+            // Tenancy Contract v2: {{#if}} blocks, new placeholders, Annexes A-C and clause numbers first.
+            $isV2 = false;
+            if (!empty($template['template_code'])) {
+                require_once __DIR__ . '/contract_v2_helper.php';
+                $isV2 = contract_v2_is_v2_template($template);
+            }
+            if ($isV2) {
+                if (!isset($lease['tenant_type']) && !empty($lease['tenant_id'])) {
+                    $tt = $this->conn->prepare('SELECT tenant_type FROM re_tenants WHERE id = ?');
+                    $tt->execute([(int)$lease['tenant_id']]);
+                    $lease['tenant_type'] = (string)$tt->fetchColumn();
+                }
+                $html = contract_v2_prepare($this->conn, $html, $lease);
+            }
+
             $companyName = $lease['company_name'] ?? '';
             $companyNameAr = $this->getCompanyNameArabic($this->companyId);
 
@@ -232,7 +255,11 @@ if (!class_exists('ContractPDFGenerator')) {
                 '{{COMPANY_STAMP}}' => $companyStamp ? '<img src="' . htmlspecialchars($companyStamp, ENT_QUOTES, 'UTF-8') . '" class="signature-image" alt="Company Stamp">' : '',
             ];
 
-            return str_replace(array_keys($replacements), array_values($replacements), $html);
+            $html = str_replace(array_keys($replacements), array_values($replacements), $html);
+            if ($isV2) {
+                contract_v2_assert_resolved($html);
+            }
+            return $html;
         }
 
         private function getSignatureImage($path) {

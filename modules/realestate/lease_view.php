@@ -1879,6 +1879,19 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                 <td><?= $lease['grace_period_days'] ?> days</td>
                             </tr>
                             <?php endif; ?>
+                            <?php if (array_key_exists('guarantor_name', $lease)):
+                                require_once __DIR__ . '/includes/contract_v2_helper.php'; ?>
+                            <tr>
+                                <th>Occupancy:</th>
+                                <td><?= (int)($lease['max_occupants'] ?: 4) ?> persons max, <?= h(contract_v2_occupancy_text($lease['occupancy_type'] ?? '')) ?></td>
+                            </tr>
+                            <?php if (!empty($lease['guarantor_name'])): ?>
+                            <tr>
+                                <th>Guarantor:</th>
+                                <td><?= h($lease['guarantor_name']) ?><?= !empty($lease['guarantor_eid']) ? ' &middot; EID ' . h($lease['guarantor_eid']) : '' ?></td>
+                            </tr>
+                            <?php endif; ?>
+                            <?php endif; ?>
                             <tr>
                                 <th>Status:</th>
                                 <td>
