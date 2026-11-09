@@ -701,7 +701,7 @@ echo hr_ui_page_header(
                 ?>
                 <?php if ($rowBreakStart): ?>
                   <div class="small text-muted">
-                    Break <?= $rowBreakMins !== null ? (int)$rowBreakMins . ' min' : 'open' ?>
+                    Break <?= $rowBreakMins !== null ? (int)$rowBreakMins . ' min' : 'started' ?>
                     <?php if (!empty($r['break_end'])): ?>
                       (<?= h(substr((string)$rowBreakStart, 0, 5)) ?>–<?= h(substr((string)$r['break_end'], 0, 5)) ?>)
                     <?php else: ?>

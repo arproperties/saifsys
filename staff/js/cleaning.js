@@ -70,6 +70,10 @@
       forgotSave: 'Save',
       forgotPick: 'Choose the time you left.',
       forgotTooEarly: function (time) { return 'The time you left must be after your check in at ' + time + '.'; },
+      breakIn: 'Break Start',
+      breakOut: 'Break End',
+      onBreak: function (time) { return 'On break since ' + time; },
+      breakDone: function (a, b, m) { return 'Break ' + a + ' – ' + b + ' · ' + m + ' min'; },
     },
     // The check-out reminder (web push), in Settings. Off until the person turns it
     // on and picks a time. Keep in step with modules/operations/includes/ops_attendance_reminder.php.
@@ -1024,6 +1028,38 @@
     enqueue({ kind: 'attendance', jobId: 0, action: action });
   }
 
+  /** Break Start / Break End: one break a day, checked in or not. Shown at once, sent when there is signal. */
+  function breakInOut(action) {
+    var stamp = nowStamp();
+    var hm = stamp.slice(11, 16);
+    var old = attendanceNow() || { state: 'not_checked_in', work_date: stamp.slice(0, 10), check_in: null, check_out: null, hours: null, message: null };
+    if (old.unclosed || old.state === 'hr_marked') return;
+    if (action === 'break-start') {
+      if (old.break_start) return;
+      cacheSet('attendance', Object.assign({}, old, { work_date: old.work_date || stamp.slice(0, 10), break_start: hm, break_end: null, break_minutes: null }));
+    } else {
+      if (!old.break_start || old.break_end) return;
+      var from = new Date((old.work_date || stamp.slice(0, 10)) + 'T' + old.break_start + ':00').getTime();
+      var mins = isFinite(from) ? Math.max(0, Math.round((Date.now() - from) / 60000)) : null;
+      cacheSet('attendance', Object.assign({}, old, { break_end: hm, break_minutes: mins }));
+    }
+    enqueue({ kind: 'attendance', jobId: 0, action: action });
+  }
+
+  /** The break button under Check in / out, on its own: Break Start, then Break End. */
+  function breakBar(data) {
+    if (data && (data.state === 'hr_marked' || data.unclosed)) return '';
+    if (data && data.break_start && data.break_end) {
+      return '<div class="att note"><span class="ok">' + icon('check') + '</span><span class="grow">' +
+        esc(T.attendance.breakDone(data.break_start, data.break_end, data.break_minutes || 0)) + '</span></div>';
+    }
+    if (data && data.break_start) {
+      return '<div class="att att-break"><strong class="grow">' + esc(T.attendance.onBreak(data.break_start)) + '</strong>' +
+        '<button type="button" class="btn break auto" data-action="cleaning:break-end">' + esc(T.attendance.breakOut) + '</button></div>';
+    }
+    return '<div class="att">' + button(T.attendance.breakIn, 'cleaning:break-start', { variant: 'break', icon: 'clock' }) + '</div>';
+  }
+
   /** Keep a file somewhere that survives a closed app until it is sent. */
   function stash(blob) {
     var key = 'f-' + S.uid();
@@ -1671,13 +1707,13 @@
     if (data && data.state === 'hr_marked') return '<div class="att note">' + icon('user') + '<span class="grow">' + esc(data.message) + '</span></div>';
     if (data && data.state === 'checked_out') {
       return '<div class="att note"><span class="ok">' + icon('check') + '</span><span class="grow">' +
-        esc(T.attendance.dayDone(data.check_in || '', data.check_out || '', hoursLabel(data.hours))) + '</span></div>';
+        esc(T.attendance.dayDone(data.check_in || '', data.check_out || '', hoursLabel(data.hours))) + '</span></div>' + breakBar(data);
     }
     if (data && data.state === 'checked_in') {
       return '<div class="att"><span class="ok">' + icon('clock') + '</span><strong class="grow">' + esc(T.attendance.checkedInAt(data.check_in || '', !!data.work_date && data.work_date < nowStamp().slice(0, 10))) + '</strong>' +
-        '<button type="button" class="btn secondary auto" data-action="cleaning:check-out">' + esc(T.attendance.checkOut) + '</button></div>';
+        '<button type="button" class="btn secondary auto" data-action="cleaning:check-out">' + esc(T.attendance.checkOut) + '</button></div>' + breakBar(data);
     }
-    return '<div class="att">' + button(T.attendance.checkIn, 'cleaning:check-in', { icon: 'clock' }) + '</div>';
+    return '<div class="att">' + button(T.attendance.checkIn, 'cleaning:check-in', { icon: 'clock' }) + '</div>' + breakBar(data);
   }
 
   /**
@@ -2339,6 +2375,8 @@
       case 'claim': claim(id); break;
       case 'new': ui.newJob = null; S.go({ app: 'cleaning', view: 'new', kind: el.getAttribute('data-kind') || undefined }); refreshScreen(); break;
       case 'check-in': checkInOut('check-in'); break;
+      case 'break-start': breakInOut('break-start'); break;
+      case 'break-end': breakInOut('break-end'); break;
       case 'close-previous': closePrevious(); break;
       case 'reminder-set': reminderEdit().on = el.getAttribute('data-on') === '1'; S.render(); break;
       case 'reminder-save': reminderSave(); break;

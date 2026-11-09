@@ -66,7 +66,7 @@ if ($route === 'reminder/settings' && $method === 'POST') {
 if ($route === 'attendance' && $method === 'GET') {
     ops_api_handle_attendance($conn, $user, 'status');
 }
-if ($method === 'POST' && preg_match('#^attendance/(check-in|check-out|close-previous)$#', $route, $m)) {
+if ($method === 'POST' && preg_match('#^attendance/(check-in|check-out|close-previous|break-start|break-end)$#', $route, $m)) {
     ops_api_handle_attendance($conn, $user, $m[1]);
 }
 
