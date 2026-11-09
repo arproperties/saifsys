@@ -128,6 +128,9 @@ check('Annexes A, B, C present', 3, preg_match_all('/Annex [ABC] - /', $out));
 check('Annex A lists 4 cheques', true, strpos($out, '000104') !== false && strpos($out, '80,000.00') !== false);
 check('renewal fee clause included by default', true, strpos($out, 'AED 1,500 or 2%') !== false);
 check('old bounced cheque penalty gone', false, strpos($out, 'contractual penalty of AED 500') !== false);
+check('cheque handling fee printed', true, strpos($out, 'administrative handling fee of AED 500 (Five Hundred Dirhams) per returned cheque') !== false);
+check('late payment penalty gone', false, strpos($out, 'late payment penalty') !== false);
+check('deposit clause allows clause 12(b) deductions', true, strpos($out, 'any unpaid amounts invoiced under Clause 12(b)') !== false);
 check('RDC jurisdiction', true, strpos($out, 'Rental Disputes Centre of the Emirate of Dubai') !== false);
 
 $g = $baseLease;

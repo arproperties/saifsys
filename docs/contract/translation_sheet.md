@@ -38,11 +38,23 @@ On the handover date, both Parties shall jointly complete and sign the Move-In I
 
 (a) The Tenant shall pay the rent on the due dates set out in the Payment Schedule (Annex A). The cheque dates in Annex A are the due dates of the respective instalments.
 
-(b) If any cheque is returned unpaid for a reason attributable to the Tenant, the Tenant shall reimburse the Landlord's actual, documented costs arising from the return (including bank charges and the cost of serving notices). A cheque returned because the account is closed, the signature does not match or the amounts in words and figures differ shall be treated as a material breach.
+(b) If a cheque is returned unpaid for any reason attributable to the Tenant, the Tenant shall, within seven (7) days of written notice:
 
-(c) The Landlord's acceptance of a replacement cheque or of a partial payment is on account only and does not extend any due date, waive any notice already served, or waive any right of the Landlord.
+- (i) pay the amount of the returned cheque;
 
-(d) In the event of non-payment, the Landlord may exercise its rights under Article 25 of Law No. 26 of 2007 as amended, including service of the statutory notice through the notary public or registered mail, and may claim rent until the date the Leased Premises are actually vacated and handed over.
+- (ii) reimburse the Landlord's actual third-party costs arising from the return, including bank charges and the cost of serving notices, against copies of the relevant receipts; and
+
+- (iii) pay an administrative handling fee of AED {{CHEQUE_ADMIN_FEE}} ({{CHEQUE_ADMIN_FEE_WORDS}} Dirhams) per returned cheque. The Parties agree that this fee is a genuine pre-estimate of the Landlord's internal cost of handling a returned cheque (staff time, correspondence, re-presentation and record-keeping) and is not a penalty.
+
+(c) The Landlord may invoice the amounts in (b)(ii) and (b)(iii) and, if unpaid, deduct them from the security deposit in accordance with the Security Deposit clause. The Landlord may make acceptance of a replacement cheque conditional on payment of these amounts.
+
+(d) A cheque returned because the account is closed, the signature does not match, or the amounts in words and figures differ shall be treated as a material breach.
+
+(e) The Landlord's acceptance of a replacement cheque or of a partial payment is on account only and does not extend any due date, waive any notice already served, or waive any right of the Landlord.
+
+(f) In the event of non-payment, the Landlord may exercise its rights under Article 25 of Law No. 26 of 2007 as amended, including service of the statutory notice through the notary public or registered mail, and may claim rent until the date the Leased Premises are actually vacated and handed over.
+
+(g) Sub-clauses (b) and (c) survive the expiry or termination of this Agreement.
 
 ## Clause 13
 *amended — old clause 13*
@@ -87,7 +99,7 @@ The Tenant shall bear full responsibility for the payment of all governmental, m
 
 (c) No deduction shall be made for normal wear and tear, which includes minor scuffs and marks, small nail holes, fading from sunlight, and ordinary repainting after a tenancy of twelve (12) months or more unless specific damage is recorded.
 
-(d) The Landlord may deduct unpaid rent, unpaid utility charges, the cost of replacing unreturned keys or access cards, and the cost of repairing damage beyond normal wear and tear proven by Annex B and Annex C.
+(d) The Landlord may deduct unpaid rent, unpaid utility charges, any unpaid amounts invoiced under Clause 12(b) supported by the invoice and receipts, the cost of replacing unreturned keys or access cards, and the cost of repairing damage beyond normal wear and tear proven by Annex B and Annex C.
 
 ## Clause 26
 *amended — old clause 27*

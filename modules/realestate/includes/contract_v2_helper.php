@@ -41,6 +41,8 @@ if (!function_exists('contract_v2_is_v2_template')) {
         return [
             'MINOR_REPAIR_THRESHOLD'    => ['type' => 'int',    'default' => 500],
             'EJARI_REGISTRATION_DAYS'   => ['type' => 'int',    'default' => 7],
+            // Clause 12(b)(iii): handling fee per returned cheque, no VAT (owner's decision 2026-11-09).
+            'CHEQUE_ADMIN_FEE'          => ['type' => 'int',    'default' => 500],
             'MAX_OCCUPANTS'             => ['type' => 'int',    'default' => 4],
             'OCCUPANCY_TYPE'            => ['type' => 'string', 'default' => 'a single family'],
             'LANDLORD_NOTICE_EMAIL'     => ['type' => 'string', 'default' => 'ar.properties15@gmail.com'],
@@ -540,6 +542,8 @@ if (!function_exists('contract_v2_is_v2_template')) {
         $values = [
             '{{MINOR_REPAIR_THRESHOLD}}' => number_format((int)$v['MINOR_REPAIR_THRESHOLD']),
             '{{MINOR_REPAIR_THRESHOLD_WORDS}}' => contract_v2_number_words((int)$v['MINOR_REPAIR_THRESHOLD']),
+            '{{CHEQUE_ADMIN_FEE}}' => number_format((int)$v['CHEQUE_ADMIN_FEE']),
+            '{{CHEQUE_ADMIN_FEE_WORDS}}' => contract_v2_number_words((int)$v['CHEQUE_ADMIN_FEE']),
             '{{EJARI_REGISTRATION_DAYS}}' => (string)(int)$v['EJARI_REGISTRATION_DAYS'],
             '{{EJARI_REGISTRATION_DAYS_WORDS}}' => strtolower(contract_v2_number_words((int)$v['EJARI_REGISTRATION_DAYS'])),
             '{{MAX_OCCUPANTS}}' => (string)(int)$v['MAX_OCCUPANTS'],

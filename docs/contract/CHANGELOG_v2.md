@@ -52,6 +52,7 @@ Numbers with the default settings: renewal fee clause included, no guarantor. Cl
 - Signature page: guarantor signature line when a guarantor is on the lease. Signature lines now print (they were missing in v1).
 - New pages after the signature page: Annex A Payment Schedule (from the lease's cheques), Annex B Move-In Inspection Report (filled from the move-in record when there is one, otherwise a blank form), Annex C Move-Out Inspection Report (blank).
 - Clause 5 wording: the last sentence now says "these reports" instead of "this inventory". The old sentence "This inventory shall serve as an official document…" was removed, because the new text already says the report is the record.
+- Clause 12: returned cheque = cheque amount + actual third-party costs with receipts + AED 500 handling fee (no VAT), within 7 days of notice; may be taken from the deposit; survives the end of the lease. Clause 20(d) now allows deducting unpaid clause 12(b) amounts.
 - Clause 19 (renewal fee) is kept unchanged inside `{{#if INCLUDE_RENEWAL_FEE}}` (default on) with `TODO(legal): confirm enforceability of renewal service fee`.
 
 ## New lease fields
@@ -69,6 +70,7 @@ Guarantor rule: when the tenant is a **company** and the annual rent is **over A
 | Placeholder | Type | Default |
 |---|---|---|
 | `{{MINOR_REPAIR_THRESHOLD}}` / `{{MINOR_REPAIR_THRESHOLD_WORDS}}` | int / words | 500 / Five Hundred |
+| `{{CHEQUE_ADMIN_FEE}}` / `{{CHEQUE_ADMIN_FEE_WORDS}}` | int / words | 500 / Five Hundred (clause 12(b)(iii), no VAT) |
 | `{{EJARI_REGISTRATION_DAYS}}` / `_WORDS` | int / words | 7 / seven |
 | `{{MAX_OCCUPANTS}}` | int | 4 |
 | `{{OCCUPANCY_TYPE}}` | text | a single family |
