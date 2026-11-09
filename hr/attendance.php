@@ -380,7 +380,7 @@ echo hr_ui_page_header(
         ['label' => 'Attendance'],
     ],
     '<a class="btn btn-outline-secondary" href="../operation.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
-    . (hr_weekly_off_plans_ready($conn) ? '<button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#woPlanModal"><i class="bi bi-calendar-plus me-1"></i>Add Weekly Off</button>' : '')
+    . (hr_weekly_off_plans_ready($conn) ? '<button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#woPlanModal"><i class="bi bi-calendar-plus me-1"></i>Weekly / Day Off</button>' : '')
     . '<a class="btn btn-primary" href="attendance_bulk.php"><i class="bi bi-ui-checks-grid me-1"></i>Bulk Apply</a>'
     . '<a class="btn btn-success" href="attendance_summary.php"><i class="bi bi-table me-1"></i>Monthly Summary</a>'
 );

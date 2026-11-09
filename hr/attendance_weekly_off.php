@@ -22,7 +22,22 @@ $me_id = isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null;
 $dayNames = hr_weekly_off_day_names();
 $action = (string)($_POST['action'] ?? '');
 
-if (!hr_weekly_off_plans_ready($conn)) {
+if ($action === 'day_off') {
+    // The Day off choice in the same popup: Day Off status on the chosen days.
+    $_SESSION['wo_plan_mode'] = 'day';
+    $ids = array_values(array_unique(array_map('intval', (array)($_POST['employee_ids'] ?? []))));
+    $from = (string)($_POST['date_from'] ?? '');
+    $to = (string)($_POST['date_to'] ?? '');
+    $res = hr_day_off_add($conn, $ids, $from, $to, (string)($_POST['note'] ?? ''), $me_id);
+    if ($res['ok'] && ($res['added'] + $res['changed']) > 0) {
+        audit_bridge_hr_ops('day_off_added', 'attendance', 0,
+            'Day off ' . $from . ($to !== $from ? ' to ' . $to : '') . ' for ' . count($ids) . ' employee(s): ' . $res['message'], null,
+            ['date_from' => $from, 'date_to' => $to, 'employee_ids' => $ids, 'note' => (string)($_POST['note'] ?? ''),
+             'added' => $res['added'], 'changed' => $res['changed'], 'already' => $res['already'], 'skipped' => $res['skipped']],
+            'Day off', $me_id);
+    }
+    $_SESSION['wo_plan_flash'] = [$res['ok'] ? 'ok' : 'err', $res['message']];
+} elseif (!hr_weekly_off_plans_ready($conn)) {
     $_SESSION['wo_plan_flash'] = ['err', 'Weekly off cannot be saved yet: run migrations/hr_attendance_weekly_off.sql first.'];
 } elseif ($action === 'add') {
     $ids = array_values(array_unique(array_map('intval', (array)($_POST['employee_ids'] ?? []))));

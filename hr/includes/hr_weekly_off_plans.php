@@ -201,6 +201,80 @@ function hr_weekly_off_plan_hits(array $plan, string $ymd): bool
     return intdiv($days, 7) % $n === 0;
 }
 
+/** Day off on chosen days (the Day off choice in the same popup): at most this many days in one go. */
+const HR_DAY_OFF_MAX_DAYS = 62;
+
+/**
+ * Day Off on every day from $from to $to (Y-m-d) for these employees, as the
+ * attendance status 'day_off' (paid; payroll deducts only Absent and Half Day).
+ * No row yet: one is added. A Pending day becomes Day Off and keeps its times.
+ * A day HR already decided (approved, leave, absent…) is left as it is.
+ *
+ * @return array{ok:bool, message:string, added?:int, changed?:int, already?:int, skipped?:int}
+ */
+function hr_day_off_add(PDO $conn, array $employeeIds, string $from, string $to, string $note, ?int $userId): array
+{
+    require_once __DIR__ . '/../../includes/hr_attendance_attachments.php';
+    if (!hr_attendance_status_supported($conn, 'day_off')) {
+        return ['ok' => false, 'message' => 'Day off cannot be saved yet: run migrations/hr_attendance_day_off.sql first.'];
+    }
+    $ids = array_values(array_filter(array_unique(array_map('intval', $employeeIds)), static fn($i) => $i > 0));
+    $valid = static function (string $v): ?DateTimeImmutable {
+        $d = DateTimeImmutable::createFromFormat('!Y-m-d', $v);
+        return ($d && $d->format('Y-m-d') === $v) ? $d : null;
+    };
+    $f = $valid($from);
+    $t = $valid($to);
+    if (!$ids) {
+        return ['ok' => false, 'message' => 'Choose at least one employee.'];
+    }
+    if (!$f || !$t) {
+        return ['ok' => false, 'message' => 'Choose the From and To dates.'];
+    }
+    if ($t < $f) {
+        return ['ok' => false, 'message' => 'To cannot be before From.'];
+    }
+    if ($f->diff($t)->days + 1 > HR_DAY_OFF_MAX_DAYS) {
+        return ['ok' => false, 'message' => 'Pick at most ' . HR_DAY_OFF_MAX_DAYS . ' days at a time.'];
+    }
+    $note = mb_substr(trim($note) !== '' ? trim($note) : 'Day off', 0, 200);
+
+    $emp = $conn->prepare('SELECT company_id FROM employees WHERE id = ?');
+    $sel = $conn->prepare('SELECT id, status, notes FROM attendance WHERE employee_id = ? AND work_date = ?');
+    $ins = $conn->prepare("INSERT INTO attendance (employee_id, work_date, status, source, notes, created_by, updated_by, company_id)
+                           VALUES (?, ?, 'day_off', 'admin', ?, ?, ?, ?)");
+    $upd = $conn->prepare("UPDATE attendance SET status = 'day_off', notes = ?, updated_by = ?, updated_at = NOW() WHERE id = ? AND status = 'pending'");
+    $n = ['added' => 0, 'changed' => 0, 'already' => 0, 'skipped' => 0];
+    foreach ($ids as $eid) {
+        $emp->execute([$eid]);
+        $company = $emp->fetchColumn();
+        if ($company === false) {
+            continue;
+        }
+        for ($d = $f; $d <= $t; $d = $d->modify('+1 day')) {
+            $sel->execute([$eid, $d->format('Y-m-d')]);
+            $row = $sel->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                $ins->execute([$eid, $d->format('Y-m-d'), $note, $userId, $userId, (int)($company ?: 1)]);
+                $n['added']++;
+            } elseif ($row['status'] === 'day_off') {
+                $n['already']++;
+            } elseif ($row['status'] === 'pending') {
+                $upd->execute([$note, $userId, (int)$row['id']]);
+                hr_attendance_log_status_change($conn, (int)$row['id'], 'pending', 'day_off', $note, $row['notes'] ?? null, $userId);
+                $n['changed']++;
+            } else {
+                $n['skipped']++;
+            }
+        }
+    }
+    $done = $n['added'] + $n['changed'];
+    $parts = [$done . ' day' . ($done === 1 ? '' : 's') . ' saved as Day Off'];
+    if ($n['already']) $parts[] = $n['already'] . ' already Day Off';
+    if ($n['skipped']) $parts[] = $n['skipped'] . ' left as they were (already decided by HR)';
+    return ['ok' => true, 'message' => implode(', ', $parts) . '.'] + $n;
+}
+
 /**
  * The Add Weekly Off popup (Bootstrap modal #woPlanModal): the form, and below
  * it every group saved so far with Delete / remove one person. Every form posts
@@ -214,6 +288,11 @@ function hr_weekly_off_plan_modal(PDO $conn, array $employees, int $companyId = 
     $plans = hr_weekly_off_plan_list($conn, $companyId);
     $flash = $_SESSION['wo_plan_flash'] ?? null;
     unset($_SESSION['wo_plan_flash']);
+    // Day off needs the day_off status (migrations/hr_attendance_day_off.sql). The popup reopens on what was just used.
+    require_once dirname(__DIR__, 2) . '/includes/hr_attendance_attachments.php';
+    $dayOffReady = hr_attendance_status_supported($conn, 'day_off');
+    $mode = ($dayOffReady && ($_SESSION['wo_plan_mode'] ?? '') === 'day') ? 'day' : 'weekly';
+    unset($_SESSION['wo_plan_mode']);
     $today = date('Y-m-d');
     $fmt = static fn($d) => date('j M Y', strtotime($d));
     searchable_select_assets();
@@ -228,11 +307,50 @@ function hr_weekly_off_plan_modal(PDO $conn, array $employees, int $companyId = 
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title" id="woPlanTitle">Weekly off</h5>
+          <!-- What to add: a repeating Weekly off, or Day Off on chosen days. -->
+          <h5 class="modal-title" id="woPlanTitle">
+            <select id="woPlanMode" class="form-select fs-5 fw-semibold border-0 ps-0 py-0" style="width:auto;background-color:transparent" aria-label="Weekly off or Day off">
+              <option value="weekly" <?= $mode === 'weekly' ? 'selected' : '' ?>>Weekly off</option>
+              <?php if ($dayOffReady): ?><option value="day" <?= $mode === 'day' ? 'selected' : '' ?>>Day off</option><?php endif; ?>
+            </select>
+          </h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
           <?php if ($flash): ?><div class="alert alert-<?= $flash[0] === 'ok' ? 'success' : 'danger' ?> py-2"><?= $e($flash[1]) ?></div><?php endif; ?>
+          <?php if ($dayOffReady): ?>
+          <div id="woDayPane" class="<?= $mode === 'day' ? '' : 'd-none' ?>">
+          <form method="post" action="attendance_weekly_off.php" class="row g-2 align-items-end">
+            <?php csrf_field(); ?>
+            <input type="hidden" name="action" value="day_off">
+            <div class="col-12">
+              <label class="form-label" for="woDayEmployees">Employees *</label>
+              <select name="employee_ids[]" id="woDayEmployees" class="form-select" multiple required>
+                <?php foreach ($employees as $emp): ?>
+                  <option value="<?= (int)$emp['id'] ?>"><?= $e($emp['label'] . (!empty($emp['company_name']) ? ' - ' . $emp['company_name'] : '')) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+            <div class="col-6 col-md-3">
+              <label class="form-label" for="woDayFrom">From *</label>
+              <input type="date" name="date_from" id="woDayFrom" class="form-control" required value="<?= $e($today) ?>">
+            </div>
+            <div class="col-6 col-md-3">
+              <label class="form-label" for="woDayTo">To *</label>
+              <input type="date" name="date_to" id="woDayTo" class="form-control" required value="<?= $e($today) ?>">
+            </div>
+            <div class="col-md-5">
+              <label class="form-label" for="woDayNote">Note</label>
+              <input type="text" name="note" id="woDayNote" class="form-control" maxlength="200" placeholder="Optional, e.g. comp off for Friday">
+            </div>
+            <div class="col-md-1 d-grid">
+              <button class="btn btn-primary">Add</button>
+            </div>
+            <div class="col-12 small text-muted">Saves Day Off on each of these days, a paid day off. A Pending day becomes Day Off and keeps its times; a day HR already decided (approved, leave, absent…) is left as it is. Shown on the Attendance list under the Day Off card.</div>
+          </form>
+          </div>
+          <?php endif; ?>
+          <div id="woWeeklyPane" class="<?= $mode === 'day' ? 'd-none' : '' ?>">
           <form method="post" action="attendance_weekly_off.php" class="row g-2 align-items-end">
             <?php csrf_field(); ?>
             <input type="hidden" name="action" value="add">
@@ -319,6 +437,7 @@ function hr_weekly_off_plan_modal(PDO $conn, array $employees, int $companyId = 
               </table>
             </div>
           <?php endif; ?>
+          </div>
         </div>
       </div>
     </div>
@@ -330,8 +449,22 @@ function hr_weekly_off_plan_modal(PDO $conn, array $employees, int $companyId = 
     to.min = from.value;
     // Select2 inside a modal needs the modal as its parent, or its search box cannot be typed in.
     if (window.jQuery && jQuery.fn.select2) {
-      jQuery('#woPlanEmployees').select2({ theme: 'bootstrap-5', width: '100%', placeholder: 'Choose one or more employees', closeOnSelect: false, dropdownParent: jQuery('#woPlanModal') });
+      jQuery('#woPlanEmployees, #woDayEmployees').select2({ theme: 'bootstrap-5', width: '100%', placeholder: 'Choose one or more employees', closeOnSelect: false, dropdownParent: jQuery('#woPlanModal') });
     }
+    // Day off: To is never before From.
+    var dFrom = document.getElementById('woDayFrom'), dTo = document.getElementById('woDayTo');
+    if (dFrom && dTo) {
+      dFrom.addEventListener('change', function () { dTo.min = dFrom.value; if (dTo.value < dFrom.value) dTo.value = dFrom.value; });
+      dTo.min = dFrom.value;
+    }
+    // The dropdown in the header switches between Weekly off and Day off.
+    var mode = document.getElementById('woPlanMode');
+    mode.addEventListener('change', function () {
+      var day = mode.value === 'day';
+      document.getElementById('woWeeklyPane').classList.toggle('d-none', day);
+      var dp = document.getElementById('woDayPane');
+      if (dp) dp.classList.toggle('d-none', !day);
+    });
   });
   <?php if ($flash !== null): ?>
   // Back from adding or deleting: show the popup again with the updated list.
