@@ -219,6 +219,10 @@ function ops_attendance_payload(?array $row, ?array $unclosed = null): array
         'check_out' => !empty($row['check_out']) ? substr((string)$row['check_out'], 0, 5) : null,
         'hours' => isset($row['hours']) && $row['hours'] !== null ? (float)$row['hours'] : null,
         'message' => $message,
+        // The day's one break: open while break_end is empty.
+        'break_start' => !empty($row['break_start']) ? substr((string)$row['break_start'], 0, 5) : null,
+        'break_end' => !empty($row['break_end']) ? substr((string)$row['break_end'], 0, 5) : null,
+        'break_minutes' => isset($row['break_minutes']) && $row['break_minutes'] !== null ? (int)$row['break_minutes'] : null,
         'unclosed' => $unclosed ? [
             'work_date' => $unclosed['work_date'],
             'check_in' => substr((string)$unclosed['check_in'], 0, 5),
@@ -238,7 +242,7 @@ function ops_attendance_status_is_open(?string $status): bool
 
 function ops_attendance_status_words(string $status): string
 {
-    return ['absent' => 'absent', 'half' => 'a half day', 'on_leave' => 'leave', 'excused_absent' => 'an excused absence', 'weekly_off' => 'your weekly off', 'pending' => 'not yet approved'][$status] ?? $status;
+    return ['absent' => 'absent', 'half' => 'a half day', 'on_leave' => 'leave', 'excused_absent' => 'an excused absence', 'weekly_off' => 'your weekly off', 'day_off' => 'your day off', 'pending' => 'not yet approved'][$status] ?? $status;
 }
 
 /**
@@ -344,6 +348,112 @@ function ops_attendance_check_out(PDO $conn, array $employee, int $userId, ?stri
 
     ops_attendance_audit($conn, 'attendance_updated', $employee, $fresh, ops_attendance_note('Checked out on the operations app', $at), $userId);
     return ['ok' => true, 'row' => $fresh];
+}
+
+/** Whether the attendance table has the break columns yet (migrations/hr_attendance_break.sql). */
+function ops_attendance_breaks_available(PDO $conn): bool
+{
+    static $has = null;
+    if ($has === null) {
+        try {
+            $has = (bool)$conn->query("SHOW COLUMNS FROM attendance LIKE 'break_start'")->fetch();
+        } catch (PDOException $e) {
+            $has = false;
+        }
+    }
+    return $has;
+}
+
+/**
+ * Break Start: one break a day, checked in or not. With no row yet the day starts
+ * with the break, as the person's own; Check in (or the camera, for someone HR
+ * ticked for it) fills in the arrival on that same row. The break is recorded, never taken off the
+ * hours, the same as on the web.
+ *
+ * @return array{ok:bool, error?:string, message?:string, row?:?array}
+ */
+function ops_attendance_break_start(PDO $conn, array $employee, int $userId, ?string $at = null): array
+{
+    if (!ops_attendance_breaks_available($conn)) {
+        return ['ok' => false, 'error' => 'no_breaks', 'message' => 'Breaks are not switched on yet. Ask HR.'];
+    }
+    $employeeId = (int)$employee['id'];
+    $at = $at ?? date('Y-m-d H:i:s');
+    $today = substr($at, 0, 10);
+    $now = date('H:i:00', strtotime($at));
+    $row = ops_attendance_current($conn, $employeeId, $at);
+
+    if ($row && !ops_attendance_status_is_open($row['status'] ?? null)) {
+        return ['ok' => false, 'error' => 'hr_marked',
+                'message' => 'HR has marked today as ' . ops_attendance_status_words((string)$row['status']) . '.'];
+    }
+    if ($row && !empty($row['break_start'])) {
+        // A second tap, or a queued one sent twice: the first break stands.
+        return empty($row['break_end'])
+            ? ['ok' => true, 'row' => $row]
+            : ['ok' => false, 'error' => 'break_taken', 'message' => 'You have already taken your break today.'];
+    }
+    if (!$row) {
+        // The person's own row, as a Check in would make. The camera still
+        // fills in the times of a day that has none (api/attendance_camera.php).
+        try {
+            $conn->prepare("
+                INSERT INTO attendance (employee_id, work_date, status, source, notes, created_at, updated_at, created_by, updated_by, company_id)
+                VALUES (?, ?, 'pending', 'self', ?, ?, ?, ?, ?, ?)
+            ")->execute([
+                $employeeId, $today, ops_attendance_note('Break on the operations app', $at),
+                date('Y-m-d H:i:s'), date('Y-m-d H:i:s'), $userId, $userId,
+                (int)($employee['company_id'] ?? 1),
+            ]);
+        } catch (PDOException $e) {
+            if ($e->getCode() !== '23000') {
+                throw $e;
+            }
+        }
+        $row = ops_attendance_current($conn, $employeeId, $at);
+    }
+    // A camera row keeps updated_by empty, so the camera keeps the day up to date.
+    $conn->prepare("
+        UPDATE attendance SET break_start = ?, updated_by = IF(source = 'camera', updated_by, ?), updated_at = ?
+        WHERE id = ? AND break_start IS NULL
+    ")->execute([$now, $userId, date('Y-m-d H:i:s'), (int)$row['id']]);
+
+    $row = ops_attendance_current($conn, $employeeId, $at);
+    ops_attendance_audit($conn, 'attendance_self_break_start', $employee, $row, ops_attendance_note('Break started on the operations app', $at), $userId);
+    return ['ok' => true, 'row' => $row];
+}
+
+/**
+ * Break End: back from the break.
+ *
+ * @return array{ok:bool, error?:string, message?:string, row?:?array}
+ */
+function ops_attendance_break_end(PDO $conn, array $employee, int $userId, ?string $at = null): array
+{
+    if (!ops_attendance_breaks_available($conn)) {
+        return ['ok' => false, 'error' => 'no_breaks', 'message' => 'Breaks are not switched on yet. Ask HR.'];
+    }
+    $employeeId = (int)$employee['id'];
+    $at = $at ?? date('Y-m-d H:i:s');
+    $row = ops_attendance_current($conn, $employeeId, $at);
+    if (!$row || empty($row['break_start'])) {
+        return ['ok' => false, 'error' => 'no_break', 'message' => 'You are not on a break.'];
+    }
+    if (!empty($row['break_end'])) {
+        return ['ok' => true, 'row' => $row];
+    }
+    $start = strtotime($row['work_date'] . ' ' . $row['break_start']);
+    // Never before the break it ends.
+    $endTs = max((int)strtotime(date('Y-m-d H:i:00', strtotime($at))), (int)$start);
+    $minutes = (int)round(($endTs - $start) / 60);
+    $conn->prepare("
+        UPDATE attendance SET break_end = ?, break_minutes = ?, updated_by = IF(source = 'camera', updated_by, ?), updated_at = ?
+        WHERE id = ? AND break_end IS NULL
+    ")->execute([date('H:i:00', $endTs), $minutes, $userId, date('Y-m-d H:i:s'), (int)$row['id']]);
+
+    $row = ops_attendance_current($conn, $employeeId, $at);
+    ops_attendance_audit($conn, 'attendance_self_break_end', $employee, $row, ops_attendance_note('Break ended on the operations app (' . $minutes . ' min)', $at), $userId);
+    return ['ok' => true, 'row' => $row];
 }
 
 /**

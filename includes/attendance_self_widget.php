@@ -23,9 +23,10 @@ if (!isset($conn) || !($conn instanceof PDO)) {
 require_once __DIR__ . '/attendance_self.php';
 require_once __DIR__ . '/url_helper.php';
 
-if (!attendance_self_web_visible()) {
-    return;
-}
+// Check in and out are on the face cameras when the web bar is off: then the
+// web shows only the break button (Break Start, then Break End), checked in or
+// not, while today's break is not yet taken.
+$asBreakOnly = !attendance_self_web_visible();
 
 // Every page that reaches here has loaded auth.php, which defines these. The
 // fallback is for the gate's own page, which is drawn from almost nothing —
@@ -92,6 +93,10 @@ if ($asOnBreak) {
 // One break a day, so the button is offered only until it has been taken.
 $asCanBreak = !empty($asState['breaks_on']) && empty($asState['break_start']);
 $asBreakMins = $asState['break_mins'] !== null ? (int)$asState['break_mins'] : null;
+// Break Start is offered whether or not they have checked in, by camera or otherwise.
+if ($asBreakOnly && !$asOnBreak && !($asCanBreak && $asState['employee'] && $asState['stage'] !== 'excused')) {
+    return;
+}
 
 // What HR marked today, in the words the attendance pages use.
 $asStatusLabels = [
@@ -99,6 +104,7 @@ $asStatusLabels = [
     'absent'         => 'Marked absent',
     'half'           => 'Half day',
     'excused_absent' => 'Excused absent',
+    'day_off'        => 'Day off',
 ];
 $asStatusLabel = $asStatusLabels[(string)$asState['att_status']] ?? 'Recorded by HR';
 
@@ -162,6 +168,9 @@ if (!function_exists('h')) {
 .as-bar-btn-alt{background:#f5f0e8;color:#44403c;}
 .as-bar-btns{display:flex;align-items:center;gap:8px;}
 .as-btn-back{background:#166534;}
+/* Break Start / Break End: blue, so they are never mistaken for the day's Check In / Check Out. */
+.as-bar-btn-break{background:#0e7490;}
+.as-btn-break{background:#0e7490;}
 .as-bar-note{color:#a8a29e;font-size:12.5px;font-weight:600;white-space:nowrap;}
 .as-bar-warn{color:#9a3412;font-size:12.5px;font-weight:600;white-space:nowrap;}
 .as-bar{cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;}
@@ -174,7 +183,54 @@ if (!function_exists('h')) {
 }
 </style>
 
-<?php if ($asOnBreak): ?>
+<?php if ($asBreakOnly): ?>
+<div class="as-bar">
+  <span class="as-bar-grip" aria-hidden="true" title="Drag to move">&#8942;&#8942;</span>
+  <div class="as-bar-txt">
+    <?php if ($asOnBreak): ?>
+      <strong>On break since <?= h(as_time_label($asState['break_start'])) ?></strong>
+      <span id="asBreakClock">0:00</span>
+    <?php else: ?>
+      <strong>Break</strong>
+      <span>Tap Break Start when you step away</span>
+    <?php endif; ?>
+    <?php if ($asFlash && empty($asFlash['ok'])): ?>
+      <span class="as-bar-warn"><?= h($asFlash['message']) ?></span>
+    <?php endif; ?>
+  </div>
+  <form method="post" action="<?= h($asEndpoint) ?>" id="asFormBreakOnly">
+    <?php csrf_field(); ?>
+    <input type="hidden" name="action" value="<?= $asOnBreak ? 'resume' : 'break' ?>">
+    <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
+    <button type="submit" class="as-bar-btn as-bar-btn-break" id="asBtnBreakOnly"><?= $asOnBreak ? 'Break End' : 'Break Start' ?></button>
+  </form>
+</div>
+<script>
+(function () {
+  // The break so far, counting up from the server's figure so a reload shows the same.
+  var el = document.getElementById('asBreakClock');
+  var started = Date.now();
+  var base = <?= json_encode($asBreakSecs) ?>;
+  function paint() {
+    var s = base + Math.floor((Date.now() - started) / 1000);
+    var hh = Math.floor(s / 3600), mm = Math.floor(s / 60) % 60, ss = s % 60;
+    var t = (mm < 10 && hh > 0 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+    el.textContent = hh > 0 ? hh + ':' + t : t;
+  }
+  if (el) { paint(); setInterval(paint, 1000); }
+
+  var form = document.getElementById('asFormBreakOnly');
+  var btn = document.getElementById('asBtnBreakOnly');
+  if (form && btn) {
+    form.addEventListener('submit', function () {
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+    });
+  }
+}());
+</script>
+
+<?php elseif ($asOnBreak): ?>
 <div class="as-scrim" id="asBreakScrim" role="dialog" aria-modal="true" aria-labelledby="asBreakTitle">
   <div class="as-card">
     <span class="as-badge">On break</span>
@@ -187,12 +243,12 @@ if (!function_exists('h')) {
       <p class="as-err"><?= h($asFlash['message']) ?></p>
     <?php endif; ?>
 
-    <p class="as-note">Tap <strong>Check In</strong> when you are back at your desk. The system is paused until you do.</p>
+    <p class="as-note">Tap <strong>Break End</strong> when you are back at your desk. The system is paused until you do.</p>
     <form method="post" action="<?= h($asEndpoint) ?>" id="asFormBack">
       <?php csrf_field(); ?>
       <input type="hidden" name="action" value="resume">
       <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
-      <button type="submit" class="as-btn as-btn-back" id="asBtnBack">Check In</button>
+      <button type="submit" class="as-btn as-btn-break" id="asBtnBack">Break End</button>
     </form>
     <p class="as-foot">Your break start and your return are both recorded for HR. The break is not taken off your hours &mdash; the day is still counted from your morning check-in to your check-out.</p>
 
@@ -388,7 +444,7 @@ if (!function_exists('h')) {
     <?php if ($asBreakMins !== null): ?>
       <span>Back <?= h(as_time_label($asState['break_end'])) ?> &middot; break was <?= h($asBreakMins) ?> min</span>
     <?php elseif ($asCanBreak): ?>
-      <span>Break when you step away</span>
+      <span>Break Start when you step away</span>
     <?php else: ?>
       <span>Tap when you leave</span>
     <?php endif; ?>
@@ -399,7 +455,7 @@ if (!function_exists('h')) {
       <?php csrf_field(); ?>
       <input type="hidden" name="action" value="break">
       <input type="hidden" name="redirect" value="<?= h($asBack) ?>">
-      <button type="submit" class="as-bar-btn as-bar-btn-alt" id="asBtnBreak">Break</button>
+      <button type="submit" class="as-bar-btn as-bar-btn-break" id="asBtnBreak">Break Start</button>
     </form>
     <?php endif; ?>
     <form method="post" action="<?= h($asEndpoint) ?>" id="asFormOut">
@@ -416,7 +472,7 @@ if (!function_exists('h')) {
   var bBtn = document.getElementById('asBtnBreak');
   if (bForm && bBtn) {
     bForm.addEventListener('submit', function (e) {
-      if (!window.confirm('Start your break? The system pauses until you tap Check In again.')) {
+      if (!window.confirm('Start your break? The system pauses until you tap Break End.')) {
         e.preventDefault();
         return;
       }

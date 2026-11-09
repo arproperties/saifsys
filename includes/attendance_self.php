@@ -379,20 +379,21 @@ function attendance_self_state(PDO $conn): array
         }
 
         // HR has already said what today is. Leave it alone.
-        if (in_array((string)$row['status'], ['on_leave', 'absent', 'half', 'excused_absent', 'weekly_off'], true)) {
+        if (in_array((string)$row['status'], ['on_leave', 'absent', 'half', 'excused_absent', 'weekly_off', 'day_off'], true)) {
             $state['stage'] = 'excused';
             return $state;
         }
     }
 
-    if (empty($state['check_in'])) {
+    if (!empty($state['break_start']) && empty($state['break_end'])) {
+        // A break that was started and not ended outranks everything: until
+        // they tap Break End, the only thing they can do is come back. A break
+        // can start before any check-in, so this comes first.
+        $state['stage'] = 'break';
+    } elseif (empty($state['check_in'])) {
         $state['stage'] = 'check_in';
     } elseif (empty($state['check_out'])) {
-        // A break that was started and not ended outranks everything: until
-        // they tap Back, the only thing they can do is come back.
-        $state['stage'] = (!empty($state['break_start']) && empty($state['break_end']))
-            ? 'break'
-            : 'check_out';
+        $state['stage'] = 'check_out';
     } else {
         $state['stage'] = 'done';
     }
@@ -714,8 +715,8 @@ function attendance_self_break_start(PDO $conn): array
     if ($state['stage'] === 'break') {
         return ['ok' => false, 'message' => 'You are already on a break.'];
     }
-    if ($state['stage'] !== 'check_out') {
-        return ['ok' => false, 'message' => 'Check in before taking a break.'];
+    if ($state['stage'] === 'excused') {
+        return ['ok' => false, 'message' => 'HR has already recorded today for you.'];
     }
     if (!empty($state['break_start'])) {
         return ['ok' => false, 'message' => 'You have already taken your break today.'];
@@ -725,6 +726,20 @@ function attendance_self_break_start(PDO $conn): array
     $workDate   = $state['work_date'];
     $time       = $state['now_time'];
     $userId     = function_exists('current_user_id') ? (current_user_id() ?: null) : null;
+
+    // A break needs no check-in: with no row yet, the day starts with the
+    // break, as the person's own (Self, Pending). The camera still fills in the
+    // check-in and check-out of a day with no times (api/attendance_camera.php).
+    if (!attendance_self_today_row($conn, $employeeId, $workDate)) {
+        try {
+            $conn->prepare(
+                "INSERT IGNORE INTO attendance (employee_id, work_date, status, source, notes, created_by, updated_by, company_id)
+                 VALUES (?, ?, 'pending', 'self', 'Break on the staff app', ?, ?, ?)"
+            )->execute([$employeeId, $workDate, $userId, $userId, (int)($employee['company_id'] ?: 1)]);
+        } catch (PDOException $e) {
+            return ['ok' => false, 'message' => 'Could not start your break. Please try again.'];
+        }
+    }
 
     try {
         // break_start IS NULL in the WHERE, so two taps in two tabs cannot
@@ -804,7 +819,7 @@ function attendance_self_break_end(PDO $conn): array
         ['employee_id' => $employeeId, 'work_date' => $workDate, 'break_start' => $started, 'break_end' => $time, 'break_minutes' => $minutes]
     );
 
-    return ['ok' => true, 'message' => 'Checked in again at ' . $state['now_label'] . '. Break was ' . $minutes . ' minutes.'];
+    return ['ok' => true, 'message' => 'Break ended at ' . $state['now_label'] . '. Break was ' . $minutes . ' minutes.'];
 }
 
 /* ---------------------------------------------------------------------------
@@ -881,7 +896,7 @@ function attendance_self_auto_checkout(PDO $conn): int
             AND a.check_in IS NOT NULL
             AND a.check_out IS NULL
             AND a.check_in < ?
-            AND a.status NOT IN ('on_leave', 'absent', 'half', 'excused_absent', 'weekly_off')
+            AND a.status NOT IN ('on_leave', 'absent', 'half', 'excused_absent', 'weekly_off', 'day_off')
             AND (a.work_date < ? OR (a.work_date = ? AND ? = 1))"
     );
     $st->execute([$cutoff . ':00', $today, $today, $past6 ? 1 : 0]);

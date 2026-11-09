@@ -10,6 +10,7 @@ require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_weekly_off.php';
 require_once __DIR__ . '/includes/hr_attendance_daily.php';
 require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
+require_once __DIR__ . '/../includes/searchable_select.php';
 require_role(['Owner', 'Admin', 'HR'], $conn);
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -77,7 +78,43 @@ $year = isset($_GET['year']) ? (int)$_GET['year'] : (int)date('Y');
 $dept = isset($_GET['department_id']) && $_GET['department_id'] !== '' ? (int)$_GET['department_id'] : null;
 $loc = isset($_GET['location_id']) && $_GET['location_id'] !== '' ? (int)$_GET['location_id'] : null;
 $supervisorId = isset($_GET['supervisor_id']) && $_GET['supervisor_id'] !== '' ? (int)$_GET['supervisor_id'] : null;
-$employeeId = isset($_GET['employee_id']) && $_GET['employee_id'] !== '' ? (int)$_GET['employee_id'] : null;
+// Several employees can be picked; employee_id (one) still works for older links.
+$employeeIds = array_values(array_unique(array_filter(array_map('intval', (array)($_GET['employee_ids'] ?? [])))));
+if (!$employeeIds && !empty($_GET['employee_id'])) {
+    $employeeIds = [(int)$_GET['employee_id']];
+}
+$employeeId = count($employeeIds) === 1 ? $employeeIds[0] : null;
+// From / To day: any days, up to 3 months. Empty = the whole month picked above.
+$validDay = static function ($v): ?string {
+    $d = DateTimeImmutable::createFromFormat('!Y-m-d', (string)$v);
+    return ($d && $d->format('Y-m-d') === $v) ? $v : null;
+};
+$dayFrom = $validDay($_GET['day_from'] ?? '');
+$dayTo = $validDay($_GET['day_to'] ?? '');
+$dayWarn = '';
+if ($dayFrom !== null || $dayTo !== null) {
+    $dayFrom ??= $dayTo;
+    $dayTo ??= $dayFrom;
+    if ($dayFrom > $dayTo) {
+        [$dayFrom, $dayTo] = [$dayTo, $dayFrom];
+    }
+    if ((new DateTimeImmutable($dayFrom))->diff(new DateTimeImmutable($dayTo))->days > 92) {
+        $dayWarn = 'Pick up to 3 months of days. Showing the month instead.';
+        $dayFrom = $dayTo = null;
+    }
+}
+$byDays = $dayFrom !== null;
+if ($byDays) {
+    // The month the range starts in: used only where one month is needed.
+    $month = (int)substr($dayFrom, 5, 2);
+    $year = (int)substr($dayFrom, 0, 4);
+}
+$rangeFrom = $byDays ? $dayFrom : sprintf('%04d-%02d-01', $year, $month);
+$rangeTo = $byDays ? $dayTo : date('Y-m-t', strtotime($rangeFrom));
+$periodLabel = !$byDays ? date('F Y', strtotime($rangeFrom))
+    : ($dayFrom === $dayTo ? date('j M Y', strtotime($dayFrom))
+        : date(substr($dayFrom, 0, 4) === substr($dayTo, 0, 4) ? 'j M' : 'j M Y', strtotime($dayFrom)) . ' – ' . date('j M Y', strtotime($dayTo)));
+$periodFile = $byDays ? $dayFrom . '_' . $dayTo : sprintf('%04d-%02d', $year, $month);
 $only_with_records = !empty($_GET['only_with_records']);
 $currentOnly = !isset($_GET['include_left']) || empty($_GET['include_left']);
 
@@ -122,7 +159,7 @@ $empListStmt = $conn->prepare($empListSql);
 $empListStmt->execute($empListParams);
 $employees = $empListStmt->fetchAll(PDO::FETCH_ASSOC);
 
-$params = [':m' => $month, ':y' => $year];
+$params = [':d_from' => $rangeFrom, ':d_to' => $rangeTo];
 $where = [];
 if ($currentOnly) {
     $ph = [];
@@ -149,9 +186,13 @@ if (!is_null($supervisorId)) {
     $where[] = "e.manager_id = :supervisor_id";
     $params[':supervisor_id'] = $supervisorId;
 }
-if (!is_null($employeeId)) {
-    $where[] = "e.id = :employee_id";
-    $params[':employee_id'] = $employeeId;
+if ($employeeIds) {
+    $ph = [];
+    foreach ($employeeIds as $i => $eid) {
+        $ph[] = ':emp' . $i;
+        $params[':emp' . $i] = $eid;
+    }
+    $where[] = "e.id IN (" . implode(',', $ph) . ")";
 }
 $sqlWhere = $where ? ("WHERE " . implode(" AND ", $where)) : "";
 
@@ -175,8 +216,7 @@ LEFT JOIN departments d ON d.id = e.department_id
 LEFT JOIN locations   l ON l.id = e.location_id
 LEFT JOIN attendance  a
   ON a.employee_id = e.id
-  AND MONTH(a.work_date) = :m
-  AND YEAR(a.work_date)  = :y
+  AND a.work_date BETWEEN :d_from AND :d_to
 $sqlWhere
 GROUP BY e.id, e.employee_code, e.full_name, c.name, d.name, l.name
 ";
@@ -193,7 +233,9 @@ $qsBase = http_build_query([
     'department_id' => $dept ?? '',
     'location_id' => $loc ?? '',
     'supervisor_id' => $supervisorId ?? '',
-    'employee_id' => $employeeId ?? '',
+    'employee_ids' => $employeeIds,
+    'day_from' => $dayFrom ?? '',
+    'day_to' => $dayTo ?? '',
     'only_with_records' => $only_with_records ? 1 : 0,
     'include_left' => $currentOnly ? 0 : 1,
 ]);
@@ -214,19 +256,22 @@ if ($export === 'detail_xls' || $export === 'detail_csv' || $tab === 'daily') {
     if (!is_null($detailEmp)) {
         $scopeEmps = array_values(array_filter($scopeEmps, static fn($se) => (int)$se['id'] === $detailEmp));
     }
-    $dailyRows = hr_attendance_daily_rows($conn, $scopeEmps, $year, $month);
-    $monthLabel = date('F Y', mktime(0, 0, 0, $month, 1, $year));
+    $dailyRows = hr_attendance_daily_rows($conn, $scopeEmps, $year, $month, $rangeFrom, $rangeTo);
+    $monthLabel = $periodLabel;
     $companyName = '';
     foreach ($companies as $co) {
         if ((int)$co['id'] === $selectedCompanyId) { $companyName = $co['name']; }
     }
-    $filename = sprintf("attendance_daily_%s_%04d-%02d." . ($export === 'detail_csv' ? 'csv' : 'xls'),
+    $filename = sprintf("attendance_daily_%s_%s." . ($export === 'detail_csv' ? 'csv' : 'xls'),
         ($detailEmp && $scopeEmps) ? preg_replace('/[^A-Za-z0-9]+/', '', (string)$scopeEmps[0]['employee_code'])
-            : ($companyName !== '' ? preg_replace('/[^A-Za-z0-9]+/', '_', $companyName) : 'all_companies'),
-        $year, $month);
+            : (count($employeeIds) > 1 ? count($employeeIds) . '_employees'
+                : ($companyName !== '' ? preg_replace('/[^A-Za-z0-9]+/', '_', $companyName) : 'all_companies')),
+        $periodFile);
     $dailyTotals = hr_attendance_daily_totals($dailyRows);
     $dailyOne = $detailEmp && $scopeEmps;
-    $dailyTitle = 'Day by day · ' . $monthLabel . ' · ' . ($dailyOne ? $scopeEmps[0]['full_name'] . ' (' . $scopeEmps[0]['employee_code'] . ')' : ($companyName !== '' ? $companyName : 'All companies'));
+    $dailyWho = $dailyOne ? $scopeEmps[0]['full_name'] . ' (' . $scopeEmps[0]['employee_code'] . ')'
+        : (count($employeeIds) > 1 ? count($employeeIds) . ' employees' : ($companyName !== '' ? $companyName : 'All companies'));
+    $dailyTitle = 'Day by day · ' . $monthLabel . ' · ' . $dailyWho;
 
     if ($export === 'detail_xls' || $export === 'detail_csv') {
         $parts = [];
@@ -265,8 +310,8 @@ if ($export === 'csv' || $export === 'xls') {
     $stmt = $conn->prepare($sql);
     $stmt->execute($params);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    $cmp = hr_attendance_compare_by_employee(hr_attendance_daily_rows($conn, $rows, $year, $month));
-    $filename = sprintf("attendance_summary_%04d-%02d.%s", $year, $month, $export);
+    $cmp = hr_attendance_compare_by_employee(hr_attendance_daily_rows($conn, $rows, $year, $month, $rangeFrom, $rangeTo));
+    $filename = sprintf("attendance_summary_%s.%s", $periodFile, $export);
     $out = [];
     $styles = [];
     foreach ($rows as $i => $r) {
@@ -277,7 +322,7 @@ if ($export === 'csv' || $export === 'xls') {
             (string)($cmp[(int)$r['id']]['late'] ?? 0), (string)($cmp[(int)$r['id']]['early'] ?? 0), (string)($cmp[(int)$r['id']]['short'] ?? 0)];
         $styles[$i] = ['cells' => [0 => 'font-weight:bold;', 11 => 'font-weight:bold;']];
     }
-    att_send_download($export, $filename, 'Monthly totals · ' . date('F Y', mktime(0, 0, 0, $month, 1, $year)), '',
+    att_send_download($export, $filename, ($byDays ? 'Totals · ' : 'Monthly totals · ') . $periodLabel, '',
         ['Employee Code', 'Employee', 'Company', 'Department', 'Location', 'Present', 'Absent', 'Half', 'On Leave', 'Excused Absent', 'Scheduled Hours', 'Total Hours', 'Late In', 'Early Out', 'Short Hours'],
         $out, $styles, [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
 }
@@ -285,7 +330,7 @@ if ($export === 'csv' || $export === 'xls') {
 $stmt = $conn->prepare($sql);
 $stmt->execute($params);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-$cmp = $tab === 'monthly' ? hr_attendance_compare_by_employee(hr_attendance_daily_rows($conn, $rows, $year, $month)) : [];
+$cmp = $tab === 'monthly' ? hr_attendance_compare_by_employee(hr_attendance_daily_rows($conn, $rows, $year, $month, $rangeFrom, $rangeTo)) : [];
 
 function month_options($sel)
 {
@@ -363,15 +408,22 @@ echo hr_ui_page_header(
           </select>
         </div>
         <div class="col-md-4">
-          <label class="form-label">Employee</label>
-          <select name="employee_id" class="form-select">
-            <option value="">— All —</option>
+          <label class="form-label">Employees</label>
+          <select name="employee_ids[]" id="attSumEmployees" class="form-select" multiple>
             <?php foreach ($employees as $e): ?>
-              <option value="<?= (int)$e['id'] ?>" <?= $employeeId === (int)$e['id'] ? 'selected' : '' ?>><?= h($e['label']) ?></option>
+              <option value="<?= (int)$e['id'] ?>" <?= in_array((int)$e['id'], $employeeIds, true) ? 'selected' : '' ?>><?= h($e['label']) ?></option>
             <?php endforeach; ?>
           </select>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2">
+          <label class="form-label">From day</label>
+          <input type="date" name="day_from" class="form-control" value="<?= h($dayFrom ?? '') ?>">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">To day</label>
+          <input type="date" name="day_to" class="form-control" value="<?= h($dayTo ?? '') ?>">
+        </div>
+        <div class="col-md-2">
           <label class="form-label">Supervisor</label>
           <select name="supervisor_id" class="form-select">
             <option value="">— All —</option>
@@ -380,7 +432,7 @@ echo hr_ui_page_header(
             <?php endforeach; ?>
           </select>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2">
           <label class="form-label">Department</label>
           <select name="department_id" class="form-select">
             <option value="">— All —</option>
@@ -389,7 +441,7 @@ echo hr_ui_page_header(
             <?php endforeach; ?>
           </select>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2">
           <label class="form-label">Location</label>
           <select name="location_id" class="form-select">
             <option value="">— All —</option>
@@ -399,7 +451,7 @@ echo hr_ui_page_header(
           </select>
         </div>
 
-        <div class="col-md-3 d-flex flex-column gap-1 pb-1">
+        <div class="col-md-2 d-flex flex-column gap-1 pb-1">
           <div class="form-check m-0">
             <input class="form-check-input" type="checkbox" id="only_with_records" name="only_with_records" value="1" <?= $only_with_records ? 'checked' : '' ?>>
             <label for="only_with_records" class="form-check-label">Only with records</label>
@@ -411,10 +463,20 @@ echo hr_ui_page_header(
         </div>
         <div class="col-12 d-flex flex-wrap align-items-center gap-2 mt-2">
           <button class="btn btn-primary"><i class="bi bi-funnel me-1"></i>Apply</button>
+          <span class="small text-muted">Leave Employees empty for everyone, and the days empty for the whole month.</span>
+          <?php if ($dayWarn !== ''): ?><span class="small text-danger fw-semibold"><?= h($dayWarn) ?></span><?php endif; ?>
         </div>
       </div>
   </form>
   </div>
+  <?php searchable_select_assets(); ?>
+  <script>
+  (function () {
+    if (window.jQuery && jQuery.fn.select2) {
+      jQuery('#attSumEmployees').select2({ theme: 'bootstrap-5', width: '100%', placeholder: '— All —', closeOnSelect: false });
+    }
+  })();
+  </script>
 
   <ul class="nav nav-tabs att-tabs mb-0">
     <li class="nav-item"><a class="nav-link <?= $tab === 'monthly' ? 'active' : '' ?>" href="?<?= h($qsBase) ?>"><i class="bi bi-table me-1"></i>Monthly totals</a></li>
@@ -423,7 +485,7 @@ echo hr_ui_page_header(
   <?php if ($tab === 'daily'): ?>
   <div class="hr-settings-card" style="border-top-left-radius:0">
     <div class="settings-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-      <span>Day by day · <?= h($monthLabel) ?> · <?= h($dailyOne ? $scopeEmps[0]['full_name'] . ' (' . $scopeEmps[0]['employee_code'] . ')' : ($companyName !== '' ? $companyName : 'All companies')) ?></span>
+      <span>Day by day · <?= h($monthLabel) ?> · <?= h($dailyWho) ?></span>
       <span class="d-flex gap-2">
         <a class="btn btn-sm btn-success" href="?<?= h($qsBase) ?>&amp;export=detail_xls"><i class="bi bi-download me-1"></i>Download day by day (Excel)</a>
         <a class="btn btn-sm btn-outline-secondary" href="?<?= h($qsBase) ?>&amp;export=detail_csv"><i class="bi bi-download me-1"></i>Download day by day (CSV)</a>
@@ -490,7 +552,7 @@ echo hr_ui_page_header(
   <?php else: ?>
   <div class="hr-settings-card" style="border-top-left-radius:0">
     <div class="settings-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-      <span>Monthly totals · <?= h(date('F Y', mktime(0, 0, 0, $month, 1, $year))) ?></span>
+      <span><?= $byDays ? 'Totals' : 'Monthly totals' ?> · <?= h($periodLabel) ?></span>
       <span class="d-flex gap-2">
         <a class="btn btn-sm btn-success" href="?<?= h($qsBase) ?>&amp;export=xls"><i class="bi bi-download me-1"></i>Download monthly totals (Excel)</a>
         <a class="btn btn-sm btn-outline-secondary" href="?<?= h($qsBase) ?>&amp;export=csv"><i class="bi bi-download me-1"></i>Download monthly totals (CSV)</a>

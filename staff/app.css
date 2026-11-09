@@ -239,6 +239,10 @@ body.viewing { overflow: hidden; }
 .att.forgot strong { display: block; color: var(--text); margin-bottom: 4px; }
 .att.forgot .att-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 .att.forgot .att-row .field { flex: 1; min-width: 0; }
+/* Break In / Break Out: blue, so it is never mistaken for Check in / Check out. */
+.btn.break { background: #0e7490; color: #fff; }
+.btn.break:active:not(:disabled) { background: #155e75; }
+.att.att-break { background: #e0f2f7; border-radius: 12px; padding: 10px 12px 10px 14px; color: #0e7490; }
 .requests-bar { width: 100%; display: flex; align-items: center; gap: 12px; margin-top: 12px; min-height: 56px; padding: 0 16px; border-radius: 12px; background: var(--navy-700); color: var(--on-navy); font-weight: 700; text-align: left; }
 .tabs { display: flex; gap: 8px; margin-top: 16px; }
 .tab { flex: 1; min-height: 52px; border-radius: 12px; background: var(--cream-200); color: var(--text-2); font-weight: 700; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 6px 2px; }

@@ -625,6 +625,10 @@ function ops_api_handle_attendance(PDO $conn, array $user, string $action): void
         $result = ops_attendance_check_in($conn, $employee, (int)$user['id'], ops_api_client_time(36 * 3600));
     } elseif ($action === 'check-out') {
         $result = ops_attendance_check_out($conn, $employee, (int)$user['id'], ops_api_client_time(36 * 3600));
+    } elseif ($action === 'break-start') {
+        $result = ops_attendance_break_start($conn, $employee, (int)$user['id'], ops_api_client_time(36 * 3600));
+    } elseif ($action === 'break-end') {
+        $result = ops_attendance_break_end($conn, $employee, (int)$user['id'], ops_api_client_time(36 * 3600));
     } elseif ($action === 'close-previous') {
         // A forgotten check out: the time is what the person says, not a tap.
         $result = ops_attendance_close_previous(

@@ -66,11 +66,19 @@ if (hr_attendance_post_too_large()) {
         $status    = $_POST['status'] ?? $row['status'];
         $notes     = trim($_POST['notes'] ?? '');
         $files     = $_FILES['attachments'] ?? null;
+        // Break Start / End: only where the break columns exist (migrations/hr_attendance_break.sql).
+        $hasBreak   = array_key_exists('break_start', $row);
+        $breakStart = $hasBreak && ($_POST['break_start'] ?? '') !== '' ? substr((string)$_POST['break_start'], 0, 5) : null;
+        $breakEnd   = $hasBreak && ($_POST['break_end'] ?? '') !== '' ? substr((string)$_POST['break_end'], 0, 5) : null;
 
         $statusChanged = $status !== ($row['status'] ?? '');
 
         if (!array_key_exists($status, $statuses)) {
             $flash_err = 'Invalid status.';
+        } elseif ($breakEnd !== null && $breakStart === null) {
+            $flash_err = 'Break End needs a Break Start.';
+        } elseif ($breakStart !== null && $breakEnd !== null && $breakEnd < $breakStart) {
+            $flash_err = 'Break End (' . $breakEnd . ') cannot be before Break Start (' . $breakStart . ').';
         } elseif ($statusChanged && $notes === '') {
             // Same rule as the quick actions on the list page: no silent changes.
             $flash_err = 'Changing the status needs a reason in Notes.';
@@ -88,6 +96,15 @@ if (hr_attendance_post_too_large()) {
                      WHERE id=?
                 ");
                 $u->execute([$work_date,$check_in,$check_out,$hours,$status,$notes,$me_id,$id]);
+                // The break is recorded only, never taken off the hours above.
+                $breakMins = null;
+                if ($hasBreak) {
+                    $breakMins = ($breakStart !== null && $breakEnd !== null)
+                        ? (int)round((strtotime('2000-01-01 ' . $breakEnd) - strtotime('2000-01-01 ' . $breakStart)) / 60)
+                        : null;
+                    $conn->prepare("UPDATE attendance SET break_start = ?, break_end = ?, break_minutes = ? WHERE id = ?")
+                         ->execute([$breakStart, $breakEnd, $breakMins, $id]);
+                }
                 $flash_ok = 'Saved.';
 
                 $changeId = 0;
@@ -129,6 +146,9 @@ if (hr_attendance_post_too_large()) {
                         'check_in' => $check_in,
                         'check_out' => $check_out,
                         'hours' => $hours,
+                        'break_start' => $breakStart,
+                        'break_end' => $breakEnd,
+                        'break_minutes' => $breakMins,
                         'from_status' => $row['status'] ?? null,
                         'note' => $statusChanged ? $notes : null,
                     ],
@@ -199,6 +219,21 @@ echo hr_ui_page_header(
           </select>
           <div class="form-text">Current: <?= hr_attendance_status_badge_html($row['status']) ?></div>
         </div>
+        <?php if (array_key_exists('break_start', $row)): ?>
+        <div class="col-md-3">
+          <label class="form-label">Break Start</label>
+          <input type="time" name="break_start" class="form-control" value="<?= h(substr((string)$row['break_start'], 0, 5)) ?>">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Break End</label>
+          <input type="time" name="break_end" class="form-control" value="<?= h(substr((string)$row['break_end'], 0, 5)) ?>">
+        </div>
+        <div class="col-md-6 d-flex align-items-end">
+          <div class="form-text mb-2">
+            <?= $row['break_minutes'] !== null ? 'Break was ' . (int)$row['break_minutes'] . ' min. ' : '' ?>Empty both to remove the break. The break is recorded only; it is not taken off the hours.
+          </div>
+        </div>
+        <?php endif; ?>
         <div class="col-md-12">
           <label class="form-label">Notes <span class="text-danger d-none" id="attEditNotesReq">*</span></label>
           <input type="text" name="notes" id="attEditNotes" class="form-control"

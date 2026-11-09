@@ -363,6 +363,11 @@ if ($row && (string)$row['status'] === 'pending' && !empty($row['check_in'])) {
         $staffCheckedIn = (bool)$cb->fetchColumn();
     }
 }
+// HR fixed this day in the Camera log: HR's check-in stays, the camera still moves the check-out on.
+if ($row && (string)$row['status'] === 'pending' && !empty($row['check_in'])
+        && strpos((string)($row['notes'] ?? ''), HR_CAMERA_FIX_NOTE) === 0) {
+    $staffCheckedIn = true;
+}
 if ($staffCheckedIn) {
     $selfIn = substr((string)$row['check_in'], 0, 5);
     $selfOut = $row['check_out'] ? substr((string)$row['check_out'], 0, 5) : null;
@@ -383,7 +388,7 @@ if ($staffCheckedIn) {
     $notes = ($oldNotes === '' || strpos($oldNotes, 'Camera ') === 0) ? mb_substr('Camera out: ' . $camLabel, 0, 255) : $oldNotes;
     try {
         $conn->prepare("UPDATE attendance SET check_out = ?, hours = ?, notes = ?, source = 'camera', updated_at = NOW()
-                         WHERE id = ? AND source IN ('self', 'camera') AND status = 'pending'")
+                         WHERE id = ? AND source IN ('self', 'camera', 'admin') AND status = 'pending'")
              ->execute([$time, attendance_self_hours($selfIn, $time), $notes, (int)$row['id']]);
     } catch (PDOException $e) {
         attendance_camera_send(['ok' => false, 'error' => 'Could not save the attendance.'], 500);
@@ -401,13 +406,16 @@ if ($staffCheckedIn) {
 // A day HR has marked (leave, absent, half day) or approved, or one the person
 // recorded on the staff app or HR typed in, is theirs: leave it alone, so a
 // camera time never slips into a row that is already approved.
-if ($row && ((string)$row['source'] !== 'camera' || (string)$row['status'] !== 'pending')) {
+// A Pending day with no times yet (only a break taken on the staff app or web)
+// is still the camera's to fill in.
+$noTimesYet = $row && (string)$row['status'] === 'pending' && empty($row['check_in']) && empty($row['check_out']);
+if ($row && !$noTimesYet && ((string)$row['source'] !== 'camera' || (string)$row['status'] !== 'pending')) {
     attendance_camera_send(['ok' => true, 'skipped' => 'This day is already recorded (' . $row['source'] . ', ' . $row['status'] . ').']);
 }
 // HR's edit forms and the staff app keep the source as it is but always set
 // updated_by; the camera never does. So a camera row someone has corrected or
 // checked in / out on is theirs from then on.
-if ($row) {
+if ($row && !$noTimesYet) {
     $by = $conn->prepare("SELECT updated_by FROM attendance WHERE id = ?");
     $by->execute([(int)$row['id']]);
     if ($by->fetchColumn()) {

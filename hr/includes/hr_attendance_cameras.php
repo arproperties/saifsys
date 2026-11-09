@@ -165,6 +165,13 @@ function hr_camera_valid_host(string $host): bool
 /** How long the photos are kept. */
 const HR_CAMERA_PHOTO_DAYS = 60;
 
+/**
+ * The note on a day HR fixed in the Camera log ("Different person" with times).
+ * The camera keeps HR's check-in and only moves the check-out later, as it does
+ * for a day the person checked in on themselves (api/attendance_camera.php).
+ */
+const HR_CAMERA_FIX_NOTE = 'Times set by HR (wrong camera match)';
+
 /** Largest picture accepted from the PC. */
 const HR_CAMERA_PHOTO_MAX_BYTES = 300 * 1024;
 
@@ -461,7 +468,7 @@ function hr_camera_log_fix_attendance(PDO $conn, array $picks, array $choices, ?
         return ['error' => null, 'note' => ''];
     }
 
-    $stmt = $conn->prepare('SELECT a.id, a.employee_id, a.work_date, a.check_in, a.check_out, a.status, e.full_name, e.employee_code, e.company_id
+    $stmt = $conn->prepare('SELECT a.id, a.employee_id, a.work_date, a.check_in, a.check_out, a.status, a.notes, e.full_name, e.employee_code, e.company_id
         FROM attendance a JOIN employees e ON e.id = a.employee_id WHERE a.id = ?');
     $updates = [];
     foreach ($plan as $attId => $set) {
@@ -482,8 +489,14 @@ function hr_camera_log_fix_attendance(PDO $conn, array $picks, array $choices, ?
     $said = [];
     foreach ($updates as [$a, $old, $new, $set, $who]) {
         $attId = (int)$a['id'];
-        $conn->prepare("UPDATE attendance SET check_in = ?, check_out = ?, hours = ?, updated_by = ?, updated_at = NOW() WHERE id = ? AND status = 'pending'")
-            ->execute([$new['in'], $new['out'], hr_attendance_hours($new['in'], $new['out']), $userId, $attId]);
+        // HR_CAMERA_FIX_NOTE first in the notes: HR's check-in stays and the camera
+        // still moves the check-out on (api/attendance_camera.php). A note someone
+        // wrote is kept after it; the camera's own "Camera in / out" note is replaced.
+        $oldNotes = trim((string)($a['notes'] ?? ''));
+        $notes = ($oldNotes === '' || strpos($oldNotes, 'Camera ') === 0 || strpos($oldNotes, HR_CAMERA_FIX_NOTE) === 0)
+            ? HR_CAMERA_FIX_NOTE : mb_substr(HR_CAMERA_FIX_NOTE . ' · ' . $oldNotes, 0, 255);
+        $conn->prepare("UPDATE attendance SET check_in = ?, check_out = ?, hours = ?, notes = ?, updated_by = ?, updated_at = NOW() WHERE id = ? AND status = 'pending'")
+            ->execute([$new['in'], $new['out'], hr_attendance_hours($new['in'], $new['out']), $notes, $userId, $attId]);
         $parts = [];
         foreach ($set as $role => $time) {
             // The day's photo follows its time: the photo of the camera sighting at the new time, else none (the old one is the other person).
