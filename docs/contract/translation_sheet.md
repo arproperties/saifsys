@@ -75,11 +75,11 @@ The lease agreement shall not be considered effective nor delivered to the Tenan
 (d) A Tenant who does not wish to renew shall notify the Landlord in writing at least ninety (90) days before the expiry date to allow re-letting; where notice is given later, the Tenant remains liable for rent until the expiry date or the actual handover date, whichever is later, and the Landlord shall use reasonable efforts to re-let.
 
 ## Clause 17
-*amended (extended) — old clause 17*
+*amended (extended) — old clause 17* · **RE-TRANSLATE 17(b)** (English changed 2026-11-09: number in words, "of any age", two adults per bedroom, 5 sqm bedroom area per person; the earlier Arabic draft of 17(b) no longer matches. 17(a) and 17(c) unchanged)
 
 (a) The Tenant shall not sublease the leased premises, whether in whole or in part, nor assign or permit any third party to occupy or use the premises in any manner, whether for consideration or otherwise, without the prior express written consent of the Landlord. The Tenant is strictly prohibited from using the leased premises for any purpose other than the residential purpose stated in this Agreement. In the event of a breach of this provision, the Landlord shall have the right to take all necessary legal actions, including immediate eviction and claiming damages. Furthermore, the Tenant undertakes to provide the Landlord or his authorized representative with copies of valid identification or residency documents for all individuals residing with the Tenant in the leased premises, within seven (7) days from the date of their occupancy, for security and regulatory purposes.
 
-(b) Occupancy: the Leased Premises shall be occupied only by the Tenant and the persons listed in Annex B, not exceeding {{MAX_OCCUPANTS}} persons, as {{OCCUPANCY_TYPE}}. Use as a holiday home, short-term accommodation, shared or bachelor accommodation, or any use contrary to the regulations of the competent authority for the area (including Trakhees or Dubai Municipality) is prohibited. Any fine or penalty imposed on the Landlord as a result of the Tenant's use shall be reimbursed by the Tenant within seven (7) days of demand.
+(b) Occupancy: the Leased Premises shall be occupied only by the Tenant and the persons listed in Annex B, not exceeding {{MAX_OCCUPANTS}} ({{MAX_OCCUPANTS_WORDS}}) persons of any age, as {{OCCUPANCY_TYPE}}. The Tenant shall ensure that no bedroom is used by more than two adults and that at least five (5) square metres of bedroom area is available per occupant, in line with Dubai Municipality requirements. Use as a holiday home, short-term accommodation, shared or bachelor accommodation, or any use contrary to the regulations of the competent authority for the area (including Trakhees or Dubai Municipality) is prohibited. Any fine or penalty imposed on the Landlord as a result of the Tenant's use shall be reimbursed by the Tenant within seven (7) days of demand.
 
 (c) Authority to consent: no consent, approval or no-objection certificate binds the Landlord unless it is issued on the Landlord's letterhead, bears a reference number and is signed by an authorised signatory named in the Landlord's trade licence or a notarised power of attorney. Real-estate brokers, agents and building staff have no authority to issue consents or documents on the Landlord's behalf.
 
@@ -89,17 +89,24 @@ The lease agreement shall not be considered effective nor delivered to the Tenan
 The Tenant shall bear full responsibility for the payment of all governmental, municipal, and housing fees, as well as the registration fees of the Lease Agreement with the Real Estate Regulatory Agency (RERA), whether such fees are currently due or may become due in the future, in relation to the Leased Premises throughout the lease term. The Tenant shall also be responsible for the timely settlement of all utility bills including water, electricity, sewage, district cooling / chiller charges, gas, telecommunications and internet, and any other service charges related to the Leased Premises. Any delay or failure in payment shall be deemed a breach of the Tenant’s contractual obligations.
 
 ## Clause 20
-*replaced — old clause 21*
+*replaced — old clause 21* (Arabic column already marked `[AR – TRANSLATION PENDING – Clause 20]`)
 
 **Security deposit.**
 
-(a) Within seven (7) working days after the Move-Out Inspection Report (Annex C) is completed, the Landlord shall send the Tenant an itemised deduction statement, each item referenced to Annex B and Annex C with photographs and the repair cost or invoice.
+(a) Within seven (7) working days after the Move-Out Inspection Report (Annex C) is completed, the Landlord shall send the Tenant an itemised deduction statement, each item referenced to Annex B and Annex C with photographs and the applicable rate from the Schedule of Rates (Annex D) or, for items not listed in Annex D, the repair cost evidenced by a contractor's quotation or invoice. Where all deductions can be determined from Annex D, the statement may be issued and signed at the Move-Out Inspection itself.
 
-(b) The Tenant may object in writing within five (5) working days of receipt. The undisputed balance of the deposit shall be refunded within twenty-five (25) working days after the Tenant has provided final clearance certificates for DEWA, district cooling / chiller, gas, and telecommunications / internet, and has returned all keys and access cards.
+(b) The Tenant may object in writing within five (5) working days of receipt. An objection by the Tenant does not suspend the Landlord's right to carry out repairs, make-ready works or re-letting of the Leased Premises. Any dispute regarding a deduction shall be determined on the basis of the Move-In Inspection Report (Annex B), the Move-Out Inspection Report (Annex C), the photographs forming part of them, and the Schedule of Rates (Annex D). The undisputed balance of the deposit shall be refunded within twenty-five (25) working days after the Tenant has provided final clearance certificates for DEWA, district cooling / chiller, gas, and telecommunications / internet, and has returned all keys and access cards.
 
 (c) No deduction shall be made for normal wear and tear, which includes minor scuffs and marks, small nail holes, fading from sunlight, and ordinary repainting after a tenancy of twelve (12) months or more unless specific damage is recorded.
 
-(d) The Landlord may deduct unpaid rent, unpaid utility charges, any unpaid amounts invoiced under Clause 12(b) supported by the invoice and receipts, the cost of replacing unreturned keys or access cards, and the cost of repairing damage beyond normal wear and tear proven by Annex B and Annex C.
+(d) The Landlord may deduct unpaid rent, unpaid utility charges, any unpaid amounts invoiced under Clause 12(b) supported by the invoice and receipts, the cost of replacing unreturned keys or access cards at the rates in Annex D, and the cost of repairing damage beyond normal wear and tear proven by Annex B and Annex C.
+
+**Changed on 2026-11-09 (Security Deposit + Annex D update). New sentences to translate:**
+
+- (a) "…with photographs and the applicable rate from the Schedule of Rates (Annex D) or, for items not listed in Annex D, the repair cost evidenced by a contractor's quotation or invoice. Where all deductions can be determined from Annex D, the statement may be issued and signed at the Move-Out Inspection itself."
+- (b) "An objection by the Tenant does not suspend the Landlord's right to carry out repairs, make-ready works or re-letting of the Leased Premises. Any dispute regarding a deduction shall be determined on the basis of the Move-In Inspection Report (Annex B), the Move-Out Inspection Report (Annex C), the photographs forming part of them, and the Schedule of Rates (Annex D)."
+- (d) "…the cost of replacing unreturned keys or access cards at the rates in Annex D,…"
+- Annex D heading: "Annex D — Schedule of Rates. The Parties agree that the rates below are a fair pre-estimate of the cost of repair, replacement or cleaning of the listed items and shall be applied in the deduction statement under the Security Deposit clause. Items not listed are charged at the actual cost evidenced by a contractor's quotation or invoice. Rates include labour and materials and exclude VAT where applicable."
 
 ## Clause 26
 *amended — old clause 27*
@@ -112,9 +119,9 @@ In the event the Tenant breaches any of the terms stipulated in this Agreement, 
 Rent at the contract rate continues to accrue until the Tenant returns all keys and access cards and the Move-Out Inspection Report (Annex C) is signed or issued, including any period of occupation after expiry or termination. Any such period shall be charged pro rata on a daily basis.
 
 ## Clause 28
-*new - Notices and addresses for service — new clause*
+*new - Notices and addresses for service — new clause* · **RE-TRANSLATE** (English changed 2026-11-09: landlord office address removed, notices to the landlord by email only; the earlier Arabic draft no longer matches)
 
-The Tenant's address for contractual notices is the Leased Premises, the email address {{TENANT_EMAIL}} and the mobile number {{TENANT_PHONE}}. The Landlord's address for notices is Office P01, AYLA Residence, Al Barsha South Fourth, Dubai, and the email address {{LANDLORD_NOTICE_EMAIL}}. Notices sent by email or by registered post to these addresses are deemed received on the next working day. The Tenant shall notify the Landlord in writing of any change of contact details within seven (7) days; notices sent to the last notified details are valid. Statutory notices under Law No. 26 of 2007 shall additionally be served by the methods that law prescribes.
+The Tenant's address for contractual notices is the Leased Premises, the email address {{TENANT_EMAIL}} and the mobile number {{TENANT_PHONE}}. The Landlord's address for contractual notices is the email address {{LANDLORD_NOTICE_EMAIL}}, or such other email address as the Landlord may notify the Tenant in writing. Notices sent by email to these addresses, or by registered post to the Leased Premises, are deemed received on the next working day. The Tenant shall notify the Landlord in writing of any change of contact details within seven (7) days; notices sent to the last notified details are valid. Statutory notices under Law No. 26 of 2007 shall additionally be served by the methods that law prescribes.
 
 ## Clause 29
 *new - Keys and access cards — new clause*
@@ -138,3 +145,14 @@ In the event of any dispute arising between the Landlord and the Tenant in relat
 - Annex A – Payment Schedule (column titles: No., Period from, Period to, Due date, Amount (AED), Cheque no., Bank; note: “The cheque dates above are the due dates of the respective instalments (Clause 12).”)
 - Annex B – Move-In Inspection Report (Handover date and time; Meter readings; Room-by-room condition; Non-original fittings / Tenant accepts maintenance; Keys and access cards / Replacement cost (AED); Occupants; Tenant / Landlord's representative / Witness)
 - Annex C – Move-Out Inspection Report (Key return date and time; Final meter readings; Room-by-room condition / Change since move-in; Keys and access cards returned; signatures)
+- Annex D – Schedule of Rates (heading text above; column titles: Item, Unit, Rate (AED); item names, units and categories listed in the annex; signatures: Tenant / Landlord's representative)
+- Each annex page now shows `[AR – TRANSLATION PENDING – Annex A/B/C/D]` under its English title.
+
+## Park Place v2 (2026 Tanacey Contract PP v2) – extra rows
+
+Park Place v2 is the same contract as Ayla v2 (same Arabic). Only these three places differ, because at Park Place the chiller is billed by the Landlord. Translate them in addition to the Ayla rows.
+
+- **Page 1, Rent value:** "AED {{ANNUAL_RENT}} + Chiller Fees AED {{CHILLER_FEES}} = AED {{ANNUAL_RENT_WITH_CHILLER}}" (the Arabic label «قيمة الايجار:» already exists)
+- **Clause 18 (utilities):** the list reads "water, electricity, sewage, gas, telecommunications and internet, and any other service charges related to the Leased Premises" (no district cooling / chiller), followed by the new sentences: "Chiller charges are payable to the Landlord as stated on page 1 and in Annex A. The chiller charges are as stated on page 1. The Landlord may increase the chiller charges at renewal by giving the Tenant written notice at least ninety (90) days before the expiry date."
+- **Clause 20(b) (deposit refund):** "…after the Tenant has provided final clearance certificates for DEWA, gas, and telecommunications / internet, has paid all chiller charges due to the Landlord, and has returned all keys and access cards."
+

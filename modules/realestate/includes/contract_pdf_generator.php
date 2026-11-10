@@ -33,7 +33,7 @@ if (!class_exists('ContractPDFGenerator')) {
                 SELECT l.*,
                        t.first_name, t.last_name, t.email, t.phone, t.id_number,
                        t.company_name AS tenant_company_name, t.tenant_type,
-                       u.unit_number, u.unit_type, u.area_sqm, u.premises_number,
+                       u.unit_number, u.unit_type, u.area_sqm, u.unit_size_sqft, u.premises_number,
                        b.name as building_name, b.address as building_address,
                        c.name as company_name
                 FROM re_leases l
@@ -90,6 +90,29 @@ if (!class_exists('ContractPDFGenerator')) {
             ");
             $stmt->execute([$pdfPath, $leaseId, $this->companyId]);
 
+            // v2: keep a copy of the Annex D rates on the lease, so a later change to the
+            // rate list never changes this lease's Annex D (column added by the v2 migration).
+            if (!empty($template['template_code']) && function_exists('contract_v2_is_v2_template')
+                && contract_v2_is_v2_template($template)) {
+                try {
+                    $stmt = $this->conn->prepare("UPDATE re_leases SET contract_rates_snapshot = ? WHERE id = ? AND company_id = ?");
+                    $stmt->execute([json_encode(contract_v2_rates_for_lease($lease, contract_v2_rate_list_for($template['template_code'] ?? null, $lease)), JSON_UNESCAPED_UNICODE), $leaseId, $this->companyId]);
+                } catch (Throwable $e) {
+                    // Column not there yet: the PDF is still fine.
+                }
+                // Max occupants worked out from the unit is saved on the lease the first time,
+                // so a later change to the unit never changes this lease's clause 17(b).
+                if (empty($lease['max_occupants']) && contract_v2_has_occupancy_clause($template['template_code'] ?? null)) {
+                    try {
+                        $occ = contract_v2_max_occupants_for_lease($this->conn, $lease);
+                        $stmt = $this->conn->prepare("UPDATE re_leases SET max_occupants = ?, max_occupants_basis = ? WHERE id = ? AND company_id = ? AND (max_occupants IS NULL OR max_occupants = 0)");
+                        $stmt->execute([$occ['value'], $occ['basis'], $leaseId, $this->companyId]);
+                    } catch (Throwable $e) {
+                        // Column not there yet: the PDF is still fine.
+                    }
+                }
+            }
+
             // Record which contract version the PDF was made from (column added by the v2 migration).
             try {
                 $stmt = $this->conn->prepare("UPDATE re_leases SET contract_template_version = ? WHERE id = ? AND company_id = ?");
@@ -114,7 +137,7 @@ if (!class_exists('ContractPDFGenerator')) {
                     $tt->execute([(int)$lease['tenant_id']]);
                     $lease['tenant_type'] = (string)$tt->fetchColumn();
                 }
-                $html = contract_v2_prepare($this->conn, $html, $lease);
+                $html = contract_v2_prepare($this->conn, $html, $lease, (string)($template['template_code'] ?? ''));
             }
 
             $companyName = $lease['company_name'] ?? '';

@@ -105,6 +105,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $commission = (string)($_POST['commission'] ?? '') !== '' ? (float)$_POST['commission'] : null;
     $unitSizeSqft = (string)($_POST['unit_size_sqft'] ?? '') !== '' ? (float)$_POST['unit_size_sqft'] : null;
     $bedrooms = (string)($_POST['bedrooms'] ?? '') !== '' ? (int)$_POST['bedrooms'] : null;
+    // Contract v2 clause 17(b): sum of net bedroom areas (5 sqm per person). Saved only if the column exists.
+    $bedroomAreaSqm = (string)($_POST['bedroom_area_sqm'] ?? '') !== '' ? round((float)$_POST['bedroom_area_sqm'], 2) : null;
+    if ($bedroomAreaSqm !== null && ($bedroomAreaSqm <= 0 || $bedroomAreaSqm > 9999)) {
+        $error = 'Bedroom area must be between 0 and 9,999 sqm.';
+    }
     $bathrooms = (string)($_POST['bathrooms'] ?? '') !== '' ? (float)$_POST['bathrooms'] : null;
     $parkingCount = (string)($_POST['parking_count'] ?? '') !== '' ? (int)$_POST['parking_count'] : null;
     $balcony = !empty($_POST['balcony']) ? 1 : 0;
@@ -164,6 +169,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
             $success = "Unit updated successfully";
             try {
+                if ($conn->query("SHOW COLUMNS FROM re_units LIKE 'bedroom_area_sqm'")->fetch()) {
+                    $conn->prepare("UPDATE re_units SET bedroom_area_sqm = ? WHERE id = ? AND company_id = ?")
+                        ->execute([$bedroomAreaSqm, $unitId, $currentCompanyId]);
+                }
+            } catch (Throwable $e) {
+                error_log('bedroom_area_sqm save failed: ' . $e->getMessage());
+            }
+            try {
                 require_once __DIR__ . '/../../includes/audit_bridge.php';
                 audit_bridge_re_ops(
                     $conn,
@@ -208,6 +221,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
             $newUnitId = (int)$conn->lastInsertId();
             $success = "Unit added successfully";
+            try {
+                if ($bedroomAreaSqm !== null && $conn->query("SHOW COLUMNS FROM re_units LIKE 'bedroom_area_sqm'")->fetch()) {
+                    $conn->prepare("UPDATE re_units SET bedroom_area_sqm = ? WHERE id = ? AND company_id = ?")
+                        ->execute([$bedroomAreaSqm, $newUnitId, $currentCompanyId]);
+                }
+            } catch (Throwable $e) {
+                error_log('bedroom_area_sqm save failed: ' . $e->getMessage());
+            }
             try {
                 require_once __DIR__ . '/../../includes/audit_bridge.php';
                 audit_bridge_re_ops(
@@ -431,7 +452,15 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <div class="col-md-2 mb-3">
                             <label class="form-label">Bedrooms</label>
                             <input type="number" min="0" max="20" class="form-control" name="bedrooms" value="<?= $unit ? h($unit['bedrooms'] ?? '') : '' ?>">
+                            <small class="text-muted">0 = studio</small>
                         </div>
+                        <?php if (!$unit || array_key_exists('bedroom_area_sqm', $unit)): ?>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">Bedroom area (sqm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control" name="bedroom_area_sqm" value="<?= $unit ? h($unit['bedroom_area_sqm'] ?? '') : '' ?>" placeholder="from floor plan">
+                            <small class="text-muted">All bedrooms, net. Sets max occupants (5 sqm each)</small>
+                        </div>
+                        <?php endif; ?>
                         <div class="col-md-2 mb-3">
                             <label class="form-label">Bathrooms</label>
                             <input type="number" step="0.5" min="0" max="20" class="form-control" name="bathrooms" value="<?= $unit ? h($unit['bathrooms'] ?? '') : '' ?>">

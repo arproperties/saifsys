@@ -12,7 +12,7 @@ if (!function_exists('lease_vat_unit_is_commercial')) {
         if ($t === '') {
             return false;
         }
-        foreach (['commercial', 'shop', 'retail', 'office', 'warehouse', 'showroom', 'business'] as $kw) {
+        foreach (['commercial', 'shop', 'retail', 'office', 'warehouse', 'showroom', 'business', 'food_court'] as $kw) {
             if (strpos($t, $kw) !== false) {
                 return true;
             }

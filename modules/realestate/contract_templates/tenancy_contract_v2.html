@@ -323,6 +323,9 @@ table {
 .annex-kv td.k { width: 35%; font-weight: bold; padding: 4px 0; }
 .annex-kv td.v { border-bottom: 1px solid #000; }
 .annex-note { font-size: 9px; margin-top: 6px; }
+.annex-ar-pending { text-align: center; margin: 0 0 4px 0; }
+.annex-intro { font-size: 9.5px; margin: 0 0 10px 0; text-align: justify; }
+.annex-cat td { background: #f3f3f3; font-weight: bold; }
 .annex-sign-table { width: 100%; margin-top: 16px; page-break-inside: avoid; }
 .annex-sign-label { width: 30%; font-weight: bold; font-size: 10px; }
 .annex-sign-gap { width: 3%; }
@@ -721,12 +724,13 @@ table {
             </td>
         </tr>
 
+        <!-- TODO(arabic): Clause 17(b) needs re-translation after English change (2026-11-09) -->
         <tr class="clause-row">
             <td class="clause-col-en">
                 <table class="clause-inner" cellpadding="0" cellspacing="0" border="0">
                     <tr>
                         <td class="num-en">{{CLAUSE_NO}}.</td>
-                        <td class="txt-en">(a) The Tenant shall not sublease the leased premises, whether in whole or in part, nor assign or permit any third party to occupy or use the premises in any manner, whether for consideration or otherwise, without the prior express written consent of the Landlord. The Tenant is strictly prohibited from using the leased premises for any purpose other than the residential purpose stated in this Agreement. In the event of a breach of this provision, the Landlord shall have the right to take all necessary legal actions, including immediate eviction and claiming damages. Furthermore, the Tenant undertakes to provide the Landlord or his authorized representative with copies of valid identification or residency documents for all individuals residing with the Tenant in the leased premises, within seven (7) days from the date of their occupancy, for security and regulatory purposes.<br>(b) Occupancy: the Leased Premises shall be occupied only by the Tenant and the persons listed in Annex B, not exceeding {{MAX_OCCUPANTS}} persons, as {{OCCUPANCY_TYPE}}. Use as a holiday home, short-term accommodation, shared or bachelor accommodation, or any use contrary to the regulations of the competent authority for the area (including Trakhees or Dubai Municipality) is prohibited. Any fine or penalty imposed on the Landlord as a result of the Tenant's use shall be reimbursed by the Tenant within seven (7) days of demand.<br>(c) Authority to consent: no consent, approval or no-objection certificate binds the Landlord unless it is issued on the Landlord's letterhead, bears a reference number and is signed by an authorised signatory named in the Landlord's trade licence or a notarised power of attorney. Real-estate brokers, agents and building staff have no authority to issue consents or documents on the Landlord's behalf.</td>
+                        <td class="txt-en">(a) The Tenant shall not sublease the leased premises, whether in whole or in part, nor assign or permit any third party to occupy or use the premises in any manner, whether for consideration or otherwise, without the prior express written consent of the Landlord. The Tenant is strictly prohibited from using the leased premises for any purpose other than the residential purpose stated in this Agreement. In the event of a breach of this provision, the Landlord shall have the right to take all necessary legal actions, including immediate eviction and claiming damages. Furthermore, the Tenant undertakes to provide the Landlord or his authorized representative with copies of valid identification or residency documents for all individuals residing with the Tenant in the leased premises, within seven (7) days from the date of their occupancy, for security and regulatory purposes.<br>(b) Occupancy: the Leased Premises shall be occupied only by the Tenant and the persons listed in Annex B, not exceeding {{MAX_OCCUPANTS}} ({{MAX_OCCUPANTS_WORDS}}) persons of any age, as {{OCCUPANCY_TYPE}}. The Tenant shall ensure that no bedroom is used by more than two adults and that at least five (5) square metres of bedroom area is available per occupant, in line with Dubai Municipality requirements. Use as a holiday home, short-term accommodation, shared or bachelor accommodation, or any use contrary to the regulations of the competent authority for the area (including Trakhees or Dubai Municipality) is prohibited. Any fine or penalty imposed on the Landlord as a result of the Tenant's use shall be reimbursed by the Tenant within seven (7) days of demand.<br>(c) Authority to consent: no consent, approval or no-objection certificate binds the Landlord unless it is issued on the Landlord's letterhead, bears a reference number and is signed by an authorised signatory named in the Landlord's trade licence or a notarised power of attorney. Real-estate brokers, agents and building staff have no authority to issue consents or documents on the Landlord's behalf.</td>
                     </tr>
                 </table>
             </td>
@@ -790,7 +794,7 @@ table {
                 <table class="clause-inner" cellpadding="0" cellspacing="0" border="0">
                     <tr>
                         <td class="num-en">{{CLAUSE_NO}}.</td>
-                        <td class="txt-en"><b>Security deposit.</b><br>(a) Within seven (7) working days after the Move-Out Inspection Report (Annex C) is completed, the Landlord shall send the Tenant an itemised deduction statement, each item referenced to Annex B and Annex C with photographs and the repair cost or invoice.<br>(b) The Tenant may object in writing within five (5) working days of receipt. The undisputed balance of the deposit shall be refunded within twenty-five (25) working days after the Tenant has provided final clearance certificates for DEWA, district cooling / chiller, gas, and telecommunications / internet, and has returned all keys and access cards.<br>(c) No deduction shall be made for normal wear and tear, which includes minor scuffs and marks, small nail holes, fading from sunlight, and ordinary repainting after a tenancy of twelve (12) months or more unless specific damage is recorded.<br>(d) The Landlord may deduct unpaid rent, unpaid utility charges, any unpaid amounts invoiced under Clause 12(b) supported by the invoice and receipts, the cost of replacing unreturned keys or access cards, and the cost of repairing damage beyond normal wear and tear proven by Annex B and Annex C.</td>
+                        <td class="txt-en"><b>Security deposit.</b><br>(a) Within seven (7) working days after the Move-Out Inspection Report (Annex C) is completed, the Landlord shall send the Tenant an itemised deduction statement, each item referenced to Annex B and Annex C with photographs and the applicable rate from the Schedule of Rates (Annex D) or, for items not listed in Annex D, the repair cost evidenced by a contractor's quotation or invoice. Where all deductions can be determined from Annex D, the statement may be issued and signed at the Move-Out Inspection itself.<br>(b) The Tenant may object in writing within five (5) working days of receipt. An objection by the Tenant does not suspend the Landlord's right to carry out repairs, make-ready works or re-letting of the Leased Premises. Any dispute regarding a deduction shall be determined on the basis of the Move-In Inspection Report (Annex B), the Move-Out Inspection Report (Annex C), the photographs forming part of them, and the Schedule of Rates (Annex D). The undisputed balance of the deposit shall be refunded within twenty-five (25) working days after the Tenant has provided final clearance certificates for DEWA, district cooling / chiller, gas, and telecommunications / internet, and has returned all keys and access cards.<br>(c) No deduction shall be made for normal wear and tear, which includes minor scuffs and marks, small nail holes, fading from sunlight, and ordinary repainting after a tenancy of twelve (12) months or more unless specific damage is recorded.<br>(d) The Landlord may deduct unpaid rent, unpaid utility charges, any unpaid amounts invoiced under Clause 12(b) supported by the invoice and receipts, the cost of replacing unreturned keys or access cards at the rates in Annex D, and the cost of repairing damage beyond normal wear and tear proven by Annex B and Annex C.</td>
                     </tr>
                 </table>
             </td>
@@ -941,12 +945,13 @@ table {
             </td>
         </tr>
 
+        <!-- TODO(arabic): Clause 28 needs re-translation after English change (2026-11-09) -->
         <tr class="clause-row">
             <td class="clause-col-en">
                 <table class="clause-inner" cellpadding="0" cellspacing="0" border="0">
                     <tr>
                         <td class="num-en">{{CLAUSE_NO}}.</td>
-                        <td class="txt-en">The Tenant's address for contractual notices is the Leased Premises, the email address {{TENANT_EMAIL}} and the mobile number {{TENANT_PHONE}}. The Landlord's address for notices is Office P01, AYLA Residence, Al Barsha South Fourth, Dubai, and the email address {{LANDLORD_NOTICE_EMAIL}}. Notices sent by email or by registered post to these addresses are deemed received on the next working day. The Tenant shall notify the Landlord in writing of any change of contact details within seven (7) days; notices sent to the last notified details are valid. Statutory notices under Law No. 26 of 2007 shall additionally be served by the methods that law prescribes.</td>
+                        <td class="txt-en">The Tenant's address for contractual notices is the Leased Premises, the email address {{TENANT_EMAIL}} and the mobile number {{TENANT_PHONE}}. The Landlord's address for contractual notices is the email address {{LANDLORD_NOTICE_EMAIL}}, or such other email address as the Landlord may notify the Tenant in writing. Notices sent by email to these addresses, or by registered post to the Leased Premises, are deemed received on the next working day. The Tenant shall notify the Landlord in writing of any change of contact details within seven (7) days; notices sent to the last notified details are valid. Statutory notices under Law No. 26 of 2007 shall additionally be served by the methods that law prescribes.</td>
                     </tr>
                 </table>
             </td>
@@ -1144,6 +1149,7 @@ table {
 
 <div class="annex-page">
     <div class="annex-title">Annex A - Payment Schedule</div>
+    <div class="annex-ar-pending"><span class="ar-pending">[AR – TRANSLATION PENDING – Annex A]</span></div>
     <div class="annex-sub">Lease No. {{LEASE_NUMBER}} &middot; {{TENANT_NAME}} &middot; Unit {{UNIT_NO}}, {{PROPERTY_NAME}} &middot; {{START_DATE}} - {{END_DATE}}</div>
     {{PAYMENT_SCHEDULE}}
     <div class="annex-note">The cheque dates above are the due dates of the respective instalments (Clause 12).</div>
@@ -1151,14 +1157,24 @@ table {
 
 <div class="annex-page">
     <div class="annex-title">Annex B - Move-In Inspection Report</div>
+    <div class="annex-ar-pending"><span class="ar-pending">[AR – TRANSLATION PENDING – Annex B]</span></div>
     <div class="annex-sub">Lease No. {{LEASE_NUMBER}} &middot; {{TENANT_NAME}} &middot; Unit {{UNIT_NO}}, {{PROPERTY_NAME}}</div>
     {{MOVE_IN_REPORT}}
 </div>
 
 <div class="annex-page">
     <div class="annex-title">Annex C - Move-Out Inspection Report</div>
+    <div class="annex-ar-pending"><span class="ar-pending">[AR – TRANSLATION PENDING – Annex C]</span></div>
     <div class="annex-sub">Lease No. {{LEASE_NUMBER}} &middot; {{TENANT_NAME}} &middot; Unit {{UNIT_NO}}, {{PROPERTY_NAME}}</div>
     {{MOVE_OUT_REPORT}}
+</div>
+
+<div class="annex-page">
+    <div class="annex-title">Annex D — Schedule of Rates</div>
+    <div class="annex-ar-pending"><span class="ar-pending">[AR – TRANSLATION PENDING – Annex D]</span></div>
+    <div class="annex-sub">Lease No. {{LEASE_NUMBER}} &middot; {{TENANT_NAME}} &middot; Unit {{UNIT_NO}}, {{PROPERTY_NAME}}</div>
+    <div class="annex-intro">The Parties agree that the rates below are a fair pre-estimate of the cost of repair, replacement or cleaning of the listed items and shall be applied in the deduction statement under the Security Deposit clause. Items not listed are charged at the actual cost evidenced by a contractor's quotation or invoice. Rates include labour and materials and exclude VAT where applicable.</div>
+    {{SCHEDULE_OF_RATES}}
 </div>
 </body>
 </html>

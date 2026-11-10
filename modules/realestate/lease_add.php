@@ -67,8 +67,15 @@ $accountingModeSettings = re_accounting_mode_settings($conn);
 $canOverrideAccountingMode = re_accounting_current_user_can_override_mode($conn);
 
 // Get units and tenants
+$unitsAreaCol = false;
+try {
+    $unitsAreaCol = (bool)$conn->query("SHOW COLUMNS FROM re_units LIKE 'bedroom_area_sqm'")->fetch();
+} catch (Throwable $e) {
+    $unitsAreaCol = false;
+}
 $units = $conn->prepare("
-    SELECT u.id, u.unit_number, u.unit_type, u.status, b.name as building_name
+    SELECT u.id, u.unit_number, u.unit_type, u.status, b.name as building_name,
+           u.bedrooms, " . ($unitsAreaCol ? "u.bedroom_area_sqm" : "NULL AS bedroom_area_sqm") . "
     FROM re_units u
     JOIN re_buildings b ON b.id = u.building_id
     WHERE u.company_id = ?
@@ -551,7 +558,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } catch (Throwable $e) {
         $hasContractV2Columns = false;
     }
-    $maxOccupants = (isset($_POST['max_occupants']) && $_POST['max_occupants'] !== '') ? (int)$_POST['max_occupants'] : null;
+    // Max occupants: worked out from the unit (contract v2 clause 17(b)); Admin may override with a reason.
+    $occIsAdmin = has_role('Owner', $conn) || has_role('Admin', $conn);
+    $occResolved = null;
+    $occExisting = null;
     $occupancyType = trim((string)($_POST['occupancy_type'] ?? ''));
     if ($occupancyType === 'other') {
         $occupancyType = trim((string)($_POST['occupancy_type_other'] ?? ''));
@@ -559,9 +569,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $occupancyType = mb_substr($occupancyType, 0, 100);
     $guarantorName = mb_substr(trim((string)($_POST['guarantor_name'] ?? '')), 0, 200);
     $guarantorEid = mb_substr(trim((string)($_POST['guarantor_eid'] ?? '')), 0, 50);
+    // Commercial contract v2 page 1 (display only, never used in any amount).
+    $commercialUse = (string)($_POST['commercial_use'] ?? '');
+    if (!isset(contract_v2_commercial_uses()[$commercialUse])) {
+        $commercialUse = '';
+    }
+    $permittedActivity = mb_substr(trim((string)($_POST['permitted_activity'] ?? '')), 0, 255);
+    $tradeLicenceNo = mb_substr(trim((string)($_POST['trade_licence_no'] ?? '')), 0, 100);
+    $fitOutDays = max(0, min(365, (int)($_POST['fit_out_days'] ?? 0)));
+    $personsPerRoom = max(0, min(50, (int)($_POST['persons_per_room'] ?? 0)));
+    // Commercial contract v2.1 (printed only).
+    $com21 = [];
+    foreach (['tenant_trn' => 30, 'tenant_signatory_name' => 200, 'tenant_signatory_eid' => 50, 'tenant_bank_account_name' => 200,
+              'guarantor_phone' => 50, 'guarantor_email' => 150, 'service_charge_terms' => 255, 'parking_terms' => 255] as $f => $len) {
+        $com21[$f] = mb_substr(trim((string)($_POST[$f] ?? '')), 0, $len);
+    }
+    $com21FitOutDeposit = max(0, round((float)($_POST['fit_out_deposit'] ?? 0), 2));
+    $guarantorWaivedReason = mb_substr(trim((string)($_POST['guarantor_waived_reason'] ?? '')), 0, 255);
     if ($hasContractV2Columns && !$error) {
-        if ($maxOccupants !== null && ($maxOccupants < 1 || $maxOccupants > 50)) {
-            $error = 'Max occupants must be between 1 and 50.';
+        if ($leaseId) {
+            try {
+                $occSt = $conn->prepare("SELECT unit_id, max_occupants, max_occupants_basis, max_occupants_override_reason FROM re_leases WHERE id = ? AND company_id = ?");
+                $occSt->execute([$leaseId, $currentCompanyId]);
+                $occExisting = $occSt->fetch(PDO::FETCH_ASSOC) ?: null;
+            } catch (Throwable $e) {
+                $occExisting = null;
+            }
+        }
+        $occResolved = contract_v2_resolve_lease_occupancy(
+            $occExisting,
+            (int)$unitId,
+            $unitId ? contract_v2_load_unit_occupancy($conn, (int)$unitId) : ['bedrooms' => null, 'bedroom_area_sqm' => null],
+            $occIsAdmin,
+            !empty($_POST['max_occupants_override_on']),
+            $_POST['max_occupants_override'] ?? null,
+            (string)($_POST['max_occupants_override_reason'] ?? '')
+        );
+        if ($occResolved['error']) {
+            $error = $occResolved['error'];
         } elseif ($guarantorName !== '' xor $guarantorEid !== '') {
             $error = 'Enter both the guarantor name and the guarantor Emirates ID, or leave both empty.';
         } elseif ($tenantId && $guarantorName === '') {
@@ -1984,16 +2029,99 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     WHERE id = ? AND company_id = ?
                 ");
                 $cv2->execute([
-                    $maxOccupants,
+                    $occResolved['max_occupants'],
                     $occupancyType !== '' ? $occupancyType : null,
                     $guarantorName !== '' ? $guarantorName : null,
                     $guarantorEid !== '' ? $guarantorEid : null,
                     (int)$leaseId,
                     $currentCompanyId,
                 ]);
+                try {
+                    if ($occResolved['overridden_by_now']) {
+                        $conn->prepare("UPDATE re_leases SET max_occupants_basis = ?, max_occupants_override_reason = ?, max_occupants_overridden_by = ?, max_occupants_overridden_at = NOW() WHERE id = ? AND company_id = ?")
+                            ->execute([$occResolved['basis'], $occResolved['override_reason'], current_user_id(), (int)$leaseId, $currentCompanyId]);
+                    } elseif ($occResolved['keep_override_meta']) {
+                        // Override unchanged: leave who/when as they are.
+                    } else {
+                        $conn->prepare("UPDATE re_leases SET max_occupants_basis = ?, max_occupants_override_reason = NULL, max_occupants_overridden_by = NULL, max_occupants_overridden_at = NULL WHERE id = ? AND company_id = ?")
+                            ->execute([$occResolved['basis'], (int)$leaseId, $currentCompanyId]);
+                    }
+                } catch (Throwable $e) {
+                    error_log('max_occupants basis save failed (run the v2 migration): ' . $e->getMessage());
+                }
+                try {
+                    if ($conn->query("SHOW COLUMNS FROM re_leases LIKE 'persons_per_room'")->fetch()) {
+                        $conn->prepare("UPDATE re_leases SET persons_per_room = ? WHERE id = ? AND company_id = ?")
+                            ->execute([$personsPerRoom > 0 ? $personsPerRoom : null, (int)$leaseId, $currentCompanyId]);
+                    }
+                } catch (Throwable $e) {
+                    error_log('persons_per_room save failed (run the v2 migration): ' . $e->getMessage());
+                }
+                try {
+                    if ($conn->query("SHOW COLUMNS FROM re_leases LIKE 'guarantor_waived_reason'")->fetch()) {
+                        $set = [];
+                        $vals = [];
+                        foreach ($com21 as $f => $val) {
+                            $set[] = "$f = ?";
+                            $vals[] = $val !== '' ? $val : null;
+                        }
+                        $set[] = 'fit_out_deposit = ?';
+                        $vals[] = $com21FitOutDeposit > 0 ? $com21FitOutDeposit : null;
+                        $vals[] = (int)$leaseId;
+                        $vals[] = $currentCompanyId;
+                        $conn->prepare('UPDATE re_leases SET ' . implode(', ', $set) . ' WHERE id = ? AND company_id = ?')->execute($vals);
+
+                        // No-guarantor reason: Admin / Owner only; who and when are kept and the change is logged.
+                        $gwSt = $conn->prepare('SELECT guarantor_waived_reason FROM re_leases WHERE id = ? AND company_id = ?');
+                        $gwSt->execute([(int)$leaseId, $currentCompanyId]);
+                        $gwOld = (string)$gwSt->fetchColumn();
+                        $gwIsAdmin = has_role('Owner', $conn) || has_role('Admin', $conn);
+                        if ($gwIsAdmin && $guarantorWaivedReason !== $gwOld) {
+                            $conn->prepare('UPDATE re_leases SET guarantor_waived_reason = ?, guarantor_waived_by = ?, guarantor_waived_at = NOW() WHERE id = ? AND company_id = ?')
+                                ->execute([$guarantorWaivedReason !== '' ? $guarantorWaivedReason : null, current_user_id(), (int)$leaseId, $currentCompanyId]);
+                            try {
+                                require_once __DIR__ . '/../../includes/audit_bridge.php';
+                                audit_bridge_re_ops($conn, (int)$currentCompanyId, 'lease_guarantor_waived', 're_leases', (int)$leaseId,
+                                    (string)$leaseNumber, $guarantorWaivedReason !== '' ? 'No guarantor: ' . $guarantorWaivedReason : 'No-guarantor reason removed',
+                                    ['guarantor_waived_reason' => $gwOld !== '' ? $gwOld : null], ['guarantor_waived_reason' => $guarantorWaivedReason !== '' ? $guarantorWaivedReason : null]);
+                            } catch (Throwable $e) {
+                                error_log('guarantor waiver audit failed: ' . $e->getMessage());
+                            }
+                        }
+                    }
+                } catch (Throwable $e) {
+                    error_log('commercial v2.1 fields save failed (run the v2 migration): ' . $e->getMessage());
+                }
+                try {
+                    if ($conn->query("SHOW COLUMNS FROM re_leases LIKE 'commercial_use'")->fetch()) {
+                        $conn->prepare("UPDATE re_leases SET commercial_use = ?, permitted_activity = ?, trade_licence_no = ?, fit_out_days = ? WHERE id = ? AND company_id = ?")
+                            ->execute([
+                                $commercialUse !== '' ? $commercialUse : null,
+                                $permittedActivity !== '' ? $permittedActivity : null,
+                                $tradeLicenceNo !== '' ? $tradeLicenceNo : null,
+                                $fitOutDays > 0 ? $fitOutDays : null,
+                                (int)$leaseId,
+                                $currentCompanyId,
+                            ]);
+                    }
+                } catch (Throwable $e) {
+                    error_log('commercial contract fields save failed (run the v2 migration): ' . $e->getMessage());
+                }
             }
 
             $conn->commit();
+
+            if (!empty($occResolved['overridden_by_now'])) {
+                try {
+                    require_once __DIR__ . '/../../includes/audit_bridge.php';
+                    audit_bridge_re_ops($conn, (int)$currentCompanyId, 'lease_max_occupants_override', 're_leases', (int)$leaseId,
+                        (string)$leaseNumber, 'Max occupants overridden to ' . (int)$occResolved['max_occupants'] . ': ' . $occResolved['override_reason'],
+                        $occExisting ? ['max_occupants' => $occExisting['max_occupants'] ?? null] : null,
+                        ['max_occupants' => $occResolved['max_occupants'], 'reason' => $occResolved['override_reason'], 'basis' => $occResolved['basis']]);
+                } catch (Throwable $e) {
+                    error_log('max occupants override audit failed: ' . $e->getMessage());
+                }
+            }
 
             // Audit History (fail-safe; does not affect lease save)
             try {
@@ -2050,7 +2178,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
             
-            $_SESSION['success'] = ($wasNewLease ? 'Lease created successfully' : 'Lease updated successfully') . $invoiceModeSyncNote;
+            $_SESSION['success'] = ($wasNewLease ? 'Lease created successfully' : 'Lease updated successfully') . $invoiceModeSyncNote
+                . (!empty($occResolved['warning']) ? ' Warning: ' . $occResolved['warning'] : '');
             header('Location: lease_view.php?id=' . $leaseId);
             exit;
         } catch (Exception $e) {
@@ -2312,7 +2441,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <select name="unit_id" class="form-select" id="unitSelect">
                                 <option value="">-- Select Unit --</option>
                                 <?php foreach ($units as $u): ?>
-                                    <option value="<?= $u['id'] ?>" data-unit-type="<?= h($u['unit_type'] ?? '') ?>" <?= ($singleUnitId == $u['id']) ? 'selected' : '' ?>>
+                                    <option value="<?= $u['id'] ?>" data-unit-type="<?= h($u['unit_type'] ?? '') ?>" data-bedrooms="<?= h($u['bedrooms'] ?? '') ?>" data-bedroom-area="<?= h($u['bedroom_area_sqm'] ?? '') ?>" <?= ($singleUnitId == $u['id']) ? 'selected' : '' ?>>
                                         <?= h($u['building_name'] . ' - ' . $u['unit_number'] . ' (' . $u['unit_type'] . ')') ?>
                                     </option>
                                 <?php endforeach; ?>
@@ -3022,9 +3151,29 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     <div class="row">
                         <div class="col-md-3 mb-3">
                             <label class="form-label">Max Occupants</label>
-                            <input type="number" class="form-control" name="max_occupants" min="1" max="50"
-                                   value="<?= h(getFormValue('max_occupants', '')) ?>" placeholder="4">
-                            <small class="form-text text-muted">Empty = 4</small>
+                            <div class="form-control bg-light" id="occCalcBox" style="height:auto;min-height:38px;">
+                                <span id="occCalcText" class="small">Select a unit</span>
+                            </div>
+                            <?php if ($lease && (int)($lease['max_occupants'] ?? 0) > 0): ?>
+                            <small class="form-text text-muted d-block">Saved on lease: <strong><?= (int)$lease['max_occupants'] ?></strong><?= !empty($lease['max_occupants_basis']) ? ' (' . h($lease['max_occupants_basis']) . ')' : '' ?></small>
+                            <?php endif; ?>
+                            <?php if (!empty($lease['max_occupants_override_reason'])): ?>
+                            <small class="form-text text-warning d-block">Admin override: <?= h($lease['max_occupants_override_reason']) ?></small>
+                            <?php endif; ?>
+                            <?php if (has_role('Owner', $conn) || has_role('Admin', $conn)):
+                                $occOvOn = $formData ? !empty($formData['max_occupants_override_on']) : !empty($lease['max_occupants_override_reason']); ?>
+                            <div class="form-check mt-1">
+                                <input class="form-check-input" type="checkbox" name="max_occupants_override_on" value="1" id="occOverrideOn" <?= $occOvOn ? 'checked' : '' ?>>
+                                <label class="form-check-label small" for="occOverrideOn">Override (Admin)</label>
+                            </div>
+                            <div id="occOverrideFields" class="<?= $occOvOn ? '' : 'd-none' ?>">
+                                <input type="number" class="form-control form-control-sm mb-1" name="max_occupants_override" id="occOverrideValue" min="1" max="50"
+                                       value="<?= h($formData['max_occupants_override'] ?? ($lease['max_occupants'] ?? '')) ?>" placeholder="Persons">
+                                <input type="text" class="form-control form-control-sm" name="max_occupants_override_reason" maxlength="255"
+                                       value="<?= h($formData['max_occupants_override_reason'] ?? ($lease['max_occupants_override_reason'] ?? '')) ?>" placeholder="Reason (required)">
+                                <small class="text-danger d-none" id="occOverrideWarn"></small>
+                            </div>
+                            <?php endif; ?>
                         </div>
                         <div class="col-md-3 mb-3">
                             <label class="form-label">Occupancy Type</label>
@@ -3053,6 +3202,116 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     <div class="small text-muted mb-3" id="guarantorHint">
                         A guarantor is required when the tenant is a company and the annual rent is over AED <?= number_format(CONTRACT_V2_GUARANTOR_RENT_LIMIT) ?>; otherwise optional.
                     </div>
+                    <?php
+                    $cv2ComUse = (string)getFormValue('commercial_use', '');
+                    $cv2FitOut = (int)getFormValue('fit_out_days', 0);
+                    ?>
+                    <div id="commercialContractFields">
+                    <h6 class="mb-2"><i class="bi bi-shop"></i> Commercial / Labour Contract <small class="text-muted fw-normal">(shop / office / food court / camp rooms, printed on page 1)</small></h6>
+                    <div class="row">
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Commercial Use</label>
+                            <select name="commercial_use" class="form-select">
+                                <option value="">- Select -</option>
+                                <?php foreach (contract_v2_commercial_uses() as $k => $label): ?>
+                                    <option value="<?= h($k) ?>" <?= $cv2ComUse === $k ? 'selected' : '' ?>><?= h($label) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <small class="form-text text-muted">The commercial contract will not print without it.</small>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Permitted Activity</label>
+                            <input type="text" class="form-control" name="permitted_activity" maxlength="255"
+                                   value="<?= h(getFormValue('permitted_activity', '')) ?>" placeholder="e.g. Grocery, Restaurant">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Trade Licence No.</label>
+                            <input type="text" class="form-control" name="trade_licence_no" maxlength="100"
+                                   value="<?= h(getFormValue('trade_licence_no', '')) ?>">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Fit-out Period (days)</label>
+                            <input type="number" class="form-control" name="fit_out_days" min="0" max="365"
+                                   value="<?= $cv2FitOut > 0 ? $cv2FitOut : '' ?>" placeholder="None">
+                            <small class="form-text text-muted">Printed only. Does not change the rent or cheques.</small>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Persons per Room <small class="text-muted">(camp rooms)</small></label>
+                            <input type="number" class="form-control" name="persons_per_room" min="1" max="50"
+                                   value="<?= (int)getFormValue('persons_per_room', 0) > 0 ? (int)getFormValue('persons_per_room', 0) : '' ?>">
+                            <small class="form-text text-muted">The labour contract will not print without it.</small>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Tenant TRN</label>
+                            <input type="text" class="form-control" name="tenant_trn" maxlength="30" value="<?= h(getFormValue('tenant_trn', '')) ?>">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Authorised Signatory Name</label>
+                            <input type="text" class="form-control" name="tenant_signatory_name" maxlength="200" value="<?= h(getFormValue('tenant_signatory_name', '')) ?>">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Signatory Emirates ID</label>
+                            <input type="text" class="form-control" name="tenant_signatory_eid" maxlength="50" value="<?= h(getFormValue('tenant_signatory_eid', '')) ?>" placeholder="784-XXXX-XXXXXXX-X">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Cheque Account Name</label>
+                            <input type="text" class="form-control" name="tenant_bank_account_name" maxlength="200" value="<?= h(getFormValue('tenant_bank_account_name', '')) ?>" placeholder="Tenant's own account">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Service Charge</label>
+                            <input type="text" class="form-control" name="service_charge_terms" maxlength="255" value="<?= h(getFormValue('service_charge_terms', '')) ?>" placeholder="None — included in the rent">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Fit-out Deposit (AED)</label>
+                            <input type="number" step="0.01" min="0" class="form-control" name="fit_out_deposit" value="<?= (float)getFormValue('fit_out_deposit', 0) > 0 ? h(getFormValue('fit_out_deposit', '')) : '' ?>" placeholder="None">
+                            <small class="form-text text-muted">Printed only. Not invoiced or posted.</small>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Parking</label>
+                            <input type="text" class="form-control" name="parking_terms" maxlength="255" value="<?= h(getFormValue('parking_terms', '')) ?>" placeholder="None, unless agreed by the Landlord in writing">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Guarantor Mobile</label>
+                            <input type="text" class="form-control" name="guarantor_phone" maxlength="50" value="<?= h(getFormValue('guarantor_phone', '')) ?>">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Guarantor Email</label>
+                            <input type="email" class="form-control" name="guarantor_email" maxlength="150" value="<?= h(getFormValue('guarantor_email', '')) ?>">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">No Guarantor - Reason <small class="text-muted">(Admin only; the commercial contract needs a guarantor or this reason)</small></label>
+                            <input type="text" class="form-control" name="guarantor_waived_reason" maxlength="255"
+                                   value="<?= h(getFormValue('guarantor_waived_reason', '')) ?>" <?= (has_role('Owner', $conn) || has_role('Admin', $conn)) ? '' : 'readonly' ?>>
+                        </div>
+                    </div>
+                    </div>
+                    <script>
+                    (function () {
+                        function refreshCommercialFields() {
+                            const box = document.getElementById('commercialContractFields');
+                            if (!box) return;
+                            let ut = '';
+                            const us = document.getElementById('unitSelect');
+                            if (us && us.selectedIndex >= 0 && us.value) {
+                                ut = us.options[us.selectedIndex].getAttribute('data-unit-type') || '';
+                            } else {
+                                const first = document.querySelector('select[data-unit-type], select option:checked[data-unit-type]');
+                                ut = first ? (first.getAttribute('data-unit-type') || '') : '';
+                            }
+                            const low = String(ut).toLowerCase();
+                            // Commercial types, camp rooms (labour_room) and camp rooms saved with no type (Ladies Camp).
+                            const show = low === '' && !!(us && us.value) || ['commercial','shop','retail','office','warehouse','showroom','business','food_court','labour'].some(k => low.includes(k));
+                            box.classList.toggle('d-none', !show);
+                        }
+                        document.addEventListener('change', function (e) {
+                            if (e.target && e.target.tagName === 'SELECT') refreshCommercialFields();
+                        });
+                        document.addEventListener('DOMContentLoaded', refreshCommercialFields);
+                        refreshCommercialFields();
+                    })();
+                    </script>
                     <script>
                     (function () {
                         const occ = document.getElementById('occupancyTypeSelect');
@@ -3081,6 +3340,65 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         });
                         document.addEventListener('DOMContentLoaded', refreshGuarantor);
                         refreshGuarantor();
+
+                        // Max occupants preview: same rule as contract_v2_compute_max_occupants().
+                        const occCaps = <?= json_encode(contract_v2_occupancy_caps()) ?>;
+                        const occSqm = <?= (int)CONTRACT_V2_OCC_SQM_PER_PERSON ?>;
+                        let occCalc = null;
+                        function refreshOccupancy() {
+                            const us = document.getElementById('unitSelect');
+                            const opt = us && us.selectedOptions ? us.selectedOptions[0] : null;
+                            const txt = document.getElementById('occCalcText');
+                            if (!txt) return;
+                            occCalc = null;
+                            if (!opt || !opt.value) { txt.textContent = 'Select a unit'; txt.className = 'small'; checkOverride(); return; }
+                            const bedsRaw = opt.getAttribute('data-bedrooms');
+                            if (bedsRaw === null || bedsRaw === '') {
+                                txt.textContent = 'Unit has no bedrooms entered: contract v2 will not print until it is set on the unit';
+                                txt.className = 'small text-danger'; checkOverride(); return;
+                            }
+                            const b = parseInt(bedsRaw, 10);
+                            const area = parseFloat(opt.getAttribute('data-bedroom-area') || '') || null;
+                            if (b === 0) {
+                                occCalc = {value: 2, cap: 2, areaCap: null};
+                                txt.textContent = 'Studio → 2';
+                            } else {
+                                const formula = 2 * b + 2;
+                                const areaCap = area ? Math.floor(area / occSqm) : null;
+                                const cap = occCaps[b] !== undefined ? occCaps[b] : 2 * b + 3;
+                                const value = Math.min(formula, areaCap !== null ? areaCap : formula, cap);
+                                occCalc = {value: value, cap: cap, areaCap: areaCap};
+                                txt.textContent = b + 'BR, ' + (area ? (area + ' sqm bedrooms') : 'bedroom area not entered') + ' → ' + value;
+                            }
+                            txt.className = 'small fw-semibold';
+                            checkOverride();
+                        }
+                        function checkOverride() {
+                            const on = document.getElementById('occOverrideOn');
+                            const fields = document.getElementById('occOverrideFields');
+                            const val = document.getElementById('occOverrideValue');
+                            const warn = document.getElementById('occOverrideWarn');
+                            if (!on || !fields) return;
+                            fields.classList.toggle('d-none', !on.checked);
+                            if (!warn || !val) return;
+                            const n = parseInt(val.value || '0', 10);
+                            const msgs = [];
+                            if (on.checked && occCalc && n > 0) {
+                                if (n > occCalc.cap) msgs.push('above the cap of ' + occCalc.cap);
+                                if (occCalc.areaCap !== null && n > occCalc.areaCap) msgs.push('above the bedroom-area limit of ' + occCalc.areaCap);
+                            }
+                            warn.textContent = msgs.length ? 'Warning: ' + msgs.join(' and ') : '';
+                            warn.classList.toggle('d-none', !msgs.length);
+                        }
+                        document.addEventListener('change', function (e) {
+                            if (e.target && (e.target.id === 'unitSelect' || e.target.id === 'occOverrideOn')) { refreshOccupancy(); }
+                        });
+                        document.addEventListener('input', function (e) {
+                            if (e.target && e.target.id === 'occOverrideValue') checkOverride();
+                        });
+                        if (window.jQuery) { jQuery(document).on('change', '#unitSelect', refreshOccupancy); }
+                        document.addEventListener('DOMContentLoaded', refreshOccupancy);
+                        refreshOccupancy();
                     })();
                     </script>
                     <?php endif; ?>
@@ -3587,7 +3905,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     }
                 }
                 const low = String(ut).toLowerCase();
-                const commercial = ['commercial','shop','retail','office','warehouse','showroom','business'].some(k => low.includes(k));
+                const commercial = ['commercial','shop','retail','office','warehouse','showroom','business','food_court'].some(k => low.includes(k));
                 row.classList.toggle('d-none', !commercial);
                 if (!commercial) {
                     const cb = document.getElementById('vatApplicableOnRent');
@@ -3677,7 +3995,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                     }
                 }
                 const utLow = String(primaryUt).toLowerCase();
-                const isCommercial = ['commercial','shop','retail','office','warehouse','showroom','business'].some(k => utLow.includes(k));
+                const isCommercial = ['commercial','shop','retail','office','warehouse','showroom','business','food_court'].some(k => utLow.includes(k));
                 const vatOnRent = isCommercial && !!document.getElementById('vatApplicableOnRent')?.checked;
                 let vatDistributionType = document.getElementById('vatDistributionType')?.value || 'first_installment';
                 if (!['first_installment','split_installments','separate_payment'].includes(vatDistributionType)) {
