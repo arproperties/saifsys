@@ -3,7 +3,7 @@
  * Finance > Vouchers: list of one kind for the company selected in the session.
  * Opened through fin_journal_vouchers.php, fin_petty_cash.php,
  * fin_payment_vouchers.php, fin_receipt_vouchers.php, fin_supplier_invoices.php,
- * fin_fixed_journals.php, fin_allocation_journals.php or fin_lease_vouchers.php,
+ * fin_fixed_journals.php, fin_allocation_journals.php, fin_lease_vouchers.php or fin_pdc_receivables.php,
  * which set $finVoucherType.
  */
 require_once __DIR__ . '/../includes/fin_context.php';
@@ -63,6 +63,7 @@ require __DIR__ . '/../includes/fin_layout_header.php';
 
   <?php if ($msg): ?><div class="alert alert-success"><?= h($msg) ?></div><?php endif; ?>
   <?php if ($err): ?><div class="alert alert-danger"><?= h($err) ?></div><?php endif; ?>
+  <?php if (!empty($finListNotes)): ?><div class="alert alert-warning"><div class="fw-semibold mb-1">Not posted yet:</div><ul class="mb-0 small"><?php foreach ($finListNotes as $finListNote): ?><li><?= h($finListNote) ?></li><?php endforeach; ?></ul></div><?php endif; ?>
 
   <?php if (!$tableOk): ?>
     <div class="alert alert-warning">Run migrations/fin_chart_of_accounts.sql, fin_ledger_entries.sql, fin_vouchers.sql and fin_partners.sql first.</div>
@@ -96,8 +97,9 @@ require __DIR__ . '/../includes/fin_layout_header.php';
           <?php if (in_array($type, FIN_SCHEDULED_TYPES, true)): ?>
           <a href="fin_pending_entries.php" class="btn btn-sm btn-success"><i class="bi bi-hourglass-split"></i> Pending Approval</a>
           <a href="<?= h($vt['new']) ?>" class="btn btn-sm btn-outline-secondary"><?= $type === 'fj' ? 'Fixed Assets' : 'Allocations' ?></a>
-          <?php elseif (in_array($type, FIN_SOURCED_TYPES, true)): ?>
+          <?php elseif ($type === 'lv'): ?>
           <a href="<?= h($vt['new']) ?>" class="btn btn-sm btn-success"><i class="bi bi-building-check"></i> Lease Posting</a>
+          <?php elseif (in_array($type, FIN_SOURCED_TYPES, true)): ?>
           <?php else: ?>
           <a href="<?= h($vt['new']) ?>" class="btn btn-sm btn-success"><i class="bi bi-plus-lg"></i> New <?= h($vt['label']) ?></a>
           <?php endif; ?>

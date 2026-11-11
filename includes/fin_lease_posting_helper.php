@@ -6,6 +6,7 @@
  *   Cr  Deferred Revenue                 the contract amount
  *   Cr  Security Deposit                 not on a renewal: the deposit is not collected again
  *   Cr  Chiller Fees / Ejari Income / Admin Fee / Commission / AMC
+ *   Cr  VAT Output (2250001)             the 5% VAT inside the Ejari fee: 300 = 285.71 + 14.29
  *
  * The rows follow the Lease Information card of lease_view.php, in its order and
  * with its names. Their accounts are fixed (FIN_LEASE_POSTING_ROWS), except:
@@ -34,10 +35,14 @@ const FIN_LEASE_POSTING_ROWS = [
     'deposit'    => ['label' => 'Security Deposit', 'code' => '2112010', 'side' => 'credit', 'kind' => 'liability'],
     'chiller'    => ['label' => 'Chiller Fees',     'code' => '4130009', 'side' => 'credit', 'kind' => 'income'],
     'ejari'      => ['label' => 'Ejari Fees',       'code' => '4130004', 'side' => 'credit', 'kind' => 'income'],
+    'ejari_vat'  => ['label' => 'VAT 5% on Ejari',  'code' => '2250001', 'side' => 'credit', 'kind' => 'liability'],
     'admin'      => ['label' => 'Admin Fees',       'code' => '4130002', 'side' => 'credit', 'kind' => 'income'],
     'commission' => ['label' => 'Commission Fees',  'code' => '4200001', 'side' => 'credit', 'kind' => 'income'],
     'amc'        => ['label' => 'AMC Amount',       'code' => '4200001', 'side' => 'credit', 'kind' => 'income'],
 ];
+
+/** The Ejari fee on a lease includes 5% VAT. */
+const FIN_LEASE_EJARI_VAT_RATE = 5.0;
 
 /** The rows whose account is picked from a list on the page. */
 const FIN_LEASE_POSTING_CHOOSABLE = ['tenant', 'contract', 'deposit', 'commission'];
@@ -253,16 +258,20 @@ function fin_lease_posting_get(PDO $conn, int $companyId, int $leaseId): ?array
 
 /**
  * Row key => the amount the lease gives it, as lease_view.php shows it: a renewal
- * has no security deposit (it is not collected again). The tenant is debited
- * with the sum of the rest.
+ * has no security deposit (it is not collected again), and the Ejari fee is split
+ * into the fee and its 5% VAT. The tenant is debited with the sum of the rest.
  */
 function fin_lease_posting_amounts(array $lease): array
 {
+    // The Ejari fee includes VAT: 300 is 285.71 of fee and 14.29 of VAT.
+    $ejari = round((float)$lease['ejari_fees'], 2);
+    $ejariVat = round($ejari * FIN_LEASE_EJARI_VAT_RATE / (100 + FIN_LEASE_EJARI_VAT_RATE), 2);
     $out = [
         'contract'   => (float)$lease['contract_amount'],
         'deposit'    => !empty($lease['is_renewal_lease']) ? 0.0 : (float)$lease['security_deposit'],
         'chiller'    => (float)$lease['chiller_fees'],
-        'ejari'      => (float)$lease['ejari_fees'],
+        'ejari'      => $ejari - $ejariVat,
+        'ejari_vat'  => $ejariVat,
         'admin'      => (float)$lease['admin_fees'],
         'commission' => (float)$lease['commission_fees'],
         'amc'        => (float)$lease['amc_amount'],
@@ -351,6 +360,11 @@ function fin_lease_post(PDO $conn, int $companyId, int $leaseId, array $data, ?i
             'lines'     => $lines,
         ], $userId);
         $conn->prepare("UPDATE fin_vouchers SET lease_id = ? WHERE id = ? AND company_id = ?")->execute([$leaseId, $voucherId, $companyId]);
+        // Cheques of the lease whose date has come move to PDC Receivables at once.
+        require_once __DIR__ . '/fin_pdc_helper.php';
+        if (fin_pdc_ready($conn)) {
+            fin_pdc_post_due($conn, $companyId, fin_pdc_today(), $leaseId, $userId);
+        }
 
         if ($ownTx) {
             $conn->commit();
