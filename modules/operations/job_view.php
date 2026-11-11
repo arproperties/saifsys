@@ -19,6 +19,7 @@ require_once __DIR__ . '/includes/ops_sources.php';
 require_once __DIR__ . '/includes/ops_billing.php';
 require_once __DIR__ . '/includes/ops_checklist.php';
 require_once __DIR__ . '/includes/ops_gas.php';
+require_once __DIR__ . '/includes/ops_body_camera.php';
 
 require_login(get_application_web_root() . '/login');
 ops_require_access($conn);
@@ -459,6 +460,35 @@ require __DIR__ . '/includes/ops_layout_header.php';
         </div>
       </div>
     </div>
+
+    <?php // What the Looki L1 recorded while this job was started (Operations → Body camera). ?>
+    <?php $bodyCam = bc_job_files($conn, $jobId); ?>
+    <?php if ($bodyCam): ?>
+    <div class="card card-round mb-3">
+      <div class="card-body">
+        <h6 class="fw-bold mb-3"><i class="bi bi-person-video"></i> Body camera (<?= count($bodyCam) ?>)</h6>
+        <div class="d-flex flex-wrap gap-2 mb-2">
+          <?php foreach ($bodyCam as $bf): ?>
+            <?php $bfUrl = $opsBase . '/body_camera_file.php?id=' . (int)$bf['id']; ?>
+            <div class="text-center small">
+              <?php if ($bf['media_type'] === 'video'): ?>
+                <video src="<?= h($bfUrl) ?>" controls muted preload="metadata" playsinline
+                       poster="<?= h($bfUrl) ?>&amp;thumb=1"
+                       style="width:104px;height:104px;object-fit:cover;border-radius:10px;border:1px solid #dee2e6;background:#000;"></video>
+              <?php else: ?>
+                <a href="<?= h($bfUrl) ?>" target="_blank" rel="noopener">
+                  <img src="<?= h($bfUrl) ?>" alt="Body camera photo" loading="lazy"
+                       style="width:104px;height:104px;object-fit:cover;border-radius:10px;border:1px solid #dee2e6;">
+                </a>
+              <?php endif; ?>
+              <div class="text-muted"><?= h(date('g:i A', strtotime($bf['recorded_at']))) ?></div>
+            </div>
+          <?php endforeach; ?>
+        </div>
+        <div class="small text-muted">Recorded by <?= h($bodyCam[0]['person'] ?? '') ?><?= $bodyCam[0]['place'] ? ' · ' . h($bodyCam[0]['place']) : '' ?></div>
+      </div>
+    </div>
+    <?php endif; ?>
 
   </div>
 
