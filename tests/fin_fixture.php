@@ -199,7 +199,7 @@ function fin_test_load_journals(PDO $conn, int $companyId): int
  */
 function fin_test_clear_extras(PDO $conn, int $a, int $b): void
 {
-    foreach (['fin_auto_entries', 'fin_assets', 'fin_alloc_schedules', 'fin_payment_allocations', 'fin_supplier_payments', 'fin_voucher_attachments', 'fin_supplier_invoices', 'fin_settings'] as $table) {
+    foreach (['fin_pdc_entries', 'fin_auto_entries', 'fin_assets', 'fin_alloc_schedules', 'fin_payment_allocations', 'fin_supplier_payments', 'fin_voucher_attachments', 'fin_supplier_invoices', 'fin_settings'] as $table) {
         $exists = $conn->prepare("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?");
         $exists->execute([$table]);
         if ((int)$exists->fetchColumn() === 1) {

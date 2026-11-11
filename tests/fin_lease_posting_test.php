@@ -43,8 +43,10 @@ function refusal(callable $fn): string
 $sample = ['contract_amount' => '60000.00', 'admin_fees' => '500.00', 'chiller_fees' => '0.00', 'ejari_fees' => '220.00',
            'security_deposit' => '3000.00', 'commission_fees' => '100.00', 'amc_amount' => '50.50'];
 check('amounts from a lease, in the order of the lease page',
-    ['tenant' => 63870.5, 'contract' => 60000.0, 'deposit' => 3000.0, 'chiller' => 0.0, 'ejari' => 220.0, 'admin' => 500.0, 'commission' => 100.0, 'amc' => 50.5],
+    ['tenant' => 63870.5, 'contract' => 60000.0, 'deposit' => 3000.0, 'chiller' => 0.0, 'ejari' => 209.52, 'ejari_vat' => 10.48, 'admin' => 500.0, 'commission' => 100.0, 'amc' => 50.5],
     fin_lease_posting_amounts($sample));
+check('Ejari 300 includes 5% VAT: 285.71 + 14.29', [285.71, 14.29],
+    array_values(array_intersect_key(fin_lease_posting_amounts(['ejari_fees' => '300.00'] + $sample), ['ejari' => 1, 'ejari_vat' => 1])));
 check('a renewal has no security deposit', ['tenant' => 60870.5, 'deposit' => 0.0],
     array_intersect_key(fin_lease_posting_amounts(['is_renewal_lease' => '1'] + $sample), ['tenant' => 1, 'deposit' => 1]));
 
@@ -140,7 +142,8 @@ try {
     check('a missing account stops the posting', true, str_contains(refusal(static fn() => $post($a, $leaseId, $amounts)), 'account 1121005 is not in the chart'));
 
     foreach ([['1121005', 'SUNDRY DEBTORS'], ['2112009', 'Deferred Revenue'], ['2112010', 'Security Deposit'],
-              ['4130004', 'EJARI FEE RECEIVED'], ['4130009', 'CHILLER FEE RECEIVED'], ['4130002', 'ADMIN FEES RECEIVED']] as [$code, $name]) {
+              ['4130004', 'EJARI FEE RECEIVED'], ['4130009', 'CHILLER FEE RECEIVED'], ['4130002', 'ADMIN FEES RECEIVED'],
+              ['2250001', 'VAT OUTPUT - COMMERCIAL UNITS']] as [$code, $name]) {
         fin_coa_add_account($conn, $a, $code, $name);
     }
 
@@ -166,7 +169,7 @@ try {
     check('reference is the lease number', $lease['lease_number'], $v['reference']);
     check('lines: debtor first, zero rows left out',
         [['1121005', '63870.50', '0.00'], ['2112009', '0.00', '60000.00'], ['2112010', '0.00', '3000.00'],
-         ['4130004', '0.00', '220.00'], ['4130002', '0.00', '500.00'], ['4200001', '0.00', '100.00'], ['4200001', '0.00', '50.50']],
+         ['4130004', '0.00', '209.52'], ['2250001', '0.00', '10.48'], ['4130002', '0.00', '500.00'], ['4200001', '0.00', '100.00'], ['4200001', '0.00', '50.50']],
         array_map(static fn($l) => [$l['code'], $l['debit'], $l['credit']], $v['lines']));
     $tb = array_column(fin_trial_balance($conn, $a, '2026-03-01', '2026-03-31')['rows'], null, 'code');
     check('trial balance shows the debtor', 63870.5, (float)$tb['1121005']['period_debit']);
@@ -201,7 +204,7 @@ try {
     $chosen = fin_lease_post($conn, $a, $leaseId, ['date' => '2026-03-05', 'amounts' => $amounts, 'accounts' => ['contract' => (int)$choices['2112012'], 'commission' => $admin]], 7);
     $codes = array_column(fin_voucher_get($conn, $a, $chosen)['lines'], 'code');
     check('the contract goes to the chosen account', ['1121005', '2112012'], array_slice($codes, 0, 2));
-    check('the commission goes to the chosen account', '4130002', $codes[5]);
+    check('the commission goes to the chosen account', '4130002', $codes[6]);
 
     // 5c. The tenant goes to an account under Sundry Debtors, and only to one.
     fin_voucher_delete($conn, $a, $chosen, 7);

@@ -11,8 +11,9 @@
  *   fj  Fixed Journal    - a monthly depreciation entry, posted when Accounts approve it
  *   aj  Allocation Journal - a monthly prepaid / accrued entry, posted when Accounts approve it
  *   lv  Lease Voucher - the opening entry of a lease contract, raised from Lease Posting
+ *   pdc PDC Receivable - a tenant's post-dated cheque moved to PDC Receivables on its date (fin_pdc_helper.php)
  * fj and aj are journals made from a schedule (fin_auto_entry_helper.php), never typed in.
- * lv is a journal raised from Lease Posting only (fin_lease_posting_helper.php); it can be
+ * lv and pdc are journals raised by the system only (Lease Posting, the lease's cheques); they can be
  * edited and deleted like a journal voucher, but not typed in as a new one.
  *
  * Saving a voucher posts its lines to fin_ledger_entries, so it shows in the
@@ -43,13 +44,15 @@ const FIN_VOUCHER_TYPES = [
              'party' => '', 'cash' => ''],
     'lv' => ['list' => 'fin_lease_vouchers.php', 'new' => 'fin_lease_posting.php', 'label' => 'Lease Voucher', 'plural' => 'Lease Vouchers', 'prefix' => 'LV', 'icon' => 'bi-house-check',
              'party' => 'Tenant', 'cash' => ''],
+    'pdc' => ['list' => 'fin_pdc_receivables.php', 'new' => 'fin_pdc_receivables.php', 'label' => 'PDC Receivable', 'plural' => 'PDC Receivables', 'prefix' => 'PDCR', 'icon' => 'bi-bank',
+             'party' => 'Tenant', 'cash' => ''],
 ];
 
 /** Kinds that are journals: lines with a debit or a credit, no cash account. */
-const FIN_JOURNAL_TYPES = ['jv', 'fj', 'aj', 'lv'];
+const FIN_JOURNAL_TYPES = ['jv', 'fj', 'aj', 'lv', 'pdc'];
 
-/** Kinds raised from their own page (Lease Posting), never from the voucher form as a new one. */
-const FIN_SOURCED_TYPES = ['lv'];
+/** Kinds raised by the system (Lease Posting, a lease's cheques), never from the voucher form as a new one. */
+const FIN_SOURCED_TYPES = ['lv', 'pdc'];
 
 /** Kinds made from a schedule and posted on approval, never typed in. */
 const FIN_SCHEDULED_TYPES = ['fj', 'aj'];
