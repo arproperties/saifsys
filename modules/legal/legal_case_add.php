@@ -134,7 +134,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
 ?>
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h1><i class="bi bi-briefcase"></i> New Legal Case</h1>
-            <a href="legal_cases.php" class="btn btn-secondary"><i class="bi bi-arrow-left"></i> Back</a>
+            <a href="legal_case_list.php" class="btn btn-secondary"><i class="bi bi-arrow-left"></i> Back</a>
         </div>
 
         <?php if ($error): ?><div class="alert alert-danger"><?= h($error) ?></div><?php endif; ?>
@@ -290,7 +290,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
 
             <div class="d-flex gap-2 mb-5">
                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-circle"></i> Create Case</button>
-                <a href="legal_cases.php" class="btn btn-outline-secondary">Cancel</a>
+                <a href="legal_case_list.php" class="btn btn-outline-secondary">Cancel</a>
             </div>
         </form>
 

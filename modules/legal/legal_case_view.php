@@ -46,7 +46,7 @@ function legal_load_case(PDO $conn, int $caseId, int $companyId) {
 $case = legal_load_case($conn, $caseId, $currentCompanyId);
 if (!$case) {
     $_SESSION['error'] = 'Legal case not found.';
-    header('Location: legal_cases.php');
+    header('Location: legal_case_list.php');
     exit;
 }
 
@@ -137,7 +137,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              ->execute([current_user_id(), $caseId, $currentCompanyId]);
         legal_audit('delete', 're_legal_case', $caseId, 'Deleted legal case ' . $case['case_number']);
         $_SESSION['success'] = 'Case deleted.';
-        header('Location: legal_cases.php'); exit;
+        header('Location: legal_case_list.php'); exit;
     }
 }
 
@@ -211,7 +211,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
             <div class="d-flex gap-2">
                 <a href="legal_case_edit.php?id=<?= (int)$caseId ?>" class="btn btn-outline-primary"><i class="bi bi-pencil"></i> Edit</a>
                 <a href="legal_notice_add.php?case_id=<?= (int)$caseId ?>" class="btn btn-outline-dark"><i class="bi bi-envelope-paper"></i> New Notice</a>
-                <a href="legal_cases.php" class="btn btn-secondary"><i class="bi bi-arrow-left"></i> Back</a>
+                <a href="legal_case_list.php" class="btn btn-secondary"><i class="bi bi-arrow-left"></i> Back</a>
             </div>
         </div>
 

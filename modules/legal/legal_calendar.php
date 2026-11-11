@@ -210,7 +210,7 @@ try {
         if ($r['overdue_count'] > 0) $parts[] = (int)$r['overdue_count'] . ' overdue AED ' . number_format((float)$r['overdue_amt']);
         $links = [[$r['lease_number'] ?: 'Lease #' . $r['id'], $re . 'lease_view.php?id=' . (int)$r['id'] . '#installments', 'bi-file-earmark-text']];
         if ($r['open_cases'] > 0) {
-            $links[] = ['Case', 'legal_cases.php?search=' . urlencode((string)$r['lease_number']), 'bi-briefcase'];
+            $links[] = ['Case', 'legal_case_list.php?search=' . urlencode((string)$r['lease_number']), 'bi-briefcase'];
         } else {
             $links[] = ['New case', 'legal_case_add.php?' . http_build_query([
                 'case_source' => $r['bounced_count'] > 0 ? 'bounced_cheque' : 'manual',
@@ -318,7 +318,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
             <div class="lw-sub">Hearings, deadlines and the lease money that falls due · <?= h(date('l, j F Y', $todayTs)) ?></div>
         </div>
         <div class="d-flex gap-2 flex-wrap">
-            <a href="legal_cases.php" class="btn lw-btn-soft"><i class="bi bi-briefcase"></i> Cases</a>
+            <a href="legal_case_list.php" class="btn lw-btn-soft"><i class="bi bi-briefcase"></i> Cases</a>
             <a href="legal_notices.php" class="btn lw-btn-soft"><i class="bi bi-envelope-paper"></i> Notices</a>
             <a href="legal_hearing_add.php" class="btn lw-btn-grad"><i class="bi bi-plus-lg"></i> Add hearing</a>
         </div>
