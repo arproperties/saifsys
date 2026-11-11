@@ -10,7 +10,7 @@
  *                 Link to job, Delete.
  *   Setup         each L1: who wears it and its Looki API key; Sync now; how many
  *                 days recordings are kept. Owner, Admin and HR only.
- * Recordings come from cron/body_camera_sync.php. Rules: includes/ops_body_camera.php.
+ * Recordings come in only with Sync now on the Setup tab. Rules: includes/ops_body_camera.php.
  */
 require_once __DIR__ . '/includes/ops_store_page.php';
 require_once __DIR__ . '/includes/ops_body_camera.php';
@@ -91,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $bcReady) {
             if (!$d) {
                 throw new BcError('That device is gone.');
             }
-            // The same lock as the cron, so the two never download the same files at once.
+            // One sync at a time, so two clicks never download the same files at once.
             $lock = fopen(bc_dir() . '/sync.lock', 'c');
             if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
                 throw new BcError('A sync is already running. Try again in a few minutes.');
@@ -100,6 +100,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $bcReady) {
             ignore_user_abort(true);
             session_write_close();
             $note = bc_sync_device($conn, $d);
+            bc_cleanup($conn);
             flock($lock, LOCK_UN);
             session_start();
             ops_flash('Sync: ' . $note, (bc_device($conn, (int)$d['id'])['last_sync_ok'] ?? 0) ? 'success' : 'danger');
@@ -196,8 +197,8 @@ require __DIR__ . '/includes/ops_layout_header.php';
   <div>
     <div class="page-header-label">Body camera</div>
     <div class="text-muted small">
-      Recordings from the Looki L1 worn on tasks. They come from Looki's cloud every 30 minutes
-      after the L1 has charged on Wi-Fi, and are linked to the job the person had started at the time.
+      Recordings from the Looki L1 worn on tasks. They come from Looki's cloud when you press
+      Sync now (Setup tab), and are linked to the job the person had started at the time.
     </div>
   </div>
 </div>
@@ -776,7 +777,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
           <li class="mb-2"><b>Orange rows</b> (⚠️) need a look: something seems taken from the store with no store entry.</li>
           <li class="mb-2"><b>Add event</b> to note something yourself. <b>🗑</b> removes a row from the report only; nothing changes in HR, Operations or Store.</li>
           <li class="mb-2"><b>Recordings:</b> all photos and videos of the day. <b>Link to job</b> for any marked “Not linked”.</li>
-          <li class="mb-2">New recordings arrive after the L1 charges on Wi-Fi near the phone. If they don't, open the Looki app → <b>Device → Upload &amp; Process</b>, then <b>Sync now</b>. Upload within 2 days; saifsys looks back 2 days. They stay in Looki's cloud.</li>
+          <li class="mb-2">After the L1 has uploaded (on charge on Wi-Fi near the phone, or Looki app → <b>Device → Upload &amp; Process</b>), press <b>Sync now</b> on the Setup tab. Upload within 2 days; saifsys looks back 2 days. They stay in Looki's cloud.</li>
         </ol>
       </div></div>
     </div>
@@ -843,8 +844,7 @@ require __DIR__ . '/includes/ops_layout_header.php';
       <div class="fw-semibold text-body mb-1">How recordings arrive</div>
       The L1 uploads to Looki's cloud while it charges on Wi-Fi (Looki app → Data Control: Upload to Cloud ON).
       The photos and videos stay in Looki's cloud: saifsys keeps only the daily report and opens each one from Looki with the API key.
-      Every 30 minutes this server reads the new recordings. On the live server that is a cron job:
-      <code>*/30 * * * * /usr/bin/php /home/&lt;user&gt;/public_html/cron/body_camera_sync.php</code>.
+      saifsys reads the new recordings only when you press <b>Sync now</b>.
       Looki's audio summary is not kept, only a sentence that names a store item or the store.
     </div>
   </div>

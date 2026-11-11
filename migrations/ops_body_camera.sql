@@ -3,7 +3,7 @@
 -- The L1 uploads its recordings to Looki's cloud while it charges on Wi-Fi.
 -- The photos and videos stay there: saifsys keeps only what they are, and
 -- shows one by asking Looki's API for a fresh link when someone opens it.
--- cron/body_camera_sync.php (every 30 minutes) asks Looki's API for each
+-- Sync now (Setup tab) asks Looki's API for each
 -- device's new recordings and links each one to the job its wearer had
 -- started at that time. The daily report is built from these rows plus Store
 -- entries (st_moves) and the Store camera's changes (st_cam_changes).

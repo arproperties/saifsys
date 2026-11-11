@@ -2,8 +2,8 @@
 /**
  * Operations → Body camera — the rules. A Looki L1 worn by field staff on
  * chosen tasks. The L1 uploads to Looki's cloud while it charges on Wi-Fi;
- * cron/body_camera_sync.php (every 30 minutes, or Sync now on the Setup tab)
- * asks Looki's API for each device's recordings and keeps them here.
+ * Sync now on the Setup tab asks Looki's API for the device's recordings and
+ * keeps them here. There is no automatic sync.
  *
  * Looki's API (https://platform.looki.ai/en/api-reference): base
  * https://open.looki.ai/api/v1, header X-API-Key, 60 requests a minute per key.
@@ -325,17 +325,6 @@ function bc_media_url(PDO $conn, array $file, bool $thumb = false): ?string
 // ---------------------------------------------------------------------------
 // Sync
 // ---------------------------------------------------------------------------
-
-/** Sync every active device. Answers one line per device. */
-function bc_sync_all(PDO $conn): array
-{
-    $out = [];
-    foreach (bc_devices($conn, true) as $d) {
-        $out[] = $d['label'] . ': ' . bc_sync_device($conn, $d);
-    }
-    bc_cleanup($conn);
-    return $out;
-}
 
 /**
  * One device: its moments of the last two days (seven on a first sync), every
