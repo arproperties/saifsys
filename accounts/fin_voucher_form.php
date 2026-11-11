@@ -9,13 +9,15 @@
 require_once __DIR__ . '/../includes/fin_context.php';
 require_once __DIR__ . '/../includes/fin_voucher_helper.php';
 
+$edit = $finEditVoucher ?? null;
 $type = (string)($finVoucherType ?? $_GET['type'] ?? 'jv');
-if (!isset(FIN_VOUCHER_TYPES[$type]) || $type === 'si' || in_array($type, FIN_SCHEDULED_TYPES, true)) {
+// A Lease Voucher opens here only to be edited; a new one is raised from Lease Posting.
+if (!isset(FIN_VOUCHER_TYPES[$type]) || $type === 'si' || in_array($type, FIN_SCHEDULED_TYPES, true)
+    || (!$edit && in_array($type, FIN_SOURCED_TYPES, true))) {
     $type = 'jv';
 }
 $vt = FIN_VOUCHER_TYPES[$type];
-$isJv = $type === 'jv';
-$edit = $finEditVoucher ?? null;
+$isJv = in_array($type, FIN_JOURNAL_TYPES, true);
 $formAction = $edit ? 'fin_voucher_edit.php?id=' . (int)$edit['id'] : $vt['new'];
 
 $tableOk = fin_coa_table_ready($conn) && fin_voucher_tables_ready($conn);
@@ -36,7 +38,8 @@ if ($edit) {
 if ($tableOk && $company && $_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     $form['date'] = trim((string)($_POST['date'] ?? ''));
-    $form['party'] = (string)($_POST['party'] ?? '');
+    // Journals have no party box, so an edit keeps the one saved (a Lease Voucher's tenant).
+    $form['party'] = ($isJv && $edit) ? (string)$form['party'] : (string)($_POST['party'] ?? '');
     $form['reference'] = (string)($_POST['reference'] ?? '');
     $form['narration'] = (string)($_POST['narration'] ?? '');
     $form['cash_account_id'] = (int)($_POST['cash_account_id'] ?? 0);

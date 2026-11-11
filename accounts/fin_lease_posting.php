@@ -2,7 +2,7 @@
 /**
  * Finance > Lease Posting: pick a contract and post its opening entry. The
  * tenant is debited to its building's account under Sundry Debtors; the contract, fees and deposit are
- * credited to their accounts. Saving raises a journal voucher (?lease_id=).
+ * credited to their accounts. Saving raises a Lease Voucher (?lease_id=).
  */
 require_once __DIR__ . '/../includes/fin_context.php';
 require_once __DIR__ . '/../includes/fin_lease_posting_helper.php';
