@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * Finance > Lease Posting: a lease raised as a journal voucher.
+ * Finance > Lease Posting: a lease raised as a Lease Voucher (lv).
  *
  * Runs against the local database inside a transaction that is rolled back.
  * Needs the finance migrations up to fin_lease_posting.sql, a company with an
@@ -155,7 +155,11 @@ try {
     // 4. Posting.
     $id = $post($a, $leaseId, $amounts);
     $v = fin_voucher_get($conn, $a, $id);
-    check('posted as a journal voucher', 'jv', $v['type']);
+    check('posted as a Lease Voucher', 'lv', $v['type']);
+    check('numbered LV', true, str_starts_with($v['voucher_no'], 'LV-2026-'));
+    check('listed under Lease Vouchers, not Journal Vouchers', [true, false],
+        [in_array($id, array_map('intval', array_column(fin_voucher_list($conn, $a, 'lv'), 'id')), true),
+         in_array($id, array_map('intval', array_column(fin_voucher_list($conn, $a, 'jv'), 'id')), true)]);
     check('voucher keeps the lease', $leaseId, (int)$v['lease_id']);
     check('voucher amount is the tenant total', '63870.50', $v['amount']);
     check('party is the tenant', mb_substr($lease['tenant_name'], 0, 150), $v['party']);
@@ -166,6 +170,13 @@ try {
         array_map(static fn($l) => [$l['code'], $l['debit'], $l['credit']], $v['lines']));
     $tb = array_column(fin_trial_balance($conn, $a, '2026-03-01', '2026-03-31')['rows'], null, 'code');
     check('trial balance shows the debtor', 63870.5, (float)$tb['1121005']['period_debit']);
+
+    // A Lease Voucher can be edited like a journal; it stays a Lease Voucher.
+    $form = fin_voucher_form_data($v);
+    $form['narration'] = 'Edited narration';
+    check('a Lease Voucher can be edited', true, fin_voucher_update($conn, $a, $id, $form, 7));
+    $ev = fin_voucher_get($conn, $a, $id);
+    check('edit keeps type, number and tenant', ['lv', $v['voucher_no'], $v['party'], 'Edited narration'], [$ev['type'], $ev['voucher_no'], $ev['party'], $ev['narration']]);
 
     // 5. Once only, until the voucher is deleted.
     check('lease now shows its voucher', $v['voucher_no'], fin_lease_posting_get($conn, $a, $leaseId)['voucher_no']);

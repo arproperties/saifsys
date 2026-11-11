@@ -1,6 +1,6 @@
 <?php
 /**
- * Finance > Lease Posting: raises the opening entry of a lease as a journal voucher.
+ * Finance > Lease Posting: raises the opening entry of a lease as a Lease Voucher (lv).
  *
  *   Dr  Sundry Debtors (the tenant)      everything the lease charges, tagged with the tenant
  *   Cr  Deferred Revenue                 the contract amount
@@ -272,7 +272,7 @@ function fin_lease_posting_amounts(array $lease): array
 }
 
 /**
- * Post a lease as a journal voucher. Returns the voucher id.
+ * Post a lease as a Lease Voucher. Returns the voucher id.
  * $data: date (Y-m-d), amounts (row key => amount as typed) and accounts (row
  * key => account id, for the choosable rows; left out = that row's default).
  * Throws InvalidArgumentException with a message fit to show the user.
@@ -343,7 +343,7 @@ function fin_lease_post(PDO $conn, int $companyId, int $leaseId, array $data, ?i
         }
 
         $unit = trim((string)$lease['unit_number']);
-        $voucherId = fin_voucher_create($conn, $companyId, 'jv', [
+        $voucherId = fin_voucher_create($conn, $companyId, 'lv', [
             'date'      => $data['date'] ?? '',
             'party'     => mb_substr($lease['tenant_name'], 0, 150),
             'reference' => $lease['lease_number'],

@@ -10,7 +10,10 @@
  *   si  Supplier Invoice - a supplier's bill; saved through fin_supplier_invoice_helper.php
  *   fj  Fixed Journal    - a monthly depreciation entry, posted when Accounts approve it
  *   aj  Allocation Journal - a monthly prepaid / accrued entry, posted when Accounts approve it
+ *   lv  Lease Voucher - the opening entry of a lease contract, raised from Lease Posting
  * fj and aj are journals made from a schedule (fin_auto_entry_helper.php), never typed in.
+ * lv is a journal raised from Lease Posting only (fin_lease_posting_helper.php); it can be
+ * edited and deleted like a journal voucher, but not typed in as a new one.
  *
  * Saving a voucher posts its lines to fin_ledger_entries, so it shows in the
  * Trial Balance and the account ledger at once. A posted voucher can be edited
@@ -38,10 +41,15 @@ const FIN_VOUCHER_TYPES = [
              'party' => '', 'cash' => ''],
     'aj' => ['list' => 'fin_allocation_journals.php', 'new' => 'fin_allocations.php', 'label' => 'Allocation Journal Voucher', 'plural' => 'Allocation Journal Vouchers', 'prefix' => 'AJV', 'icon' => 'bi-calendar2-range',
              'party' => '', 'cash' => ''],
+    'lv' => ['list' => 'fin_lease_vouchers.php', 'new' => 'fin_lease_posting.php', 'label' => 'Lease Voucher', 'plural' => 'Lease Vouchers', 'prefix' => 'LV', 'icon' => 'bi-house-check',
+             'party' => 'Tenant', 'cash' => ''],
 ];
 
 /** Kinds that are journals: lines with a debit or a credit, no cash account. */
-const FIN_JOURNAL_TYPES = ['jv', 'fj', 'aj'];
+const FIN_JOURNAL_TYPES = ['jv', 'fj', 'aj', 'lv'];
+
+/** Kinds raised from their own page (Lease Posting), never from the voucher form as a new one. */
+const FIN_SOURCED_TYPES = ['lv'];
 
 /** Kinds made from a schedule and posted on approval, never typed in. */
 const FIN_SCHEDULED_TYPES = ['fj', 'aj'];
