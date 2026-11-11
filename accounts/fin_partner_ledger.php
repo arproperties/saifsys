@@ -98,12 +98,13 @@ require __DIR__ . '/../includes/fin_layout_header.php';
     </div>
     <div class="table-responsive">
       <table class="table table-sm table-hover align-middle mb-0">
-        <thead><tr><th>Date</th><th>Voucher</th><th>Account</th><th>Description</th><th class="text-end">Debit (AED)</th><th class="text-end">Credit (AED)</th><th class="text-end">Balance (AED)</th></tr></thead>
+        <thead><tr><th>Date</th><th>Voucher type</th><th>Voucher</th><th>Account</th><th>Description</th><th class="text-end">Debit (AED)</th><th class="text-end">Credit (AED)</th><th class="text-end">Balance (AED)</th></tr></thead>
         <tbody>
-          <tr class="table-light"><td colspan="6">Opening balance</td><td class="v-num"><?= h(fin_balance_label($ledger['opening'])) ?></td></tr>
+          <tr class="table-light"><td colspan="7">Opening balance</td><td class="v-num"><?= h(fin_balance_label($ledger['opening'])) ?></td></tr>
         <?php foreach ($ledger['lines'] as $l): ?>
           <tr>
             <td class="text-nowrap"><?= h(date('d M Y', strtotime($l['entry_date']))) ?></td>
+            <td class="text-nowrap"><?= h(FIN_VOUCHER_TYPES[$l['type']]['label'] ?? '') ?></td>
             <td class="text-nowrap"><a href="fin_voucher_view.php?id=<?= (int)$l['voucher_id'] ?>"><?= h($l['voucher_no']) ?></a></td>
             <td><a href="fin_account_ledger.php?account_id=<?= (int)$l['account_id'] ?><?= h($period) ?>" class="text-reset text-decoration-none"><?= h($l['code'] . ' ' . $l['account_name']) ?></a></td>
             <td><?= h($l['description'] !== null && $l['description'] !== '' ? $l['description'] : $l['reference']) ?></td>
@@ -112,12 +113,12 @@ require __DIR__ . '/../includes/fin_layout_header.php';
             <td class="v-num"><?= h(fin_balance_label((float)$l['balance'])) ?></td>
           </tr>
         <?php endforeach; if (!$ledger['lines']): ?>
-          <tr><td colspan="7" class="text-muted text-center py-3">No entries in this period.</td></tr>
+          <tr><td colspan="8" class="text-muted text-center py-3">No entries in this period.</td></tr>
         <?php endif; ?>
         </tbody>
         <tfoot>
           <tr class="fw-bold">
-            <td colspan="4">Closing balance</td>
+            <td colspan="5">Closing balance</td>
             <td class="v-num"><?= number_format($ledger['debit'], 2) ?></td>
             <td class="v-num"><?= number_format($ledger['credit'], 2) ?></td>
             <td class="v-num"><?= h(fin_balance_label($ledger['closing'])) ?></td>

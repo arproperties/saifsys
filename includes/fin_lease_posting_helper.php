@@ -360,10 +360,10 @@ function fin_lease_post(PDO $conn, int $companyId, int $leaseId, array $data, ?i
             'lines'     => $lines,
         ], $userId);
         $conn->prepare("UPDATE fin_vouchers SET lease_id = ? WHERE id = ? AND company_id = ?")->execute([$leaseId, $voucherId, $companyId]);
-        // Cheques of the lease whose date has come move to PDC Receivables at once.
+        // All the lease's cheques move to PDC Receivables at once, each on its own date.
         require_once __DIR__ . '/fin_pdc_helper.php';
         if (fin_pdc_ready($conn)) {
-            fin_pdc_post_due($conn, $companyId, fin_pdc_today(), $leaseId, $userId);
+            fin_pdc_post_due($conn, $companyId, $leaseId, $userId);
         }
 
         if ($ownTx) {
