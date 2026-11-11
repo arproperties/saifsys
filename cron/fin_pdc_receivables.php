@@ -1,9 +1,9 @@
 <?php
 /**
- * Daily: moves tenants' post-dated cheques whose date has come to PDC Receivables
- * (Dr PDC Receivables, Cr the tenant), one PDC Receivable voucher per cheque, for
- * every company. The same happens whenever a lease is posted or Finance > PDC
- * Receivables is opened, so a missed run loses nothing. See fin_pdc_helper.php.
+ * Daily: moves tenants' post-dated cheques recorded since the last run to PDC
+ * Receivables (Dr PDC Receivables, Cr the tenant), one PDC Receivable voucher per
+ * cheque dated with its cheque date, for every company. The same happens whenever
+ * a lease is posted or Finance > PDC Receivables is opened. See fin_pdc_helper.php.
  *
  *     php cron/fin_pdc_receivables.php
  */
@@ -23,7 +23,7 @@ $today = fin_pdc_today();
 $total = 0;
 $companies = $conn->query("SELECT DISTINCT company_id FROM fin_vouchers WHERE type = 'lv' AND status = 'posted'")->fetchAll(PDO::FETCH_COLUMN);
 foreach ($companies as $companyId) {
-    $r = fin_pdc_post_due($conn, (int)$companyId, $today);
+    $r = fin_pdc_post_due($conn, (int)$companyId);
     $total += count($r['posted']);
     if ($r['posted']) {
         echo "company {$companyId}: " . count($r['posted']) . " posted\n";

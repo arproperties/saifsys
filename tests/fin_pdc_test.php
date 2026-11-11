@@ -99,19 +99,18 @@ try {
     };
 
     // 2. Nothing moves before the lease has its Lease Voucher.
-    check('no cheque is due before the lease is posted', [], fin_pdc_due($conn, $a, '2026-11-11', $leaseId));
+    check('no cheque moves before the lease is posted', [], fin_pdc_due($conn, $a, $leaseId));
 
-    // 3. Posting the lease: the Ejari VAT, and the cheques already due move at once.
+    // 3. Posting the lease: the Ejari VAT, and all its cheques move at once, future ones too.
     $lv = fin_lease_post($conn, $a, $leaseId, ['date' => '2026-01-01', 'amounts' => array_map('strval', fin_lease_posting_amounts($lease))], 7);
     $lvLines = fin_voucher_get($conn, $a, $lv)['lines'];
     check('the Lease Voucher: tenant, deferred revenue, Ejari 285.71, VAT 14.29',
         [['1121005', '120300.00', '0.00'], ['2112009', '0.00', '120000.00'], ['4130004', '0.00', '285.71'], ['2250001', '0.00', '14.29']],
         array_map(static fn($l) => [$l['code'], $l['debit'], $l['credit']], $lvLines));
-    $today = fin_pdc_today();
     $stmt = $conn->prepare("SELECT c.cheque_number FROM fin_pdc_entries p JOIN re_lease_cheques c ON c.id = p.cheque_id WHERE p.lease_id = ? ORDER BY c.cheque_date, c.id");
     $stmt->execute([$leaseId]);
-    check('the cheques due by ' . $today . ' are posted with the lease; not transfers, cancelled, replaced, bounced or future ones',
-        ['OLD', 'T-1', 'T-2', 'T-3', 'T-4'], $stmt->fetchAll(PDO::FETCH_COLUMN));
+    check('every cheque is posted with the lease, future ones too; not transfers, cancelled, replaced or bounced',
+        ['OLD', 'T-1', 'T-2', 'T-3', 'T-4', 'T-5'], $stmt->fetchAll(PDO::FETCH_COLUMN));
 
     $stmt = $conn->prepare("SELECT voucher_id FROM fin_pdc_entries WHERE cheque_id = ?");
     $stmt->execute([$chequeId('T-2')]);
@@ -126,26 +125,28 @@ try {
         [fin_partner_key($v['lines'][0]['partner_type'], $v['lines'][0]['partner_id']), fin_partner_key($v['lines'][1]['partner_type'], $v['lines'][1]['partner_id'])]);
     $stmt->execute([$chequeId('OLD')]);
     check('a cheque dated before the Lease Voucher is posted on its date', '2026-01-01', fin_voucher_get($conn, $a, (int)$stmt->fetchColumn())['voucher_date']);
-    check('listed under PDC Receivables', 5, count(fin_voucher_list($conn, $a, 'pdc')));
+    check('listed under PDC Receivables', 6, count(fin_voucher_list($conn, $a, 'pdc')));
+    $stmt->execute([$chequeId('T-5')]);
+    check('a future cheque carries its own date', '2027-01-01', fin_voucher_get($conn, $a, (int)$stmt->fetchColumn())['voucher_date']);
 
-    // 4. The tenant: 120,300 charged, 120,100 moved to PDC (four cheques and the old one), 200 left.
+    // 4. The tenant: 120,300 charged, 150,100 moved to PDC (five cheques and the old one).
     $bal = static function (string $code) use ($conn, $a): string {
         $s = $conn->prepare("SELECT FORMAT(COALESCE(SUM(e.debit - e.credit), 0), 2) FROM fin_ledger_entries e JOIN fin_coa_accounts c ON c.id = e.account_id WHERE e.company_id = ? AND c.code = ? AND e.is_void = 0");
         $s->execute([$a, $code]);
         return (string)$s->fetchColumn();
     };
-    check('tenant balance after the four cheques due (and the old one)', '200.00', $bal('1121005'));
-    check('PDC Receivables holds them', '120,100.00', $bal('1290001'));
+    check('tenant balance after all cheques move (the extra test cheque takes it past zero)', '-29,800.00', $bal('1121005'));
+    check('PDC Receivables holds them', '150,100.00', $bal('1290001'));
 
-    // 5. Once only; the future cheque waits for its date.
-    check('running again posts nothing', [], fin_pdc_post_due($conn, $a, $today)['posted']);
-    check('the 2027 cheque posts on its date', 1, count(fin_pdc_post_due($conn, $a, '2027-01-01')['posted']));
-    check('the extra test cheque then takes the tenant past zero', '-29,800.00', $bal('1121005'));
+    // 5. Once only; a cheque added to the lease later moves on the next run.
+    check('running again posts nothing', [], fin_pdc_post_due($conn, $a)['posted']);
+    $cheque->execute([$a, $leaseId, 'T-6', '2027-04-01', 1000, 'cheque', 'pending']);
+    check('a cheque added later is posted on the next run', 1, count(fin_pdc_post_due($conn, $a)['posted']));
 
     // 6. A deleted PDC voucher is not raised again.
     $stmt->execute([$chequeId('T-3')]);
     fin_voucher_delete($conn, $a, (int)$stmt->fetchColumn(), 7);
-    check('a deleted PDC voucher stays deleted', [], fin_pdc_post_due($conn, $a, '2027-01-01')['posted']);
+    check('a deleted PDC voucher stays deleted', [], fin_pdc_post_due($conn, $a)['posted']);
 
     // 7. A PDC voucher can be edited like a journal, never typed in new.
     $form = fin_voucher_form_data($v);
@@ -156,13 +157,13 @@ try {
     // 8. A building with no PDC account waits, and says so.
     $conn->prepare("UPDATE fin_coa_accounts SET is_active = 0 WHERE id = ?")->execute([$pdcAcc]);
     $cheque->execute([$a, $leaseId, 'W-1', '2026-05-05', 1000, 'cheque', 'pending']);
-    $r = fin_pdc_post_due($conn, $a, $today);
+    $r = fin_pdc_post_due($conn, $a);
     check('no PDC account: nothing posted', [], $r['posted']);
     check('and the cheque is listed as waiting', true, str_contains($r['waiting'][0] ?? '', 'W-1') && str_contains($r['waiting'][0], 'no PDC Receivables account'));
 
     // 9. Another company sees none of it.
     check('another company has no PDC vouchers', 0, count(fin_voucher_list($conn, $b, 'pdc')));
-    check('nor cheques due', [], fin_pdc_due($conn, $b, '2027-12-31'));
+    check('nor cheques to move', [], fin_pdc_due($conn, $b));
 } finally {
     $conn->rollBack();
 }

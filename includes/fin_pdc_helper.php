@@ -6,8 +6,9 @@
  *   Dr  PDC Receivables (the building's, tagged with the tenant)   cheque amount
  *   Cr  Sundry Debtors (the tenant, as on the lease's Lease Voucher) cheque amount
  *
- * The cheques are the ones recorded on the lease (re_lease_cheques). A cheque is
- * posted on its cheque date, automatically, once:
+ * The cheques are the ones recorded on the lease (re_lease_cheques). Every cheque
+ * moves as soon as it is recorded, future ones too, each voucher dated with its own
+ * cheque date (so a 2027 cheque counts in the balances from its date), once:
  *   - it is a cheque (not cash, a transfer or a card), with an amount;
  *   - it is not a draft, cancelled, replaced, bounced, returned or in legal;
  *   - its lease has a posted Lease Voucher (that voucher names the debtor account);
@@ -15,7 +16,7 @@
  *     named after the building; a villa goes to the "VILLA" one).
  * A cheque dated before the Lease Voucher is posted on the Lease Voucher's date.
  * Posting happens when a lease is posted, when PDC Receivables is opened and daily
- * (cron/fin_pdc_receivables.php), so a missed run loses nothing.
+ * (cron/fin_pdc_receivables.php, for cheques added to a lease later).
  *
  * fin_pdc_entries keeps one row per cheque posted, so a cheque is never posted twice;
  * a deleted PDC voucher is not raised again. Clearing a cheque (Dr Bank, Cr PDC) and
@@ -73,8 +74,8 @@ function fin_pdc_account_for(array $choices, ?string $building): ?array
     return $best;
 }
 
-/** The lease's cheques that are due and not posted yet ($leaseId 0 = every lease). */
-function fin_pdc_due(PDO $conn, int $companyId, string $today, int $leaseId = 0): array
+/** The cheques recorded and not posted yet ($leaseId 0 = every lease), by cheque date. */
+function fin_pdc_due(PDO $conn, int $companyId, int $leaseId = 0): array
 {
     $in = implode(',', array_fill(0, count(FIN_PDC_STATUSES), '?'));
     $stmt = $conn->prepare("
@@ -84,24 +85,24 @@ function fin_pdc_due(PDO $conn, int $companyId, string $today, int $leaseId = 0)
           JOIN fin_vouchers v ON v.lease_id = c.lease_id AND v.company_id = c.company_id AND v.type = 'lv' AND v.status = 'posted'
           LEFT JOIN fin_pdc_entries p ON p.cheque_id = c.id
          WHERE c.company_id = ? AND c.payment_method = 'cheque' AND c.status IN ({$in})
-           AND c.cheque_amount > 0 AND c.cheque_date IS NOT NULL AND c.cheque_date <= ?
+           AND c.cheque_amount > 0 AND c.cheque_date IS NOT NULL
            AND p.id IS NULL" . ($leaseId ? ' AND c.lease_id = ?' : '') . "
          ORDER BY c.cheque_date, c.id");
-    $stmt->execute(array_merge([$companyId], FIN_PDC_STATUSES, [$today], $leaseId ? [$leaseId] : []));
+    $stmt->execute(array_merge([$companyId], FIN_PDC_STATUSES, $leaseId ? [$leaseId] : []));
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
 /**
- * Post every cheque that is due ($leaseId 0 = every lease of the company).
+ * Post every cheque recorded and not posted yet ($leaseId 0 = every lease of the company).
  * Returns ['posted' => voucher ids, 'waiting' => messages for cheques that could not be posted].
  * Inside a caller's transaction the cheques post in it; otherwise each cheque is its own.
  */
-function fin_pdc_post_due(PDO $conn, int $companyId, string $today, int $leaseId = 0, ?int $userId = null): array
+function fin_pdc_post_due(PDO $conn, int $companyId, int $leaseId = 0, ?int $userId = null): array
 {
     $out = ['posted' => [], 'waiting' => []];
     $pdcAccounts = null;
     $leases = [];
-    foreach (fin_pdc_due($conn, $companyId, $today, $leaseId) as $c) {
+    foreach (fin_pdc_due($conn, $companyId, $leaseId) as $c) {
         $lid = (int)$c['lease_id'];
         $leases[$lid] ??= fin_lease_posting_get($conn, $companyId, $lid);
         $lease = $leases[$lid];
