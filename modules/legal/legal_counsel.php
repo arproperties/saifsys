@@ -217,7 +217,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
             <div class="lc-sub">Law firms and lawyers we hand cases to — their workload, what we spend, and which leases are ready to go to them</div>
         </div>
         <div class="d-flex gap-2 flex-wrap">
-            <a href="legal_cases.php" class="btn lw-btn-soft"><i class="bi bi-briefcase"></i> Cases</a>
+            <a href="legal_case_list.php" class="btn lw-btn-soft"><i class="bi bi-briefcase"></i> Cases</a>
             <a href="legal_counsel_add.php" class="btn lw-btn-grad"><i class="bi bi-plus-lg"></i> Add counsel</a>
         </div>
     </div>

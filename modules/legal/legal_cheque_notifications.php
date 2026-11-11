@@ -567,7 +567,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                             <?php if (!empty($e['legal_case_id'])): ?>
                                 <a class="cn-act case" href="legal_case_view.php?id=<?= (int)$e['legal_case_id'] ?>"><i class="bi bi-briefcase"></i> View case</a>
                             <?php elseif ($w && $w['open_cases'] > 0): ?>
-                                <a class="cn-act case" href="legal_cases.php?search=<?= h(urlencode((string)$e['lease_number'])) ?>"><i class="bi bi-briefcase"></i> View case</a>
+                                <a class="cn-act case" href="legal_case_list.php?search=<?= h(urlencode((string)$e['lease_number'])) ?>"><i class="bi bi-briefcase"></i> View case</a>
                             <?php else: ?>
                                 <a class="cn-act case" href="<?= h($caseUrl) ?>" title="Open a legal case pre-filled from this request"><i class="bi bi-plus-lg"></i> Open case</a>
                             <?php endif; ?>
@@ -660,7 +660,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                         <td class="text-end lw-actions text-nowrap">
                             <a class="btn btn-outline-secondary" href="<?= h($re) ?>lease_view.php?id=<?= (int)$c['lease_id'] ?>#installments" title="Open lease and cheques"><i class="bi bi-box-arrow-up-right"></i></a>
                             <?php if ($w && $w['open_cases'] > 0): ?>
-                                <a class="btn btn-outline-primary" href="legal_cases.php?search=<?= h(urlencode((string)$c['lease_number'])) ?>" title="View legal case"><i class="bi bi-briefcase"></i> Case</a>
+                                <a class="btn btn-outline-primary" href="legal_case_list.php?search=<?= h(urlencode((string)$c['lease_number'])) ?>" title="View legal case"><i class="bi bi-briefcase"></i> Case</a>
                             <?php else: ?>
                                 <a class="btn cn-btn-case" href="<?= h($caseUrl) ?>" title="Open a legal case pre-filled with this cheque"><i class="bi bi-plus-lg"></i> Open case</a>
                             <?php endif; ?>

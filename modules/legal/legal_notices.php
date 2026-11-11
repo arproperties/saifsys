@@ -261,7 +261,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
         </div>
         <div class="d-flex gap-2 flex-wrap">
             <a href="legal_dashboard.php" class="btn lw-btn-soft"><i class="bi bi-speedometer2"></i> Dashboard</a>
-            <a href="legal_cases.php" class="btn lw-btn-soft"><i class="bi bi-briefcase"></i> Cases</a>
+            <a href="legal_case_list.php" class="btn lw-btn-soft"><i class="bi bi-briefcase"></i> Cases</a>
             <a href="legal_notice_add.php" class="btn lw-btn-grad"><i class="bi bi-plus-lg"></i> New Notice</a>
         </div>
     </div>

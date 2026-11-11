@@ -629,7 +629,7 @@ $csvBtn = fn(string $table) => '<button type="button" class="lw-detail-btn lr-no
                         <h2 id="lrF"><span class="lr-num">F</span> Legal cases</h2>
                         <div class="lw-muted">Cases, claims and legal costs<?= $bid ? ' for ' . h($scopeName) : '' ?></div>
                     </div>
-                    <a href="legal_cases.php" class="lw-link lr-noprint">All cases <i class="bi bi-arrow-right"></i></a>
+                    <a href="legal_case_list.php" class="lw-link lr-noprint">All cases <i class="bi bi-arrow-right"></i></a>
                 </div>
                 <?php if (!$hasCases): ?>
                     <div class="lr-nocase">

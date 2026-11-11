@@ -26,7 +26,7 @@ $stmt->execute([$caseId, $currentCompanyId]);
 $case = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$case) {
     $_SESSION['error'] = 'Legal case not found.';
-    header('Location: legal_cases.php');
+    header('Location: legal_case_list.php');
     exit;
 }
 

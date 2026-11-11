@@ -295,7 +295,8 @@ if (!function_exists('lc_case_row')) {
     }
 }
 
-$pageTitle = 'Legal Cases';
+$caseMode = basename($_SERVER['PHP_SELF'] ?? '') === 'legal_case_list.php';
+$pageTitle = $caseMode ? 'Legal Cases' : 'Leases';
 $cssVer = @filemtime(__DIR__ . '/assets/legal-cases.css') ?: 1;
 $pageHead = '
 <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet">
@@ -307,11 +308,13 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
 
     <div class="lw-head d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
         <div>
-            <h1 class="mb-1">Legal Cases</h1>
-            <div class="lw-sub">Cases on file and leases waiting for one · <?= h(date('l, j F Y')) ?></div>
+            <h1 class="mb-1"><?= $caseMode ? 'Legal Cases' : 'Leases' ?></h1>
+            <div class="lw-sub"><?= $caseMode ? 'Every case on file' : 'Leases that need legal action' ?> · <?= h(date('l, j F Y')) ?></div>
         </div>
         <div class="d-flex gap-2 flex-wrap">
             <a href="legal_dashboard.php" class="btn lw-btn-soft"><i class="bi bi-speedometer2"></i> Dashboard</a>
+            <?php if ($caseMode): ?><a href="legal_cases.php" class="btn lw-btn-soft"><i class="bi bi-house-exclamation"></i> Leases</a>
+            <?php else: ?><a href="legal_case_list.php" class="btn lw-btn-soft"><i class="bi bi-briefcase"></i> Legal Cases</a><?php endif; ?>
             <a href="legal_notices.php" class="btn lw-btn-soft"><i class="bi bi-envelope-paper"></i> Notices</a>
             <a href="legal_case_add.php" class="btn lw-btn-grad"><i class="bi bi-plus-lg"></i> New Case</a>
         </div>
@@ -326,16 +329,16 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
     $segs = [
         ['rose', 'bi-briefcase', 'Leases need a case', (string)$needCount['all'],
             $needCount['all'] > 0 ? 'AED ' . lw_aed($needAmt) . ' owed' : 'Every flagged lease has a case',
-            '#lcNeed', 'Leases with bounced cheques, ended with a balance, overdue more than 90 days, or expired and not renewed — and no open case'],
+            $caseMode ? 'legal_cases.php' : '#lcNeed', 'Leases with bounced cheques, ended with a balance, overdue more than 90 days, or expired and not renewed — and no open case'],
         ['violet', 'bi-folder2-open', 'Open cases', (string)$openCases,
             $totalCases > 0 ? 'of ' . $totalCases . ' case' . ($totalCases === 1 ? '' : 's') . ' on file' : 'No cases on file yet',
-            '#lcCases', 'Cases not settled, closed or withdrawn'],
+            $caseMode ? '#lcCases' : 'legal_case_list.php', 'Cases not settled, closed or withdrawn'],
         ['amber', 'bi-alarm-fill', 'Overdue actions', (string)$overdueN,
             $overdueN > 0 ? 'Deadline passed · case open' : 'No deadline missed',
-            'legal_cases.php?deadline=overdue#lcCases', 'Open cases whose deadline date has passed'],
+            'legal_case_list.php?deadline=overdue#lcCases', 'Open cases whose deadline date has passed'],
         ['sky', 'bi-calendar2-week-fill', 'Due soon', (string)$dueSoonN,
             $dueSoonN > 0 ? 'Deadline within reminder days' : 'No deadline coming up',
-            'legal_cases.php?deadline=due_soon#lcCases', 'Open cases whose deadline falls within the case\'s reminder window'],
+            'legal_case_list.php?deadline=due_soon#lcCases', 'Open cases whose deadline falls within the case\'s reminder window'],
         ['navy', 'bi-cash-stack', 'Open claims', 'AED ' . lw_aed($openClaim),
             $openCases > 0 ? 'Claimed on ' . $openCases . ' open case' . ($openCases === 1 ? '' : 's') : 'No open claims',
             null, 'Sum of the claim amount on open cases'],
@@ -343,6 +346,8 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
             $totalClaim > 0 ? $recPct . '% of AED ' . lw_aed($totalClaim) . ' claimed' : 'Nothing recovered yet',
             null, 'Recovered amount on all cases, open and closed'],
     ];
+    // Leases screen: what needs a case. Legal Cases screen: the cases themselves.
+    $segs = $caseMode ? array_slice($segs, 1) : array_slice($segs, 0, 2);
     ?>
     <div class="lw-strip mb-4">
         <?php foreach ($segs as [$tone, $icon, $label, $big, $sub, $href, $tip]):
@@ -359,6 +364,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
         <?php endforeach; ?>
     </div>
 
+    <?php if (!$caseMode): ?>
     <!-- Leases that need a case -->
     <div class="lw-panel mb-4" id="lcNeed">
         <div class="lw-panel-head flex-wrap">
@@ -458,6 +464,9 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
         <?php endif; ?>
     </div>
 
+    <?php endif; ?>
+
+    <?php if ($caseMode): ?>
     <!-- Cases -->
     <div class="lw-panel" id="lcCases">
         <div class="lw-panel-head flex-wrap">
@@ -474,10 +483,10 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                     </div>
                 </div>
             </div>
-            <?php if ($filtersOn): ?><a href="legal_cases.php#lcCases" class="btn lw-btn-soft btn-sm"><i class="bi bi-x-circle"></i> Clear filters</a><?php endif; ?>
+            <?php if ($filtersOn): ?><a href="legal_case_list.php#lcCases" class="btn lw-btn-soft btn-sm"><i class="bi bi-x-circle"></i> Clear filters</a><?php endif; ?>
         </div>
 
-        <form method="GET" action="legal_cases.php#lcCases" class="lc-filters row g-2 mb-3">
+        <form method="GET" action="legal_case_list.php#lcCases" class="lc-filters row g-2 mb-3">
             <div class="col-xl-3 col-md-6">
                 <label class="form-label">Search</label>
                 <div class="lw-search-box">
@@ -549,7 +558,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
             </div>
             <div class="col-xl-6 col-md-4 d-flex align-items-end gap-2">
                 <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-funnel"></i> Filter</button>
-                <a href="legal_cases.php#lcCases" class="btn btn-outline-secondary btn-sm">Reset</a>
+                <a href="legal_case_list.php#lcCases" class="btn btn-outline-secondary btn-sm">Reset</a>
             </div>
         </form>
 
@@ -562,7 +571,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                         <p><?= (int)$needCount['all'] ?> lease<?= $needCount['all'] === 1 ? '' : 's' ?> with bounced or long-overdue cheques, or expired and not renewed, <?= $needCount['all'] === 1 ? 'is' : 'are' ?> waiting for one —
                             AED <?= number_format($needAmt, 0) ?> owed. Start with the most urgent lease in the list above; the case form is pre-filled.</p>
                         <div class="d-flex gap-2 justify-content-center flex-wrap">
-                            <a href="#lcNeed" class="btn lw-btn-grad"><i class="bi bi-arrow-up"></i> See leases that need a case</a>
+                            <a href="legal_cases.php" class="btn lw-btn-grad"><i class="bi bi-arrow-up"></i> See leases that need a case</a>
                             <a href="legal_case_add.php" class="btn lw-btn-soft"><i class="bi bi-plus-lg"></i> Blank case</a>
                         </div>
                     <?php else: ?>
@@ -571,7 +580,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                     <?php endif; ?>
                 </div>
             <?php else: ?>
-                <div class="lw-empty-state"><i class="bi bi-funnel"></i>No cases match these filters. <a href="legal_cases.php#lcCases">Clear filters</a></div>
+                <div class="lw-empty-state"><i class="bi bi-funnel"></i>No cases match these filters. <a href="legal_case_list.php#lcCases">Clear filters</a></div>
             <?php endif; ?>
         <?php else: ?>
             <div class="table-responsive">
@@ -587,6 +596,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
             </div>
         <?php endif; ?>
     </div>
+    <?php endif; ?>
 
 </div>
 
