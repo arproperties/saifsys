@@ -267,6 +267,9 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($opsBase) ?>/store.php" class="slink <?= in_array($currentPage, ['store.php', 'store_history.php', 'store_entry.php', 'store_setup.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-box-seam"></i></span><span class="slabel">Store</span>
       </a>
+      <a href="<?= h($opsBase) ?>/body_camera.php" class="slink <?= $currentPage === 'body_camera.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-person-video"></i></span><span class="slabel">Body camera</span>
+      </a>
 
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>
