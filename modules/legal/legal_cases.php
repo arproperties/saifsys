@@ -231,7 +231,7 @@ if (!function_exists('lc_case_row')) {
         $sources = legal_case_sources();
         $prioIcon = ['urgent' => 'bi-fire', 'high' => 'bi-arrow-up-circle-fill', 'medium' => 'bi-dash-circle-fill', 'low' => 'bi-arrow-down-circle'];
         $statusIcon = ['draft' => 'bi-pencil', 'open' => 'bi-folder2-open', 'notice_sent' => 'bi-envelope-paper', 'filed' => 'bi-file-earmark-text',
-                       'in_hearing' => 'bi-bank2', 'judgment' => 'bi-hammer', 'execution' => 'bi-lightning-charge', 'settled' => 'bi-check2-circle',
+                       'settlement_dept' => 'bi-people', 'in_hearing' => 'bi-bank2', 'judgment' => 'bi-hammer', 'appeal' => 'bi-arrow-repeat', 'execution' => 'bi-lightning-charge', 'settled' => 'bi-check2-circle',
                        'closed' => 'bi-lock', 'withdrawn' => 'bi-x-circle'];
         $tName = legal_tenant_name($c);
         $state = legal_deadline_state($c['deadline_date'] ?? null, (int)($c['reminder_days_before'] ?? 0), (string)$c['status']);

@@ -392,6 +392,17 @@ $legacyOutstandingTotal = (float)$paymentSummary['total_outstanding'] + (float)$
 $invoiceOutstandingTotal = (float)$invoiceModeSummary['invoice_outstanding'];
 $combinedOutstandingTotal = $legacyOutstandingTotal + $invoiceOutstandingTotal;
 
+// Tenant Timeline: lease items for everyone on this page; legal items only
+// for users with Legal access (Owner/Admin always).
+require_once __DIR__ . '/includes/tenant_timeline.php';
+$tenantTimeline = null;
+try {
+    require_once __DIR__ . '/../legal/includes/legal_helper.php';
+    $tenantTimeline = tenant_timeline_build($conn, $currentCompanyId, $tenantId, legal_can_view_timeline($conn), '', '../legal/');
+} catch (Throwable $e) {
+    error_log('tenant_view timeline: ' . $e->getMessage());
+}
+
 // Set page title and include layout
 $pageTitle = 'Tenant Details';
 require_once __DIR__ . '/includes/re_layout_header.php';
@@ -703,6 +714,14 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             </div>
         </div>
         <?php endif; ?>
+
+        <!-- Tenant Timeline -->
+        <?php if ($tenantTimeline) {
+            tenant_timeline_render($tenantTimeline, ['rePath' => '', 'legalPath' => '../legal/', 'checksEditable' => false]);
+            if ($tenantTimeline['with_legal']): ?>
+                <div class="text-end mt-n3 mb-4"><a href="../legal/legal_tenant_timeline.php?tenant_id=<?= (int)$tenantId ?>" class="small"><i class="bi bi-box-arrow-up-right"></i> Open in Legal module</a></div>
+            <?php endif;
+        } ?>
 
         <!-- Lease / Contracts History -->
         <div class="card mb-4">

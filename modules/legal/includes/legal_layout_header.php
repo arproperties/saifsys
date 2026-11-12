@@ -49,6 +49,7 @@ $casePages = ['legal_case_list.php','legal_case_add.php','legal_case_edit.php','
 $noticePages = ['legal_notices.php','legal_notice_add.php','legal_notice_view.php'];
 $pdcPages = ['legal_billing_cheques.php'];
 $issuePages = ['legal_issues.php','legal_issue_add.php','legal_issue_view.php'];
+$timelinePages = ['legal_tenant_timeline.php'];
 $documentPages = ['legal_documents.php'];
 $calendarPages = ['legal_calendar.php','legal_hearing_add.php','legal_hearing_edit.php'];
 $counselPages = ['legal_counsel.php','legal_counsel_add.php','legal_counsel_edit.php'];
@@ -101,6 +102,9 @@ if (is_file($asWidget)) { require $asWidget; }
             </a>
             <a href="legal_issues.php" class="legal-nav-link <?= in_array($currentPage, $issuePages, true) ? 'active' : '' ?>">
                 <i class="bi bi-flag"></i><span class="sb-label">Issues</span>
+            </a>
+            <a href="legal_tenant_timeline.php" class="legal-nav-link <?= in_array($currentPage, $timelinePages, true) ? 'active' : '' ?>">
+                <i class="bi bi-clock-history"></i><span class="sb-label">Tenant Timeline</span>
             </a>
             <div class="legal-nav-section">Collections &amp; Files</div>
             <a href="legal_cheque_notifications.php" class="legal-nav-link <?= $currentPage === 'legal_cheque_notifications.php' ? 'active' : '' ?>">

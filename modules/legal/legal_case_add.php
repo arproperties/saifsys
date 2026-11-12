@@ -69,6 +69,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $reminderDays, current_user_id(),
             ]);
             $caseId = (int)$conn->lastInsertId();
+            if (legal_timeline_schema_ready($conn) && trim($_POST['claimant_name'] ?? '') !== '') {
+                $conn->prepare("UPDATE re_legal_cases SET claimant_name = ? WHERE id = ? AND company_id = ?")
+                     ->execute([trim($_POST['claimant_name']), $caseId, $currentCompanyId]);
+            }
 
             // Optional extra links (payment/installment) passed from escalation
             if (!empty($_POST['link_payment_id'])) {
@@ -195,6 +199,12 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                         <label class="form-label">External Reference</label>
                         <input type="text" name="external_reference" class="form-control" value="<?= h($pf('external_reference')) ?>" placeholder="Court / police case no.">
                     </div>
+                    <?php if (legal_timeline_schema_ready($conn)): ?>
+                    <div class="col-md-4">
+                        <label class="form-label">Claimant (our company in the case)</label>
+                        <input type="text" name="claimant_name" class="form-control" value="<?= h($pf('claimant_name')) ?>" placeholder="e.g. Madar Al Wadi Building Contracting LLC">
+                    </div>
+                    <?php endif; ?>
                     <div class="col-12">
                         <label class="form-label">Description</label>
                         <textarea name="description" class="form-control" rows="3"><?= h($pf('description')) ?></textarea>
