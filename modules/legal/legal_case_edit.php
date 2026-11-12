@@ -76,6 +76,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $tenantId, $leaseId, $ownerId, $assignedTo, $openedDate, $deadlineDate,
                 $nextActionDate, $reminderDays, $caseId, $currentCompanyId,
             ]);
+            if (legal_timeline_schema_ready($conn)) {
+                $conn->prepare("UPDATE re_legal_cases SET claimant_name = ? WHERE id = ? AND company_id = ?")
+                     ->execute([trim($_POST['claimant_name'] ?? '') ?: null, $caseId, $currentCompanyId]);
+            }
             legal_log_event($conn, $caseId, 'note', 'Case details updated');
             legal_audit('update', 're_legal_case', $caseId, 'Updated legal case ' . $case['case_number'], $case, $_POST);
             $_SESSION['success'] = 'Case updated.';
@@ -165,6 +169,12 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                         <label class="form-label">External Reference</label>
                         <input type="text" name="external_reference" class="form-control" value="<?= h($v('external_reference')) ?>">
                     </div>
+                    <?php if (legal_timeline_schema_ready($conn)): ?>
+                    <div class="col-md-4">
+                        <label class="form-label">Claimant (our company in the case)</label>
+                        <input type="text" name="claimant_name" class="form-control" value="<?= h($v('claimant_name')) ?>" placeholder="e.g. Madar Al Wadi Building Contracting LLC">
+                    </div>
+                    <?php endif; ?>
                     <div class="col-12">
                         <label class="form-label">Description</label>
                         <textarea name="description" class="form-control" rows="3"><?= h($v('description')) ?></textarea>

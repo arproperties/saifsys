@@ -48,8 +48,10 @@ function legal_case_statuses(): array {
         'open'       => 'Open',
         'notice_sent'=> 'Notice Sent',
         'filed'      => 'Filed',
+        'settlement_dept' => 'Settlement Department',
         'in_hearing' => 'In Hearing',
         'judgment'   => 'Judgment',
+        'appeal'     => 'Appeal',
         'execution'  => 'Execution',
         'settled'    => 'Settled',
         'closed'     => 'Closed',
@@ -63,8 +65,10 @@ function legal_status_color(string $status): string {
         'open'       => 'primary',
         'notice_sent'=> 'info',
         'filed'      => 'info',
+        'settlement_dept' => 'info',
         'in_hearing' => 'warning',
         'judgment'   => 'warning',
+        'appeal'     => 'warning',
         'execution'  => 'dark',
         'settled'    => 'success',
         'closed'     => 'success',
@@ -132,17 +136,19 @@ function legal_link_types(): array {
 
 // ---------------------------------------------------------------------------
 // Controlled status workflow
-// Draft -> Open -> Notice Sent -> Filed -> In Hearing -> Judgment ->
-// Execution -> Settled / Closed / Withdrawn
+// Draft -> Open -> Notice Sent -> Filed -> (Settlement Department) ->
+// In Hearing -> Judgment -> (Appeal) -> Execution -> Settled / Closed / Withdrawn
 // ---------------------------------------------------------------------------
 function legal_allowed_transitions(string $current): array {
     $flow = [
-        'draft'       => ['open', 'withdrawn'],
+        'draft'       => ['open', 'filed', 'withdrawn'],
         'open'        => ['notice_sent', 'filed', 'settled', 'closed', 'withdrawn'],
         'notice_sent' => ['filed', 'settled', 'closed', 'withdrawn'],
-        'filed'       => ['in_hearing', 'settled', 'closed', 'withdrawn'],
-        'in_hearing'  => ['judgment', 'settled', 'closed', 'withdrawn'],
-        'judgment'    => ['execution', 'settled', 'closed', 'withdrawn'],
+        'filed'       => ['settlement_dept', 'in_hearing', 'settled', 'closed', 'withdrawn'],
+        'settlement_dept' => ['in_hearing', 'judgment', 'settled', 'closed', 'withdrawn'],
+        'in_hearing'  => ['judgment', 'settlement_dept', 'settled', 'closed', 'withdrawn'],
+        'judgment'    => ['appeal', 'execution', 'settled', 'closed', 'withdrawn'],
+        'appeal'      => ['execution', 'judgment', 'settled', 'closed', 'withdrawn'],
         'execution'   => ['settled', 'closed', 'withdrawn'],
         'settled'     => ['closed', 'open'],
         'closed'      => ['open'],
@@ -453,6 +459,7 @@ function legal_hearing_types(): array {
         'filing' => 'Filing',
         'mediation' => 'Mediation',
         'site_visit' => 'Site Visit',
+        'eviction' => 'Eviction',
         'other' => 'Other',
     ];
 }
@@ -491,4 +498,113 @@ function legal_case_cost_total(PDO $conn, int $caseId): float {
     $stmt = $conn->prepare("SELECT COALESCE(SUM(amount),0) FROM re_legal_case_costs WHERE case_id = ?");
     $stmt->execute([$caseId]);
     return (float)$stmt->fetchColumn();
+}
+
+// ---------------------------------------------------------------------------
+// Case stages, settlement offers, PDF-vs-saifsys checks, review flags
+// (migrations/legal_tenant_timeline.sql)
+// ---------------------------------------------------------------------------
+function legal_stage_types(): array {
+    return [
+        'filing'          => 'Filing',
+        'settlement_dept' => 'Settlement Department',
+        'hearing'         => 'Hearing',
+        'judgment'        => 'Judgment',
+        'appeal'          => 'Appeal',
+        'execution'       => 'Execution',
+        'other'           => 'Other',
+    ];
+}
+
+function legal_offer_parties(): array {
+    return ['tenant' => 'Tenant', 'landlord' => 'Landlord (us)', 'court' => 'Court / Settlement Dept'];
+}
+
+function legal_offer_statuses(): array {
+    return ['pending' => 'Pending', 'accepted' => 'Accepted', 'refused' => 'Refused', 'withdrawn' => 'Withdrawn'];
+}
+
+function legal_offer_status_color(string $s): string {
+    return ['pending' => 'warning', 'accepted' => 'success', 'refused' => 'danger', 'withdrawn' => 'secondary'][$s] ?? 'secondary';
+}
+
+/** True once migrations/legal_tenant_timeline.sql has run (pages degrade without it). */
+function legal_timeline_schema_ready(PDO $conn): bool {
+    static $ready = null;
+    if ($ready === null) {
+        try {
+            $conn->query("SELECT 1 FROM re_legal_case_stages LIMIT 0");
+            $conn->query("SELECT 1 FROM re_legal_data_checks LIMIT 0");
+            $ready = true;
+        } catch (Throwable $e) {
+            $ready = false;
+        }
+    }
+    return $ready;
+}
+
+function legal_fetch_case_stages(PDO $conn, int $caseId): array {
+    if (!legal_timeline_schema_ready($conn)) return [];
+    $st = $conn->prepare("SELECT * FROM re_legal_case_stages WHERE case_id = ? ORDER BY FIELD(stage_type, 'filing', 'settlement_dept', 'hearing', 'judgment', 'appeal', 'execution', 'other'), COALESCE(stage_date, '9999-12-31'), id");
+    $st->execute([$caseId]);
+    return $st->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function legal_fetch_case_offers(PDO $conn, int $caseId): array {
+    if (!legal_timeline_schema_ready($conn)) return [];
+    $st = $conn->prepare("SELECT * FROM re_legal_settlement_offers WHERE case_id = ? ORDER BY COALESCE(offer_date, '9999-12-31'), id");
+    $st->execute([$caseId]);
+    return $st->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * PDF-vs-saifsys checks. Filter by case, or by tenant (all of that tenant's checks).
+ */
+function legal_fetch_data_checks(PDO $conn, int $companyId, ?int $caseId = null, ?int $tenantId = null): array {
+    if (!legal_timeline_schema_ready($conn)) return [];
+    $where = ['c.company_id = ?'];
+    $vals = [$companyId];
+    if ($caseId) { $where[] = 'c.case_id = ?'; $vals[] = $caseId; }
+    if ($tenantId) { $where[] = 'c.tenant_id = ?'; $vals[] = $tenantId; }
+    $st = $conn->prepare("
+        SELECT c.*, l.lease_number, lc.case_number, lc.external_reference,
+               COALESCE(NULLIF(u.fullname,''), u.username) AS resolved_name
+        FROM re_legal_data_checks c
+        LEFT JOIN re_leases l ON l.id = c.lease_id
+        LEFT JOIN re_legal_cases lc ON lc.id = c.case_id
+        LEFT JOIN user u ON u.id = c.resolved_by
+        WHERE " . implode(' AND ', $where) . "
+        ORDER BY (c.status = 'open') DESC, c.id
+    ");
+    $st->execute($vals);
+    return $st->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/** Mark a case and everything entered under it as checked by a person. */
+function legal_clear_case_review(PDO $conn, int $caseId, int $companyId): void {
+    $conn->prepare("UPDATE re_legal_cases SET needs_review = 0, review_note = NULL WHERE id = ? AND company_id = ?")->execute([$caseId, $companyId]);
+    $conn->prepare("UPDATE re_legal_case_stages SET needs_review = 0 WHERE case_id = ? AND company_id = ?")->execute([$caseId, $companyId]);
+    $conn->prepare("UPDATE re_legal_settlement_offers SET needs_review = 0 WHERE case_id = ? AND company_id = ?")->execute([$caseId, $companyId]);
+    $conn->prepare("UPDATE re_legal_hearings SET needs_review = 0 WHERE case_id = ? AND company_id = ?")->execute([$caseId, $companyId]);
+    $conn->prepare("UPDATE re_legal_notices SET needs_review = 0 WHERE case_id = ? AND company_id = ?")->execute([$caseId, $companyId]);
+}
+
+/**
+ * Who sees legal items on the Tenant Timeline: users with the Legal module and
+ * the Legal department (Owner/Admin pass automatically). Never throws.
+ */
+function legal_can_view_timeline(PDO $conn): bool {
+    try {
+        if (has_role('Owner', $conn) || has_role('Admin', $conn)) {
+            return true;
+        }
+        require_once __DIR__ . '/../../../includes/module_access.php';
+        $uid = (int)current_user_id();
+        if ($uid <= 0 || !user_has_module_access($conn, $uid, MODULE_LEGAL)) {
+            return false;
+        }
+        return legal_can_manage($conn);
+    } catch (Throwable $e) {
+        return false;
+    }
 }
