@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
+require_once __DIR__ . '/includes/document_watch_helper.php';
 
 // Clear any output
 ob_clean();
@@ -41,6 +42,34 @@ try {
     ");
     $stmt->execute([$currentCompanyId, $relatedType, $relatedId]);
     $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Tenant papers (EID, visa, passport, ...) uploaded on this tenant's OTHER leases
+    // (typically the lease before a renewal) that are still the current copy and
+    // still watched. Shown read-only so the active lease shows what is being tracked.
+    if ($relatedType === 'lease') {
+        $personTypes = re_doc_sql_list(RE_DOC_PERSON_TYPES);
+        $carry = $conn->prepare("
+            SELECT d.*, u.username AS uploaded_by_name, dt.document_type_name,
+                   ol.id AS from_lease_id, ol.lease_number AS from_lease_number
+            FROM re_documents d
+            JOIN re_leases ol ON ol.id = d.related_id AND d.related_type = 'lease'
+            JOIN re_leases cur ON cur.id = ? AND cur.company_id = d.company_id
+                 AND cur.status IN (" . re_doc_sql_list(RE_DOC_WATCH_LEASE_STATUSES) . ")
+            LEFT JOIN user u ON u.id = d.uploaded_by
+            LEFT JOIN re_document_types dt ON dt.id = d.document_type_id
+            WHERE d.company_id = ?
+              AND ol.tenant_id = cur.tenant_id
+              AND ol.id <> cur.id
+              AND ol.deleted_at IS NULL
+              AND d.document_type IN ({$personTypes})
+              AND " . re_doc_watched_sql('d') . "
+        ");
+        $carry->execute([$relatedId, $currentCompanyId]);
+        foreach ($carry->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $row['is_carried'] = true;
+            $documents[] = $row;
+        }
+    }
 
     // Tenant portal uploads: signed tenancy contract scans (lease only)
     if ($relatedType === 'lease') {
@@ -74,17 +103,30 @@ try {
         }
     }
     
+    // Is each document still watched (active lease, not replaced by a newer copy)?
+    $watchReasons = re_doc_watch_reasons($conn, $currentCompanyId, array_map(static function ($d) {
+        return is_numeric($d['id'] ?? null) ? (int)$d['id'] : 0;
+    }, $documents));
+
     // Format file sizes and normalise expiry fields for frontend
     foreach ($documents as &$doc) {
+        $docId = is_numeric($doc['id'] ?? null) ? (int)$doc['id'] : 0;
+        $doc['watch_reason'] = $docId ? ($watchReasons[$docId] ?? null) : 'no_expiry';
+        $doc['is_watched'] = ($doc['watch_reason'] === null);
+        $doc['is_carried'] = !empty($doc['is_carried']);
         $doc['file_size_formatted'] = formatFileSize((int)($doc['file_size'] ?? 0));
         // Backwards-compatible 'expires_at' for JS, sourced from expiry_date
         $expiryDate = $doc['expiry_date'] ?? null;
         $doc['expires_at'] = $expiryDate;
         $doc['is_expiring_soon'] = false;
+        // Work out expiry from the date on every load. The stored is_expired
+        // flag is only set at upload time, so it goes stale once the date passes.
+        $doc['is_expired'] = false;
         if ($expiryDate) {
-            $daysUntilExpiry = (strtotime($expiryDate) - time()) / 86400;
-            $doc['is_expiring_soon'] = ($daysUntilExpiry > 0 && $daysUntilExpiry <= 30);
-            $doc['days_until_expiry'] = (int)ceil($daysUntilExpiry);
+            $daysUntilExpiry = (int)round((strtotime(substr((string)$expiryDate, 0, 10)) - strtotime('today')) / 86400);
+            $doc['is_expired'] = ($daysUntilExpiry < 0);
+            $doc['is_expiring_soon'] = ($daysUntilExpiry >= 0 && $daysUntilExpiry <= 30);
+            $doc['days_until_expiry'] = $daysUntilExpiry;
         }
     }
     unset($doc);

@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../includes/branding.php';
 require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/rbac_department.php';
+require_once __DIR__ . '/includes/document_watch_helper.php';
 
 $isLegalLayout = defined('LEGAL_DOCUMENTS_LAYOUT') && LEGAL_DOCUMENTS_LAYOUT;
 if ($isLegalLayout) {
@@ -304,8 +305,8 @@ $stats = $conn->prepare("
     SELECT 
         COUNT(*) as total,
         COUNT(CASE WHEN d.status = 'active' THEN 1 END) as active,
-        COUNT(CASE WHEN d.expiry_date IS NOT NULL AND d.expiry_date < CURDATE() THEN 1 END) as expired,
-        COUNT(CASE WHEN d.expiry_date IS NOT NULL AND d.expiry_date >= CURDATE() AND d.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 1 END) as expiring_soon,
+        COUNT(CASE WHEN d.expiry_date IS NOT NULL AND d.expiry_date < CURDATE() AND " . re_doc_watched_sql('d') . " THEN 1 END) as expired,
+        COUNT(CASE WHEN d.expiry_date IS NOT NULL AND d.expiry_date >= CURDATE() AND d.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) AND " . re_doc_watched_sql('d') . " THEN 1 END) as expiring_soon,
         SUM(d.file_size) as total_size
     FROM re_documents d
     WHERE " . implode(' AND ', $statsWhere) . "
