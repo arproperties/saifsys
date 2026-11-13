@@ -207,6 +207,15 @@ $expList = fetchAllAssoc($conn, "
   LIMIT 8
 ", array_merge($companyParams, $currentStatusParams));
 
+// Absence alerts (UAE law: more than 7 days in a row / more than 20 in a year). Read only.
+require_once __DIR__ . '/includes/hr_attendance_checks.php';
+$attAlerts = ['streak' => [], 'year' => []];
+try {
+    $attAlerts = hr_att_check_alerts($conn, (int)$selectedCompanyId);
+} catch (Throwable $e) {
+    $attAlerts = ['streak' => [], 'year' => []];
+}
+
 $pageTitle = 'HR Dashboard';
 // Breadcrumb lives in the top bar; the page header below keeps only the title.
 $hrTopbarCrumbs = [
@@ -304,6 +313,26 @@ echo hr_ui_page_header(
         <div class="small text-muted mb-0">Trade licence, MOA, Ejari, establishment card or power of attorney</div>
       </div>
       <a class="btn btn-outline-primary" href="<?= h($companyDocsHref) ?>">Review</a>
+    </div>
+  </div>
+  <?php endif; ?>
+
+  <?php if ($attAlerts['streak'] || $attAlerts['year']): ?>
+  <div class="hr-settings-card mb-3">
+    <div class="card-body d-flex flex-wrap align-items-center gap-3">
+      <div class="kpi-icon" style="width:44px;height:44px;border-radius:12px;background:var(--hr-primary-soft);color:var(--hr-danger);display:grid;place-items:center">
+        <i data-lucide="shield-alert" style="width:22px;height:22px"></i>
+      </div>
+      <div class="flex-grow-1">
+        <h6 class="mb-1">
+          <?php $partsA = [];
+            if ($attAlerts['streak']) $partsA[] = '<strong>' . count($attAlerts['streak']) . '</strong> with ' . HR_ATT_STREAK_ALERT . '+ absent days in a row';
+            if ($attAlerts['year']) $partsA[] = '<strong>' . count($attAlerts['year']) . '</strong> with ' . HR_ATT_YEAR_ALERT . '+ absent days in 12 months';
+            echo implode(' · ', $partsA); ?>
+        </h6>
+        <div class="small text-muted mb-0">Check the days before any action — only absences without a valid reason count (law: more than <?= HR_ATT_STREAK_LAW ?> in a row, or more than <?= HR_ATT_YEAR_LAW ?> in a year).</div>
+      </div>
+      <a class="btn btn-outline-danger btn-sm" href="<?= h('attendance_checks.php?tab=alerts' . $appendCompanyQuery) ?>">Review</a>
     </div>
   </div>
   <?php endif; ?>

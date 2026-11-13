@@ -6,6 +6,7 @@ require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/../includes/audit_bridge.php';
 require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
 require_once __DIR__ . '/includes/hr_attendance_cameras.php';
+require_once __DIR__ . '/includes/hr_attendance_lock.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
@@ -72,8 +73,16 @@ if (hr_attendance_post_too_large()) {
         $breakEnd   = $hasBreak && ($_POST['break_end'] ?? '') !== '' ? substr((string)$_POST['break_end'], 0, 5) : null;
 
         $statusChanged = $status !== ($row['status'] ?? '');
+        // On a locked day the reason must be new text, not the note already on the row.
+        $lockReason = $notes !== trim((string)($row['notes'] ?? '')) ? $notes : '';
+        $lockMsg = hr_attendance_write_block($conn, (int)$row['employee_id'], (string)$row['work_date'], 'change', $lockReason);
+        if (!$lockMsg && $work_date !== $row['work_date']) {
+            $lockMsg = hr_attendance_write_block($conn, (int)$row['employee_id'], (string)$work_date, 'change', $lockReason);
+        }
 
-        if (!array_key_exists($status, $statuses)) {
+        if ($lockMsg) {
+            $flash_err = $lockMsg;
+        } elseif (!array_key_exists($status, $statuses)) {
             $flash_err = 'Invalid status.';
         } elseif ($breakEnd !== null && $breakStart === null) {
             $flash_err = 'Break End needs a Break Start.';
@@ -86,7 +95,7 @@ if (hr_attendance_post_too_large()) {
             $flash_err = 'Check-out cannot be the same time as check-in (' . substr($check_in, 0, 5) . ').';
         } else {
             // recalc hours (an Out before the In is the next morning)
-            $hours = hr_attendance_hours($check_in, $check_out);
+            $hours = hr_attendance_no_hours_status($status) ? null : hr_attendance_hours($check_in, $check_out);
 
             try {
                 $notes = mb_substr($notes, 0, HR_ATTENDANCE_NOTE_MAX);
@@ -190,6 +199,19 @@ echo hr_ui_page_header(
   <?php if ($flash_ok):  ?><div class="alert alert-success"><?= h($flash_ok)  ?></div><?php endif; ?>
   <?php if ($flash_warn): ?>
     <div class="alert alert-warning"><ul class="mb-0 small"><?php foreach ($flash_warn as $w): ?><li><?= h($w) ?></li><?php endforeach; ?></ul></div>
+  <?php endif; ?>
+
+  <?php
+    $exitDay = hr_attendance_exit_day($conn, (int)$row['employee_id']);
+    $afterExit = $exitDay !== null && $row['work_date'] > $exitDay;
+    $dayLocked = hr_attendance_date_locked((string)$row['work_date']);
+  ?>
+  <?php if ($afterExit): ?>
+    <div class="alert alert-danger"><strong>Locked:</strong> this day is after the employee's last working day (<?= h(date('j M Y', strtotime($exitDay))) ?>). It cannot be changed. An Owner can delete it from the Attendance list.</div>
+  <?php elseif ($dayLocked && !hr_attendance_lock_admin($conn)): ?>
+    <div class="alert alert-warning"><strong>Locked:</strong> attendance older than <?= HR_ATTENDANCE_LOCK_DAYS ?> days can only be changed by an Owner.</div>
+  <?php elseif ($dayLocked): ?>
+    <div class="alert alert-warning"><strong>Older than <?= HR_ATTENDANCE_LOCK_DAYS ?> days:</strong> you can change it as an Owner, but write the reason in Notes.</div>
   <?php endif; ?>
 
   <div class="hr-settings-card">

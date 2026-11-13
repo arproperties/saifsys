@@ -123,6 +123,13 @@ function hr_nav_groups(string $hrBase, bool $isWorkerNavigation, string $selfPro
                     'pages' => ['attendance_missing.php'],
                 ],
                 [
+                    'key' => 'attendance_checks',
+                    'label' => 'Attendance checks',
+                    'icon' => 'shield-alert',
+                    'href' => $hrBase . '/attendance_checks',
+                    'pages' => ['attendance_checks.php'],
+                ],
+                [
                     'key' => 'attendance_camera_log',
                     'label' => 'Camera log',
                     'icon' => 'cctv',
@@ -256,6 +263,7 @@ function hr_nav_page_title(string $currentPage): string
         'attendance_summary.php' => 'Attendance summary',
         'attendance_edit.php' => 'Edit attendance',
         'attendance_missing.php' => 'Missing check-ins',
+        'attendance_checks.php' => 'Attendance checks',
         'employee_pins_bulk.php' => 'Staff app PINs',
         'overtime.php' => 'Overtime',
         'leave_requests.php' => 'Leave requests',

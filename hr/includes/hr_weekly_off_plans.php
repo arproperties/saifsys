@@ -215,6 +215,7 @@ const HR_DAY_OFF_MAX_DAYS = 62;
 function hr_day_off_add(PDO $conn, array $employeeIds, string $from, string $to, string $note, ?int $userId): array
 {
     require_once __DIR__ . '/../../includes/hr_attendance_attachments.php';
+    require_once __DIR__ . '/hr_attendance_lock.php';
     if (!hr_attendance_status_supported($conn, 'day_off')) {
         return ['ok' => false, 'message' => 'Day off cannot be saved yet: run migrations/hr_attendance_day_off.sql first.'];
     }
@@ -252,6 +253,11 @@ function hr_day_off_add(PDO $conn, array $employeeIds, string $from, string $to,
             continue;
         }
         for ($d = $f; $d <= $t; $d = $d->modify('+1 day')) {
+            // Locked day (older than the lock period, or after the last working day): left alone.
+            if (hr_attendance_write_block($conn, $eid, $d->format('Y-m-d'), 'change', $note) !== null) {
+                $n['locked'] = ($n['locked'] ?? 0) + 1;
+                continue;
+            }
             $sel->execute([$eid, $d->format('Y-m-d')]);
             $row = $sel->fetch(PDO::FETCH_ASSOC);
             if (!$row) {
@@ -272,6 +278,7 @@ function hr_day_off_add(PDO $conn, array $employeeIds, string $from, string $to,
     $parts = [$done . ' day' . ($done === 1 ? '' : 's') . ' saved as Day Off'];
     if ($n['already']) $parts[] = $n['already'] . ' already Day Off';
     if ($n['skipped']) $parts[] = $n['skipped'] . ' left as they were (already decided by HR)';
+    if (!empty($n['locked'])) $parts[] = $n['locked'] . ' locked (older than ' . HR_ATTENDANCE_LOCK_DAYS . ' days or after the last working day)';
     return ['ok' => true, 'message' => implode(', ', $parts) . '.'] + $n;
 }
 
