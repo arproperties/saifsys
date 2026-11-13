@@ -4475,6 +4475,9 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                 <a class="btn btn-sm btn-primary" href="employee_edit?id=<?= urlencode($emp['id']) ?>">
                     <i class="bi bi-pencil-square me-1"></i>Edit
                 </a>
+                <a class="btn btn-sm btn-outline-primary" href="final_settlement.php?employee_id=<?= (int)$emp['id'] ?>">
+                    <i class="bi bi-file-earmark-text me-1"></i>Final settlement
+                </a>
             <?php if (empty($emp['user_id'])): ?>
               <form action="user_create_for_employee" method="post" class="d-inline m-0">
                 <?php csrf_field(); ?>

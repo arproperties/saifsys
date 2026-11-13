@@ -49,6 +49,8 @@ try {
 }
 
 function n($v){ return ($v===''||$v===null)?0.0:(float)$v; }
+/** Absent days for messages and notes: 9, 2.5 (no trailing zeros). */
+function hr_payroll_abs_fmt(float $v): string { return rtrim(rtrim(number_format($v, 2, '.', ''), '0'), '.') ?: '0'; }
 
 /* ---------------- Employees (company scope) ---------------- */
 $emps = $conn->prepare("
@@ -318,6 +320,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
   $ot_amt     = $_POST['ot_amt']     ?? [];
   $bonus_plus = $_POST['bonus_plus'] ?? [];
   $abs_days   = $_POST['abs_days']   ?? [];
+  $abs_reason = $_POST['abs_reason'] ?? [];
   $adv_apply  = $_POST['adv_apply']  ?? [];
   $ded_apply  = $_POST['ded_apply']  ?? [];
   $cashback_in = $_POST['cashback'] ?? [];
@@ -347,6 +350,18 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
       $abs   = round((float)($abs_days[$eid] ?? ($absByEmp[$eid] ?? 0)), 2);
       if ($abs < 0) {
         $abs = 0.0;
+      }
+      // Absent days typed differently from attendance need a reason for this employee
+      // (Aug–Sep 2026: 30 days were typed while attendance showed 9).
+      $attAbs = round((float)($absByEmp[$eid] ?? 0), 2);
+      $absReasonTxt = '';
+      if (abs($abs - $attAbs) > 0.001) {
+        $absReasonTxt = trim(preg_replace('/\s+/', ' ', (string)($abs_reason[$eid] ?? '')));
+        if (mb_strlen($absReasonTxt) < 5) {
+          throw new RuntimeException($e['full_name'] . ': absent days typed (' . hr_payroll_abs_fmt($abs) . ') are different from attendance ('
+            . hr_payroll_abs_fmt($attAbs) . '). Write the reason under the Absent box (at least 5 letters), or set it back to ' . hr_payroll_abs_fmt($attAbs) . '.');
+        }
+        $absReasonTxt = mb_substr($absReasonTxt, 0, 120);
       }
       $advA  = n($adv_apply[$eid]   ?? 0);
       $dedA  = n($ded_apply[$eid]   ?? 0);
@@ -399,6 +414,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
       $billPart = min($dedA, $billOpenByEmp[$eid] ?? 0.0);
       if ($dedA)  $notes[] = "Ded-".number_format($dedA,2) . ($billPart > 0.005 ? " (bill excess ".number_format($billPart,2).")" : "");
       if ($abs > 0.005) $notes[] = "Abs(".rtrim(rtrim(number_format($abs, 2, '.', ''), '0'), '.')." d)-".number_format($absDed,2);
+      if ($absReasonTxt !== '') $notes[] = "Abs typed " . hr_payroll_abs_fmt($abs) . " vs attendance " . hr_payroll_abs_fmt($attAbs) . ": " . $absReasonTxt;
 
       $insParams = [
         $run_id,
@@ -711,6 +727,9 @@ foreach ($emps as $e){
     'bonus_profile'=>$bonusProfile,
     'bonus_changed'=>$bonusChanged,
     'abs_days'=>$autoAbs, 'abs_ded'=>$absDed,
+    'att_abs'=>round((float)($absByEmp[$eid] ?? 0), 2),
+    'abs_reason'=>isset($_POST['abs_reason'][$eid]) ? (string)$_POST['abs_reason'][$eid]
+      : (preg_match('/Abs typed [0-9.]+ vs attendance [0-9.]+: (.*?)(?: \| |$)/', (string)($saved['notes'] ?? ''), $absM) ? $absM[1] : ''),
     'daily_rate'=>$daily,
     'scheduled_days'=>(int)($scheduleSummary['expected_days'] ?? 0),
     'has_schedule'=>!empty($scheduleSummary['has_schedule']),
@@ -987,7 +1006,12 @@ echo hr_ui_page_header(
                     </div>
                   <?php endif; ?>
                 </td>
-                <td class="col-abs"><input name="abs_days[<?= $eid ?>]" type="number" step="0.5" min="0" value="<?= number_format((float)$r['abs_days'], 2, '.', '') ?>" class="form-control form-control-sm" title="Full absent = 1; attendance half-day = 0.5"></td>
+                <td class="col-abs">
+                  <input name="abs_days[<?= $eid ?>]" type="number" step="0.5" min="0" value="<?= number_format((float)$r['abs_days'], 2, '.', '') ?>" class="form-control form-control-sm js-abs-days" data-att-abs="<?= number_format($r['att_abs'], 2, '.', '') ?>" title="Full absent = 1; attendance half-day = 0.5">
+                  <?php $absDiff = abs((float)$r['abs_days'] - $r['att_abs']) > 0.001; ?>
+                  <div class="small mt-1 js-abs-att <?= $absDiff ? 'text-danger fw-semibold' : 'text-muted' ?>">Attendance: <?= hr_payroll_abs_fmt($r['att_abs']) ?></div>
+                  <input name="abs_reason[<?= $eid ?>]" value="<?= htmlspecialchars($r['abs_reason']) ?>" maxlength="120" class="form-control form-control-sm mt-1 js-abs-reason<?= $absDiff ? '' : ' d-none' ?>" placeholder="Why different?" title="Needed when the absent days differ from attendance" <?= $canEditRun ? '' : 'disabled' ?>>
+                </td>
                 <td class="col-money text-muted td-absded"><?= number_format($r['abs_ded'], 2) ?></td>
                 <td class="col-pct td-dedpct"><span class="badge text-bg-secondary">100%</span></td>
                 <td class="col-net td-net"><?= number_format($r['net'], 2) ?></td>
@@ -1356,6 +1380,14 @@ echo hr_ui_page_header(
     if (!(t instanceof HTMLInputElement)) return;
     hideClientError();
     recalcRow(t.closest('tr'));
+    // Absent days different from attendance: show the reason box and the attendance figure in red.
+    if (t.classList.contains('js-abs-days')) {
+      const cell = t.closest('td');
+      const diff = Math.abs(num(t.value) - num(t.dataset.attAbs)) > 0.001;
+      cell?.querySelector('.js-abs-reason')?.classList.toggle('d-none', !diff);
+      const att = cell?.querySelector('.js-abs-att');
+      if (att) { att.classList.toggle('text-danger', diff); att.classList.toggle('fw-semibold', diff); att.classList.toggle('text-muted', !diff); }
+    }
   });
 
   document.querySelectorAll('#payrollBuildTable tbody tr').forEach(recalcRow);

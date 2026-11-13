@@ -9,7 +9,15 @@ require_once __DIR__ . '/../includes/audit_bridge.php';
 require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
+require_once __DIR__ . '/includes/hr_attendance_bulk_switch.php';
+require_once __DIR__ . '/includes/hr_attendance_lock.php';
 require_role(['Owner', 'Admin', 'HR'], $conn);
+
+// Bulk Apply switched off for everyone: nothing below runs, not even a POST.
+if (!hr_attendance_bulk_enabled()) {
+    header('Location: attendance.php');
+    exit;
+}
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start();
@@ -212,6 +220,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_apply'])) {
 
             foreach ($employee_ids as $eid) {
                 $rows++;
+                // Locked day (older than the lock period, or after the last working day): left alone.
+                if (hr_attendance_write_block($conn, (int)$eid, $work_date, 'change', $notes) !== null) {
+                    $skipped++;
+                    continue;
+                }
                 if ($mode === 'clock') {
                     $in = $check_in;
                     $out = $check_out;

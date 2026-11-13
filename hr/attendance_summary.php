@@ -11,6 +11,7 @@ require_once __DIR__ . '/includes/hr_weekly_off.php';
 require_once __DIR__ . '/includes/hr_attendance_daily.php';
 require_once __DIR__ . '/../includes/hr_attendance_attachments.php';
 require_once __DIR__ . '/../includes/searchable_select.php';
+require_once __DIR__ . '/includes/hr_attendance_bulk_switch.php';
 require_role(['Owner', 'Admin', 'HR'], $conn);
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -382,7 +383,7 @@ echo hr_ui_page_header(
         ['label' => 'Summary'],
     ],
     '<a href="attendance.php" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>'
-    . '<a class="btn btn-outline-primary" href="attendance_bulk.php">Bulk Apply</a>'
+    . (hr_attendance_bulk_enabled() ? '<a class="btn btn-outline-primary" href="attendance_bulk.php">Bulk Apply</a>' : '')
 );
 ?>
 

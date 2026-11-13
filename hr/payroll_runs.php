@@ -81,6 +81,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create'])) {
             $err = 'Invalid company selected.';
         } elseif (!$canPickCompany && $companyId !== $currentCompanyId) {
             $err = 'You can only create payroll for your current company.';
+        } elseif ($to < $from) {
+            $err = 'The end date cannot be before the start date.';
+        } else {
+            // No two payroll periods of one company may share a day: that pays those days twice
+            // (26–31 May 2026 was paid in both the May and the 26 May – 25 Jun runs).
+            $ov = $conn->prepare("SELECT id, period_from, period_to FROM payroll_runs
+                                   WHERE company_id = ? AND period_from <= ? AND period_to >= ?
+                                   ORDER BY period_from LIMIT 1");
+            $ov->execute([$companyId, $to, $from]);
+            if ($hit = $ov->fetch(PDO::FETCH_ASSOC)) {
+                $err = 'These dates overlap payroll #' . (int)$hit['id'] . ' ('
+                    . date('j M Y', strtotime($hit['period_from'])) . ' – ' . date('j M Y', strtotime($hit['period_to']))
+                    . '). Start the new payroll the day after ' . date('j M Y', strtotime($hit['period_to'])) . '.';
+            }
         }
     }
 

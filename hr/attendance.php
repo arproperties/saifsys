@@ -10,6 +10,8 @@ require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_attendance_daily.php';
 require_once __DIR__ . '/includes/hr_weekly_off_plans.php';
 require_once __DIR__ . '/includes/hr_attendance_cameras.php';
+require_once __DIR__ . '/includes/hr_attendance_bulk_switch.php';
+require_once __DIR__ . '/includes/hr_attendance_lock.php';
 require_role(['Owner','Admin','HR'], $conn);
 // Camera arrival/departure photos are staff photos: the HR role only.
 $canSeeCamPhotos = has_role('HR', $conn);
@@ -58,10 +60,13 @@ if (hr_attendance_post_too_large()) {
 
         if (!$employee_id || !$work_date) {
             $flash_err = 'Employee and Date are required.';
+        } elseif ($lockMsg = hr_attendance_write_block($conn, $employee_id, $work_date, 'change', $notes)) {
+            $flash_err = $lockMsg;
         } elseif (hr_attendance_same_time($check_in, $check_out, $status)) {
             $flash_err = 'Check-out cannot be the same time as check-in (' . substr($check_in, 0, 5) . ').';
         } else {
-            $hours = calc_hours($check_in, $check_out);
+            // An absent day never carries worked hours.
+            $hours = hr_attendance_no_hours_status($status) ? null : calc_hours($check_in, $check_out);
             try {
                 $empMeta = $conn->prepare("SELECT full_name, employee_code, company_id FROM employees WHERE id=? LIMIT 1");
                 $empMeta->execute([$employee_id]);
@@ -156,10 +161,13 @@ if (hr_attendance_post_too_large()) {
 
             if (!$prevRow) {
                 $flash_err = 'That attendance row no longer exists.';
+            } elseif ($lockMsg = hr_attendance_write_block($conn, (int)$prevRow['employee_id'], (string)$prevRow['work_date'], 'change', $note)) {
+                $flash_err = $lockMsg;
             } else {
                 $note = mb_substr($note, 0, HR_ATTENDANCE_NOTE_MAX);
-                $u = $conn->prepare("UPDATE attendance SET status=?, notes=?, updated_by=?, updated_at=NOW() WHERE id=?");
-                $u->execute([$new,$note,$me_id,$id]);
+                // An absent day never carries worked hours: clear them with the status.
+                $u = $conn->prepare("UPDATE attendance SET status=?, notes=?, hours=IF(?, NULL, hours), updated_by=?, updated_at=NOW() WHERE id=?");
+                $u->execute([$new,$note,hr_attendance_no_hours_status($new) ? 1 : 0,$me_id,$id]);
 
                 $changeId = hr_attendance_log_status_change(
                     $conn,
@@ -218,6 +226,13 @@ if (hr_attendance_post_too_large()) {
         ");
         $prev->execute([$id]);
         $prevRow = $prev->fetch(PDO::FETCH_ASSOC);
+        $lockMsg = $prevRow ? hr_attendance_write_block($conn, (int)$prevRow['employee_id'], (string)$prevRow['work_date'], 'delete') : null;
+        if ($lockMsg) {
+            $flash_err = $lockMsg;
+            $prevRow = null;
+            $id = 0;
+        }
+        if ($id > 0) {
         // Files first: the rows go with the FK cascade, the files on disk do not.
         hr_attendance_attachments_purge($conn, $id);
         $conn->prepare("DELETE FROM attendance WHERE id=?")->execute([$id]);
@@ -239,6 +254,7 @@ if (hr_attendance_post_too_large()) {
                 $empLabel . ' @ ' . ($prevRow['work_date'] ?? ''),
                 $me_id ? (int)$me_id : null
             );
+        }
         }
     }
 }
@@ -381,7 +397,7 @@ echo hr_ui_page_header(
     ],
     '<a class="btn btn-outline-secondary" href="../operation.php"><i class="bi bi-arrow-left me-1"></i>Back</a>'
     . (hr_weekly_off_plans_ready($conn) ? '<button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#woPlanModal"><i class="bi bi-calendar-plus me-1"></i>Weekly / Day Off</button>' : '')
-    . '<a class="btn btn-primary" href="attendance_bulk.php"><i class="bi bi-ui-checks-grid me-1"></i>Bulk Apply</a>'
+    . (hr_attendance_bulk_enabled() ? '<a class="btn btn-primary" href="attendance_bulk.php"><i class="bi bi-ui-checks-grid me-1"></i>Bulk Apply</a>' : '')
     . '<a class="btn btn-success" href="attendance_summary.php"><i class="bi bi-table me-1"></i>Monthly Summary</a>'
 );
 ?>
@@ -613,7 +629,7 @@ echo hr_ui_page_header(
   <div class="hr-settings-card">
     <div class="settings-header d-flex justify-content-between align-items-center">
       <span>Results (max 500)</span>
-      <span class="small text-muted">Every status change asks for a reason.</span>
+      <span class="small text-muted">Every status change asks for a reason. Days before <?= h(date('j M', strtotime(hr_attendance_lock_cutoff()))) ?> are locked (Owner only).</span>
     </div>
     <div class="card-body p-0">
     <div class="hr-table-shell att-table-shell border-0 shadow-none rounded-0">
