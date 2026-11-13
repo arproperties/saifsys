@@ -1109,7 +1109,7 @@ try {
 
         if ($batchToAdd > 0 && !$override) {
             $snap = credit_snapshot($conn, $batchClientId, null);
-            if (credit_would_exceed_available($snap['available'], $batchToAdd)) {
+            if ($snap['credit_limit'] > 0 && credit_would_exceed_available($snap['available'], $batchToAdd)) {
               http_response_code(400);
               echo json_encode([
                 'success'=>false,
@@ -1493,7 +1493,7 @@ try {
       $override = !empty($_POST['override_credit_limit']); // from UI checkbox
       if (strtolower((string)$status) === 'confirmed' && !$override) {
           $snap = credit_snapshot($conn, $client_id, null);
-          if (credit_would_exceed_available($snap['available'], (float)$tot)) {
+          if ($snap['credit_limit'] > 0 && credit_would_exceed_available($snap['available'], (float)$tot)) {
             http_response_code(400);
             echo json_encode([
               'success'=>false,
@@ -2062,7 +2062,7 @@ try {
         $clientId = (int)$mo['client_id'];
         // exclude this order from outstanding to avoid double count if it already has an invoice
           $snap = credit_snapshot($conn, $clientId, $order_id);
-          if (credit_would_exceed_available($snap['available'], (float)$tot)) {
+          if ($snap['credit_limit'] > 0 && credit_would_exceed_available($snap['available'], (float)$tot)) {
             http_response_code(400);
             echo json_encode([
               'success'=>false,
