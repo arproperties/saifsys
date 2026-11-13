@@ -822,4 +822,51 @@ if ($action === 'activity') {
     jarvis_api_send(['ok' => true, 'booking_number' => $q ?: null, 'count' => count($rows), 'activity' => $rows]);
 }
 
+// ---------- unit sizes & rent (same rows as modules/ars/unit_rent_report.php) ----------
+
+if ($action === 'unit_rents') {
+    require_once __DIR__ . '/../../../../modules/ars/includes/ars_unit_rent.php';
+    $buildings = ars_unit_rent_buildings($conn, $cid);
+    // ?building= takes an id or part of the name ("ayla")
+    $b = trim((string)($_GET['building'] ?? ''));
+    $buildingId = 0;
+    if ($b !== '') {
+        if (ctype_digit($b) && isset($buildings[(int)$b])) {
+            $buildingId = (int)$b;
+        } else {
+            foreach ($buildings as $id => $name) {
+                if (stripos($name, $b) !== false) {
+                    $buildingId = $id;
+                    break;
+                }
+            }
+        }
+        if (!$buildingId) {
+            jarvis_api_error('not_found', 'No ARS building matches "' . $b . '". ARS buildings: ' . implode(', ', $buildings) . '.', 404);
+        }
+    }
+    $status = (string)($_GET['status'] ?? '');
+    if (!in_array($status, ['', 'rented', 'vacant'], true)) {
+        jarvis_api_error('bad_request', 'status must be rented or vacant.', 400);
+    }
+    $q = trim((string)($_GET['q'] ?? ''));
+    $rows = ars_unit_rent_rows($conn, $cid, $buildingId, $status, $today);
+    if ($q !== '') {
+        $rows = array_values(array_filter($rows, static fn(array $r): bool =>
+            strcasecmp($r['unit'], $q) === 0 || $r['premise_no'] === $q));
+    }
+    foreach ($rows as &$r) {
+        unset($r['unit_id'], $r['building_id'], $r['booking_id'], $r['type']);
+    }
+    unset($r);
+    jarvis_api_send([
+        'ok' => true,
+        'date' => $today,
+        'building' => $buildingId ? $buildings[$buildingId] : 'all',
+        'rule' => 'Rented = a checked-in or confirmed booking covering today; rent per month = its nightly rate x 30.',
+        'totals' => ars_unit_rent_totals($rows),
+        'units' => $rows,
+    ]);
+}
+
 jarvis_api_error('not_found', 'Unknown ARS action.', 404);

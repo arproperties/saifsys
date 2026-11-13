@@ -56,6 +56,13 @@ $cards = [
         null,
     ],
     [
+        'Unit Sizes & Rent',
+        'Every unit with premise no., type, size, rented or vacant, and monthly rent — PDF for brokers',
+        'unit_rent_report.php',
+        'home',
+        null,
+    ],
+    [
         'Revenue',
         'Stay revenue report for the ARS company',
         'revenue.php',
