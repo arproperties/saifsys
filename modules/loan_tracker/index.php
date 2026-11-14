@@ -74,7 +74,7 @@ foreach (lt_hr_loans($conn) as $r) {
         'name' => $r['full_name'],
         'kind' => 'employee',
         'type' => 'from HR',
-        'no' => $r['product_type'] === 'loan' ? 'Staff loan' : 'Salary advance',
+        'no' => ($r['product_type'] === 'loan' ? 'Staff loan' : 'Salary advance') . ' · HR #' . (int)$r['id'],
         'total' => $total, 'left' => (float)$r['outstanding'],
         'done' => 0, 'count' => 0,
         'pct' => $total > 0 ? (int)round((float)$r['recovered'] / $total * 100) : 0,

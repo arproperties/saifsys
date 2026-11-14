@@ -38,13 +38,13 @@ function lt_send_csv(string $name, array $head, array $rows): void
 if ($what === 'hr_loans') {
     $rows = [];
     foreach (lt_hr_loans($conn) as $r) {
-        $rows[] = [$r['employee_code'], $r['full_name'], $r['company_name'], $r['product_type'] === 'loan' ? 'Loan' : 'Salary advance',
+        $rows[] = [(int)$r['id'], $r['employee_code'], $r['full_name'], $r['company_name'], $r['product_type'] === 'loan' ? 'Loan' : 'Salary advance',
             $r['tx_date'], number_format((float)$r['amount'], 2, '.', ''), number_format($r['recovered'], 2, '.', ''),
             number_format($r['outstanding'], 2, '.', ''), (int)$r['installment_count'],
             $r['preferred_settle_method'] === 'cash' ? 'Cash' : 'Salary', $r['last_paid'],
             $r['status'] === 'open' ? 'Open' : 'Closed', $r['hidden'] ? 'Yes' : 'No', $r['description']];
     }
-    lt_send_csv('staff-loans', ['Employee code', 'Employee', 'Company', 'Type', 'Given on', 'Amount (AED)', 'Paid back (AED)',
+    lt_send_csv('staff-loans', ['HR #', 'Employee code', 'Employee', 'Company', 'Type', 'Given on', 'Amount (AED)', 'Paid back (AED)',
         'Still to pay (AED)', 'Instalments', 'Repaid by', 'Last repayment', 'Status', 'Deleted from dashboard', 'Description'], $rows);
 }
 
@@ -73,11 +73,12 @@ if ($what === 'loans') {
 if ($what === 'repayments') {
     $month = preg_match('/^\d{4}-\d{2}$/', (string)($_GET['month'] ?? '')) ? $_GET['month'] : '';
     $rows = [];
-    $hr = $conn->query("SELECT s.settle_date, s.amount, s.method, rf.paid_by, rf.reference, s.notes, e.full_name, e.employee_code, c.name AS company
+    $hr = $conn->query("SELECT s.loan_id, s.settle_date, s.amount, s.method, rf.paid_by, rf.reference, s.notes, e.full_name, e.employee_code, c.name AS company
                           FROM hr_loan_settlements s JOIN employees e ON e.id = s.employee_id
-                          LEFT JOIN companies c ON c.id = e.company_id LEFT JOIN lt_repayment_files rf ON rf.settlement_id = s.id")->fetchAll(PDO::FETCH_ASSOC);
+                          LEFT JOIN companies c ON c.id = e.company_id LEFT JOIN lt_repayment_files rf ON rf.settlement_id = s.id
+                         WHERE NOT EXISTS (SELECT 1 FROM lt_loans x WHERE x.hr_loan_id = s.loan_id)")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($hr as $r) {
-        $rows[] = [$r['settle_date'], $r['full_name'], $r['employee_code'], $r['company'], 'Staff loan (HR)',
+        $rows[] = [$r['settle_date'], $r['full_name'], $r['employee_code'], $r['company'], 'Staff loan · HR #' . (int)$r['loan_id'],
             $r['method'] === 'cash' ? lt_paid_by_label($r['paid_by']) : 'Deducted from salary', $r['reference'],
             number_format((float)$r['amount'], 2, '.', ''), $r['notes']];
     }

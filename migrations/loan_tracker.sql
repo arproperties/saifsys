@@ -114,3 +114,12 @@ ALTER TABLE lt_loans
   ADD COLUMN IF NOT EXISTS closed_at DATETIME NULL AFTER submitted_at,
   ADD COLUMN IF NOT EXISTS closed_by INT NULL AFTER closed_at,
   ADD COLUMN IF NOT EXISTS close_note VARCHAR(255) NULL AFTER closed_by;
+
+-- Employee loans made here are also an HR loan (cash_advances), so payroll can deduct them.
+-- HR's recoveries (payroll or cash) are copied into lt_loan_repayments, once each.
+ALTER TABLE lt_loans
+  ADD COLUMN IF NOT EXISTS hr_loan_id INT NULL AFTER employee_id,
+  ADD KEY IF NOT EXISTS idx_lt_hr_loan (hr_loan_id);
+ALTER TABLE lt_loan_repayments
+  ADD COLUMN IF NOT EXISTS hr_settlement_id INT UNSIGNED NULL AFTER loan_id,
+  ADD UNIQUE KEY IF NOT EXISTS uq_lt_rep_hr (hr_settlement_id);

@@ -34,7 +34,7 @@ $getLoan = function (string $key) use ($conn, $companyId): ?array {
         foreach (lt_hr_loans($conn) as $r) {
             if ((int)$r['id'] !== $id) { continue; }
             return ['key' => $key, 'kind' => 'hr', 'id' => $id, 'name' => $r['full_name'], 'code' => $r['employee_code'],
-                'company' => $r['company_name'], 'label' => ($r['product_type'] === 'loan' ? 'Loan' : 'Salary advance') . ' from HR',
+                'company' => $r['company_name'], 'label' => ($r['product_type'] === 'loan' ? 'Loan' : 'Salary advance') . ' · HR #' . $id,
                 'date' => $r['tx_date'], 'amount' => (float)$r['amount'], 'paid' => (float)$r['recovered'],
                 'left' => (float)$r['outstanding'], 'open' => $r['status'] === 'open', 'employee_id' => (int)$r['employee_id'],
                 'modes' => ['cash' => 'Cash', 'bank' => 'Bank transfer', 'cheque' => 'Cheque']];
@@ -53,6 +53,7 @@ $getLoan = function (string $key) use ($conn, $companyId): ?array {
         'date' => $l['issue_date'], 'amount' => (float)$l['total_payable'], 'paid' => $paid,
         'left' => max(0.0, (float)$l['total_payable'] - $paid), 'open' => $l['status'] === 'active',
         'loan_to' => $l['loan_to'], 'who' => $l['loan_to'] === 'employee' ? (string)(int)$l['employee_id'] : $l['borrower_name'],
+        'hr_id' => (int)($l['hr_loan_id'] ?? 0),
         'modes' => lt_repayment_modes($l['loan_to'])];
 };
 
@@ -106,8 +107,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $left = max(0.0, $balance - $amount);
                 } else {
                     if (lt_has_upload($file)) { $stored = lt_store_upload($file, $loan['id'] . '/repayments'); }
+                    // A loan that is also in HR: record it in HR too, so HR's balance and payroll match
+                    $sid = null;
+                    if ($loan['hr_id'] > 0) {
+                        $note = trim($loan['modes'][$v['paid_by']] . ($v['reference'] !== '' ? ' ' . $v['reference'] : '')
+                            . ($v['notes'] !== '' ? ' · ' . $v['notes'] : '') . ' · via Loan Tracker ' . lt_loan_no($loan['id']));
+                        $sid = hr_loan_record_settlement($conn, $loan['hr_id'], $amount, $v['paid_by'] === 'salary' ? 'payroll' : 'cash',
+                            $v['date'], current_user_id(), null, null, mb_substr($note, 0, 255)) ?: null;
+                    }
                     [, $left] = lt_record_lt_repayment($conn, $loan['id'], $amount, $v['date'], $v['paid_by'],
-                        $v['reference'], $v['notes'], $stored, $stored ? $fileName : null, current_user_id());
+                        $v['reference'], $v['notes'], $stored, $stored ? $fileName : null, current_user_id(), $sid);
                 }
                 $conn->commit();
                 lt_flash('Repayment of AED ' . lt_money($amount) . ' recorded for ' . $loan['name'] . '. '
@@ -165,9 +174,10 @@ if ($tab === 'records') {
                                  e.full_name AS name, c.name AS company, e.id AS employee_id
                             FROM hr_loan_settlements s JOIN employees e ON e.id = s.employee_id
                             LEFT JOIN companies c ON c.id = e.company_id
-                            LEFT JOIN lt_repayment_files rf ON rf.settlement_id = s.id")->fetchAll(PDO::FETCH_ASSOC);
+                            LEFT JOIN lt_repayment_files rf ON rf.settlement_id = s.id
+                           WHERE NOT EXISTS (SELECT 1 FROM lt_loans x WHERE x.hr_loan_id = s.loan_id)")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as $r) {
-        $records[] = ['d' => $r['d'], 'name' => $r['name'], 'sub' => $r['company'] ?: '', 'loan' => 'Staff loan (HR)',
+        $records[] = ['d' => $r['d'], 'name' => $r['name'], 'sub' => $r['company'] ?: '', 'loan' => 'Staff loan · HR #' . (int)$r['loan_id'],
             'how' => $r['method'] === 'cash' ? lt_paid_by_label($r['paid_by']) : 'Deducted from salary', 'ref' => $r['reference'] ?? '',
             'amount' => (float)$r['amount'], 'proof' => $r['proof'] ? $ltBase . '/file.php?rep=' . (int)$r['id'] : null,
             'receipt' => $r['method'] === 'cash' ? $hrBase . '/loan_cash_receipt.php?id=' . (int)$r['id'] : null,
@@ -238,7 +248,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
       <?php $grp = null; foreach ($openHr as $r): ?>
         <?php if ($grp !== ($r['company_name'] ?: 'Other')): if ($grp !== null): ?></optgroup><?php endif; $grp = $r['company_name'] ?: 'Other'; ?><optgroup label="Staff loans (HR) · <?= h($grp) ?>"><?php endif; ?>
         <option value="hr:<?= (int)$r['id'] ?>" <?= $loan && $loan['key'] === 'hr:' . (int)$r['id'] ? 'selected' : '' ?>>
-          <?= h($r['full_name']) ?> (<?= h($r['employee_code']) ?>) · given <?= h(lt_date($r['tx_date'])) ?> · still to pay AED <?= lt_money($r['outstanding']) ?>
+          HR #<?= (int)$r['id'] ?> · <?= h($r['full_name']) ?> (<?= h($r['employee_code']) ?>) · given <?= h(lt_date($r['tx_date'])) ?> · still to pay AED <?= lt_money($r['outstanding']) ?>
         </option>
       <?php endforeach; if ($grp !== null): ?></optgroup><?php endif; ?>
     </select>

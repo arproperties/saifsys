@@ -85,7 +85,7 @@ if ($picked || $month !== '') {
         $cards[] = [
             'key' => 'hr' . $r['id'], 'sort' => $r['tx_date'],
             'title' => $picked ? $kind : $r['full_name'],
-            'sub' => ($picked ? '' : $kind . ' · ') . 'Given ' . lt_date($r['tx_date']) . ' · from HR',
+            'sub' => ($picked ? '' : $kind . ' · ') . 'Given ' . lt_date($r['tx_date']) . ' · HR #' . (int)$r['id'],
             'open' => $r['status'] === 'open', 'badge' => $r['status'] === 'open' ? 'Open' : 'Closed',
             'amount' => lt_money($r['amount']), 'balance' => lt_money($r['outstanding']), 'pct' => $pct,
             'events' => lt_hr_loan_events($r, $settle[(int)$r['id']] ?? []), 'link' => null,

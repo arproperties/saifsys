@@ -56,8 +56,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $conn->prepare("DELETE FROM lt_loan_installments WHERE loan_id = ?")->execute([$id]);
             $ins = $conn->prepare("INSERT INTO lt_loan_installments (loan_id, seq, due_date, amount) VALUES (?,?,?,?)");
             foreach ($schedule as $s) { $ins->execute([$id, $s['seq'], $s['due'], $s['amount']]); }
+            // An employee loan is also an HR loan, so payroll can deduct it and HR sees it
+            $hrId = ($loan['loan_to'] === 'employee' && (int)$loan['employee_id'] > 0) ? lt_hr_link_create($conn, $loan, current_user_id()) : 0;
             $conn->commit();
-            lt_flash(lt_loan_no($id) . ' is submitted and active. ' . count($schedule) . ' instalment' . (count($schedule) === 1 ? '' : 's') . ', first due ' . lt_date($loan['first_due_date']) . '.');
+            lt_flash(lt_loan_no($id) . ' is submitted and active. ' . count($schedule) . ' instalment' . (count($schedule) === 1 ? '' : 's') . ', first due ' . lt_date($loan['first_due_date']) . '.'
+                . ($hrId ? ' It is also added to HR as loan #' . $hrId . ($loan['repayment_mode'] === 'salary' ? ', to be deducted in payroll.' : '.') : ''));
             header('Location: ' . $ltBase . '/loan_view.php?id=' . $id);
             exit;
         } catch (Throwable $e) {

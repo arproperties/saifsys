@@ -48,6 +48,7 @@ function lt_boot(PDO $conn): int
     require_once dirname(__DIR__, 3) . '/includes/company_helper.php';
     require_login(get_application_web_root() . '/login');
     require_role(LT_ROLES, $conn);
+    lt_sync_hr($conn);
     return (int)(current_company_id($conn) ?: 1);
 }
 
@@ -98,7 +99,8 @@ function lt_hr_loans(PDO $conn, ?int $employeeId = null): array
               LEFT JOIN companies c ON c.id = e.company_id
               LEFT JOIN lt_hidden_hr_loans hid ON hid.cash_advance_id = ca.id
              WHERE ca.status IN ('open','settled')
-               AND (ca.request_status IS NULL OR ca.request_status = 'approved')$byEmp
+               AND (ca.request_status IS NULL OR ca.request_status = 'approved')
+               AND NOT EXISTS (SELECT 1 FROM lt_loans x WHERE x.hr_loan_id = ca.id)$byEmp
              ORDER BY (ca.status = 'open') DESC, ca.tx_date DESC, ca.id DESC";
     $rows = $conn->query($sql)->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as &$r) {
@@ -133,7 +135,7 @@ function lt_hr_loan_events(array $loan, array $settlements): array
     $kind = $loan['product_type'] === 'loan' ? 'Loan' : 'Salary advance';
     $plan = (int)$loan['installment_count'] . ' × AED ' . lt_money($loan['installment_amount'] ?: $loan['amount'])
         . ($loan['preferred_settle_method'] === 'cash' ? ' in cash' : ' from salary');
-    $ev = [['kind' => 'given', 'icon' => 'bi-cash-coin', 'date' => lt_date($loan['tx_date']), 'title' => $kind . ' given',
+    $ev = [['kind' => 'given', 'icon' => 'bi-cash-coin', 'date' => lt_date($loan['tx_date']), 'title' => $kind . ' given · HR #' . (int)$loan['id'],
         'amount' => 'AED ' . lt_money($loan['amount']),
         'note' => 'Plan: ' . $plan . (trim((string)$loan['description']) !== '' ? ' · ' . $loan['description'] : '')]];
     $bal = (float)$loan['amount'];
@@ -249,7 +251,8 @@ function lt_loan_paid(PDO $conn, int $loanId): float
  * Returns [repayment id, amount left].
  */
 function lt_record_lt_repayment(PDO $conn, int $loanId, float $amount, string $date, string $paidBy,
-                                string $reference, string $notes, ?string $filePath, ?string $fileName, ?int $userId): array
+                                string $reference, string $notes, ?string $filePath, ?string $fileName, ?int $userId,
+                                ?int $hrSettlementId = null): array
 {
     $q = $conn->prepare("SELECT id, status, total_payable FROM lt_loans WHERE id = ? FOR UPDATE");
     $q->execute([$loanId]);
@@ -265,9 +268,9 @@ function lt_record_lt_repayment(PDO $conn, int $loanId, float $amount, string $d
     if ($amount > $left + 0.005) {
         throw new RuntimeException('The amount is more than the AED ' . lt_money($left) . ' still to pay.');
     }
-    $conn->prepare("INSERT INTO lt_loan_repayments (loan_id, paid_on, amount, paid_by, reference, notes, file_path, original_name, created_by)
-                    VALUES (?,?,?,?,?,?,?,?,?)")
-        ->execute([$loanId, $date, $amount, $paidBy, $reference ?: null, $notes ?: null, $filePath, $fileName, $userId]);
+    $conn->prepare("INSERT INTO lt_loan_repayments (loan_id, hr_settlement_id, paid_on, amount, paid_by, reference, notes, file_path, original_name, created_by)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)")
+        ->execute([$loanId, $hrSettlementId, $date, $amount, $paidBy, $reference ?: null, $notes ?: null, $filePath, $fileName, $userId]);
     $repId = (int)$conn->lastInsertId();
 
     $rest = $amount;
@@ -285,6 +288,84 @@ function lt_record_lt_repayment(PDO $conn, int $loanId, float $amount, string $d
         $conn->prepare("UPDATE lt_loans SET status = 'closed' WHERE id = ?")->execute([$loanId]);
     }
     return [$repId, $newLeft];
+}
+
+/**
+ * An employee loan made here is also put in HR (cash_advances) as an open loan, so payroll
+ * can deduct it and HR sees it. Call inside the submit transaction. Returns the HR loan id.
+ */
+function lt_hr_link_create(PDO $conn, array $loan, ?int $userId): int
+{
+    require_once dirname(__DIR__, 3) . '/hr/includes/hr_loans.php';
+    $total = (float)$loan['total_payable'];
+    $n = max(1, (int)$loan['installments']);
+    $rate = (float)$loan['interest_rate'];
+    $desc = 'Loan Tracker ' . lt_loan_no((int)$loan['id'])
+        . ($rate > 0 ? ' (AED ' . lt_money($loan['amount']) . ' + ' . rtrim(rtrim(number_format($rate, 2), '0'), '.') . '% interest)' : '');
+    $conn->prepare("INSERT INTO cash_advances (employee_id, product_type, tx_date, amount, preferred_settle_method, description, status, created_by, request_status)
+                    VALUES (?, 'loan', ?, ?, ?, ?, 'open', ?, 'approved')")
+        ->execute([(int)$loan['employee_id'], $loan['issue_date'], $total,
+                   $loan['repayment_mode'] === 'salary' ? 'payroll' : 'cash', mb_substr($desc, 0, 255), $userId]);
+    $hrId = (int)$conn->lastInsertId();
+    hr_loan_initialize_schedule($conn, $hrId, $total, $n, $loan['first_due_date']);
+    $conn->prepare("UPDATE lt_loans SET hr_loan_id = ? WHERE id = ?")->execute([$hrId, (int)$loan['id']]);
+    try {
+        require_once dirname(__DIR__, 3) . '/includes/AuditService.php';
+        AuditService::logEvent([
+            'action' => 'loan_issued', 'module' => 'hr', 'object_type' => 'cash_advances',
+            'object_id' => (string)$hrId, 'object_ref' => 'Loan #' . $hrId,
+            'summary' => 'Issued loan #' . $hrId . ' for AED ' . number_format($total, 2) . ' in ' . $n
+                . ' instalment(s), from Loan Tracker ' . lt_loan_no((int)$loan['id']),
+            'user_id' => $userId, 'source' => 'user', 'success' => true,
+        ]);
+    } catch (Throwable $ignored) {
+    }
+    return $hrId;
+}
+
+/**
+ * Stop the HR loan of a Loan Tracker loan that is closed early or deleted, so payroll stops
+ * deducting it. Payments already made stay in HR. Nothing changes if HR has it settled already.
+ */
+function lt_hr_link_void(PDO $conn, $hrLoanId): void
+{
+    if ((int)$hrLoanId > 0) {
+        $conn->prepare("UPDATE cash_advances SET status = 'void' WHERE id = ? AND status = 'open'")->execute([(int)$hrLoanId]);
+    }
+}
+
+/**
+ * Copy HR's recoveries of linked loans (payroll deductions, cash paid in HR) into Loan Tracker,
+ * once each, and close a loan HR has voided. Runs on every page; never stops a page.
+ */
+function lt_sync_hr(PDO $conn): void
+{
+    try {
+        $rows = $conn->query("SELECT s.id, s.settle_date, s.amount, s.method, s.notes, s.created_by, l.id AS lt_id
+                                FROM lt_loans l
+                                JOIN hr_loan_settlements s ON s.loan_id = l.hr_loan_id
+                                LEFT JOIN lt_loan_repayments r ON r.hr_settlement_id = s.id
+                               WHERE l.status = 'active' AND l.hr_loan_id IS NOT NULL AND r.id IS NULL
+                               ORDER BY s.settle_date, s.id")->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as $s) {
+            try {
+                $conn->beginTransaction();
+                $payroll = $s['method'] === 'payroll';
+                $note = $payroll ? 'Deducted in payroll (HR)' : 'Paid in cash to HR' . ($s['notes'] ? ' · ' . $s['notes'] : '');
+                lt_record_lt_repayment($conn, (int)$s['lt_id'], (float)$s['amount'], $s['settle_date'], $payroll ? 'salary' : 'cash',
+                    '', mb_substr($note, 0, 200), null, null, $s['created_by'] !== null ? (int)$s['created_by'] : null, (int)$s['id']);
+                $conn->commit();
+            } catch (Throwable $e) {
+                if ($conn->inTransaction()) { $conn->rollBack(); }
+                error_log('loan_tracker HR sync, settlement ' . $s['id'] . ': ' . $e->getMessage());
+            }
+        }
+        $conn->exec("UPDATE lt_loans l JOIN cash_advances ca ON ca.id = l.hr_loan_id
+                        SET l.status = 'closed', l.closed_at = NOW(), l.close_note = 'Voided in HR'
+                      WHERE l.status = 'active' AND ca.status = 'void'");
+    } catch (Throwable $e) {
+        error_log('loan_tracker HR sync: ' . $e->getMessage());
+    }
 }
 
 /** How a loan is paid back. Salary deduction only for employees. */

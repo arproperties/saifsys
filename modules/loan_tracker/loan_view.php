@@ -37,6 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $conn->prepare("UPDATE lt_loans SET status = 'closed', closed_at = NOW(), closed_by = ?, close_note = ? WHERE id = ?")
                 ->execute([current_user_id(), $reason, $lid]);
+            lt_hr_link_void($conn, $loan['hr_loan_id'] ?? null); // payroll stops deducting it
             lt_flash(lt_loan_no($lid) . ' is closed.');
         }
         header('Location: ' . $ltBase . '/loan_view.php?id=' . $lid);
@@ -44,6 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if ($do === 'delete') {
         $conn->prepare("DELETE FROM lt_loans WHERE id = ? AND company_id = ?")->execute([$lid, $companyId]);
+        lt_hr_link_void($conn, $loan['hr_loan_id'] ?? null); // HR keeps the row as void, with any payments made
         // Its files: documents, loan proof and repayment proofs all live in the loan's own folder
         $dir = lt_upload_root() . '/' . $lid;
         if (is_dir($dir)) {
@@ -157,6 +159,9 @@ require __DIR__ . '/includes/lt_layout_header.php';
       <div class="col-md-3"><div class="text-muted">Instalments</div><div class="fw-semibold"><?= (int)$loan['installments'] ?><?= (float)$loan['interest_rate'] > 0 ? ' · interest ' . h(rtrim(rtrim((string)$loan['interest_rate'], '0'), '.')) . '%' : '' ?></div></div>
       <div class="col-md-3"><div class="text-muted">Paid in · Repayment</div><div class="fw-semibold"><?= $loan['paid_out_by'] === 'bank' ? 'Bank transfer' : 'Cash' ?> · <?= h($modes[$loan['repayment_mode']] ?? '—') ?></div></div>
       <div class="col-md-3"><div class="text-muted">Issued by</div><div class="fw-semibold"><?= h($loan['issuer_name'] ?: '—') ?><?= $loan['submitted_at'] ? ' · ' . h(lt_date($loan['submitted_at'])) : '' ?></div></div>
+      <?php if (!empty($loan['hr_loan_id'])): ?>
+        <div class="col-12 text-muted"><i class="bi bi-link-45deg"></i> Also in HR as loan #<?= (int)$loan['hr_loan_id'] ?>. Payments HR records (payroll or cash) show here by themselves.</div>
+      <?php endif; ?>
       <?php if (!empty($loan['proof_path'])): ?>
         <div class="col-12"><a class="lt-tl-file mt-0" target="_blank" rel="noopener" href="<?= h($ltBase) ?>/file.php?proof=<?= (int)$loan['id'] ?>"><i class="bi bi-paperclip"></i> <?= h($loan['proof_name'] ?: 'Proof') ?></a></div>
       <?php endif; ?>
