@@ -184,7 +184,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       </div>
 
       <div class="col-12">
-        <div class="form-text mb-2">Every new payment starts as <strong>Pending</strong>. Changing the amount here changes the coming payments only.</div>
+        <div class="form-text mb-2">Every new payment starts as <strong>Pending</strong>. Changing the amount here also changes the payments still pending with nothing received; paid or part-paid ones keep theirs.</div>
         <div class="d-flex gap-2">
           <button class="btn btn-lg text-white" style="background:var(--primary)">
             <i class="bi bi-check-lg"></i> <?= $entry ? 'Save changes' : 'Add entry' ?>
