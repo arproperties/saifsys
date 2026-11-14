@@ -134,18 +134,22 @@ $flagMeta = legal_watch_flag_meta();
 
 // Every legal case per lease (any status), for the "Cases" column and its pop-up.
 $casesByLease = [];
+$noLeaseGroups = [];
 try {
     $cbl = $conn->prepare("
-        SELECT id, lease_id, case_number, title, status, priority, case_type,
-               claim_amount, recovered_amount, opened_date, closed_date
-        FROM re_legal_cases
-        WHERE company_id = ? AND deleted_at IS NULL AND lease_id IS NOT NULL
-        ORDER BY COALESCE(opened_date, created_at) DESC, id DESC
+        SELECT c.id, c.lease_id, c.case_number, c.title, c.status, c.priority, c.case_type,
+               c.claim_amount, c.recovered_amount, c.opened_date, c.closed_date,
+               c.unit_id, u.unit_number, b.id AS building_id, b.name AS building_name
+        FROM re_legal_cases c
+        LEFT JOIN re_units u ON u.id = c.unit_id
+        LEFT JOIN re_buildings b ON b.id = u.building_id
+        WHERE c.company_id = ? AND c.deleted_at IS NULL
+        ORDER BY COALESCE(c.opened_date, c.created_at) DESC, c.id DESC
     ");
     $cbl->execute([$currentCompanyId]);
     $stLabels = legal_case_statuses(); $prLabels = legal_priorities(); $tyLabels = legal_case_types();
     foreach ($cbl->fetchAll(PDO::FETCH_ASSOC) as $cr) {
-        $casesByLease[(int)$cr['lease_id']][] = [
+        $item = [
             'id'        => (int)$cr['id'],
             'number'    => $cr['case_number'],
             'title'     => $cr['title'],
@@ -160,10 +164,46 @@ try {
             'opened'    => $cr['opened_date'] ? date('j M Y', strtotime($cr['opened_date'])) : '',
             'closed'    => $cr['closed_date'] ? date('j M Y', strtotime($cr['closed_date'])) : '',
         ];
+        if (!empty($cr['lease_id'])) {
+            $casesByLease[(int)$cr['lease_id']][] = $item;
+            continue;
+        }
+        // No lease in saifsys (tenant never set up): group by the tenant named in the
+        // case title - "... – NAME (BUILDING UNIT) ..." - so one tenant's filings sit together.
+        $name = ''; $place = '';
+        if (preg_match('/–\s*([^–(]+?)\s*\(([^)]*)\)/u', (string)$cr['title'], $m)) {
+            $name = trim($m[1]); $place = trim($m[2]);
+        }
+        if ($name === '') $name = 'Unknown tenant';
+        $key = 'n' . substr(md5(mb_strtoupper($name)), 0, 10);
+        if (!isset($noLeaseGroups[$key])) {
+            $noLeaseGroups[$key] = [
+                'key' => $key, 'tenant' => $name, 'place' => $place,
+                'building_id' => (int)$cr['building_id'], 'building_name' => (string)$cr['building_name'],
+                'unit_number' => (string)$cr['unit_number'], 'open' => 0, 'claim_open' => 0.0, 'by_status' => [],
+            ];
+        }
+        $g = &$noLeaseGroups[$key];
+        if (!$g['building_id'] && $cr['building_id']) {            // fill the unit from any case that has one
+            $g['building_id'] = (int)$cr['building_id'];
+            $g['building_name'] = (string)$cr['building_name'];
+            $g['unit_number'] = (string)$cr['unit_number'];
+        }
+        if (!in_array($cr['status'], ['settled', 'closed', 'withdrawn'], true)) {
+            $g['open']++;
+            $g['claim_open'] += (float)$cr['claim_amount'];
+        }
+        $g['by_status'][$item['status']] = ($g['by_status'][$item['status']] ?? 0) + 1;
+        unset($g);
+        $casesByLease[$key][] = $item;   // pop-up data, keyed like a lease
     }
 } catch (Throwable $e) {
     error_log('legal cases by lease: ' . $e->getMessage());
 }
+// Open matters first, then most cases.
+uasort($noLeaseGroups, fn($a, $b) => [$b['open'], count($casesByLease[$b['key']])] <=> [$a['open'], count($casesByLease[$a['key']])]);
+$noLeaseCaseCount = 0;
+foreach ($noLeaseGroups as $g) $noLeaseCaseCount += count($casesByLease[$g['key']]);
 
 $watchById = [];
 foreach ($watchRows as $r) $watchById[(int)$r['id']] = $r;
@@ -213,7 +253,7 @@ foreach ($watchRows as $r) {
 }
 
 // A case can sit on a lease Lease Watch leaves out (e.g. a test building); still list it.
-$missing = array_values(array_diff(array_keys($casesByLease), array_keys($seenLease)));
+$missing = array_values(array_diff(array_filter(array_keys($casesByLease), 'is_int'), array_keys($seenLease)));
 if ($missing) {
     $ph = implode(',', array_fill(0, count($missing), '?'));
     $ls = $conn->prepare("
@@ -248,6 +288,7 @@ if ($missing) {
         $needBuildings[(int)$l['building_id']] = $l['building_name'];
     }
 }
+foreach ($noLeaseGroups as $g) if ($g['building_id']) $needBuildings[$g['building_id']] = $g['building_name'];
 asort($needBuildings);
 
 $totalCases = (int)($stats['total'] ?? 0);
@@ -480,6 +521,9 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                         <button type="button" class="lw-tab" data-tab="<?= h($k) ?>"><i class="bi <?= h($icon) ?>"></i> <?= h($label) ?> <span>(<b><?= (int)$needCount[$k] ?></b>)</span></button>
                     <?php endforeach; ?>
                     <button type="button" class="lw-tab lw-tab-hascase" data-tab="hascase" title="Leases that already have legal cases"><i class="bi bi-briefcase-fill"></i> Has a case <span>(<b><?= (int)$hasCaseCount ?></b>)</span></button>
+                    <?php if ($noLeaseGroups): ?>
+                    <button type="button" class="lw-tab" data-tab="nolease" title="<?= (int)$noLeaseCaseCount ?> legal cases whose tenant has no lease in saifsys, grouped by tenant"><i class="bi bi-file-earmark-x"></i> Cases with no lease <span>(<b><?= count($noLeaseGroups) ?></b>)</span></button>
+                    <?php endif; ?>
                 </div>
                 <div class="d-flex gap-2 flex-wrap lc-need-tools">
                     <div style="width:230px">
@@ -559,48 +603,104 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                             </td>
                         </tr>
                     <?php endforeach; ?>
+                    <?php foreach ($noLeaseGroups as $g):
+                        $nC = count($casesByLease[$g['key']]);
+                        $placeTxt = $g['building_id'] ? $g['building_name'] : ($g['place'] ?: '-');
+                        $unitTxt  = $g['building_id'] ? 'Unit ' . $g['unit_number'] : '';
+                        $searchTxt = strtolower(implode(' ', [$g['tenant'], $g['place'], $g['building_name'], $g['unit_number']]));
+                    ?>
+                        <tr class="lw-sev-<?= $g['open'] ? 2 : 1 ?>" data-cats="nolease" data-building="<?= (int)$g['building_id'] ?>"
+                            data-search="<?= h($searchTxt) ?>" data-owed="0" data-chq="0">
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="lw-avatar lw-avatar-sm lw-av-<?= lw_avatar_tone($g['tenant']) ?>"><?= h(lw_initials($g['tenant'])) ?></span>
+                                    <div class="min-w-0"><div class="lw-tname"><?= h($g['tenant']) ?></div>
+                                        <span class="lw-muted">Not set up in saifsys</span></div>
+                                </div>
+                            </td>
+                            <td class="lw-lease"><span class="lw-muted"><i class="bi bi-dash-circle"></i> No lease in saifsys</span></td>
+                            <td><?= h($placeTxt) ?><?php if ($unitTxt): ?><br><span class="lw-muted"><?= h($unitTxt) ?></span><?php endif; ?></td>
+                            <td class="lc-why">
+                                <?php foreach ($g['by_status'] as $stName => $stN): ?>
+                                    <span class="lw-flag"><?= h($stName) ?> &times;<?= (int)$stN ?></span>
+                                <?php endforeach; ?>
+                            </td>
+                            <td class="text-end text-nowrap">
+                                <?php if ($g['claim_open'] > 0.005): ?>
+                                    <div class="lw-money lc-owed"><?= number_format($g['claim_open'], 0) ?></div><span class="lw-muted">claimed on open case<?= $g['open'] > 1 ? 's' : '' ?></span>
+                                <?php else: ?><span class="lw-muted">-</span><?php endif; ?>
+                            </td>
+                            <td class="text-center">
+                                <button type="button" class="lc-cases-btn" data-lease="<?= h($g['key']) ?>"
+                                        data-lease-label="<?= h('No lease in saifsys · ' . $g['tenant']) ?>"
+                                        title="Show the legal cases of this tenant"><i class="bi bi-briefcase"></i> <?= $nC ?></button>
+                            </td>
+                            <td></td>
+                        </tr>
+                    <?php endforeach; ?>
                     </tbody>
                 </table>
                 <div class="lw-empty-state d-none" id="lcNeedEmpty"><i class="bi bi-search"></i>No leases match this filter.</div>
             </div>
             <div class="lc-need-foot lw-muted" id="lcNeedShown"></div>
 
-            <!-- Cases on one lease: opened from the "Cases" column -->
+            <!-- Cases of one lease / tenant: side panel opened from the "Cases" column -->
             <script type="application/json" id="lcCasesData"><?= json_encode($casesByLease, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?></script>
-            <div class="modal fade" id="lcCasesModal" tabindex="-1" aria-labelledby="lcCasesTitle" aria-hidden="true">
-            <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
-            <div class="modal-content lc-cm">
-                <div class="lc-cm-head">
-                    <div class="d-flex align-items-center gap-3 min-w-0">
-                        <span class="lc-cm-ico"><i class="bi bi-briefcase"></i></span>
-                        <div class="min-w-0">
-                            <h2 id="lcCasesTitle">Legal cases</h2>
-                            <div class="lc-cm-sub" id="lcCasesSub"></div>
+            <aside class="offcanvas offcanvas-end lc-sp" tabindex="-1" id="lcCasesPanel" aria-labelledby="lcCasesTitle"
+                   data-bs-backdrop="false" data-bs-scroll="true">
+                <div class="lc-sp-head">
+                    <div class="d-flex align-items-start justify-content-between gap-2">
+                        <div class="d-flex align-items-center gap-3 min-w-0">
+                            <span class="lc-sp-ico"><i class="bi bi-briefcase"></i></span>
+                            <div class="min-w-0">
+                                <div class="lc-sp-kicker">Legal cases</div>
+                                <h2 id="lcCasesTitle" class="text-truncate">-</h2>
+                                <div class="lc-sp-sub" id="lcCasesSub"></div>
+                            </div>
                         </div>
+                        <button type="button" class="lc-sp-x" data-bs-dismiss="offcanvas" aria-label="Close panel"><i class="bi bi-x-lg"></i></button>
                     </div>
-                    <button type="button" class="lc-cm-x" data-bs-dismiss="modal" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+                    <div class="lc-sp-stats" id="lcCasesStats"></div>
                 </div>
-                <div class="modal-body lc-cm-body" id="lcCasesBody"></div>
-            </div></div></div>
+                <div class="lc-sp-filters" id="lcCasesFilters" role="tablist" aria-label="Filter cases by status"></div>
+                <div class="lc-sp-body" id="lcCasesBody"></div>
+            </aside>
             <style>
                 .lc-cases-btn { display:inline-flex; align-items:center; gap:5px; border:1px solid #c9b8ea; background:#f6f1fd; color:#4a2386; font-weight:700; font-size:.85rem; padding:4px 11px; border-radius:999px; cursor:pointer; }
                 .lc-cases-btn:hover { background:linear-gradient(135deg,#3b1e6e,#7a2a8c); color:#fff; border-color:transparent; }
                 .lc-cases-none { color:#a3a6bd; font-weight:600; }
-                .lc-cm { border:0; border-radius:22px; overflow:hidden; box-shadow:0 30px 80px rgba(26,35,50,.35); font-family:"Plus Jakarta Sans", system-ui, sans-serif; }
-                .lc-cm-head { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:18px 20px; color:#fff; background:linear-gradient(135deg,#1e1b4b,#3b1e6e 55%,#7a2a8c); }
-                .lc-cm-head h2 { font-size:1.15rem; font-weight:700; margin:0; color:#fff; }
-                .lc-cm-sub { font-size:.84rem; opacity:.85; }
-                .lc-cm-ico { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; background:rgba(255,255,255,.16); font-size:1.15rem; flex:none; }
-                .lc-cm-x { border:0; width:34px; height:34px; border-radius:10px; background:rgba(255,255,255,.14); color:#fff; flex:none; }
-                .lc-cm-x:hover { background:rgba(255,255,255,.28); }
-                .lc-cm-body { background:#f7f6fc; padding:16px; display:flex; flex-direction:column; gap:10px; }
-                .lc-cm-case { display:block; background:#fff; border:1px solid #eceaf5; border-radius:14px; padding:12px 14px; text-decoration:none; color:#24273f; transition:border-color .15s, box-shadow .15s; }
-                .lc-cm-case:hover { border-color:#c9b8ea; box-shadow:0 6px 18px rgba(59,30,110,.1); color:#24273f; }
-                .lc-cm-top { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:4px; }
-                .lc-cm-num { font-weight:800; color:#4a2386; margin-right:4px; }
-                .lc-cm-title { font-size:.9rem; font-weight:600; line-height:1.35; }
-                .lc-cm-meta { display:flex; flex-wrap:wrap; gap:4px 16px; margin-top:8px; font-size:.8rem; color:#7a7e99; }
-                .lc-cm-meta strong { color:#24273f; }
+                tr.lc-row-on td { background:#f6f1fd !important; }
+                .lc-sp { --bs-offcanvas-width: 480px; border-left:0 !important; box-shadow:-24px 0 60px rgba(26,35,50,.22); font-family:"Plus Jakarta Sans", system-ui, sans-serif; background:#f7f6fc; }
+                @media (max-width:575px){ .lc-sp { --bs-offcanvas-width: 100vw; } }
+                .lc-sp-head { padding:18px 18px 16px; color:#fff; background:linear-gradient(140deg,#1e1b4b 0%,#3b1e6e 55%,#7a2a8c 100%); }
+                .lc-sp-kicker { font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; opacity:.7; }
+                .lc-sp-head h2 { font-size:1.1rem; font-weight:800; margin:0; color:#fff; }
+                .lc-sp-sub { font-size:.82rem; opacity:.85; }
+                .lc-sp-ico { width:44px; height:44px; border-radius:13px; display:grid; place-items:center; background:rgba(255,255,255,.16); font-size:1.2rem; flex:none; }
+                .lc-sp-x { border:0; width:34px; height:34px; border-radius:10px; background:rgba(255,255,255,.14); color:#fff; flex:none; }
+                .lc-sp-x:hover { background:rgba(255,255,255,.28); }
+                .lc-sp-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:16px; }
+                .lc-sp-stat { background:rgba(255,255,255,.12); border-radius:12px; padding:8px 10px; }
+                .lc-sp-stat b { display:block; font-size:1.05rem; font-weight:800; line-height:1.2; }
+                .lc-sp-stat span { font-size:.68rem; opacity:.8; text-transform:uppercase; letter-spacing:.04em; }
+                .lc-sp-filters { display:flex; gap:6px; flex-wrap:wrap; padding:12px 16px 4px; }
+                .lc-sp-pill { border:1px solid #e1def0; background:#fff; color:#4b4f6b; font-size:.8rem; font-weight:700; padding:4px 11px; border-radius:999px; }
+                .lc-sp-pill.on { background:#3b1e6e; border-color:#3b1e6e; color:#fff; }
+                .lc-sp-pill em { font-style:normal; opacity:.7; margin-left:3px; }
+                .lc-sp-body { flex:1; overflow-y:auto; padding:10px 16px 20px; display:flex; flex-direction:column; gap:10px; }
+                .lc-sp-case { position:relative; display:block; background:#fff; border:1px solid #eceaf5; border-radius:14px; padding:12px 14px 12px 18px; text-decoration:none; color:#24273f; transition:transform .12s, box-shadow .15s, border-color .15s; }
+                .lc-sp-case::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:4px; border-radius:0 4px 4px 0; background:var(--edge,#c4c6d6); }
+                .lc-sp-case:hover { transform:translateY(-1px); border-color:#c9b8ea; box-shadow:0 8px 22px rgba(59,30,110,.12); color:#24273f; }
+                .lc-sp-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+                .lc-sp-num { font-weight:800; color:#4a2386; font-size:.92rem; }
+                .lc-sp-st { font-size:.7rem; font-weight:800; padding:2px 9px; border-radius:999px; background:var(--soft,#eceaf5); color:var(--edge,#4b4f6b); }
+                .lc-sp-title { font-size:.86rem; font-weight:600; line-height:1.4; margin:6px 0 8px; }
+                .lc-sp-tags { display:flex; gap:5px; flex-wrap:wrap; margin-bottom:8px; }
+                .lc-sp-tag { font-size:.7rem; font-weight:700; padding:2px 8px; border-radius:7px; background:#f3f2f9; color:#5b5f7a; }
+                .lc-sp-meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px 12px; font-size:.76rem; color:#7a7e99; }
+                .lc-sp-meta strong { color:#24273f; font-weight:700; }
+                .lc-sp-go { font-size:.75rem; font-weight:700; color:#7a2a8c; margin-top:8px; display:inline-flex; align-items:center; gap:4px; }
+                .lc-sp-empty { text-align:center; color:#7a7e99; padding:30px 10px; }
             </style>
 
         <?php endif; ?>
@@ -758,44 +858,81 @@ $pageScripts = <<<'JS'
         });
     }
 
-    // "Cases" column: pop-up with the legal cases of that one lease.
+    // "Cases" column: side panel with the legal cases of that lease / tenant.
     (function () {
         const dataEl = document.getElementById('lcCasesData');
-        const modalEl = document.getElementById('lcCasesModal');
-        if (!dataEl || !modalEl || !window.bootstrap) return;
+        const panelEl = document.getElementById('lcCasesPanel');
+        if (!dataEl || !panelEl || !window.bootstrap) return;
         let byLease = {};
         try { byLease = JSON.parse(dataEl.textContent) || {}; } catch (e) { byLease = {}; }
-        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        const panel = bootstrap.Offcanvas.getOrCreateInstance(panelEl);
         const body = document.getElementById('lcCasesBody');
         const sub = document.getElementById('lcCasesSub');
         const title = document.getElementById('lcCasesTitle');
+        const stats = document.getElementById('lcCasesStats');
+        const filters = document.getElementById('lcCasesFilters');
         const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         const aed = v => 'AED ' + Number(v || 0).toLocaleString('en-US', {maximumFractionDigits: 0});
+        const closedKeys = ['settled', 'closed', 'withdrawn'];
+        const tone = k => ({
+            settled:   ['#15803d', '#dcfce7'], closed: ['#166534', '#dcfce7'],
+            withdrawn: ['#6b7280', '#f1f2f6'], draft: ['#6b7280', '#f1f2f6'],
+        }[k] || ['#b45309', '#fef3c7']);   // anything still running = amber
+        let cases = [], filter = 'all', activeRow = null;
 
-        document.addEventListener('click', function (e) {
-            const btn = e.target.closest('.lc-cases-btn');
-            if (!btn) return;
-            const cases = byLease[btn.dataset.lease] || [];
-            title.textContent = cases.length + ' legal case' + (cases.length === 1 ? '' : 's');
-            sub.textContent = btn.dataset.leaseLabel || '';
-            body.innerHTML = cases.map(c => `
-                <a class="lc-cm-case" href="legal_case_view.php?id=${c.id}">
-                    <div class="lc-cm-top">
-                        <span class="lc-cm-num">${esc(c.number)}</span>
-                        <span class="badge bg-${esc(c.statusClr)}">${esc(c.status)}</span>
-                        <span class="badge bg-${esc(c.prioClr)}">${esc(c.priority)}</span>
-                        <span class="badge bg-light text-dark border">${esc(c.type)}</span>
-                    </div>
-                    <div class="lc-cm-title">${esc(c.title)}</div>
-                    <div class="lc-cm-meta">
-                        ${c.opened ? `<span>Opened <strong>${esc(c.opened)}</strong></span>` : ''}
-                        ${c.closed ? `<span>Closed <strong>${esc(c.closed)}</strong></span>` : ''}
+        function render() {
+            const shown = cases.filter(c => filter === 'all'
+                || (filter === 'open' ? !closedKeys.includes(c.statusKey) : c.statusKey === filter));
+            body.innerHTML = shown.map(c => {
+                const [edge, soft] = tone(c.statusKey);
+                return `<a class="lc-sp-case" style="--edge:${edge};--soft:${soft}" href="legal_case_view.php?id=${c.id}">
+                    <div class="lc-sp-top"><span class="lc-sp-num">${esc(c.number)}</span><span class="lc-sp-st">${esc(c.status)}</span></div>
+                    <div class="lc-sp-title">${esc(c.title)}</div>
+                    <div class="lc-sp-tags"><span class="lc-sp-tag">${esc(c.type)}</span><span class="lc-sp-tag">${esc(c.priority)} priority</span></div>
+                    <div class="lc-sp-meta">
+                        <span>Opened <strong>${esc(c.opened || '-')}</strong></span>
+                        <span>Closed <strong>${esc(c.closed || '-')}</strong></span>
                         <span>Claim <strong>${esc(aed(c.claim))}</strong></span>
                         <span>Recovered <strong>${esc(aed(c.recovered))}</strong></span>
                     </div>
-                </a>`).join('') || '<p class="text-muted mb-0">No legal cases on this lease.</p>';
-            modal.show();
-        });
+                    <span class="lc-sp-go">Open case <i class="bi bi-arrow-right"></i></span>
+                </a>`;
+            }).join('') || '<div class="lc-sp-empty"><i class="bi bi-inbox fs-3 d-block mb-1"></i>No cases with this status.</div>';
+            filters.querySelectorAll('.lc-sp-pill').forEach(p => p.classList.toggle('on', p.dataset.f === filter));
+        }
+
+        function open(btn) {
+            // Running cases first, then the rest (newest first within each, as loaded).
+            cases = (byLease[btn.dataset.lease] || []).slice().sort((x, y) =>
+                (closedKeys.includes(x.statusKey) ? 1 : 0) - (closedKeys.includes(y.statusKey) ? 1 : 0));
+            filter = 'all';
+            const nOpen = cases.filter(c => !closedKeys.includes(c.statusKey)).length;
+            const claimOpen = cases.filter(c => !closedKeys.includes(c.statusKey)).reduce((a, c) => a + (c.claim || 0), 0);
+            const rec = cases.reduce((a, c) => a + (c.recovered || 0), 0);
+            const [leaseTxt, ...rest] = (btn.dataset.leaseLabel || '').split(' · ');
+            title.textContent = rest.length ? rest.join(' · ') : leaseTxt;
+            sub.textContent = (rest.length ? leaseTxt + ' · ' : '') + cases.length + ' case' + (cases.length === 1 ? '' : 's');
+            stats.innerHTML = [
+                [cases.length, 'Cases'], [nOpen, 'Open'],
+                [aed(claimOpen).replace('AED ', ''), 'Claimed open'], [aed(rec).replace('AED ', ''), 'Recovered'],
+            ].map(([v, l]) => `<div class="lc-sp-stat"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('');
+            const counts = {all: cases.length, open: nOpen};
+            cases.forEach(c => { if (closedKeys.includes(c.statusKey)) counts[c.statusKey] = (counts[c.statusKey] || 0) + 1; });
+            const labels = {all: 'All', open: 'Open', closed: 'Closed', settled: 'Settled', withdrawn: 'Withdrawn'};
+            filters.innerHTML = Object.keys(labels).filter(k => counts[k])
+                .map(k => `<button type="button" class="lc-sp-pill" data-f="${k}">${labels[k]}<em>${counts[k]}</em></button>`).join('');
+            render();
+            if (activeRow) activeRow.classList.remove('lc-row-on');
+            activeRow = btn.closest('tr');
+            if (activeRow) activeRow.classList.add('lc-row-on');
+            body.scrollTop = 0;
+            panel.show();
+        }
+
+        filters.addEventListener('click', e => { const p = e.target.closest('.lc-sp-pill'); if (p) { filter = p.dataset.f; render(); } });
+        panelEl.addEventListener('hidden.bs.offcanvas', () => { if (activeRow) activeRow.classList.remove('lc-row-on'); activeRow = null; });
+        document.addEventListener('click', e => { const btn = e.target.closest('.lc-cases-btn'); if (btn) open(btn); });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape' && panelEl.classList.contains('show')) panel.hide(); });
     })();
 
     // Leases that need a case: tabs + building + search.
@@ -808,14 +945,14 @@ $pageScripts = <<<'JS'
     const stat = document.getElementById('lcNeedStat');
     const shown = document.getElementById('lcNeedShown');
     const empty = document.getElementById('lcNeedEmpty');
-    const names = {every: 'All leases', need: 'Needs a case', bounced: 'Bounced', ended: 'Ended with balance', over90: 'Overdue 90+ days', notrenew: 'Expired, not renewed', hascase: 'Has a case'};
-    const headings = {every: 'All leases', hascase: 'Leases with a legal case'};
+    const names = {every: 'All leases', need: 'Needs a case', bounced: 'Bounced', ended: 'Ended with balance', over90: 'Overdue 90+ days', notrenew: 'Expired, not renewed', hascase: 'Has a case', nolease: 'Cases with no lease'};
+    const headings = {every: 'All leases', hascase: 'Leases with a legal case', nolease: 'Legal cases with no lease in saifsys'};
     let tab = 'every';
 
     function apply() {
         const q = search.value.trim().toLowerCase();
         const b = building.value;
-        const counts = {every: 0, need: 0, bounced: 0, ended: 0, over90: 0, notrenew: 0, hascase: 0};
+        const counts = {every: 0, need: 0, bounced: 0, ended: 0, over90: 0, notrenew: 0, hascase: 0, nolease: 0};
         let n = 0, chq = 0, amt = 0;
         rows.forEach(tr => {
             const base = (!b || tr.dataset.building === b) && (!q || tr.dataset.search.includes(q));
@@ -833,9 +970,16 @@ $pageScripts = <<<'JS'
         });
         list.querySelector('table').classList.toggle('d-none', n === 0);
         empty.classList.toggle('d-none', n > 0);
-        stat.textContent = n + ' lease' + (n === 1 ? '' : 's') + ' · ' + chq + ' unpaid cheque' + (chq === 1 ? '' : 's')
-            + ' · AED ' + Math.round(amt).toLocaleString('en-US') + ' owed (bounced + overdue)';
-        let txt = 'Showing ' + n + ' of ' + rows.length + ' leases';
+        if (tab === 'nolease') {
+            let nc = 0;
+            rows.forEach(tr => { if (!tr.classList.contains('d-none')) { const b2 = tr.querySelector('.lc-cases-btn'); if (b2) nc += parseInt(b2.textContent, 10) || 0; } });
+            stat.textContent = n + ' tenant' + (n === 1 ? '' : 's') + ' · ' + nc + ' case' + (nc === 1 ? '' : 's') + ' · tenant never set up in saifsys, so no lease to link';
+        } else {
+            stat.textContent = n + ' lease' + (n === 1 ? '' : 's') + ' · ' + chq + ' unpaid cheque' + (chq === 1 ? '' : 's')
+                + ' · AED ' + Math.round(amt).toLocaleString('en-US') + ' owed (bounced + overdue)';
+        }
+        const totalOfTab = rows.filter(r => r.dataset.cats.split(' ').includes(tab === 'nolease' ? 'nolease' : 'every')).length;
+        let txt = 'Showing ' + n + ' of ' + totalOfTab + (tab === 'nolease' ? ' tenants' : ' leases');
         if (tab !== 'every') txt += ' · ' + names[tab];
         if (b) txt += ' · ' + building.options[building.selectedIndex].text;
         if (q) txt += ' · "' + search.value.trim() + '"';
