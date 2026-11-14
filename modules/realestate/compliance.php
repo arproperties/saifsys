@@ -2,6 +2,10 @@
 /**
  * Real Estate Module - Compliance Tracking Dashboard
  * Track document expiry, missing documents, legal status, Ejari
+ *
+ * Expiry figures come from the same source as the expiry summary e-mail
+ * (re_doc_digest_rows: active leases, current copies only), so the page,
+ * the e-mail and the alerts page always show the same numbers.
  */
 
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
@@ -11,6 +15,8 @@ require_once __DIR__ . '/../../includes/branding.php';
 require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/rbac_department.php';
+require_once __DIR__ . '/includes/compliance_helper.php';
+require_once __DIR__ . '/includes/compliance_ui.php';
 
 require_login();
 // Check department access (backward compatible: fallback to module access)
@@ -21,57 +27,32 @@ if (!has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_COMPLIANCE, $conn)
 $brand = getBrandSettings($conn);
 $currentCompanyId = current_company_id($conn) ?: 1;
 
-// Get expiring documents (next 30 days)
-$expiringDocuments = $conn->prepare("
-    SELECT 
-        d.*,
-        dt.document_type_name,
-        CASE d.related_type
-            WHEN 'lease' THEN (SELECT CONCAT(b.name, ' - ', u.unit_number) FROM re_leases l JOIN re_units u ON u.id = l.unit_id JOIN re_buildings b ON b.id = u.building_id WHERE l.id = d.related_id)
-            WHEN 'tenant' THEN (SELECT CONCAT(first_name, ' ', last_name) FROM re_tenants WHERE id = d.related_id)
-            WHEN 'unit' THEN (SELECT CONCAT(b.name, ' - ', u.unit_number) FROM re_units u JOIN re_buildings b ON b.id = u.building_id WHERE u.id = d.related_id)
-            ELSE 'Other'
-        END as related_name,
-        DATEDIFF(d.expiry_date, CURDATE()) as days_until_expiry
-    FROM re_documents d
-    LEFT JOIN re_document_types dt ON dt.id = d.document_type_id
-    WHERE d.company_id = ?
-    AND d.expiry_date IS NOT NULL
-    AND d.expiry_date >= CURDATE()
-    AND d.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
-    AND d.status = 'active'
-    ORDER BY d.expiry_date ASC
-");
-$expiringDocuments->execute([$currentCompanyId]);
-$expiringDocuments = $expiringDocuments->fetchAll(PDO::FETCH_ASSOC);
+// Expired + expiring documents on active leases (most urgent first)
+$docRows   = re_doc_digest_rows($conn, $currentCompanyId);
+$docGroups = re_doc_digest_group($docRows);
+$expiredCount  = count(array_filter($docRows, static function ($r) { return $r['days_left'] < 0; }));
+$expiringCount = count($docRows) - $expiredCount;
+$urgentCount   = count(array_filter($docRows, static function ($r) { return $r['days_left'] >= 0 && $r['days_left'] <= 7; }));
 
-// Get expired documents
-$expiredDocuments = $conn->prepare("
-    SELECT 
-        d.*,
-        dt.document_type_name,
-        CASE d.related_type
-            WHEN 'lease' THEN (SELECT CONCAT(b.name, ' - ', u.unit_number) FROM re_leases l JOIN re_units u ON u.id = l.unit_id JOIN re_buildings b ON b.id = u.building_id WHERE l.id = d.related_id)
-            WHEN 'tenant' THEN (SELECT CONCAT(first_name, ' ', last_name) FROM re_tenants WHERE id = d.related_id)
-            WHEN 'unit' THEN (SELECT CONCAT(b.name, ' - ', u.unit_number) FROM re_units u JOIN re_buildings b ON b.id = u.building_id WHERE u.id = d.related_id)
-            ELSE 'Other'
-        END as related_name,
-        DATEDIFF(CURDATE(), d.expiry_date) as days_expired
-    FROM re_documents d
-    LEFT JOIN re_document_types dt ON dt.id = d.document_type_id
-    WHERE d.company_id = ?
-    AND d.expiry_date IS NOT NULL
-    AND d.expiry_date < CURDATE()
-    AND d.status = 'active'
-    ORDER BY d.expiry_date DESC
-    LIMIT 20
-");
-$expiredDocuments->execute([$currentCompanyId]);
-$expiredDocuments = $expiredDocuments->fetchAll(PDO::FETCH_ASSOC);
+// By document type
+$byType = [];
+foreach ($docRows as $r) {
+    $k = $r['doc_label'];
+    $byType[$k] = $byType[$k] ?? ['expired' => 0, 'expiring' => 0];
+    $byType[$k][$r['days_left'] < 0 ? 'expired' : 'expiring']++;
+}
+uasort($byType, static function ($a, $b) {
+    return ($b['expired'] + $b['expiring']) <=> ($a['expired'] + $a['expiring']);
+});
+$maxType = $byType ? max(array_map(static function ($c) { return $c['expired'] + $c['expiring']; }, $byType)) : 1;
 
-// Get missing documents
+// Reminder e-mail status
+$recipients = re_doc_digest_all_recipients($conn, $currentCompanyId);
+$lastSent   = re_doc_digest_last_sent($conn, $currentCompanyId);
+
+// Missing documents
 $missingDocuments = $conn->prepare("
-    SELECT 
+    SELECT
         md.*,
         dt.document_type_name,
         dt.is_required,
@@ -89,10 +70,11 @@ $missingDocuments = $conn->prepare("
 ");
 $missingDocuments->execute([$currentCompanyId]);
 $missingDocuments = $missingDocuments->fetchAll(PDO::FETCH_ASSOC);
+$missingRequired = count(array_filter($missingDocuments, static function ($m) { return (int)$m['is_required'] === 1; }));
 
-// Get unit legal status summary
+// Unit legal status
 $unitLegalStatus = $conn->prepare("
-    SELECT 
+    SELECT
         uls.*,
         u.unit_number,
         b.name as building_name,
@@ -105,7 +87,7 @@ $unitLegalStatus = $conn->prepare("
     LEFT JOIN re_leases l ON l.unit_id = u.id AND l.status = 'active'
     LEFT JOIN re_tenants t ON t.id = l.tenant_id
     WHERE uls.company_id = ?
-    ORDER BY 
+    ORDER BY
         CASE uls.legal_status
             WHEN 'non_compliant' THEN 1
             WHEN 'at_risk' THEN 2
@@ -116,10 +98,11 @@ $unitLegalStatus = $conn->prepare("
 ");
 $unitLegalStatus->execute([$currentCompanyId]);
 $unitLegalStatus = $unitLegalStatus->fetchAll(PDO::FETCH_ASSOC);
+$nonCompliantUnits = count(array_filter($unitLegalStatus, static function ($s) { return $s['legal_status'] === 'non_compliant'; }));
 
-// Get Ejari tracking
+// Ejari tracking
 $ejariTracking = $conn->prepare("
-    SELECT 
+    SELECT
         e.*,
         l.lease_number,
         u.unit_number,
@@ -133,7 +116,7 @@ $ejariTracking = $conn->prepare("
     JOIN re_buildings b ON b.id = u.building_id
     LEFT JOIN re_tenants t ON t.id = l.tenant_id
     WHERE e.company_id = ?
-    ORDER BY 
+    ORDER BY
         CASE e.registration_status
             WHEN 'expired' THEN 1
             WHEN 'pending' THEN 2
@@ -145,368 +128,272 @@ $ejariTracking = $conn->prepare("
 $ejariTracking->execute([$currentCompanyId]);
 $ejariTracking = $ejariTracking->fetchAll(PDO::FETCH_ASSOC);
 
-// Statistics
-$stats = $conn->prepare("
-    SELECT 
-        (SELECT COUNT(*) FROM re_documents 
-         WHERE company_id = ? AND expiry_date IS NOT NULL 
-         AND expiry_date >= CURDATE() AND expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) 
-         AND status = 'active') as expiring_soon,
-        (SELECT COUNT(*) FROM re_documents 
-         WHERE company_id = ? AND expiry_date IS NOT NULL 
-         AND expiry_date < CURDATE() AND status = 'active') as expired,
-        (SELECT COUNT(*) FROM re_missing_documents 
-         WHERE company_id = ? AND status IN ('missing', 'pending_upload') AND is_required = 1) as missing_required,
-        (SELECT COUNT(*) FROM re_unit_legal_status 
-         WHERE company_id = ? AND legal_status = 'non_compliant') as non_compliant_units,
-        (SELECT COUNT(*) FROM re_ejari_tracking 
-         WHERE company_id = ? AND registration_status = 'expired') as expired_ejari
-");
-$stats->execute([$currentCompanyId, $currentCompanyId, $currentCompanyId, $currentCompanyId, $currentCompanyId]);
-$stats = $stats->fetch(PDO::FETCH_ASSOC);
+if (!function_exists('h')) {
+    function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+}
+function cx_tenant_name(array $r): string {
+    if (($r['tenant_type'] ?? '') === 'company' && trim((string)($r['company_name'] ?? '')) !== '') {
+        return trim((string)$r['company_name']);
+    }
+    return trim(($r['first_name'] ?? '') . ' ' . ($r['last_name'] ?? ''));
+}
+$legalPill = [
+    'compliant'      => ['bg-green', 'Compliant'],
+    'non_compliant'  => ['bg-red', 'Non-compliant'],
+    'at_risk'        => ['bg-amber', 'At risk'],
+    'pending_review' => ['bg-blue', 'Pending review'],
+];
 
-function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
-
-// Set page title and include layout
 $pageTitle = 'Compliance Tracking';
 require_once __DIR__ . '/includes/re_layout_header.php';
+
+re_cx_header(
+    'overview',
+    'Compliance Tracking',
+    'Tenant and lease documents on active leases that have expired or expire within their reminder window.',
+    '<a class="cx-btn" href="compliance_send_alerts.php?preview=summary" target="_blank" rel="noopener"><i class="bi bi-eye"></i> Preview summary e-mail</a>'
+    . '<a class="cx-btn cx-btn-primary" href="compliance_send_alerts.php"><i class="bi bi-envelope"></i> Expiry alerts</a>'
+);
+re_cx_flash();
 ?>
 
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <div class="page-header-label"><i class="bi bi-shield-check"></i> Compliance Tracking</div>
+<div class="cx-kpis">
+    <div class="cx-kpi">
+        <div class="cx-kpi-icon bg-red"><i class="bi bi-x-octagon"></i></div>
+        <div><div class="cx-kpi-label">Expired</div>
+             <div class="cx-kpi-value t-red"><?= $expiredCount ?></div>
+             <div class="cx-kpi-note">documents on active leases</div></div>
+    </div>
+    <div class="cx-kpi">
+        <div class="cx-kpi-icon bg-amber"><i class="bi bi-hourglass-split"></i></div>
+        <div><div class="cx-kpi-label">Expiring soon</div>
+             <div class="cx-kpi-value t-amber"><?= $expiringCount ?></div>
+             <div class="cx-kpi-note"><?= $urgentCount ?> within 7 days</div></div>
+    </div>
+    <div class="cx-kpi">
+        <div class="cx-kpi-icon bg-blue"><i class="bi bi-house-door"></i></div>
+        <div><div class="cx-kpi-label">Leases needing action</div>
+             <div class="cx-kpi-value t-blue"><?= count($docGroups) ?></div>
+             <div class="cx-kpi-note">with at least one item</div></div>
+    </div>
+    <div class="cx-kpi">
+        <div class="cx-kpi-icon <?= $missingRequired ? 'bg-red' : 'bg-green' ?>"><i class="bi bi-file-earmark-excel"></i></div>
+        <div><div class="cx-kpi-label">Missing required</div>
+             <div class="cx-kpi-value <?= $missingRequired ? 't-red' : 't-green' ?>"><?= $missingRequired ?></div>
+             <div class="cx-kpi-note">documents</div></div>
+    </div>
+    <div class="cx-kpi">
+        <div class="cx-kpi-icon <?= $nonCompliantUnits ? 'bg-red' : 'bg-green' ?>"><i class="bi bi-building-exclamation"></i></div>
+        <div><div class="cx-kpi-label">Non-compliant units</div>
+             <div class="cx-kpi-value <?= $nonCompliantUnits ? 't-red' : 't-green' ?>"><?= $nonCompliantUnits ?></div>
+             <div class="cx-kpi-note">units</div></div>
+    </div>
+</div>
+
+<div class="cx-grid-2">
+    <!-- Action list -->
+    <section class="cx-card" aria-labelledby="cx-actions-title">
+        <div class="cx-card-head">
             <div>
-                <a href="compliance_document_types.php" class="btn btn-primary">
-                    <i class="bi bi-tags"></i> Document Types
-                </a>
-                <a href="compliance_ejari.php" class="btn btn-info">
-                    <i class="bi bi-file-earmark-text"></i> Ejari Tracking
-                </a>
-                <a href="compliance_send_alerts.php" class="btn btn-success">
-                    <i class="bi bi-envelope"></i> Send Alerts
-                </a>
+                <h2 class="cx-card-title" id="cx-actions-title"><i class="bi bi-list-check"></i> Documents needing action</h2>
+                <p class="cx-card-sub">Most urgent first. Uploading a renewed copy removes the item.</p>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <div class="cx-chips" role="group" aria-label="Filter">
+                    <button type="button" class="cx-chip is-active" data-cx-filter="all">All <?= count($docRows) ?></button>
+                    <button type="button" class="cx-chip" data-cx-filter="expired">Expired <?= $expiredCount ?></button>
+                    <button type="button" class="cx-chip" data-cx-filter="week">≤ 7 days <?= $urgentCount ?></button>
+                    <button type="button" class="cx-chip" data-cx-filter="soon">Expiring <?= $expiringCount ?></button>
+                </div>
+                <input type="search" class="cx-search" id="cxSearch" placeholder="Search unit, tenant, document…" aria-label="Search">
             </div>
         </div>
-
-        <!-- Statistics -->
-        <div class="row mb-4">
-            <div class="col-md-3">
-                <div class="card text-center border-warning">
-                    <div class="card-body">
-                        <h5 class="text-muted">Expiring Soon</h5>
-                        <h2 class="mb-0 text-warning"><?= $stats['expiring_soon'] ?></h2>
-                        <small>Next 30 days</small>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center border-danger">
-                    <div class="card-body">
-                        <h5 class="text-muted">Expired</h5>
-                        <h2 class="mb-0 text-danger"><?= $stats['expired'] ?></h2>
-                        <small>Documents</small>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center border-danger">
-                    <div class="card-body">
-                        <h5 class="text-muted">Missing Required</h5>
-                        <h2 class="mb-0 text-danger"><?= $stats['missing_required'] ?></h2>
-                        <small>Documents</small>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center border-danger">
-                    <div class="card-body">
-                        <h5 class="text-muted">Non-Compliant Units</h5>
-                        <h2 class="mb-0 text-danger"><?= $stats['non_compliant_units'] ?></h2>
-                        <small>Units</small>
-                    </div>
-                </div>
-            </div>
+        <?php if (!$docRows): ?>
+            <div class="cx-empty"><i class="bi bi-check-circle"></i>All documents on active leases are valid.</div>
+        <?php else: ?>
+        <div class="table-responsive">
+            <table class="cx-table" id="cxDocTable">
+                <thead><tr>
+                    <th>Document</th>
+                    <th>Property / tenant</th>
+                    <th class="cx-hide-sm">Expiry date</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr></thead>
+                <tbody>
+                <?php foreach ($docRows as $r):
+                    $band = $r['days_left'] < 0 ? 'expired' : ($r['days_left'] <= 7 ? 'week' : 'soon');
+                    $prop = trim(($r['building_name'] ?? '') . ($r['unit_number'] ? ' – ' . $r['unit_number'] : ''));
+                    $tenant = cx_tenant_name($r);
+                    $search = strtolower($r['doc_label'] . ' ' . $prop . ' ' . $tenant . ' ' . ($r['lease_number'] ?? ''));
+                ?>
+                    <tr data-band="<?= $band ?>" data-search="<?= h($search) ?>">
+                        <td><span class="cx-strong"><?= h($r['doc_label']) ?></span></td>
+                        <td><div class="cx-strong"><?= h($prop ?: '—') ?></div>
+                            <div class="cx-dim"><?= h($tenant ?: '—') ?><?= $r['lease_number'] ? ' · ' . h($r['lease_number']) : '' ?></div></td>
+                        <td class="cx-hide-sm"><?= h(date('d M Y', strtotime($r['expiry_date']))) ?></td>
+                        <td><?= re_cx_status_pill((int)$r['days_left']) ?></td>
+                        <td class="num"><?php if ($r['group_lease_id']): ?>
+                            <a class="cx-btn cx-btn-sm" href="lease_view.php?id=<?= (int)$r['group_lease_id'] ?>" title="Open lease">Open <i class="bi bi-arrow-right"></i></a>
+                        <?php endif; ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <div class="cx-empty" id="cxNoMatch" hidden>No documents match this filter.</div>
         </div>
+        <?php endif; ?>
+    </section>
 
-        <div class="row">
-            <!-- Expiring Documents -->
-            <div class="col-md-6 mb-4">
-                <div class="card">
-                    <div class="card-header bg-warning">
-                        <h5 class="mb-0"><i class="bi bi-clock"></i> Expiring Soon (Next 30 Days)</h5>
-                    </div>
-                    <div class="card-body">
-                        <?php if (empty($expiringDocuments)): ?>
-                            <p class="text-muted">No documents expiring in the next 30 days.</p>
-                        <?php else: ?>
-                            <div class="table-responsive">
-                                <table class="table table-sm">
-                                    <thead>
-                                        <tr>
-                                            <th>Document</th>
-                                            <th>Related To</th>
-                                            <th>Expiry Date</th>
-                                            <th>Days Left</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($expiringDocuments as $doc): ?>
-                                            <tr class="<?= $doc['days_until_expiry'] <= 7 ? 'table-danger' : ($doc['days_until_expiry'] <= 14 ? 'table-warning' : '') ?>">
-                                                <td>
-                                                    <strong><?= h($doc['document_name'] ?: $doc['document_type_name'] ?: 'Document') ?></strong>
-                                                    <?php if ($doc['document_number']): ?>
-                                                        <br><small class="text-muted">#<?= h($doc['document_number']) ?></small>
-                                                    <?php endif; ?>
-                                                </td>
-                                                <td><?= h($doc['related_name'] ?: '-') ?></td>
-                                                <td><?= date('M d, Y', strtotime($doc['expiry_date'])) ?></td>
-                                                <td>
-                                                    <span class="badge bg-<?= 
-                                                        $doc['days_until_expiry'] <= 7 ? 'danger' : 
-                                                        ($doc['days_until_expiry'] <= 14 ? 'warning' : 'info') 
-                                                    ?>">
-                                                        <?= $doc['days_until_expiry'] ?> days
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
+    <!-- Side column -->
+    <div>
+        <section class="cx-card" aria-labelledby="cx-type-title">
+            <div class="cx-card-head"><h2 class="cx-card-title" id="cx-type-title"><i class="bi bi-bar-chart"></i> By document</h2></div>
+            <div class="cx-card-body">
+                <?php if (!$byType): ?>
+                    <p class="cx-dim mb-0">Nothing to show.</p>
+                <?php else: ?>
+                    <?php foreach ($byType as $label => $c): $tot = $c['expired'] + $c['expiring']; ?>
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between" style="font-size:.88rem;">
+                                <span class="cx-strong"><?= h($label) ?></span>
+                                <span><span class="t-red"><?= $c['expired'] ?></span> <span class="cx-dim">expired ·</span>
+                                      <span class="t-amber"><?= $c['expiring'] ?></span> <span class="cx-dim">expiring</span></span>
                             </div>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Expired Documents -->
-            <div class="col-md-6 mb-4">
-                <div class="card">
-                    <div class="card-header bg-danger text-white">
-                        <h5 class="mb-0"><i class="bi bi-x-circle"></i> Expired Documents</h5>
-                    </div>
-                    <div class="card-body">
-                        <?php if (empty($expiredDocuments)): ?>
-                            <p class="text-muted">No expired documents.</p>
-                        <?php else: ?>
-                            <div class="table-responsive">
-                                <table class="table table-sm">
-                                    <thead>
-                                        <tr>
-                                            <th>Document</th>
-                                            <th>Related To</th>
-                                            <th>Expiry Date</th>
-                                            <th>Days Expired</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($expiredDocuments as $doc): ?>
-                                            <tr>
-                                                <td>
-                                                    <strong><?= h($doc['document_name'] ?: $doc['document_type_name'] ?: 'Document') ?></strong>
-                                                    <?php if ($doc['document_number']): ?>
-                                                        <br><small class="text-muted">#<?= h($doc['document_number']) ?></small>
-                                                    <?php endif; ?>
-                                                </td>
-                                                <td><?= h($doc['related_name'] ?: '-') ?></td>
-                                                <td><?= date('M d, Y', strtotime($doc['expiry_date'])) ?></td>
-                                                <td>
-                                                    <span class="badge bg-danger"><?= $doc['days_expired'] ?> days</span>
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
+                            <div class="cx-bar mt-1" role="img" aria-label="<?= h("$label: {$c['expired']} expired, {$c['expiring']} expiring") ?>"
+                                 style="width:<?= max(8, round($tot / $maxType * 100)) ?>%;">
+                                <span style="width:<?= $tot ? round($c['expired'] / $tot * 100) : 0 ?>%;background:var(--cx-red);"></span>
+                                <span style="width:<?= $tot ? round($c['expiring'] / $tot * 100) : 0 ?>%;background:#f79009;"></span>
                             </div>
-                        <?php endif; ?>
-                    </div>
-                </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
             </div>
-        </div>
+        </section>
 
-        <!-- Missing Documents -->
-        <?php if (!empty($missingDocuments)): ?>
-        <div class="card mb-4">
-            <div class="card-header bg-danger text-white">
-                <h5 class="mb-0"><i class="bi bi-exclamation-triangle"></i> Missing Required Documents</h5>
+        <section class="cx-card" aria-labelledby="cx-mail-title">
+            <div class="cx-card-head"><h2 class="cx-card-title" id="cx-mail-title"><i class="bi bi-envelope-paper"></i> Expiry summary e-mail</h2></div>
+            <div class="cx-card-body">
+                <ul class="cx-list">
+                    <li><span class="k">Recipients</span>
+                        <span><?php if ($recipients): ?><?= h(implode(', ', $recipients)) ?>
+                              <?php else: ?><span class="cx-pill bg-red no-dot">Not set</span>
+                              <a href="../../settings.php?tab=re_email" class="d-block mt-1" style="font-size:.85rem;">Add in Settings →</a><?php endif; ?></span></li>
+                    <li><span class="k">Last sent</span><span><?= $lastSent ? h(date('d M Y', strtotime($lastSent))) : 'Never' ?></span></li>
+                    <li><span class="k">Schedule</span><span>Daily when something is new · full list every Monday</span></li>
+                </ul>
+                <a class="cx-btn w-100 justify-content-center mt-2" href="compliance_send_alerts.php"><i class="bi bi-gear"></i> Manage alerts</a>
             </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Document Type</th>
-                                <th>Related To</th>
-                                <th>Status</th>
-                                <th>Required</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($missingDocuments as $missing): ?>
-                                <tr>
-                                    <td>
-                                        <strong><?= h($missing['document_type_name']) ?></strong>
-                                        <?php if ($missing['is_required']): ?>
-                                            <span class="badge bg-danger ms-2">Required</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td><?= h($missing['related_name'] ?: '-') ?></td>
-                                    <td>
-                                        <span class="badge bg-<?= 
-                                            $missing['status'] === 'missing' ? 'danger' : 'warning' 
-                                        ?>">
-                                            <?= ucfirst(str_replace('_', ' ', $missing['status'])) ?>
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <?= $missing['is_required'] ? '<span class="text-danger">Yes</span>' : '<span class="text-muted">No</span>' ?>
-                                    </td>
-                                    <td>
-                                        <a href="compliance_upload_document.php?related_type=<?= h($missing['related_type']) ?>&related_id=<?= $missing['related_id'] ?>&document_type_id=<?= $missing['document_type_id'] ?>" 
-                                           class="btn btn-sm btn-primary">
-                                            <i class="bi bi-upload"></i> Upload
-                                        </a>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <?php endif; ?>
+        </section>
+    </div>
+</div>
 
-        <!-- Unit Legal Status -->
-        <?php if (!empty($unitLegalStatus)): ?>
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-shield-check"></i> Unit Legal Status</h5>
-            </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Unit</th>
-                                <th>Lease</th>
-                                <th>Tenant</th>
-                                <th>Legal Status</th>
-                                <th>Compliance Score</th>
-                                <th>Last Review</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($unitLegalStatus as $status): ?>
-                                <tr class="<?= 
-                                    $status['legal_status'] === 'non_compliant' ? 'table-danger' : 
-                                    ($status['legal_status'] === 'at_risk' ? 'table-warning' : '') 
-                                ?>">
-                                    <td>
-                                        <?= h($status['building_name']) ?> - <?= h($status['unit_number']) ?>
-                                    </td>
-                                    <td><?= h($status['lease_number'] ?: '-') ?></td>
-                                    <td><?= $status['first_name'] ? h($status['first_name'] . ' ' . $status['last_name']) : '-' ?></td>
-                                    <td>
-                                        <span class="badge bg-<?= 
-                                            $status['legal_status'] === 'compliant' ? 'success' : 
-                                            ($status['legal_status'] === 'non_compliant' ? 'danger' : 
-                                            ($status['legal_status'] === 'at_risk' ? 'warning' : 'info')) 
-                                        ?>">
-                                            <?= ucfirst(str_replace('_', ' ', $status['legal_status'])) ?>
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <?php if ($status['compliance_score'] !== null): ?>
-                                            <span class="badge bg-<?= 
-                                                $status['compliance_score'] >= 80 ? 'success' : 
-                                                ($status['compliance_score'] >= 60 ? 'warning' : 'danger') 
-                                            ?>">
-                                                <?= $status['compliance_score'] ?>%
-                                            </span>
-                                        <?php else: ?>
-                                            <span class="text-muted">-</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <?= $status['last_review_date'] ? date('M d, Y', strtotime($status['last_review_date'])) : '-' ?>
-                                    </td>
-                                    <td>
-                                        <a href="compliance_unit_status.php?unit_id=<?= $status['unit_id'] ?>" class="btn btn-sm btn-primary">
-                                            <i class="bi bi-eye"></i> Review
-                                        </a>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <?php endif; ?>
+<?php if (!empty($missingDocuments)): ?>
+<section class="cx-card">
+    <div class="cx-card-head"><h2 class="cx-card-title"><i class="bi bi-exclamation-triangle"></i> Missing documents</h2></div>
+    <div class="table-responsive">
+        <table class="cx-table">
+            <thead><tr><th>Document type</th><th>Related to</th><th>Status</th><th class="num"></th></tr></thead>
+            <tbody>
+            <?php foreach ($missingDocuments as $missing): ?>
+                <tr>
+                    <td><span class="cx-strong"><?= h($missing['document_type_name']) ?></span>
+                        <?php if ($missing['is_required']): ?><span class="cx-pill bg-red no-dot ms-2">Required</span><?php endif; ?></td>
+                    <td><?= h($missing['related_name'] ?: '—') ?></td>
+                    <td><span class="cx-pill <?= $missing['status'] === 'missing' ? 'bg-red' : 'bg-amber' ?>"><?= h(ucfirst(str_replace('_', ' ', $missing['status']))) ?></span></td>
+                    <td class="num"><a class="cx-btn cx-btn-sm" href="compliance_upload_document.php?related_type=<?= h($missing['related_type']) ?>&related_id=<?= (int)$missing['related_id'] ?>&document_type_id=<?= (int)$missing['document_type_id'] ?>"><i class="bi bi-upload"></i> Upload</a></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</section>
+<?php endif; ?>
 
-        <!-- Ejari Tracking -->
-        <?php if (!empty($ejariTracking)): ?>
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-file-earmark-text"></i> Ejari Tracking</h5>
-            </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Ejari Number</th>
-                                <th>Lease</th>
-                                <th>Unit</th>
-                                <th>Tenant</th>
-                                <th>Registration Date</th>
-                                <th>Expiry Date</th>
-                                <th>Status</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($ejariTracking as $ejari): ?>
-                                <tr class="<?= 
-                                    $ejari['registration_status'] === 'expired' ? 'table-danger' : 
-                                    ($ejari['registration_status'] === 'pending' ? 'table-warning' : '') 
-                                ?>">
-                                    <td><strong><?= h($ejari['ejari_number']) ?></strong></td>
-                                    <td><?= h($ejari['lease_number']) ?></td>
-                                    <td>
-                                        <?= h($ejari['building_name']) ?> - <?= h($ejari['unit_number']) ?>
-                                    </td>
-                                    <td><?= h($ejari['first_name'] . ' ' . $ejari['last_name']) ?></td>
-                                    <td><?= $ejari['registration_date'] ? date('M d, Y', strtotime($ejari['registration_date'])) : '-' ?></td>
-                                    <td>
-                                        <?= $ejari['expiry_date'] ? date('M d, Y', strtotime($ejari['expiry_date'])) : '-' ?>
-                                        <?php if ($ejari['expiry_date'] && $ejari['days_until_expiry'] !== null): ?>
-                                            <br><small class="text-<?= $ejari['days_until_expiry'] < 0 ? 'danger' : ($ejari['days_until_expiry'] <= 30 ? 'warning' : 'muted') ?>">
-                                                <?= $ejari['days_until_expiry'] < 0 ? abs($ejari['days_until_expiry']) . ' days expired' : $ejari['days_until_expiry'] . ' days left' ?>
-                                            </small>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <span class="badge bg-<?= 
-                                            $ejari['registration_status'] === 'registered' ? 'success' : 
-                                            ($ejari['registration_status'] === 'expired' ? 'danger' : 
-                                            ($ejari['registration_status'] === 'pending' ? 'warning' : 'secondary')) 
-                                        ?>">
-                                            <?= ucfirst($ejari['registration_status']) ?>
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <a href="compliance_ejari_view.php?id=<?= $ejari['id'] ?>" class="btn btn-sm btn-primary">
-                                            <i class="bi bi-eye"></i> View
-                                        </a>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <?php endif; ?>
+<?php if (!empty($unitLegalStatus)): ?>
+<section class="cx-card">
+    <div class="cx-card-head"><h2 class="cx-card-title"><i class="bi bi-shield-check"></i> Unit legal status</h2></div>
+    <div class="table-responsive">
+        <table class="cx-table">
+            <thead><tr><th>Unit</th><th>Lease / tenant</th><th>Legal status</th><th class="num">Score</th><th class="cx-hide-sm">Last review</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($unitLegalStatus as $status): [$pc, $pl] = $legalPill[$status['legal_status']] ?? ['bg-grey', ucfirst((string)$status['legal_status'])]; ?>
+                <tr>
+                    <td class="cx-strong"><?= h($status['building_name']) ?> – <?= h($status['unit_number']) ?></td>
+                    <td><?= h($status['lease_number'] ?: '—') ?><div class="cx-dim"><?= $status['first_name'] ? h($status['first_name'] . ' ' . $status['last_name']) : '—' ?></div></td>
+                    <td><span class="cx-pill <?= $pc ?>"><?= h($pl) ?></span></td>
+                    <td class="num"><?php if ($status['compliance_score'] !== null): $sc = (int)$status['compliance_score']; ?>
+                        <span class="<?= $sc >= 80 ? 't-green' : ($sc >= 60 ? 't-amber' : 't-red') ?> cx-strong"><?= $sc ?>%</span>
+                        <?php else: ?><span class="cx-dim">—</span><?php endif; ?></td>
+                    <td class="cx-hide-sm"><?= $status['last_review_date'] ? h(date('d M Y', strtotime($status['last_review_date']))) : '—' ?></td>
+                    <td class="num"><a class="cx-btn cx-btn-sm" href="compliance_unit_status.php?unit_id=<?= (int)$status['unit_id'] ?>">Review</a></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</section>
+<?php endif; ?>
 
+<?php if (!empty($ejariTracking)): ?>
+<section class="cx-card">
+    <div class="cx-card-head"><h2 class="cx-card-title"><i class="bi bi-file-earmark-text"></i> Ejari tracking</h2>
+        <a class="cx-btn cx-btn-sm" href="compliance_ejari.php">View all</a></div>
+    <div class="table-responsive">
+        <table class="cx-table">
+            <thead><tr><th>Ejari number</th><th>Unit / tenant</th><th class="cx-hide-sm">Registered</th><th>Expiry</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($ejariTracking as $ejari):
+                $rs = (string)$ejari['registration_status'];
+                $rc = $rs === 'registered' ? 'bg-green' : ($rs === 'expired' ? 'bg-red' : ($rs === 'pending' ? 'bg-amber' : 'bg-grey'));
+            ?>
+                <tr>
+                    <td class="cx-strong"><?= h($ejari['ejari_number']) ?><div class="cx-dim"><?= h($ejari['lease_number']) ?></div></td>
+                    <td><?= h($ejari['building_name']) ?> – <?= h($ejari['unit_number']) ?><div class="cx-dim"><?= h(trim($ejari['first_name'] . ' ' . $ejari['last_name'])) ?></div></td>
+                    <td class="cx-hide-sm"><?= $ejari['registration_date'] ? h(date('d M Y', strtotime($ejari['registration_date']))) : '—' ?></td>
+                    <td><?= $ejari['expiry_date'] ? h(date('d M Y', strtotime($ejari['expiry_date']))) : '—' ?>
+                        <?php if ($ejari['expiry_date'] && $ejari['days_until_expiry'] !== null): ?><div><?= re_cx_status_pill((int)$ejari['days_until_expiry']) ?></div><?php endif; ?></td>
+                    <td><span class="cx-pill <?= $rc ?>"><?= h(ucfirst($rs)) ?></span></td>
+                    <td class="num"><a class="cx-btn cx-btn-sm" href="compliance_ejari_view.php?id=<?= (int)$ejari['id'] ?>">View</a></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</section>
+<?php endif; ?>
+
+<script>
+(function () {
+    var table = document.getElementById('cxDocTable');
+    if (!table) return;
+    var rows = Array.prototype.slice.call(table.tBodies[0].rows);
+    var chips = document.querySelectorAll('[data-cx-filter]');
+    var search = document.getElementById('cxSearch');
+    var noMatch = document.getElementById('cxNoMatch');
+    var band = 'all';
+    function apply() {
+        var q = (search.value || '').trim().toLowerCase(), shown = 0;
+        rows.forEach(function (tr) {
+            var b = tr.getAttribute('data-band');
+            var okBand = band === 'all' || b === band || (band === 'soon' && b === 'week');
+            var ok = okBand && (!q || tr.getAttribute('data-search').indexOf(q) !== -1);
+            tr.hidden = !ok;
+            if (ok) shown++;
+        });
+        noMatch.hidden = shown !== 0;
+    }
+    chips.forEach(function (c) {
+        c.addEventListener('click', function () {
+            chips.forEach(function (x) { x.classList.remove('is-active'); });
+            c.classList.add('is-active');
+            band = c.getAttribute('data-cx-filter');
+            apply();
+        });
+    });
+    search.addEventListener('input', apply);
+})();
+</script>
+
+<?php re_cx_footer(); ?>
 <?php require_once __DIR__ . '/includes/re_layout_footer.php'; ?>

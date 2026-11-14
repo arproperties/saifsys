@@ -323,6 +323,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'cash_payment_pending_verification' => trim($_POST['cash_payment_pending_verification_email'] ?? ''),
                     'inventory_material_request' => trim($_POST['inventory_material_request_email'] ?? ''),
                     'lease_expiry' => trim($_POST['lease_expiry_email'] ?? ''),
+                    'document_expiry' => trim($_POST['document_expiry_email'] ?? ''),
                     'payment_overdue' => trim($_POST['payment_overdue_email'] ?? ''),
                     'move_in' => trim($_POST['move_in_email'] ?? ''),
                     'move_out' => trim($_POST['move_out_email'] ?? ''),
@@ -3642,6 +3643,12 @@ require __DIR__ . '/includes/admin/admin_layout_header.php';
                      value="<?= h($reNotifications['lease_expiry'] ?? '') ?>"
                      placeholder="leasing@example.com">
               <small class="text-muted">Email address(es) to receive lease expiry reminders.</small>
+
+              <label class="form-label mt-3">Document Expiry Email(s)</label>
+              <input type="text" name="document_expiry_email" class="form-control"
+                     value="<?= h($reNotifications['document_expiry'] ?? '') ?>"
+                     placeholder="tenantcare@example.com">
+              <small class="text-muted">Receives the <strong>Tenant Document Expiry Summary</strong> (Emirates ID, visa, passport, Ejari, contract on active leases) – one e-mail, grouped by lease. Multiple emails can be separated by commas.</small>
             </div>
             
             <div class="col-md-6 mb-4">

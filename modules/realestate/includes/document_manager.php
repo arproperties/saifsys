@@ -170,23 +170,37 @@ if (!function_exists('render_document_manager')) {
                         html += '<thead><tr><th>Type</th><th>File Name</th><th>Size</th><th>Uploaded</th><th>Expires</th><th>Actions</th></tr></thead><tbody>';
                         
                         data.documents.forEach(doc => {
-                            const expiryBadge = doc.expires_at ? 
-                                (doc.is_expired ? 
-                                    '<span class="badge bg-danger">Expired</span>' : 
-                                    (doc.is_expiring_soon ? 
-                                        `<span class="badge bg-warning">Expires in ${doc.days_until_expiry} days</span>` : 
-                                        '<span class="badge bg-success">Valid</span>')) : 
-                                '';
+                            // Not watched = lease closed or a newer copy exists: no warning colours.
+                            const notWatchedNote = doc.watch_reason === 'replaced' ? 'replaced by newer copy'
+                                : (doc.watch_reason === 'lease_closed' ? 'lease closed, not tracked' : '');
+                            let expiryBadge = '';
+                            if (doc.expires_at) {
+                                if (notWatchedNote && (doc.is_expired || doc.is_expiring_soon)) {
+                                    expiryBadge = `<span class="badge bg-secondary" title="No reminder is sent for this document">${doc.is_expired ? 'Expired' : 'Expiring'} · ${notWatchedNote}</span>`;
+                                } else if (doc.is_expired) {
+                                    expiryBadge = '<span class="badge bg-danger">Expired</span>';
+                                } else if (doc.is_expiring_soon) {
+                                    expiryBadge = doc.days_until_expiry === 0
+                                        ? '<span class="badge bg-warning">Expires today</span>'
+                                        : `<span class="badge bg-warning">Expires in ${doc.days_until_expiry} days</span>`;
+                                } else {
+                                    expiryBadge = '<span class="badge bg-success">Valid</span>';
+                                }
+                            }
                             const typeLabel = doc.document_type_name
                                 ? escapeHtml(doc.document_type_name)
                                 : (doc.document_type || '').replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
                             const isTenantScan = !!doc.is_tenant_portal_scan;
-                            const delBtn = isTenantScan ? '' : `<button onclick="deleteDocument(${doc.id})" class="btn btn-sm btn-outline-danger" title="Delete">
+                            const isCarried = !!doc.is_carried;
+                            const carriedTag = isCarried
+                                ? ` <span class="badge bg-info text-dark" title="Uploaded on an earlier lease of this tenant; still tracked">From lease ${escapeHtml(doc.from_lease_number || ('#' + doc.from_lease_id))}</span>`
+                                : '';
+                            const delBtn = (isTenantScan || isCarried) ? '' : `<button onclick="deleteDocument(${doc.id})" class="btn btn-sm btn-outline-danger" title="Delete">
                                         <i class="bi bi-trash"></i>
                                     </button>`;
                             
                             html += `<tr>
-                                <td>${escapeHtml(typeLabel)}${isTenantScan ? ' <span class="badge bg-secondary">Portal</span>' : ''}</td>
+                                <td>${escapeHtml(typeLabel)}${isTenantScan ? ' <span class="badge bg-secondary">Portal</span>' : ''}${carriedTag}</td>
                                 <td>${escapeHtml(doc.file_name)}</td>
                                 <td>${doc.file_size_formatted}</td>
                                 <td><small>${new Date(doc.created_at).toLocaleDateString()}<br>by ${escapeHtml(doc.uploaded_by_name || 'Unknown')}</small></td>

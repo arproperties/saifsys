@@ -5,6 +5,8 @@
  */
 
 require_once __DIR__ . '/re_email_helper.php';
+require_once __DIR__ . '/document_watch_helper.php';
+require_once __DIR__ . '/document_expiry_digest.php';
 
 if (!function_exists('send_document_expiry_alert')) {
     /**
@@ -38,6 +40,12 @@ if (!function_exists('send_document_expiry_alert')) {
         if (!$document || !$document['expiry_date']) {
             return ['success' => false, 'message' => 'Document not found or has no expiry date'];
         }
+
+        // Only documents that still matter (active lease, current copy). See document_watch_helper.php
+        $reason = re_doc_watch_reasons($conn, $companyId, [$documentId])[$documentId] ?? 'no_expiry';
+        if ($reason !== null) {
+            return ['success' => false, 'message' => "Not tracked ({$reason})"];
+        }
         
         // Check if alert already sent today
         $todayCheck = $conn->prepare("
@@ -50,7 +58,7 @@ if (!function_exists('send_document_expiry_alert')) {
         }
         
         // Calculate days until expiry
-        $daysUntilExpiry = (int)((strtotime($document['expiry_date']) - time()) / 86400);
+        $daysUntilExpiry = (int)round((strtotime(substr((string)$document['expiry_date'], 0, 10)) - strtotime('today')) / 86400);
         
         // Check if we should send alert based on document type configuration
         $alertDays = $document['alert_days_before_expiry'] ?? 30;
@@ -190,8 +198,7 @@ if (!function_exists('send_document_expiry_alert')) {
         $conn->prepare("
             UPDATE re_documents 
             SET expiry_alert_sent = 1,
-                is_expired = CASE WHEN expiry_date < CURDATE() THEN 1 ELSE 0 END,
-                status = CASE WHEN expiry_date < CURDATE() THEN 'expired' ELSE 'active' END
+                is_expired = CASE WHEN expiry_date < CURDATE() THEN 1 ELSE 0 END
             WHERE id = ?
         ")->execute([$documentId]);
         
@@ -207,46 +214,10 @@ if (!function_exists('check_and_send_document_expiry_alerts')) {
      * @param int $companyId Company ID
      * @return array Results
      */
-    function check_and_send_document_expiry_alerts(PDO $conn, int $companyId): array {
-        // Get documents expiring soon or expired
-        $documents = $conn->prepare("
-            SELECT 
-                d.id,
-                d.expiry_date,
-                dt.alert_days_before_expiry,
-                DATEDIFF(d.expiry_date, CURDATE()) as days_until_expiry
-            FROM re_documents d
-            LEFT JOIN re_document_types dt ON dt.id = d.document_type_id
-            WHERE d.company_id = ?
-            AND d.expiry_date IS NOT NULL
-            AND d.status = 'active'
-            AND (
-                d.expiry_date <= DATE_ADD(CURDATE(), INTERVAL COALESCE(dt.alert_days_before_expiry, 30) DAY)
-                OR d.expiry_date < CURDATE()
-            )
-            AND (d.expiry_alert_sent = 0 OR d.expiry_alert_sent IS NULL)
-        ");
-        $documents->execute([$companyId]);
-        $documents = $documents->fetchAll(PDO::FETCH_ASSOC);
-        
-        $results = [
-            'total' => count($documents),
-            'sent' => 0,
-            'skipped' => 0,
-            'errors' => []
-        ];
-        
-        foreach ($documents as $doc) {
-            $result = send_document_expiry_alert($conn, $companyId, $doc['id']);
-            if ($result['success']) {
-                $results['sent']++;
-            } else {
-                $results['skipped']++;
-                $results['errors'][] = $result['message'];
-            }
-        }
-        
-        return $results;
+    function check_and_send_document_expiry_alerts(PDO $conn, int $companyId, bool $force = false): array {
+        // One summary e-mail grouped by lease (not one e-mail per document).
+        // See includes/document_expiry_digest.php
+        return send_document_expiry_digest($conn, $companyId, $force);
     }
 }
 
@@ -273,6 +244,7 @@ if (!function_exists('update_unit_compliance_status')) {
                 OR (d.related_type = 'lease' AND d.related_id IN (SELECT id FROM re_leases WHERE unit_id = ?))
             )
             AND d.status = 'active'
+            AND (d.expiry_date IS NULL OR " . re_doc_watched_sql('d') . ")
         ");
         $documents->execute([$companyId, $unitId, $unitId]);
         $documents = $documents->fetchAll(PDO::FETCH_ASSOC);
@@ -290,7 +262,7 @@ if (!function_exists('update_unit_compliance_status')) {
         // Calculate compliance score
         $totalDocs = count($documents);
         $expiredDocs = count(array_filter($documents, function($d) { 
-            return $d['expiry_date'] && strtotime($d['expiry_date']) < time(); 
+            return $d['expiry_date'] && strtotime($d['expiry_date']) < strtotime('today'); 
         }));
         
         $complianceScore = max(0, min(100, 
