@@ -131,6 +131,17 @@ if (is_file($asWidget)) { require $asWidget; }
         <span class="sicon"><i class="bi bi-arrow-left-right"></i></span><span class="slabel">Transfers</span>
       </a>
 
+    <?php
+    // Loan Tracker lives inside Recurring Payments; its pages are for Owner, Admin and HR only.
+    if (function_exists('current_user_roles') && array_intersect(current_user_roles($conn ?? null), ['Owner', 'Admin', 'HR'])):
+        $ltNav = $appBase . '/modules/loan_tracker'; ?>
+    <div class="nav-sect">Loan Tracker</div>
+      <a href="<?= h($ltNav) ?>/index.php" class="slink"><span class="sicon"><i class="bi bi-speedometer2"></i></span><span class="slabel">Loans dashboard</span></a>
+      <a href="<?= h($ltNav) ?>/new_loan.php" class="slink"><span class="sicon"><i class="bi bi-plus-circle"></i></span><span class="slabel">New loan</span></a>
+      <a href="<?= h($ltNav) ?>/timeline.php" class="slink"><span class="sicon"><i class="bi bi-clock-history"></i></span><span class="slabel">Loan timeline</span></a>
+      <a href="<?= h($ltNav) ?>/repayments.php" class="slink"><span class="sicon"><i class="bi bi-cash-stack"></i></span><span class="slabel">Loan repayments</span></a>
+    <?php endif; ?>
+
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>
   </aside>

@@ -61,10 +61,17 @@ function rpay_stop(BinvError $e): void
 {
     http_response_code(in_array($e->status, [401, 403, 404], true) ? 403 : 503);
     $back = function_exists('get_application_web_root') ? get_application_web_root() . '/select-module.php' : 'javascript:history.back()';
+    // Loan Tracker sits inside Recurring Payments but does not need Reem: keep it reachable.
+    $loans = '';
+    global $conn;
+    if (function_exists('get_application_web_root') && function_exists('current_user_roles')
+        && array_intersect(current_user_roles($conn instanceof PDO ? $conn : null), ['Owner', 'Admin', 'HR'])) {
+        $loans = ' · <a href="' . h(get_application_web_root() . '/modules/loan_tracker/index.php') . '">Open Loan Tracker</a>';
+    }
     echo '<div style="font-family:system-ui;padding:32px;max-width:640px">
             <h3>Recurring Payments</h3>
             <p>' . h($e->getMessage()) . '</p>
-            <p><a href="' . h($back) . '">Back to modules</a></p>
+            <p><a href="' . h($back) . '">Back to modules</a>' . $loans . '</p>
           </div>';
     exit;
 }
