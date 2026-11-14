@@ -41,7 +41,7 @@ if (!$emp) {
 $back = 'employee_view.php?id=' . urlencode((string)$empId) . '#tab-overview';
 $userId = (int)($emp['user_id'] ?? 0);
 $allowed = ($_POST['allowed'] ?? '') === '1';
-$apps = [FLEET_DRIVER_APP => 'Driver app', 'purchase' => 'Purchase', 'store' => 'Store'];
+$apps = [FLEET_DRIVER_APP => 'Driver app', 'purchase' => 'Purchase', 'store' => 'Store', 'bills' => 'Bills'];
 $app = (string)($_POST['app'] ?? FLEET_DRIVER_APP);
 if (!isset($apps[$app])) {
     header('Location: ' . $back);

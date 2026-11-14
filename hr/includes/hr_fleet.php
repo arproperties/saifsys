@@ -81,10 +81,26 @@ function fleet_vehicle_types(): array
 // App access — one PIN, a switch per app
 // ---------------------------------------------------------------------------
 
+/**
+ * Apps that are ON for everyone with a PIN until HR turns them off. For these,
+ * staff_app_access holds a row "<app>_off" for each person turned off, instead
+ * of a row for each person turned on.
+ */
+const STAFF_APPS_ON_BY_DEFAULT = ['bills'];
+
 function fleet_app_access_has(PDO $conn, int $userId, string $app = FLEET_DRIVER_APP): bool
 {
     if ($userId <= 0) {
         return false;
+    }
+    if (in_array($app, STAFF_APPS_ON_BY_DEFAULT, true)) {
+        try {
+            $stmt = $conn->prepare("SELECT 1 FROM staff_app_access WHERE user_id = ? AND app = ? LIMIT 1");
+            $stmt->execute([$userId, $app . '_off']);
+            return !$stmt->fetchColumn();
+        } catch (PDOException $e) {
+            return false;
+        }
     }
     // Since 2026-09-28 the Driver app is open to everyone with a PIN (user's
     // call). Every caller has already checked the PIN or the token's PIN epoch,
@@ -104,6 +120,11 @@ function fleet_app_access_has(PDO $conn, int $userId, string $app = FLEET_DRIVER
 
 function fleet_app_access_set(PDO $conn, int $userId, bool $allowed, ?int $actorId, string $app = FLEET_DRIVER_APP): void
 {
+    if (in_array($app, STAFF_APPS_ON_BY_DEFAULT, true)) {
+        // On by default: turning off writes "<app>_off", turning on removes it.
+        $app .= '_off';
+        $allowed = !$allowed;
+    }
     if ($allowed) {
         $stmt = $conn->prepare("
             INSERT IGNORE INTO staff_app_access (user_id, app, granted_at, granted_by)
