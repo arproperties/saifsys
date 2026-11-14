@@ -100,9 +100,9 @@ $tenantsStmt->execute([$currentCompanyId]);
 $tenants = $tenantsStmt->fetchAll(PDO::FETCH_ASSOC);
 
 $leasesStmt = $conn->prepare("
-    SELECT l.id, l.lease_number, u.unit_number, b.name AS building_name
+    SELECT l.id, l.lease_number, l.start_date, l.end_date, u.unit_number, b.name AS building_name
     FROM re_leases l JOIN re_units u ON u.id = l.unit_id JOIN re_buildings b ON b.id = u.building_id
-    WHERE l.company_id = ? AND l.deleted_at IS NULL ORDER BY l.created_at DESC
+    WHERE l.company_id = ? AND l.deleted_at IS NULL ORDER BY b.name, u.unit_number, l.start_date DESC
 ");
 $leasesStmt->execute([$currentCompanyId]);
 $leases = $leasesStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -223,7 +223,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                             <option value="">-- None --</option>
                             <?php foreach ($leases as $l): ?>
                                 <option value="<?= (int)$l['id'] ?>" <?= (int)$v('lease_id') === (int)$l['id'] ? 'selected' : '' ?>>
-                                    <?= h($l['lease_number']) ?> (<?= h($l['building_name']) ?> - <?= h($l['unit_number']) ?>)
+                                    <?= h($l['lease_number']) ?> · <?= h(legal_lease_period($l['start_date'], $l['end_date'])) ?> (<?= h($l['building_name']) ?> - <?= h($l['unit_number']) ?>)
                                 </option>
                             <?php endforeach; ?>
                         </select>
