@@ -109,8 +109,8 @@ $refunds = getCreditNoteRefunds($conn, $credit_note_id);
 
 function getCreditNote($conn, $id) {
   $stmt = $conn->prepare("
-    SELECT cn.*, c.client_name, c.client_email, c.client_phone,
-           i.invoice_no, i.invoice_date
+    SELECT cn.*, c.client_name, c.email AS client_email, c.mobile_num AS client_phone,
+           i.invoice_no, i.issue_date AS invoice_date
     FROM credit_notes cn
     LEFT JOIN client c ON cn.client_id = c.id
     LEFT JOIN invoices i ON cn.invoice_id = i.id
@@ -128,7 +128,7 @@ function getCreditNoteItems($conn, $id) {
 
 function getCreditNoteAllocations($conn, $id) {
   $stmt = $conn->prepare("
-    SELECT cna.*, i.invoice_no, i.invoice_date, i.total as invoice_total
+    SELECT cna.*, i.invoice_no, i.issue_date AS invoice_date, i.total as invoice_total
     FROM credit_note_allocations cna
     LEFT JOIN invoices i ON cna.invoice_id = i.id
     WHERE cna.credit_note_id = ?
