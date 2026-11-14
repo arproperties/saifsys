@@ -12,6 +12,7 @@ require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/csrf.php';
 require_once __DIR__ . '/includes/legal_helper.php';
+require_once __DIR__ . '/includes/legal_lease_watch.php'; // lw_initials / lw_avatar_tone for the lease card
 
 require_login();
 require_module_access($conn, MODULE_LEGAL);
@@ -25,6 +26,7 @@ $caseId = !empty($_GET['id']) ? (int)$_GET['id'] : 0;
 function legal_load_case(PDO $conn, int $caseId, int $companyId) {
     $stmt = $conn->prepare("
         SELECT c.*, b.name AS building_name, u.unit_number, l.lease_number,
+               l.start_date AS lease_start, l.end_date AS lease_end,
                t.first_name, t.last_name, t.company_name, t.tenant_type, t.email AS tenant_email, t.phone AS tenant_phone,
                o.name AS owner_name,
                COALESCE(NULLIF(usr.fullname,''), usr.username) AS assigned_name,
@@ -100,14 +102,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $_SESSION['error'] = 'Could not add link.';
         }
-        header('Location: legal_case_view.php?id=' . $caseId); exit;
+        header('Location: legal_case_view.php?id=' . $caseId . '#links'); exit;
     }
 
     if ($action === 'remove_link') {
         $linkId = (int)($_POST['link_row_id'] ?? 0);
         $conn->prepare("DELETE FROM re_legal_case_links WHERE id = ? AND case_id = ?")->execute([$linkId, $caseId]);
         $_SESSION['success'] = 'Link removed.';
-        header('Location: legal_case_view.php?id=' . $caseId); exit;
+        header('Location: legal_case_view.php?id=' . $caseId . '#links'); exit;
     }
 
     if ($action === 'add_cost') {
@@ -129,7 +131,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             legal_log_event($conn, $caseId, 'payment', 'Cost recorded: ' . (legal_cost_types()[$costType] ?? $costType) . ' ' . number_format($amount, 2) . ' AED');
             $_SESSION['success'] = 'Cost recorded.';
         }
-        header('Location: legal_case_view.php?id=' . $caseId); exit;
+        header('Location: legal_case_view.php?id=' . $caseId . '#costs'); exit;
     }
 
     // ---- Stages / offers / differences / review (migrations/legal_tenant_timeline.sql) ----
@@ -280,14 +282,21 @@ if (!empty($case['lease_id'])) {
 // Primary (denormalized) context as deep links (open Real Estate records in sibling module)
 $rePath = legal_re_path();
 $primaryLinks = [];
-if ($case['building_id']) $primaryLinks[] = ['label' => 'Building: ' . ($case['building_name'] ?: ('#' . $case['building_id'])), 'url' => $rePath . 'buildings.php', 'icon' => 'building'];
-if ($case['unit_id'])     $primaryLinks[] = ['label' => 'Unit: ' . ($case['unit_number'] ?: ('#' . $case['unit_id'])), 'url' => $rePath . 'unit_view.php?id=' . $case['unit_id'], 'icon' => 'door-open'];
-if ($case['tenant_id'])   $primaryLinks[] = ['label' => 'Tenant: ' . legal_tenant_name($case), 'url' => $rePath . 'tenant_view.php?id=' . $case['tenant_id'], 'icon' => 'person'];
-if ($case['lease_id'])    $primaryLinks[] = ['label' => 'Lease: ' . ($case['lease_number'] ?: ('#' . $case['lease_id'])), 'url' => $rePath . 'lease_view.php?id=' . $case['lease_id'], 'icon' => 'file-text'];
+if ($case['building_id']) $primaryLinks[] = ['label' => 'Building: ' . ($case['building_name'] ?: ('#' . $case['building_id'])), 'url' => null, 'icon' => 'building'];
+if ($case['unit_id'])     $primaryLinks[] = ['label' => 'Unit: ' . ($case['unit_number'] ?: ('#' . $case['unit_id'])), 'url' => null, 'icon' => 'door-open'];
+if ($case['tenant_id'])   $primaryLinks[] = ['label' => 'Tenant: ' . legal_tenant_name($case), 'url' => null, 'icon' => 'person'];
+if ($case['lease_id'])    $primaryLinks[] = ['label' => 'Lease: ' . ($case['lease_number'] ?: ('#' . $case['lease_id'])) . (($p = legal_lease_period($case['lease_start'], $case['lease_end'])) !== '' ? ' (' . $p . ')' : ''), 'url' => null, 'icon' => 'file-text', 'kind' => 'lease'];
 if ($case['owner_id'])    $primaryLinks[] = ['label' => 'Owner: ' . ($case['owner_name'] ?: ('#' . $case['owner_id'])), 'url' => null, 'icon' => 'person-badge'];
 if ($case['primary_cheque_id']) {
     $r = legal_resolve_link($conn, 'cheque', (int)$case['primary_cheque_id']);
     $primaryLinks[] = ['label' => 'Cheque: ' . $r['label'], 'url' => $r['url'], 'icon' => 'bank'];
+}
+
+// Full lease details for the in-page lease card (opened from the Lease chip).
+$leaseCard = null;
+if (!empty($case['lease_id'])) {
+    try { $leaseCard = legal_case_lease_details($conn, (int)$case['lease_id'], (int)$currentCompanyId); }
+    catch (Throwable $e) { error_log('legal lease card: ' . $e->getMessage()); }
 }
 
 $deadlineState = legal_deadline_state($case['deadline_date'], (int)$case['reminder_days_before'], $case['status']);
@@ -298,15 +307,15 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
 ?>
         <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
             <div>
-                <h1 class="mb-1"><i class="bi bi-briefcase"></i> <?= h($case['case_number']) ?></h1>
-                <div class="fs-5"><?= h($case['title']) ?></div>
-                <div class="mt-2 d-flex flex-wrap gap-2 align-items-center">
+                <div class="d-flex flex-wrap gap-2 align-items-center mb-1">
+                    <h1 class="mb-0 me-1"><i class="bi bi-briefcase"></i> <?= h($case['case_number']) ?></h1>
                     <span class="badge bg-<?= legal_status_color($case['status']) ?>"><?= h(legal_case_statuses()[$case['status']] ?? $case['status']) ?></span>
                     <span class="badge bg-<?= legal_priority_color($case['priority']) ?>"><?= h(legal_priorities()[$case['priority']] ?? $case['priority']) ?> priority</span>
                     <span class="badge bg-light text-dark border"><?= h(legal_case_types()[$case['case_type']] ?? $case['case_type']) ?></span>
                     <span class="badge bg-light text-dark border">Source: <?= h(legal_case_sources()[$case['case_source']] ?? $case['case_source']) ?></span>
                     <?= legal_deadline_badge($case['deadline_date'], (int)$case['reminder_days_before'], $case['status']) ?>
                 </div>
+                <div class="fs-5"><?= h($case['title']) ?></div>
             </div>
             <div class="d-flex gap-2">
                 <?php if (!empty($case['tenant_id'])): ?>
@@ -332,10 +341,42 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
             </div>
         <?php endif; ?>
 
+        <?php
+        // One tab per section, so nothing needs scrolling: only the chosen section shows.
+        $caseTabs = [['details', 'info-circle', 'Details', null]];
+        if ($schemaReady) {
+            $caseTabs[] = ['stages',   'diagram-3',           'Case Stages',          count($stages)];
+            $caseTabs[] = ['hearings', 'calendar-event',      'Hearings & Eviction',  count($hearings)];
+            $caseTabs[] = ['offers',   'hand-thumbs-up',      'Settlement Offers',    count($offers)];
+            $caseTabs[] = ['checks',   'file-earmark-diff',   'Document vs saifsys',  count(array_filter($dataChecks, fn($c) => $c['status'] === 'open'))];
+        }
+        $caseTabs[] = ['links',     'link-45deg',     'Linked Records', count($primaryLinks) + count($links)];
+        $caseTabs[] = ['costs',     'cash-stack',     'Legal Costs',    number_format($caseCostTotal, 2) . ' AED'];
+        $caseTabs[] = ['documents', 'folder',         'Documents',      count($docs)];
+        $caseTabs[] = ['notices',   'envelope-paper', 'Legal Notices',  count($notices)];
+        ?>
+        <nav class="lcv-tabs mb-3" role="tablist" aria-label="Case sections">
+            <?php foreach ($caseTabs as [$tKey, $tIcon, $tLabel, $tCount]): ?>
+                <a href="#<?= h($tKey) ?>" class="lcv-tab" role="tab" data-tab="<?= h($tKey) ?>">
+                    <i class="bi bi-<?= h($tIcon) ?>"></i> <?= h($tLabel) ?>
+                    <?php if ($tCount !== null): ?><span class="lcv-tab-count"><?= h((string)$tCount) ?></span><?php endif; ?>
+                </a>
+            <?php endforeach; ?>
+        </nav>
+        <style>
+            .lcv-tabs { display:flex; flex-wrap:wrap; gap:6px; padding:6px; background:#fff; border:1px solid #e7e8f0; border-radius:14px; position:sticky; top:64px; z-index:20; box-shadow:0 4px 14px rgba(30,27,75,.06); }
+            .lcv-tab { display:inline-flex; align-items:center; gap:6px; padding:7px 12px; border-radius:10px; font-size:.86rem; font-weight:600; color:#4b4f6b; text-decoration:none; white-space:nowrap; }
+            .lcv-tab:hover { background:#f3f1fb; color:#3b1e6e; }
+            .lcv-tab.active { background:linear-gradient(135deg,#3b1e6e,#7a2a8c); color:#fff; }
+            .lcv-tab-count { font-size:.72rem; padding:1px 7px; border-radius:999px; background:#eceaf5; color:#4b4f6b; }
+            .lcv-tab.active .lcv-tab-count { background:rgba(255,255,255,.22); color:#fff; }
+            .lcv-pane-hidden { display:none !important; }
+        </style>
+
         <div class="row g-4">
             <div class="col-lg-8">
                 <!-- Details -->
-                <div class="card mb-4"><div class="card-header"><h5 class="mb-0"><i class="bi bi-info-circle"></i> Case Details</h5></div><div class="card-body">
+                <div class="card mb-4" id="details"><div class="card-header"><h5 class="mb-0"><i class="bi bi-info-circle"></i> Case Details</h5></div><div class="card-body">
                     <div class="row g-3">
                         <div class="col-md-3"><small class="text-muted">Claim Amount</small><br><strong><?= number_format((float)$case['claim_amount'], 2) ?> AED</strong></div>
                         <div class="col-md-3"><small class="text-muted">Recovered</small><br><strong class="text-success"><?= number_format((float)$case['recovered_amount'], 2) ?> AED</strong></div>
@@ -493,20 +534,163 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                 <?php endif; ?>
 
                 <!-- Linked records -->
-                <div class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center">
+                <div class="card mb-4" id="links"><div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><i class="bi bi-link-45deg"></i> Linked Records</h5>
                 </div><div class="card-body">
                     <?php if (!empty($primaryLinks)): ?>
                         <div class="mb-3">
                             <small class="text-muted d-block mb-1">Primary context</small>
                             <?php foreach ($primaryLinks as $pl): ?>
-                                <?php if ($pl['url']): ?>
-                                    <a href="<?= h($pl['url']) ?>" class="btn btn-sm btn-outline-secondary mb-1"><i class="bi bi-<?= h($pl['icon']) ?>"></i> <?= h($pl['label']) ?></a>
+                                <?php if (($pl['kind'] ?? '') === 'lease' && $leaseCard): ?>
+                                    <button type="button" class="lcv-chip lcv-chip-lease mb-1" id="leaseChip" aria-expanded="false" aria-controls="leaseCard">
+                                        <i class="bi bi-<?= h($pl['icon']) ?>"></i> <?= h($pl['label']) ?> <i class="bi bi-chevron-down lcv-chev"></i>
+                                    </button>
+                                <?php elseif (!$pl['url']): ?>
+                                    <span class="lcv-chip mb-1"><i class="bi bi-<?= h($pl['icon']) ?>"></i> <?= h($pl['label']) ?></span>
                                 <?php else: ?>
-                                    <span class="btn btn-sm btn-outline-secondary mb-1 disabled"><i class="bi bi-<?= h($pl['icon']) ?>"></i> <?= h($pl['label']) ?></span>
+                                    <a href="<?= h($pl['url']) ?>" class="btn btn-sm btn-outline-secondary mb-1"><i class="bi bi-<?= h($pl['icon']) ?>"></i> <?= h($pl['label']) ?></a>
                                 <?php endif; ?>
                             <?php endforeach; ?>
                         </div>
+                    <?php endif; ?>
+
+                    <?php if ($leaseCard):
+                        $L = $leaseCard['lease']; $T = $leaseCard['totals'];
+                        $lcAed = fn($v) => number_format((float)$v, 2) . ' AED';
+                        $lcDate = fn($d) => ($d && $d !== '0000-00-00') ? date('j M Y', strtotime($d)) : '-';
+                        $lcTenant = $L['t_id'] ? legal_tenant_name(['tenant_type' => $L['tenant_type'], 'company_name' => $L['company_name'], 'first_name' => $L['first_name'], 'last_name' => $L['last_name'], 'id' => $L['t_id']]) : '-';
+                        $lcStatus = ucwords(str_replace('_', ' ', (string)$L['status']));
+                        $deposit = (float)$L['security_deposit'];
+                        // Same rule as lease_view.php: a renewal lease doesn't collect the deposit again.
+                        $depositTxt = !empty($L['is_renewal_lease'])
+                            ? 'Not collected again on renewal' . ($deposit > 0 ? ' (original ' . $lcAed($deposit) . ')' : '')
+                            : ($deposit > 0 ? $lcAed($deposit) : '-');
+                        $fees = array_filter([
+                            'Chiller'    => (float)$L['chiller_fees'],
+                            'Ejari'      => (float)$L['ejari_fees'],
+                            'Admin'      => (float)$L['admin_fees'],
+                            'Commission' => (float)$L['commission_fees'],
+                            'Extra parking' => !empty($L['has_additional_parking']) ? (float)$L['additional_parking_fee'] : 0,
+                            'Store room' => !empty($L['has_additional_store']) ? (float)$L['additional_store_fee'] : 0,
+                        ], fn($v) => $v > 0.005);
+                        $stateMeta = ['paid' => ['Paid', 'ok'], 'bounced' => ['Bounced', 'bad'], 'overdue' => ['Overdue', 'warn'], 'upcoming' => ['Upcoming', 'muted']];
+                        $pct = $T['face'] > 0 ? min(100, round($T['collected'] / $T['face'] * 100)) : 0;
+                    ?>
+                    <div class="lc-card" id="leaseCard" hidden>
+                        <div class="lc-head">
+                            <div class="min-w-0">
+                                <div class="lc-kicker"><i class="bi bi-file-earmark-text"></i> Lease</div>
+                                <div class="lc-title"><?= h($L['lease_number']) ?> <span class="lc-pill"><?= h($lcStatus) ?></span></div>
+                                <div class="lc-sub"><?= h($lcDate($L['start_date'])) ?> – <?= h($lcDate($L['end_date'])) ?> · <?= h(trim(($L['building_name'] ?? '') . ' - ' . ($L['unit_number'] ?? ''), ' -')) ?></div>
+                            </div>
+                            <button type="button" class="lc-close" id="leaseCardClose" aria-label="Close lease details"><i class="bi bi-x-lg"></i></button>
+                        </div>
+
+                        <div class="lc-stats">
+                            <div class="lc-stat"><span>Annual rent</span><strong><?= h($lcAed($L['annual_rent'])) ?></strong></div>
+                            <div class="lc-stat"><span>Collected</span><strong class="text-success"><?= h($lcAed($T['collected'])) ?></strong><div class="lc-bar"><i style="width:<?= (int)$pct ?>%"></i></div></div>
+                            <div class="lc-stat"><span>Overdue / bounced</span><strong class="<?= $T['overdue'] > 0.005 ? 'text-danger' : '' ?>"><?= h($lcAed($T['overdue'])) ?></strong><?php if ($T['bounced']): ?><small class="text-danger"><?= (int)$T['bounced'] ?> bounced cheque<?= $T['bounced'] > 1 ? 's' : '' ?></small><?php endif; ?></div>
+                            <div class="lc-stat"><span>Still to come</span><strong><?= h($lcAed($T['upcoming'])) ?></strong></div>
+                        </div>
+
+                        <div class="row g-3">
+                            <div class="col-md-7">
+                                <div class="lc-box">
+                                    <div class="lc-box-title">Lease information</div>
+                                    <dl class="lc-dl">
+                                        <dt>Ejari contract</dt><dd><?= h($L['ejari_registration_number'] ?: '-') ?></dd>
+                                        <dt>Unit</dt><dd><?= h(trim(($L['building_name'] ?? '') . ' - ' . ($L['unit_number'] ?? ''), ' -') ?: '-') ?></dd>
+                                        <dt>Unit type</dt><dd><?= h($L['unit_type'] ?: '-') ?></dd>
+                                        <dt>Premises no.</dt><dd><?= h($L['premises_number'] ?: '-') ?></dd>
+                                        <dt>Parking slot</dt><dd><?= h($L['parking_slot'] ?: '-') ?></dd>
+                                        <dt>Balcony</dt><dd><?= !empty($L['balcony']) ? 'Yes' : 'No' ?></dd>
+                                        <dt>Contract amount</dt><dd><?= h($lcAed($L['contract_amount'])) ?></dd>
+                                        <dt>Security deposit</dt><dd><?= h($depositTxt) ?></dd>
+                                        <dt>Cheques</dt><dd><?= (int)$L['number_of_installments'] ?: count($leaseCard['cheques']) ?> · <?= h(ucfirst((string)($L['payment_method'] ?: 'cheque'))) ?></dd>
+                                        <?php foreach ($fees as $fLabel => $fAmt): ?>
+                                            <dt><?= h($fLabel) ?> fee</dt><dd><?= h($lcAed($fAmt)) ?></dd>
+                                        <?php endforeach; ?>
+                                    </dl>
+                                </div>
+                            </div>
+                            <div class="col-md-5">
+                                <div class="lc-box">
+                                    <div class="lc-box-title">Tenant</div>
+                                    <div class="lc-tenant">
+                                        <span class="lw-avatar lw-avatar-sm lw-av-<?= lw_avatar_tone($lcTenant) ?>"><?= h(lw_initials($lcTenant)) ?></span>
+                                        <strong><?= h($lcTenant) ?></strong>
+                                    </div>
+                                    <dl class="lc-dl lc-dl-1">
+                                        <dt>Phone</dt><dd><?php if ($L['phone']): ?><a href="tel:<?= h($L['phone']) ?>"><?= h($L['phone']) ?></a><?php else: ?>-<?php endif; ?></dd>
+                                        <dt>Email</dt><dd class="text-break"><?php if ($L['email']): ?><a href="mailto:<?= h($L['email']) ?>"><?= h($L['email']) ?></a><?php else: ?>-<?php endif; ?></dd>
+                                        <dt><?= h($L['id_type'] ? ucwords(str_replace('_', ' ', $L['id_type'])) : 'ID number') ?></dt><dd><?= h($L['id_number'] ?: '-') ?></dd>
+                                    </dl>
+                                </div>
+                                <?php if (trim((string)$L['notes']) !== ''): ?>
+                                <div class="lc-box mt-3">
+                                    <div class="lc-box-title">Notes</div>
+                                    <div class="small"><?= nl2br(h($L['notes'])) ?></div>
+                                </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+
+                        <div class="lc-box mt-3">
+                            <div class="lc-box-title">Cheque schedule (<?= count($leaseCard['cheques']) ?>)</div>
+                            <?php if (!$leaseCard['cheques']): ?>
+                                <p class="text-muted small mb-0">No cheques on this lease.</p>
+                            <?php else: ?>
+                            <div class="table-responsive"><table class="table table-sm align-middle mb-0 lc-table">
+                                <thead><tr><th>Date</th><th>Cheque no.</th><th>Bank</th><th class="text-end">Amount</th><th class="text-end">Open</th><th>Status</th></tr></thead>
+                                <tbody>
+                                <?php foreach ($leaseCard['cheques'] as $c): [$sLabel, $sTone] = $stateMeta[$c['state']]; ?>
+                                    <tr>
+                                        <td><?= h($lcDate($c['cheque_date'])) ?></td>
+                                        <td><?= h($c['cheque_number'] ?: '-') ?></td>
+                                        <td><?= h($c['bank_name'] ?: '-') ?></td>
+                                        <td class="text-end"><?= h(number_format((float)$c['cheque_amount'], 2)) ?></td>
+                                        <td class="text-end"><?= $c['open'] > 0.005 ? h(number_format($c['open'], 2)) : '-' ?></td>
+                                        <td><span class="lc-state lc-<?= h($sTone) ?>"><?= h($sLabel) ?></span></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table></div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <style>
+                        .lcv-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 11px; border:1px solid #e1e3ee; border-radius:9px; background:#fff; color:#3d4160; font-size:.85rem; font-weight:600; }
+                        .lcv-chip-lease { cursor:pointer; border-color:#c9b8ea; background:#f6f1fd; color:#4a2386; }
+                        .lcv-chip-lease:hover, .lcv-chip-lease[aria-expanded="true"] { background:linear-gradient(135deg,#3b1e6e,#7a2a8c); color:#fff; border-color:transparent; }
+                        .lcv-chip-lease .lcv-chev { transition:transform .2s; }
+                        .lcv-chip-lease[aria-expanded="true"] .lcv-chev { transform:rotate(180deg); }
+                        .lc-card { margin:6px 0 18px; border:1px solid #e7e3f3; border-radius:16px; padding:16px; background:linear-gradient(180deg,#fbfaff,#fff); box-shadow:0 8px 24px rgba(59,30,110,.08); }
+                        .lc-head { display:flex; justify-content:space-between; gap:12px; margin:-16px -16px 14px; padding:14px 16px; border-radius:16px 16px 0 0; background:linear-gradient(135deg,#1e1b4b,#3b1e6e 55%,#7a2a8c); color:#fff; }
+                        .lc-kicker { font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; opacity:.75; }
+                        .lc-title { font-size:1.15rem; font-weight:700; }
+                        .lc-sub { font-size:.85rem; opacity:.85; }
+                        .lc-pill { font-size:.7rem; font-weight:600; padding:2px 8px; border-radius:999px; background:rgba(255,255,255,.18); vertical-align:middle; }
+                        .lc-close { border:0; background:rgba(255,255,255,.14); color:#fff; width:32px; height:32px; border-radius:9px; flex:none; }
+                        .lc-close:hover { background:rgba(255,255,255,.28); }
+                        .lc-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
+                        @media (max-width:767px){ .lc-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+                        .lc-stat { background:#fff; border:1px solid #eceaf5; border-radius:12px; padding:10px 12px; display:flex; flex-direction:column; gap:2px; }
+                        .lc-stat span { font-size:.75rem; color:#7a7e99; }
+                        .lc-stat strong { font-size:1rem; }
+                        .lc-bar { height:5px; border-radius:9px; background:#eceaf5; overflow:hidden; margin-top:4px; }
+                        .lc-bar i { display:block; height:100%; background:linear-gradient(90deg,#16a34a,#4ade80); }
+                        .lc-box { background:#fff; border:1px solid #eceaf5; border-radius:12px; padding:12px 14px; height:auto; }
+                        .lc-box-title { font-size:.78rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#6b5a9a; margin-bottom:8px; }
+                        .lc-dl { display:grid; grid-template-columns:140px 1fr; gap:6px 12px; margin:0; font-size:.88rem; }
+                        .lc-dl dt { font-weight:500; color:#7a7e99; }
+                        .lc-dl dd { margin:0; font-weight:600; color:#24273f; }
+                        .lc-dl-1 { grid-template-columns:90px 1fr; }
+                        .lc-tenant { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+                        .lc-table th { font-size:.75rem; color:#7a7e99; font-weight:600; }
+                        .lc-state { font-size:.72rem; font-weight:700; padding:2px 9px; border-radius:999px; }
+                        .lc-ok { background:#dcfce7; color:#166534; } .lc-bad { background:#fee2e2; color:#991b1b; }
+                        .lc-warn { background:#fef3c7; color:#92400e; } .lc-muted { background:#eceaf5; color:#4b4f6b; }
+                    </style>
                     <?php endif; ?>
 
                     <small class="text-muted d-block mb-1">Additional links</small>
@@ -562,7 +746,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                 </div></div>
 
                 <!-- Legal costs -->
-                <div class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center">
+                <div class="card mb-4" id="costs"><div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><i class="bi bi-cash-stack"></i> Legal Costs (<?= number_format($caseCostTotal, 2) ?> AED)</h5>
                 </div><div class="card-body">
                     <?php if (empty($caseCosts)): ?><p class="text-muted">No costs recorded.</p>
@@ -585,7 +769,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                 </div></div>
 
                 <!-- Documents -->
-                <div class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center">
+                <div class="card mb-4" id="documents"><div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><i class="bi bi-folder"></i> Documents (<?= count($docs) ?>)</h5>
                     <div class="d-flex gap-2">
                         <a href="legal_documents.php?case_id=<?= (int)$caseId ?>" class="btn btn-sm btn-outline-secondary"><i class="bi bi-folder2-open"></i> All Case Docs</a>
@@ -615,7 +799,7 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
                 </div></div>
 
                 <!-- Notices -->
-                <div class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center">
+                <div class="card mb-4" id="notices"><div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><i class="bi bi-envelope-paper"></i> Legal Notices (<?= count($notices) ?>)</h5>
                     <a href="legal_notice_add.php?case_id=<?= (int)$caseId ?>" class="btn btn-sm btn-outline-dark"><i class="bi bi-plus"></i> New Notice</a>
                 </div><div class="card-body">
@@ -707,6 +891,51 @@ require_once __DIR__ . '/includes/legal_layout_header.php';
 <?php
 $pageScripts = <<<'HTML'
 <script>
+(function () {
+    // Section tabs: show one section at a time; the URL hash (#stages, #costs, ...) picks it,
+    // so after adding a stage/offer/cost the page comes back on the same tab.
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('.lcv-tab'));
+    if (!tabs.length) return;
+    var keys = tabs.map(function (t) { return t.getAttribute('data-tab'); });
+    function show(key) {
+        if (keys.indexOf(key) === -1) key = keys[0];
+        keys.forEach(function (k) {
+            var pane = document.getElementById(k);
+            if (pane) pane.classList.toggle('lcv-pane-hidden', k !== key);
+        });
+        tabs.forEach(function (t) {
+            var on = t.getAttribute('data-tab') === key;
+            t.classList.toggle('active', on);
+            t.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+    }
+    tabs.forEach(function (t) {
+        t.addEventListener('click', function (e) {
+            e.preventDefault();
+            var key = t.getAttribute('data-tab');
+            history.replaceState(null, '', '#' + key);
+            show(key);
+        });
+    });
+    window.addEventListener('hashchange', function () { show(location.hash.slice(1)); });
+    show(location.hash.slice(1));
+    // The browser jumps to the #anchor on load; keep the header + tabs in view instead.
+    if (location.hash) window.addEventListener('load', function () { window.scrollTo(0, 0); });
+})();
+(function () {
+    // Lease chip opens the lease card in place (no trip to the Real Estate lease page).
+    var chip = document.getElementById('leaseChip');
+    var card = document.getElementById('leaseCard');
+    var closeBtn = document.getElementById('leaseCardClose');
+    if (!chip || !card) return;
+    function setOpen(open) {
+        card.hidden = !open;
+        chip.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    chip.addEventListener('click', function () { setOpen(card.hidden); });
+    if (closeBtn) closeBtn.addEventListener('click', function () { setOpen(false); chip.focus(); });
+})();
 (function () {
     var typeSel = document.getElementById('linkType');
     var idSel = document.getElementById('linkId');

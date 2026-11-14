@@ -449,6 +449,88 @@ function legal_tenant_name(array $t): string {
     return trim(($t['first_name'] ?? '') . ' ' . ($t['last_name'] ?? '')) ?: ('Tenant #' . ($t['id'] ?? ''));
 }
 
+/**
+ * Everything the case page shows about its linked lease, so staff don't have to open
+ * the Real Estate lease page: lease, unit, tenant, and the cheque schedule with what
+ * is actually collected (same rule as Lease Watch: cheque status, re_payments and
+ * re_receipt_cheque_links). Returns null if the lease is missing or another company's.
+ */
+function legal_case_lease_details(PDO $conn, int $leaseId, int $companyId): ?array {
+    $st = $conn->prepare("
+        SELECT l.*, u.unit_number, u.unit_type, u.premises_number, u.parking_slot, u.balcony,
+               b.name AS building_name,
+               t.id AS t_id, t.tenant_type, t.company_name, t.first_name, t.last_name,
+               t.phone, t.email, t.id_type, t.id_number
+        FROM re_leases l
+        LEFT JOIN re_units u ON u.id = l.unit_id
+        LEFT JOIN re_buildings b ON b.id = u.building_id
+        LEFT JOIN re_tenants t ON t.id = l.tenant_id
+        WHERE l.id = ? AND l.company_id = ? AND l.deleted_at IS NULL
+        LIMIT 1
+    ");
+    $st->execute([$leaseId, $companyId]);
+    $lease = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$lease) return null;
+
+    $hasLinks = false;
+    try { $hasLinks = (bool)$conn->query("SHOW TABLES LIKE 're_receipt_cheque_links'")->fetchColumn(); } catch (Throwable $e) {}
+    $collSql = "SELECT p.cheque_id, p.amount AS amt FROM re_payments p WHERE p.lease_id = :l1 AND p.cheque_id IS NOT NULL";
+    $params = [':l1' => $leaseId, ':l3' => $leaseId];
+    if ($hasLinks) {
+        $collSql .= " UNION ALL SELECT k.cheque_id, k.amount_applied FROM re_receipt_cheque_links k
+                      JOIN re_post_dated_cheques kc ON kc.id = k.cheque_id WHERE kc.lease_id = :l2";
+        $params[':l2'] = $leaseId;
+    }
+    $cq = $conn->prepare("
+        SELECT c.id, c.cheque_number, c.cheque_date, c.cheque_amount, c.status, c.bank_name, c.payment_method,
+               c.bounced_date, c.bounced_reason,
+               LEAST(COALESCE(col.got, 0), c.cheque_amount) AS collected
+        FROM re_post_dated_cheques c
+        LEFT JOIN (SELECT cheque_id, SUM(amt) AS got FROM ({$collSql}) x GROUP BY cheque_id) col ON col.cheque_id = c.id
+        WHERE c.lease_id = :l3 AND c.status <> 'cancelled'
+        ORDER BY c.cheque_date, c.id
+    ");
+    $cq->execute($params);
+    $cheques = $cq->fetchAll(PDO::FETCH_ASSOC);
+
+    $today = date('Y-m-d');
+    $tot = ['face' => 0.0, 'collected' => 0.0, 'bounced' => 0, 'overdue' => 0.0, 'upcoming' => 0.0];
+    foreach ($cheques as &$c) {
+        $amt = (float)$c['cheque_amount'];
+        $paid = in_array($c['status'], ['cleared', 'paid', 'deposited'], true) || (float)$c['collected'] >= $amt - 0.005;
+        $got = $paid ? $amt : (float)$c['collected'];
+        $open = max($amt - $got, 0);
+        if ($paid) $state = 'paid';
+        elseif (in_array($c['status'], ['bounced', 'returned', 'legal_escalated'], true)) $state = 'bounced';
+        elseif ($c['cheque_date'] && $c['cheque_date'] < $today) $state = 'overdue';
+        else $state = 'upcoming';
+        $c['state'] = $state;
+        $c['open'] = $open;
+        $tot['face'] += $amt;
+        $tot['collected'] += $got;
+        if ($state === 'bounced') $tot['bounced']++;
+        if ($state === 'bounced' || $state === 'overdue') $tot['overdue'] += $open;
+        if ($state === 'upcoming') $tot['upcoming'] += $open;
+    }
+    unset($c);
+
+    return ['lease' => $lease, 'cheques' => $cheques, 'totals' => $tot];
+}
+
+/**
+ * Contract period of a lease, e.g. "16 Jul 2025 – 15 Jul 2026", so a case shows
+ * which year's lease it is tied to (a unit has one lease per year).
+ */
+function legal_lease_period(?string $start, ?string $end): string {
+    $fmt = static function (?string $d): string {
+        if (!$d || $d === '0000-00-00') return '?';
+        $ts = strtotime($d);
+        return $ts ? date('j M Y', $ts) : '?';
+    };
+    if (!$start && !$end) return '';
+    return $fmt($start) . ' – ' . $fmt($end);
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2 — hearings, counsel, costs
 // ---------------------------------------------------------------------------
