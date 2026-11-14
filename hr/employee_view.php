@@ -5045,6 +5045,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                 $staffAppSwitches = [
                                     'purchase' => ['Purchase', 'bi-cart-check', 'The Purchase button in the staff app: they record what they buy, cash at a shop or ordered from a supplier, with a photo of the bill.'],
                                     'store' => ['Store', 'bi-box-seam', 'The Store button in the staff app: the store keeper records goods in, goods out, moves between stores and count corrections.'],
+                                    'bills' => ['Bills', 'bi-receipt', 'The Bills button in the staff app: they hand bills or money to each other, accept or reject them, and keep them. On for everyone with a PIN unless turned off here; only people with Bills on can be given a bill.'],
                                 ];
                                 foreach ($staffAppSwitches as $switchApp => [$switchLabel, $switchIcon, $switchHint]):
                                     $switchOn = $opsPinUserId > 0 && fleet_app_access_has($conn, $opsPinUserId, $switchApp);

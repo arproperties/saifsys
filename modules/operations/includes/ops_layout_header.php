@@ -267,6 +267,11 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($opsBase) ?>/store.php" class="slink <?= in_array($currentPage, ['store.php', 'store_history.php', 'store_entry.php', 'store_setup.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-box-seam"></i></span><span class="slabel">Store</span>
       </a>
+      <?php if (array_intersect(current_user_roles($conn), ['Owner', 'Admin'])): /* bills from the staff app: Owner and Admin only */ ?>
+      <a href="<?= h($opsBase) ?>/staff_bills.php" class="slink <?= $currentPage === 'staff_bills.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-receipt"></i></span><span class="slabel">Staff Bills</span>
+      </a>
+      <?php endif; ?>
 
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>

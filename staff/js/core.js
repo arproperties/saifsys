@@ -42,6 +42,8 @@
       purchaseHint: 'What you buy',
       store: 'Store',
       storeHint: 'Goods in and out',
+      bills: 'Bills',
+      billsHint: 'Bills and money handed over',
       back: 'Home',
       settings: 'Settings',
     },
@@ -121,12 +123,12 @@
   };
 
   /**
-   * { user: {id, name}, tokens: {cleaning, driver, purchase, store: string|null} }
+   * { user: {id, name}, tokens: {cleaning, driver, purchase, store, bills: string|null} }
    * One token per app: each API only accepts its own.
    */
   function session() {
     var s = readJson(KEYS.session, null);
-    return s && s.user && s.user.id && s.tokens && (s.tokens.cleaning || s.tokens.driver || s.tokens.purchase || s.tokens.store) ? s : null;
+    return s && s.user && s.user.id && s.tokens && (s.tokens.cleaning || s.tokens.driver || s.tokens.purchase || s.tokens.store || s.tokens.bills) ? s : null;
   }
 
   function setSession(s) { writeJson(KEYS.session, s); }
@@ -139,7 +141,7 @@
   function hasApp(app) { return !!token(app); }
 
   function apps() {
-    return ['driver', 'cleaning', 'purchase', 'store'].filter(hasApp);
+    return ['driver', 'cleaning', 'purchase', 'store', 'bills'].filter(hasApp);
   }
 
   /** Per-install id the sign-in lockout counts against. Kept across sign-outs. Not a secret. */
@@ -606,7 +608,7 @@
     if (!s || state.route.app === 'signin') return modules.app.renderSignIn();
     var r = state.route;
     if (r.app === 'settings') return modules.app.renderSettings();
-    if (['driver', 'cleaning', 'purchase', 'store'].indexOf(r.app) !== -1 && hasApp(r.app) && modules[r.app]) {
+    if (['driver', 'cleaning', 'purchase', 'store', 'bills'].indexOf(r.app) !== -1 && hasApp(r.app) && modules[r.app]) {
       return modules[r.app].render(r);
     }
     // Home, or an app this person no longer has.
@@ -730,7 +732,13 @@
     return '<header class="header">' +
       (choice ? '<button type="button" class="icon-btn" data-action="core:home" aria-label="' + esc(T.home.back) + '">' + icon('home') + '</button>' : '') +
       '<div class="grow"><h1 class="h2">' + esc(title) + '</h1>' + (sub ? '<div class="secondary">' + esc(sub) + '</div>' : '') + '</div>' +
+      headerBell() +
       '<button type="button" class="icon-btn" data-action="core:settings" aria-label="' + esc(T.home.settings) + '">' + icon('settings') + '</button></header>';
+  }
+
+  /** The bell beside Settings: bills waiting for this person (bills.js), or nothing. */
+  function headerBell() {
+    return modules.bills && modules.bills.bell ? modules.bills.bell() : '';
   }
 
   function backBar(action, label, right) {
@@ -860,6 +868,7 @@
     closeViewer: closeViewer,
     installCard: installCard,
     topHeader: topHeader,
+    headerBell: headerBell,
     backBar: backBar,
   };
 })();

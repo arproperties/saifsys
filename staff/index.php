@@ -9,6 +9,7 @@
  *             (api/mobile/ops)
  *   Purchase  what the buyer bought, cash or ordered (api/mobile/purchase)
  *   Store     goods in and out of the stores (api/mobile/store)
+ *   Bills     bills and money handed from person to person (api/mobile/bills)
  *
  * One PIN signs in to both through api/mobile/staff/signin.php, which hands
  * back a separate token for each app the person may use. Someone with only one
@@ -65,6 +66,7 @@ window.STAFF_CONFIG = <?= json_encode([
     'fleetBase' => $apiRoot . '/fleet',
     'purchaseBase' => $apiRoot . '/purchase',
     'storeBase' => $apiRoot . '/store',
+    'billsBase' => $apiRoot . '/bills',
     'appKey' => $appKey,
     'version' => $version,
 ], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
@@ -74,6 +76,7 @@ window.STAFF_CONFIG = <?= json_encode([
 <script src="<?= htmlspecialchars($asset('js/cleaning.js')) ?>"></script>
 <script src="<?= htmlspecialchars($asset('js/purchase.js')) ?>"></script>
 <script src="<?= htmlspecialchars($asset('js/store.js')) ?>"></script>
+<script src="<?= htmlspecialchars($asset('js/bills.js')) ?>"></script>
 <script src="<?= htmlspecialchars($asset('js/app.js')) ?>"></script>
 </body>
 </html>
