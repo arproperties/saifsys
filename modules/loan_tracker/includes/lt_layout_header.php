@@ -16,6 +16,8 @@ require_once dirname(__DIR__, 3) . '/includes/url_helper.php';
 $appBase = get_application_web_root();
 $ltBase = $appBase . '/modules/loan_tracker';
 $currentPage = basename($_SERVER['PHP_SELF']);
+// Investments are confidential: their pages link to nothing else, and nothing links to them.
+$ltConfidential = in_array($currentPage, ['investments.php', 'investment_form.php', 'investment_view.php'], true);
 
 $U = !empty($_SESSION['user']) && is_array($_SESSION['user']) ? $_SESSION['user'] : [];
 $fullName = $U['full_name'] ?? $U['fullname'] ?? ($_SESSION['fullname'] ?? 'User');
@@ -27,7 +29,7 @@ $ltFlash = lt_take_flash();
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title><?= isset($pageTitle) ? h($pageTitle) . ' | ' : '' ?>Loan Tracker | <?= h($brand['system_name']) ?></title>
+  <title><?= $ltConfidential ? 'Confidential | ' : '' ?><?= isset($pageTitle) ? h($pageTitle) . ' | ' : '' ?><?= $ltConfidential ? '' : 'Loan Tracker | ' ?><?= h($brand['system_name']) ?></title>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
@@ -188,6 +190,19 @@ if (is_file($asWidget)) { require $asWidget; }
     </div>
     <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
 
+    <?php if ($ltConfidential): ?>
+    <div class="nav-sect mt-3">Recurring Payments</div>
+      <a href="<?= h($appBase) ?>/modules/recurring_payments/index.php" class="slink">
+        <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Recurring Payments</span>
+      </a>
+    <div class="nav-sect"><i class="bi bi-lock-fill me-1"></i>Confidential</div>
+      <a href="<?= h($ltBase) ?>/investments.php" class="slink <?= $currentPage !== 'investment_form.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-graph-up-arrow"></i></span><span class="slabel">Investments</span>
+      </a>
+      <a href="<?= h($ltBase) ?>/investment_form.php" class="slink <?= $currentPage === 'investment_form.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-plus-circle"></i></span><span class="slabel">New investment</span>
+      </a>
+    <?php else: ?>
     <div class="nav-sect mt-3">Recurring Payments</div>
       <a href="<?= h($appBase) ?>/modules/recurring_payments/index.php" class="slink">
         <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Recurring Payments</span>
@@ -206,8 +221,21 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($ltBase) ?>/repayments.php" class="slink <?= $currentPage === 'repayments.php' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-cash-stack"></i></span><span class="slabel">Repayments</span>
       </a>
+    <div class="nav-sect">Cheques</div>
+      <a href="<?= h($ltBase) ?>/pdc.php" class="slink <?= in_array($currentPage, ['pdc.php', 'pdc_form.php'], true) ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-credit-card-2-front"></i></span><span class="slabel">Post Dated Cheques</span>
+      </a>
+    <?php /* Investments: the menu is shown to everyone; the pages themselves allow only LT_INV_EMPLOYEES. */ ?>
+    <div class="nav-sect"><i class="bi bi-lock-fill me-1"></i>Investments</div>
+      <a href="<?= h($ltBase) ?>/investments.php" class="slink" onclick="return confirm('Investments is confidential.\n\nOnly open it if you are allowed to see it, and do not share what you see. Continue?');">
+        <span class="sicon"><i class="bi bi-graph-up-arrow"></i></span><span class="slabel">Investments</span>
+      </a>
+      <a href="<?= h($ltBase) ?>/investment_form.php" class="slink" onclick="return confirm('Investments is confidential.\n\nOnly open it if you are allowed to see it, and do not share what you see. Continue?');">
+        <span class="sicon"><i class="bi bi-plus-circle"></i></span><span class="slabel">New investment</span>
+      </a>
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>
+    <?php endif; ?>
   </aside>
 
   <div class="flex-grow-1" style="min-width:0">
@@ -230,6 +258,23 @@ if (is_file($asWidget)) { require $asWidget; }
     </nav>
 
     <div class="container-fluid px-3 px-lg-4 py-4">
+      <?php if ($ltConfidential): ?>
+        <div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 rounded-3 fw-bold small" style="max-width:960px;background:#fee2e2;color:#991b1b;border:1px solid #fecaca;letter-spacing:.06em">
+          <i class="bi bi-lock-fill"></i> CONFIDENTIAL <span class="fw-normal" style="letter-spacing:0">· Do not share or forward this page.</span>
+        </div>
+        <?php if (function_exists('lt_inv_level') && ($ltInvLevel = lt_inv_level($conn)) !== ''):
+            $ltMe = lt_inv_me($conn); $ltFirst = $ltMe ? ucfirst(strtolower(preg_split('/\s+/', $ltMe['name'])[0] ?? '')) : ''; ?>
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-3 px-3 py-2 rounded-3" style="max-width:960px;background:#fff;border:1px solid var(--lt-line)">
+            <span class="fw-bold">Hi<?= $ltFirst !== '' ? ', ' . h($ltFirst) : '' ?>,</span>
+            <span class="text-muted small flex-grow-1"><?= $ltInvLevel === 'owner'
+                ? 'this page is kept confidential and is visible only to you.'
+                : 'this page is confidential and was shared with you (' . ($ltInvLevel === 'edit' ? 'edit' : 'read only') . ').' ?></span>
+            <?php if ($ltInvLevel === 'owner' && $currentPage !== 'investments.php'): /* the list has the box itself */ ?>
+              <a href="<?= h($ltBase) ?>/investments.php#give-access" class="btn btn-lt btn-sm"><i class="bi bi-person-plus me-1"></i> Give access</a>
+            <?php endif; ?>
+          </div>
+        <?php endif; ?>
+      <?php endif; ?>
       <?php if ($ltFlash): ?>
         <div class="alert alert-<?= h($ltFlash['type']) ?> alert-dismissible fade show" role="alert">
           <?= h($ltFlash['message']) ?>
