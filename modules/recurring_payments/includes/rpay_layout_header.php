@@ -140,7 +140,16 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($ltNav) ?>/new_loan.php" class="slink"><span class="sicon"><i class="bi bi-plus-circle"></i></span><span class="slabel">New loan</span></a>
       <a href="<?= h($ltNav) ?>/timeline.php" class="slink"><span class="sicon"><i class="bi bi-clock-history"></i></span><span class="slabel">Loan timeline</span></a>
       <a href="<?= h($ltNav) ?>/repayments.php" class="slink"><span class="sicon"><i class="bi bi-cash-stack"></i></span><span class="slabel">Loan repayments</span></a>
+    <div class="nav-sect">Cheques</div>
+      <a href="<?= h($ltNav) ?>/pdc.php" class="slink"><span class="sicon"><i class="bi bi-credit-card-2-front"></i></span><span class="slabel">Post Dated Cheques</span></a>
     <?php endif; ?>
+    <?php
+    // Investments (confidential) also live inside Recurring Payments. The menu is shown to everyone;
+    // the pages themselves allow only LT_INV_EMPLOYEES.
+    $invNav = $appBase . '/modules/loan_tracker'; ?>
+    <div class="nav-sect"><i class="bi bi-lock-fill me-1"></i>Investments</div>
+      <a href="<?= h($invNav) ?>/investments.php" class="slink" onclick="return confirm('Investments is confidential.\n\nOnly open it if you are allowed to see it, and do not share what you see. Continue?');"><span class="sicon"><i class="bi bi-graph-up-arrow"></i></span><span class="slabel">Investments</span></a>
+      <a href="<?= h($invNav) ?>/investment_form.php" class="slink" onclick="return confirm('Investments is confidential.\n\nOnly open it if you are allowed to see it, and do not share what you see. Continue?');"><span class="sicon"><i class="bi bi-plus-circle"></i></span><span class="slabel">New investment</span></a>
 
     <div class="nav-sect">Other</div>
     <a href="<?= h($appBase) ?>/select-module.php" class="slink"><span class="sicon"><i class="bi bi-grid"></i></span><span class="slabel">Modules</span></a>
