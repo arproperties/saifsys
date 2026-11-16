@@ -169,7 +169,7 @@ function lt_inv_handle_share(PDO $conn, string $backUrl): void
 /** Open access requests, newest first, one line per person. */
 function lt_inv_requests(PDO $conn): array
 {
-    return $conn->query("SELECT r.id, r.employee_id, r.reason, r.created_at, e.employee_code, e.full_name, c.name AS company_name,
+    return $conn->query("SELECT r.id, r.employee_id, r.reason, r.level, r.created_at, e.employee_code, e.full_name, c.name AS company_name,
                                 (SELECT COUNT(*) FROM lt_investment_access_requests x WHERE x.employee_id = r.employee_id AND x.status = 'pending') AS times
                            FROM lt_investment_access_requests r
                            JOIN employees e ON e.id = r.employee_id LEFT JOIN companies c ON c.id = e.company_id
@@ -191,16 +191,17 @@ function lt_inv_render_welcome(PDO $conn): void
 
       <?php if ($requests): ?>
         <div class="lt-section mb-2"><i class="bi bi-bell me-1"></i>Access requests <span class="badge text-bg-danger ms-1"><?= count($requests) ?></span></div>
-        <?php foreach ($requests as $r): ?>
-          <div class="d-flex flex-wrap align-items-center gap-2 py-2 border-bottom">
+        <?php $pickReq = (int)($_GET['request'] ?? 0); $pickLvl = ($_GET['level'] ?? '') === 'edit' ? 'edit' : (($_GET['level'] ?? '') === 'view' ? 'view' : null);
+        foreach ($requests as $r): $isPick = $pickReq && $pickReq === (int)$r['id']; $lvl = $isPick && $pickLvl ? $pickLvl : $r['level']; ?>
+          <div class="d-flex flex-wrap align-items-center gap-2 py-2 border-bottom<?= $isPick ? ' px-2 rounded-3' : '' ?>"<?= $isPick ? ' style="background:#fef9c3;border:2px solid #facc15"' : '' ?>>
             <div class="flex-grow-1" style="min-width:220px">
               <div class="fw-semibold"><?= h($r['full_name']) ?> <span class="text-muted fw-normal small">(<?= h($r['employee_code']) ?><?= $r['company_name'] ? ' · ' . h($r['company_name']) : '' ?>)</span></div>
               <div class="small text-muted">Asked <?= h(lt_date($r['created_at'])) ?><?= (int)$r['times'] > 1 ? ' · ' . (int)$r['times'] . ' times' : '' ?>
-                <?= $r['reason'] ? ' · “' . h($r['reason']) . '”' : '' ?></div>
+                · asked for <b><?= $r['level'] === 'edit' ? 'Edit' : 'Read only' ?></b><?= $r['reason'] ? ' · “' . h($r['reason']) . '”' : '' ?></div>
             </div>
             <form method="post" class="d-flex gap-1 m-0">
               <?php csrf_field(); ?><input type="hidden" name="do" value="approve"><input type="hidden" name="request_id" value="<?= (int)$r['id'] ?>">
-              <select class="form-select form-select-sm" name="level" style="width:auto"><option value="view">Read only</option><option value="edit">Edit</option></select>
+              <select class="form-select form-select-sm" name="level" style="width:auto"><option value="view" <?= $lvl === 'view' ? 'selected' : '' ?>>Read only</option><option value="edit" <?= $lvl === 'edit' ? 'selected' : '' ?>>Edit</option></select>
               <button class="btn btn-lt btn-sm"><i class="bi bi-check-lg me-1"></i>Approve</button>
             </form>
             <form method="post" class="m-0" onsubmit="return confirm('Decline the request from <?= h(addslashes($r['full_name'])) ?>?');">
@@ -277,6 +278,7 @@ function lt_inv_denied(PDO $conn): void
     $owners = lt_inv_owners($conn);
     $do = $_SERVER['REQUEST_METHOD'] === 'POST' ? (string)($_POST['do'] ?? '') : '';
     $why = mb_substr(trim((string)($_POST['reason'] ?? '')), 0, 500);
+    $want = ($_POST['level'] ?? '') === 'edit' ? 'edit' : 'view';
     $step = 'write';
     $sent = 0;
     $error = '';
@@ -285,11 +287,13 @@ function lt_inv_denied(PDO $conn): void
     $who = lt_user_name($conn, current_user_id()) ?: 'A user';
     $code = lt_inv_my_code($conn);
     $subject = 'Access request: Investments (confidential)';
-    $url = (isset($_SERVER['HTTP_HOST']) ? ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] : '')
-        . get_application_web_root() . '/modules/loan_tracker/investments.php';
-    $html = '<p><b>' . h($who) . '</b>' . ($code !== '' ? ' (' . h($code) . ')' : '') . ' is asking for access to <b>Investments</b> (confidential) in Loan Tracker.</p>'
-        . ($why !== '' ? '<p>Reason: ' . nl2br(h($why)) . '</p>' : '')
-        . '<p>Page: ' . h($url) . '</p><p>Access is set in the code (LT_INV_EMPLOYEES in modules/loan_tracker/includes/lt_invest.php). Reply to the person if you agree.</p>';
+    // the email (they give access on the Investments page in saifsys)
+    $mail = static function (?int $reqId) use ($who, $code, $why, $want): string {
+        return '<p><b>' . h($who) . '</b>' . ($code !== '' ? ' (' . h($code) . ')' : '') . ' is asking for access to <b>Investments</b> (confidential).</p>'
+            . '<p>Access asked for: <b>' . ($want === 'edit' ? 'Edit' : 'Read only') . '</b></p>'
+            . ($why !== '' ? '<p>Reason: ' . nl2br(h($why)) . '</p>' : '');
+    };
+    $html = $mail(null);
     $to = array_values(array_filter($owners, static fn($o) => $o['email'] && filter_var($o['email'], FILTER_VALIDATE_EMAIL)));
 
     if ($do === 'preview' || $do === 'send') {
@@ -302,8 +306,9 @@ function lt_inv_denied(PDO $conn): void
         // Saved first, so the owners see it on the Investments page even if the email fails
         $me = lt_inv_me($conn);
         if ($me) {
-            $conn->prepare("INSERT INTO lt_investment_access_requests (employee_id, user_id, reason) VALUES (?,?,?)")
-                ->execute([$me['id'], current_user_id(), $why !== '' ? $why : null]);
+            $conn->prepare("INSERT INTO lt_investment_access_requests (employee_id, user_id, reason, level) VALUES (?,?,?,?)")
+                ->execute([$me['id'], current_user_id(), $why !== '' ? $why : null, $want]);
+            $html = $mail((int)$conn->lastInsertId());
         }
         foreach ($to as $o) {
             if (!$set) { break; }
@@ -349,7 +354,7 @@ function lt_inv_denied(PDO $conn): void
         </div>
         <form method="post">
           <?php csrf_field(); ?>
-          <input type="hidden" name="reason" value="<?= h($why) ?>">
+          <input type="hidden" name="reason" value="<?= h($why) ?>"><input type="hidden" name="level" value="<?= h($want) ?>">
           <div class="form-check mb-3">
             <input class="form-check-input" type="checkbox" id="confirm" name="confirm" value="1" required>
             <label class="form-check-label" for="confirm">I confirm this request is correct and want it emailed to them.</label>
@@ -363,6 +368,11 @@ function lt_inv_denied(PDO $conn): void
       <?php else: ?>
         <form method="post">
           <?php csrf_field(); ?><input type="hidden" name="do" value="preview">
+          <label class="form-label small fw-semibold d-block">Access needed</label>
+          <div class="btn-group mb-3" role="group">
+            <input type="radio" class="btn-check" name="level" id="lvView" value="view" <?= $want === 'view' ? 'checked' : '' ?>><label class="btn btn-outline-primary btn-sm" for="lvView"><i class="bi bi-eye me-1"></i>Read only</label>
+            <input type="radio" class="btn-check" name="level" id="lvEdit" value="edit" <?= $want === 'edit' ? 'checked' : '' ?>><label class="btn btn-outline-primary btn-sm" for="lvEdit"><i class="bi bi-pencil me-1"></i>Edit</label>
+          </div>
           <label class="form-label small fw-semibold" for="reason">Why do you need access? <span class="text-muted fw-normal">(optional)</span></label>
           <textarea class="form-control mb-3" id="reason" name="reason" rows="2" maxlength="500"><?= h($why) ?></textarea>
           <button class="btn btn-lt"><i class="bi bi-eye me-1"></i> Preview request</button>

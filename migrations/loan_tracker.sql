@@ -349,3 +349,5 @@ CREATE TABLE IF NOT EXISTS lt_investment_notes (
 ALTER TABLE lt_investment_plan ADD COLUMN IF NOT EXISTS after_unit ENUM('days','weeks','months','years') NOT NULL DEFAULT 'months' AFTER after_months;
 -- "Receive after" unit: days / weeks / months / years, or any word typed in.
 ALTER TABLE lt_investment_plan MODIFY after_unit VARCHAR(30) NOT NULL DEFAULT 'months';
+-- Access requests: the access asked for (read only / edit).
+ALTER TABLE lt_investment_access_requests ADD COLUMN IF NOT EXISTS level ENUM('view','edit') NOT NULL DEFAULT 'view' AFTER reason;
