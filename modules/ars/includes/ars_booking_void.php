@@ -17,8 +17,13 @@ function ars_booking_void_blockers(PDO $conn, array $booking): array {
     if (in_array($booking['status'], ['cancelled', 'expired'], true)) {
         $blockers[] = 'Booking is already ' . $booking['status'] . '.';
     }
-    if (!in_array((string)($booking['deposit_status'] ?? 'none'), ['none', 'pending'], true)) {
-        $blockers[] = 'Security deposit has been received — settle it on the Deposit tab first.';
+    // Block only while part of a received deposit is still held; a fully settled
+    // deposit (refunded / forfeited) has its own journals and does not stop a void.
+    require_once __DIR__ . '/ars_deposit.php';
+    if (!in_array((string)($booking['deposit_status'] ?? 'none'), ['none', 'pending'], true)
+        && ars_deposit_held_remaining($booking) > 0.009) {
+        $blockers[] = 'Security deposit is still held (AED ' . number_format(ars_deposit_held_remaining($booking), 2)
+            . ') — settle it on the Deposit tab first.';
     }
 
     $st = $conn->prepare("SELECT * FROM ars_booking_payments WHERE booking_id = ?");
