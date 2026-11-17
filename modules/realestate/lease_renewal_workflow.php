@@ -138,7 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // A lease Reem (Jarvis) is already renewing with the tenant by email is left to Reem.
         $reemOpen = $conn->prepare("SELECT rw.id FROM re_lease_renewal_workflows rw
             WHERE rw.lease_id = ? AND rw.status NOT IN ('rejected', 'converted')
-              AND EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type = 'reem_started')
+              AND EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type IN ('reem_started', 'reem_takeover'))
             LIMIT 1");
         $reemOpen->execute([(int)$leaseId]);
         if ($reemOpen->fetchColumn()) {

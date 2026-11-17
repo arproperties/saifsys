@@ -254,11 +254,11 @@ if ($action === 'renewal_history') {
         'renewals' => array_map(static function (array $w) use ($rows, $name, $str, $num): array {
             $id = (int)$w['id'];
             $events = $rows("
-                SELECT e.event_type, e.message, e.created_at, e.tenant_portal_user_id, {$name('u')} AS by_name
+                SELECT e.id, e.event_type, e.message, e.created_at, UNIX_TIMESTAMP(e.created_at) AS ts, e.tenant_portal_user_id, {$name('u')} AS by_name
                 FROM re_renewal_portal_events e LEFT JOIN user u ON u.id = e.legacy_user_id
                 WHERE e.workflow_id = ? ORDER BY e.created_at, e.id LIMIT 300", $id);
             $messages = $rows("
-                SELECT m.author_role, m.body, m.created_at, {$name('u')} AS by_name
+                SELECT m.id, m.author_role, m.body, m.created_at, UNIX_TIMESTAMP(m.created_at) AS ts, {$name('u')} AS by_name
                 FROM re_renewal_negotiation_messages m LEFT JOIN user u ON u.id = m.admin_user_id
                 WHERE m.workflow_id = ? ORDER BY m.created_at, m.id LIMIT 200", $id);
             return [
@@ -285,8 +285,10 @@ if ($action === 'renewal_history') {
                 'messages' => array_map(static fn($m) => [
                     'from' => $m['author_role'] === 'tenant' ? 'tenant' : 'staff',
                     'by' => $m['author_role'] === 'tenant' ? null : $str($m['by_name']),
+                    'id' => (int)$m['id'],
                     'text' => (string)$m['body'],
                     'at' => (string)$m['created_at'],
+                    'ts' => (int)$m['ts'],
                 ], $messages),
                 'events' => array_map(static fn($e) => [
                     'type' => (string)$e['event_type'],
@@ -294,7 +296,10 @@ if ($action === 'renewal_history') {
                     // A step with a portal user on it is the tenant's own; the others are staff.
                     'by' => $e['tenant_portal_user_id'] !== null ? 'Tenant' : $str($e['by_name']),
                     'tenant' => $e['tenant_portal_user_id'] !== null,
+                    'id' => (int)$e['id'],
                     'at' => (string)$e['created_at'],
+                    // The moment itself, whatever clock the database keeps: Reem files each step under it.
+                    'ts' => (int)$e['ts'],
                 ], $events),
             ];
         }, $workflows),

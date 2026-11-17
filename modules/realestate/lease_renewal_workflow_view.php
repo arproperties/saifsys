@@ -393,7 +393,7 @@ $emailHistory = $emailHistoryStmt->fetchAll(PDO::FETCH_ASSOC);
 // tenant and moves this workflow along itself, so a change made here would not reach it.
 $runByReem = false;
 try {
-    $rbr = $conn->prepare("SELECT 1 FROM re_renewal_portal_events WHERE workflow_id = ? AND event_type = 'reem_started' LIMIT 1");
+    $rbr = $conn->prepare("SELECT 1 FROM re_renewal_portal_events WHERE workflow_id = ? AND event_type IN ('reem_started', 'reem_takeover') LIMIT 1");
     $rbr->execute([$workflowId]);
     $runByReem = (bool)$rbr->fetchColumn();
 } catch (Throwable $e) {
