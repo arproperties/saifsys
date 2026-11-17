@@ -771,6 +771,9 @@ if ($accountingMode === 'invoice') {
 $securityDepositSummary = re_sd_summary($conn, (int)$currentCompanyId, (int)$leaseId);
 
 $allowedStatusTransitions = re_lease_allowed_status_transitions($lease);
+if (($lease['status'] ?? '') === 'draft' && re_lease_renewal_rejected($conn, (int)$leaseId)) {
+    $allowedStatusTransitions = array_values(array_diff($allowedStatusTransitions, ['active']));
+}
 $tenantDisplayName = trim((string)($lease['company_name'] ?? ''));
 if ($tenantDisplayName === '') {
     $tenantDisplayName = trim((string)($lease['first_name'] ?? '') . ' ' . (string)($lease['last_name'] ?? ''));
@@ -828,6 +831,13 @@ $isOldLease = !$isDraftLease && re_lease_is_old($conn, $lease);
 // draft renewal waits for activation instead of offering a new Move-In
 $leaseRenewedBy = re_move_out_superseded_by($conn, (int)$currentCompanyId, (int)$leaseId);
 $isDraftRenewal = re_lease_is_draft_renewal($lease);
+// Rejected renewal draft: dead end, the tenancy (and its move-out) stays on the original lease
+$rejectedRenewalOf = null;
+if ($isDraftLease && re_lease_renewal_rejected($conn, (int)$leaseId)) {
+    $rjSt = $conn->prepare("SELECT ol.id, ol.lease_number FROM re_lease_renewal_workflows rw JOIN re_leases ol ON ol.id = rw.lease_id AND ol.company_id = ? WHERE rw.new_lease_id = ? ORDER BY rw.id DESC LIMIT 1");
+    $rjSt->execute([(int)$currentCompanyId, (int)$leaseId]);
+    $rejectedRenewalOf = $rjSt->fetch(PDO::FETCH_ASSOC) ?: ['id' => 0, 'lease_number' => ''];
+}
 // "Renewed by" replaces the move buttons only once this lease has its move-in (or a
 // move-out) done. A renewed lease without one still offers Mark as Moved In, so the
 // tenancy's move-in can be recorded (on its first lease) and its renewals follow it.
@@ -835,11 +845,12 @@ $moveOutDoneSt = $conn->prepare("SELECT COUNT(*) FROM re_move_outs WHERE lease_i
 $moveOutDoneSt->execute([(int)$leaseId, (int)$currentCompanyId]);
 $hasMoveOutDone = (int)$moveOutDoneSt->fetchColumn() > 0;
 $showRenewedBy = $leaseRenewedBy && ($hasMoveInCompleted || $hasMoveOutDone);
-$moveInMode = $showRenewedBy ? 'superseded'
+$moveInMode = $rejectedRenewalOf ? 'renewal_rejected'
+    : ($showRenewedBy ? 'superseded'
     : ($hasMoveInCompleted ? 'done'
     : ($openMoveIn ? 'open'
     : ($leaseRenewedBy ? ($moveInFirstLease ? 'renewal' : 'old')   // renewed, no move-in yet: never a new Move-In
-    : ($isDraftRenewal ? 'renewal_draft' : ($moveInFirstLease ? 'renewal' : ($isOldLease ? 'old' : 'new'))))));
+    : ($isDraftRenewal ? 'renewal_draft' : ($moveInFirstLease ? 'renewal' : ($isOldLease ? 'old' : 'new')))))));
 $canManageMoveIn = has_role('Owner', $conn) || has_role('Admin', $conn);
 // Not for a lease that has ended (expired / terminated)
 $leaseEnded = in_array($lease['status'] ?? '', ['expired', 'terminated'], true);
@@ -1606,7 +1617,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <i class="bi bi-arrow-repeat"></i> Moved in under <?= h($moveInCarried['lease_number'] ?: ('lease #' . $moveInCarried['lease_id'])) ?>
                     </a>
                 <?php endif; ?>
-                <?php if ($moveInMode === 'superseded'): ?>
+                <?php if ($moveInMode === 'renewal_rejected'): ?>
+                    <?php if ((int)$rejectedRenewalOf['id'] > 0): ?>
+                        <a href="lease_view.php?id=<?= (int)$rejectedRenewalOf['id'] ?>" class="btn btn-outline-secondary"
+                           title="This renewal was rejected. It cannot be activated; move-in and move-out stay on the original lease.">
+                            <i class="bi bi-x-circle"></i> Renewal rejected · Move-Out on <?= h($rejectedRenewalOf['lease_number'] ?: ('#' . $rejectedRenewalOf['id'])) ?>
+                        </a>
+                    <?php else: ?>
+                        <button type="button" class="btn btn-outline-secondary" disabled title="This renewal was rejected and cannot be activated.">
+                            <i class="bi bi-x-circle"></i> Renewal rejected
+                        </button>
+                    <?php endif; ?>
+                <?php elseif ($moveInMode === 'superseded'): ?>
                     <a href="lease_view.php?id=<?= (int)$leaseRenewedBy['id'] ?>" class="btn btn-outline-secondary"
                        title="This lease was renewed. Move-in and move-out of the tenancy are handled on the current lease.">
                         <i class="bi bi-arrow-repeat"></i> Renewed by <?= h($leaseRenewedBy['lease_number'] ?: ('#' . $leaseRenewedBy['id'])) ?><?= ($leaseRenewedBy['status'] ?? '') === 'draft' ? ' (draft)' : '' ?>
