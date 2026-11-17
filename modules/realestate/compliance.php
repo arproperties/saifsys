@@ -158,31 +158,31 @@ re_cx_flash();
 ?>
 
 <div class="cx-kpis">
-    <div class="cx-kpi">
+    <div class="cx-kpi" data-cx-card="expired" role="button" tabindex="0" aria-pressed="false">
         <div class="cx-kpi-icon bg-red"><i class="bi bi-x-octagon"></i></div>
         <div><div class="cx-kpi-label">Expired</div>
              <div class="cx-kpi-value t-red"><?= $expiredCount ?></div>
              <div class="cx-kpi-note">documents on active leases</div></div>
     </div>
-    <div class="cx-kpi">
+    <div class="cx-kpi" data-cx-card="soon" role="button" tabindex="0" aria-pressed="false">
         <div class="cx-kpi-icon bg-amber"><i class="bi bi-hourglass-split"></i></div>
         <div><div class="cx-kpi-label">Expiring soon</div>
              <div class="cx-kpi-value t-amber"><?= $expiringCount ?></div>
              <div class="cx-kpi-note"><?= $urgentCount ?> within 7 days</div></div>
     </div>
-    <div class="cx-kpi">
+    <div class="cx-kpi" data-cx-card="all" role="button" tabindex="0" aria-pressed="false">
         <div class="cx-kpi-icon bg-blue"><i class="bi bi-house-door"></i></div>
         <div><div class="cx-kpi-label">Leases needing action</div>
              <div class="cx-kpi-value t-blue"><?= count($docGroups) ?></div>
              <div class="cx-kpi-note">with at least one item</div></div>
     </div>
-    <div class="cx-kpi">
+    <div class="cx-kpi"<?= $missingRequired && !empty($missingDocuments) ? ' data-cx-card="missing" role="button" tabindex="0" aria-pressed="false"' : '' ?>>
         <div class="cx-kpi-icon <?= $missingRequired ? 'bg-red' : 'bg-green' ?>"><i class="bi bi-file-earmark-excel"></i></div>
         <div><div class="cx-kpi-label">Missing required</div>
              <div class="cx-kpi-value <?= $missingRequired ? 't-red' : 't-green' ?>"><?= $missingRequired ?></div>
              <div class="cx-kpi-note">documents</div></div>
     </div>
-    <div class="cx-kpi">
+    <div class="cx-kpi"<?= $nonCompliantUnits ? ' data-cx-card="noncompliant" role="button" tabindex="0" aria-pressed="false"' : '' ?>>
         <div class="cx-kpi-icon <?= $nonCompliantUnits ? 'bg-red' : 'bg-green' ?>"><i class="bi bi-building-exclamation"></i></div>
         <div><div class="cx-kpi-label">Non-compliant units</div>
              <div class="cx-kpi-value <?= $nonCompliantUnits ? 't-red' : 't-green' ?>"><?= $nonCompliantUnits ?></div>
@@ -192,7 +192,7 @@ re_cx_flash();
 
 <div class="cx-grid-2">
     <!-- Action list -->
-    <section class="cx-card" aria-labelledby="cx-actions-title">
+    <section class="cx-card" id="cxDocsSection" aria-labelledby="cx-actions-title">
         <div class="cx-card-head">
             <div>
                 <h2 class="cx-card-title" id="cx-actions-title"><i class="bi bi-list-check"></i> Documents needing action</h2>
@@ -289,7 +289,7 @@ re_cx_flash();
 </div>
 
 <?php if (!empty($missingDocuments)): ?>
-<section class="cx-card">
+<section class="cx-card" id="cxMissingSection">
     <div class="cx-card-head"><h2 class="cx-card-title"><i class="bi bi-exclamation-triangle"></i> Missing documents</h2></div>
     <div class="table-responsive">
         <table class="cx-table">
@@ -311,14 +311,15 @@ re_cx_flash();
 <?php endif; ?>
 
 <?php if (!empty($unitLegalStatus)): ?>
-<section class="cx-card">
-    <div class="cx-card-head"><h2 class="cx-card-title"><i class="bi bi-shield-check"></i> Unit legal status</h2></div>
+<section class="cx-card" id="cxUnitsSection">
+    <div class="cx-card-head"><h2 class="cx-card-title"><i class="bi bi-shield-check"></i> Unit legal status</h2>
+        <button type="button" class="cx-btn cx-btn-sm" id="cxUnitsShowAll" hidden>Show all units</button></div>
     <div class="table-responsive">
         <table class="cx-table">
             <thead><tr><th>Unit</th><th>Lease / tenant</th><th>Legal status</th><th class="num">Score</th><th class="cx-hide-sm">Last review</th><th></th></tr></thead>
             <tbody>
             <?php foreach ($unitLegalStatus as $status): [$pc, $pl] = $legalPill[$status['legal_status']] ?? ['bg-grey', ucfirst((string)$status['legal_status'])]; ?>
-                <tr>
+                <tr data-legal="<?= h($status['legal_status']) ?>">
                     <td class="cx-strong"><?= h($status['building_name']) ?> – <?= h($status['unit_number']) ?></td>
                     <td><?= h($status['lease_number'] ?: '—') ?><div class="cx-dim"><?= $status['first_name'] ? h($status['first_name'] . ' ' . $status['last_name']) : '—' ?></div></td>
                     <td><span class="cx-pill <?= $pc ?>"><?= h($pl) ?></span></td>
@@ -365,14 +366,19 @@ re_cx_flash();
 
 <script>
 (function () {
+    var cards = Array.prototype.slice.call(document.querySelectorAll('[data-cx-card]'));
+    var chips = Array.prototype.slice.call(document.querySelectorAll('[data-cx-filter]'));
     var table = document.getElementById('cxDocTable');
-    if (!table) return;
-    var rows = Array.prototype.slice.call(table.tBodies[0].rows);
-    var chips = document.querySelectorAll('[data-cx-filter]');
+    var rows = table ? Array.prototype.slice.call(table.tBodies[0].rows) : [];
     var search = document.getElementById('cxSearch');
     var noMatch = document.getElementById('cxNoMatch');
+    var unitsTable = document.querySelector('#cxUnitsSection table');
+    var unitRows = unitsTable ? Array.prototype.slice.call(unitsTable.tBodies[0].rows) : [];
+    var showAllUnits = document.getElementById('cxUnitsShowAll');
     var band = 'all';
+
     function apply() {
+        if (!table) return;
         var q = (search.value || '').trim().toLowerCase(), shown = 0;
         rows.forEach(function (tr) {
             var b = tr.getAttribute('data-band');
@@ -383,15 +389,60 @@ re_cx_flash();
         });
         noMatch.hidden = shown !== 0;
     }
-    chips.forEach(function (c) {
-        c.addEventListener('click', function () {
-            chips.forEach(function (x) { x.classList.remove('is-active'); });
-            c.classList.add('is-active');
-            band = c.getAttribute('data-cx-filter');
-            apply();
+    function selectCard(key) {
+        cards.forEach(function (c) {
+            var on = c.getAttribute('data-cx-card') === key;
+            c.classList.toggle('is-selected', on);
+            c.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+    }
+    function setBand(b) {
+        band = b;
+        chips.forEach(function (x) { x.classList.toggle('is-active', x.getAttribute('data-cx-filter') === b); });
+        apply();
+    }
+    function filterUnits(onlyNonCompliant) {
+        unitRows.forEach(function (tr) {
+            tr.hidden = onlyNonCompliant && tr.getAttribute('data-legal') !== 'non_compliant';
+        });
+        if (showAllUnits) showAllUnits.hidden = !onlyNonCompliant;
+    }
+    function goTo(id) {
+        var el = document.getElementById(id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function activate(card) {
+        var key = card.getAttribute('data-cx-card');
+        selectCard(key);
+        if (key === 'expired' || key === 'soon' || key === 'all') {
+            setBand(key);
+            filterUnits(false);
+            goTo('cxDocsSection');
+        } else if (key === 'missing') {
+            filterUnits(false);
+            goTo('cxMissingSection');
+        } else if (key === 'noncompliant') {
+            filterUnits(true);
+            goTo('cxUnitsSection');
+        }
+    }
+
+    cards.forEach(function (c) {
+        c.addEventListener('click', function () { activate(c); });
+        c.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(c); }
         });
     });
-    search.addEventListener('input', apply);
+    chips.forEach(function (c) {
+        c.addEventListener('click', function () {
+            var b = c.getAttribute('data-cx-filter');
+            setBand(b);
+            // Only the Expired / Expiring chips have a matching card; All and ≤ 7 days clear the highlight.
+            selectCard(b === 'expired' || b === 'soon' ? b : '');
+        });
+    });
+    if (search) search.addEventListener('input', apply);
+    if (showAllUnits) showAllUnits.addEventListener('click', function () { filterUnits(false); selectCard(''); });
 })();
 </script>
 
