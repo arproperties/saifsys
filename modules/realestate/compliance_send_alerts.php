@@ -54,11 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $units->execute([$currentCompanyId]);
         $unitIds = $units->fetchAll(PDO::FETCH_COLUMN);
         
-        $updated = 0;
-        foreach ($unitIds as $unitId) {
-            update_unit_compliance_status($conn, $currentCompanyId, $unitId);
-            $updated++;
-        }
+        $updated = re_refresh_unit_compliance_statuses($conn, (int)$currentCompanyId, $unitIds);
         $_SESSION['success'] = "Updated compliance status for {$updated} units.";
     }
     // Post/Redirect/Get: a page refresh must not send the e-mail again
@@ -68,6 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // Figures (same rule as the summary e-mail: active leases, current copies only)
 $digestRows = re_doc_digest_rows($conn, $currentCompanyId);
+re_refresh_unit_compliance_statuses($conn, (int)$currentCompanyId);
 $nonCompliant = $conn->prepare("SELECT COUNT(*) FROM re_unit_legal_status WHERE company_id = ? AND legal_status = 'non_compliant'");
 $nonCompliant->execute([$currentCompanyId]);
 $stats = [
