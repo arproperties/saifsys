@@ -53,7 +53,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
 
 <div class="mb-3">
   <div class="page-header-label mb-1">Buildings</div>
-  <p class="text-muted mb-0">The buildings of Recurring Payments only. Add any building you collect a payment from.</p>
+  <p class="text-muted mb-0">The buildings of Recurrent Income only. Add any building you collect a payment from.</p>
 </div>
 
 <div class="card card-round mb-3" style="max-width:680px">

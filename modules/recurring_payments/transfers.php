@@ -62,7 +62,7 @@ try {
 } catch (BinvError $e) {
     rpay_stop($e);
 }
-$accounts = $data['accounts'] ?? [];
+$accounts = rpay_visible_accounts($conn, $data['accounts'] ?? [], (int)($form['from_id'] ?? 0)); // hidden ones are not offered
 $transfers = $data['transfers'] ?? [];
 if ($form['date'] === '') {
     $form['date'] = (string)($data['today'] ?? date('Y-m-d'));

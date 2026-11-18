@@ -29,7 +29,7 @@ $rpayFlash = binv_take_flash();
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title><?= isset($pageTitle) ? h($pageTitle) . ' | ' : '' ?>Recurring Payments | <?= h($brand['system_name']) ?></title>
+  <title><?= isset($pageTitle) ? h($pageTitle) . ' | ' : '' ?>Recurrent Income | <?= h($brand['system_name']) ?></title>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
@@ -108,7 +108,7 @@ if (is_file($asWidget)) { require $asWidget; }
     </div>
     <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
 
-    <div class="nav-sect mt-3">Recurring Payments</div>
+    <div class="nav-sect mt-3">Recurrent Income</div>
       <a href="<?= h($rpayBase) ?>/index.php" class="slink <?= in_array($currentPage, ['index.php', 'pay.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Payments</span>
       </a>

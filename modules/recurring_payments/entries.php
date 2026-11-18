@@ -24,6 +24,12 @@ $listUrl = $selfUrl . ($headFilter !== '' ? '?head=' . urlencode($headFilter) : 
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
+    // A note added or deleted (saifsys's own table): back to the list with that entry's notes open.
+    if (rpay_handle_note_post($conn, $code)) {
+        $back = $listUrl . (strpos($listUrl, '?') === false ? '?' : '&') . 'notes=' . (int)($_POST['entry'] ?? 0);
+        header('Location: ' . $back);
+        exit;
+    }
     $id = (int)($_POST['entry'] ?? 0);
     $action = (string)($_POST['action'] ?? '');
     try {
@@ -58,6 +64,9 @@ if ($headFilter !== '') {
     }));
 }
 
+// Notes kept in saifsys, per entry.
+$noteMap = rpay_entry_notes($conn, array_map(function ($e) { return (int)$e['id']; }, $entries));
+
 $pageTitle = 'Entries';
 require __DIR__ . '/includes/rpay_layout_header.php';
 ?>
@@ -79,7 +88,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         <label class="form-label small fw-semibold mb-1">Income head</label>
         <select name="head" class="form-select" data-search onchange="this.form.submit()">
           <option value="">All</option>
-          <?php foreach ($data['heads'] ?? [] as $hd): ?>
+          <?php foreach (rpay_live_heads($conn, $data['heads'] ?? [], (int)($headFilter !== 'none' ? $headFilter : 0)) as $hd): ?>
             <option value="<?= (int)$hd['id'] ?>"<?= $headFilter === (string)$hd['id'] ? ' selected' : '' ?>><?= h($hd['name']) ?></option>
           <?php endforeach; ?>
           <option value="none"<?= $headFilter === 'none' ? ' selected' : '' ?>>No income head</option>
@@ -135,6 +144,10 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             </td>
             <td><span class="badge text-bg-<?= $active ? 'success' : 'secondary' ?>"><?= $active ? 'Active' : 'Paused' ?></span></td>
             <td class="text-end text-nowrap">
+              <?php $nc = count($noteMap[(int)$e['id']] ?? []); ?>
+              <button type="button" class="btn btn-sm btn-light border" data-bs-toggle="collapse" data-bs-target="#rpNotes<?= (int)$e['id'] ?>" title="Notes">
+                <i class="bi bi-journal-text"></i> Notes<?= $nc ? ' <span class="badge text-bg-secondary">' . $nc . '</span>' : '' ?>
+              </button>
               <?php if ($active): ?>
                 <form method="post" action="<?= h($listUrl) ?>" class="d-inline-flex gap-1 align-middle">
                   <?php csrf_field(); ?>
@@ -158,6 +171,20 @@ require __DIR__ . '/includes/rpay_layout_header.php';
                   <button class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></button>
                 </form>
               <?php endif; ?>
+            </td>
+          </tr>
+          <!-- The entry's notes, opened right under it -->
+          <tr class="collapse<?= (int)($_GET['notes'] ?? 0) === (int)$e['id'] ? ' show' : '' ?>" id="rpNotes<?= (int)$e['id'] ?>">
+            <td colspan="8" class="bg-body-tertiary">
+              <div style="max-width:640px">
+                <?php
+                  $notesEntry = $e;
+                  $notesList = $noteMap[(int)$e['id']] ?? [];
+                  $notesPostUrl = $listUrl . (strpos($listUrl, '?') === false ? '?' : '&') . 'notes=' . (int)$e['id'];
+                  $rpayUi = 'notes';
+                  require __DIR__ . '/includes/rpay_ui.php';
+                ?>
+              </div>
             </td>
           </tr>
         <?php endforeach; ?>

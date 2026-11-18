@@ -33,19 +33,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'delete') {
             rpay_reem($code, 'DELETE', '/accounts/' . $id);
             binv_flash('Account deleted.');
+        } elseif ($action === 'hide' || $action === 'show') {
+            // Hidden in saifsys only; the account keeps its money and history in Reem.
+            $acc = null;
+            foreach (rpay_reem($code, 'GET', '/accounts')['accounts'] ?? [] as $x) {
+                if ((int)$x['id'] === $id) {
+                    $acc = $x;
+                }
+            }
+            if (!$acc) {
+                throw new BinvError('That account could not be found.', 404);
+            }
+            rpay_set_account_hidden($conn, $id, $action === 'hide', (int)current_user_id());
+            binv_flash('"' . $acc['name'] . '" ' . ($action === 'hide' ? 'hidden. It is no longer offered when money comes in or is transferred; find it under "Hidden accounts".' : 'is shown again.'));
         }
     } catch (BinvError $e) {
         binv_flash($e->getMessage(), 'danger');
+    } catch (PDOException $e) {
+        error_log('recurrent income: account not hidden: ' . $e->getMessage());
+        binv_flash('That could not be saved.', 'danger');
     }
     header('Location: ' . $selfUrl);
     exit;
 }
 
 try {
-    $accounts = rpay_reem($code, 'GET', '/accounts')['accounts'] ?? [];
+    $allAccounts = rpay_reem($code, 'GET', '/accounts')['accounts'] ?? [];
 } catch (BinvError $e) {
     rpay_stop($e);
 }
+$hiddenMap = rpay_hidden_accounts($conn);
+$accounts = rpay_visible_accounts($conn, $allAccounts);
+$hiddenAccounts = array_values(array_filter($allAccounts, function ($a) use ($hiddenMap) { return isset($hiddenMap[(int)$a['id']]); }));
 
 $pageTitle = 'Accounts';
 require __DIR__ . '/includes/rpay_layout_header.php';
@@ -98,6 +117,14 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             <td class="num text-end fw-semibold<?= (float)$a['balance'] < 0 ? ' text-danger' : '' ?>"><?= h(rpay_money($a['balance'] ?? 0)) ?></td>
             <td class="text-end text-nowrap">
               <a href="<?= h($rpayBase) ?>/account.php?id=<?= (int)$a['id'] ?>" class="btn btn-sm btn-light border">History</a>
+              <?php $holds = abs((float)($a['balance'] ?? 0)) >= 0.005; ?>
+              <form method="post" action="<?= h($selfUrl) ?>" class="d-inline"
+                    onsubmit="return confirm(<?= h(json_encode('Hide "' . $a['name'] . '"?' . ($holds ? ' It still holds ' . rpay_money($a['balance']) . '.' : '') . ' It stops being offered when money comes in or is transferred. Its history stays, and you can show it again.')) ?>);">
+                <?php csrf_field(); ?>
+                <input type="hidden" name="account" value="<?= (int)$a['id'] ?>">
+                <input type="hidden" name="action" value="hide">
+                <button class="btn btn-sm btn-light border" title="Hide this account"><i class="bi bi-eye-slash"></i> Hide</button>
+              </form>
               <?php if (empty($a['used'])): ?>
                 <form method="post" action="<?= h($selfUrl) ?>" class="d-inline" onsubmit="return confirm('Delete this account?');">
                   <?php csrf_field(); ?>
@@ -113,5 +140,35 @@ require __DIR__ . '/includes/rpay_layout_header.php';
     </table>
   </div>
 </div>
+
+<?php if ($hiddenAccounts): ?>
+<details class="card card-round mt-3" style="max-width:820px">
+  <summary class="card-body py-2 fw-semibold">Hidden accounts <span class="text-muted fw-normal">(<?= count($hiddenAccounts) ?>)</span></summary>
+  <div class="table-responsive">
+    <table class="table rpay-table align-middle">
+      <tbody>
+        <?php foreach ($hiddenAccounts as $a): $hd = $hiddenMap[(int)$a['id']]; ?>
+          <tr>
+            <td>
+              <div class="text-muted"><?= h($a['name']) ?></div>
+              <div class="small text-muted">Hidden by <?= h($hd['by'] !== '' ? $hd['by'] : 'someone') ?> · <?= h(rpay_datetime($hd['at'])) ?></div>
+            </td>
+            <td class="num text-end text-muted"><?= h(rpay_money($a['balance'] ?? 0)) ?></td>
+            <td class="text-end text-nowrap">
+              <a href="<?= h($rpayBase) ?>/account.php?id=<?= (int)$a['id'] ?>" class="btn btn-sm btn-light border">History</a>
+              <form method="post" action="<?= h($selfUrl) ?>" class="d-inline">
+                <?php csrf_field(); ?>
+                <input type="hidden" name="account" value="<?= (int)$a['id'] ?>">
+                <input type="hidden" name="action" value="show">
+                <button class="btn btn-sm btn-light border"><i class="bi bi-eye"></i> Show</button>
+              </form>
+            </td>
+          </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+</details>
+<?php endif; ?>
 
 <?php require __DIR__ . '/../building_inventory/includes/binv_layout_footer.php'; ?>
