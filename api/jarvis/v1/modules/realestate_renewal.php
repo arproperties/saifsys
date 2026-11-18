@@ -29,9 +29,16 @@
  *   contract the tenancy contract PDF of the renewal's draft lease (Contract Templates), the
  *            one the staff's tenants sign. Body: workflow_id.
  *   note     a line on the workflow's log for an email out or in (Body: workflow_id, message),
- *            with the email itself added to its negotiation notes (text).
+ *            with the email itself added to its negotiation notes (text). With to_tenant on a
+ *            renewal Reem took over, the text is also a message to the tenant in the portal.
  *   file     a paper the tenant emailed (signed agreement, cheque photo), kept with the
  *            renewal's tenant uploads. Body: workflow_id, name, mime, data (base64).
+ *   takeover a renewal the staff ran here (rejected, or left unfinished) is Reem's from now on:
+ *            the same workflow and draft lease, reopened if it was rejected, and locked for the
+ *            staff like any renewal Reem runs. The tenant portal keeps showing it, so a tenant
+ *            who answers there is not cut off; Reem reads what they do from renewal_history.
+ *            Nothing is sent to the tenant. Safe to call again. Body: lease_id, end_date.
+ *            Returns its rent, cheques and charges, for Reem to carry on from.
  *   convert  Approve & Convert: the new lease, its installments, obligations and invoice
  *            candidates. Safe to call again. Body: workflow_id, expected_total (the cheques'
  *            total the tenant agreed to: a schedule that has changed since is refused).
@@ -59,6 +66,10 @@ const JARVIS_RN_EVENT = 'reem_started';
 // A renewal started with Reem's cheques (fees, VAT and Ejari in the first, whole dirhams,
 // evenly apart). Renewals started before keep saifsys's own, as their tenants were sent.
 const JARVIS_RN_CHEQUES = 'reem_cheques';
+// A renewal the staff ran that Reem took over. Its own mark, apart from reem_started, because
+// the tenant portal hides renewals Reem started (they are answered by email) and must go on
+// showing these: their tenants were already using the portal.
+const JARVIS_RN_TAKEOVER = 'reem_takeover';
 
 function jarvis_rn_has_event(PDO $conn, int $workflowId, string $type): bool
 {
@@ -189,21 +200,21 @@ function jarvis_rn_terms(array $lease, float $rent, int $cheques, array $in): ar
 function jarvis_rn_open_for_lease(PDO $conn, int $leaseId): ?array
 {
     $st = $conn->prepare("SELECT rw.id, rw.status, rw.new_lease_id,
-            EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type = ?) AS reem
+            EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type IN (?, ?)) AS reem
         FROM re_lease_renewal_workflows rw
         WHERE rw.lease_id = ? AND rw.status <> 'rejected'
         ORDER BY rw.id DESC LIMIT 1");
-    $st->execute([JARVIS_RN_EVENT, $leaseId]);
+    $st->execute([JARVIS_RN_EVENT, JARVIS_RN_TAKEOVER, $leaseId]);
     return $st->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
-/** A workflow Reem started. */
+/** A workflow Reem started, or took over from the staff. */
 function jarvis_rn_workflow(PDO $conn, array $in): array
 {
     $st = $conn->prepare("SELECT rw.*, l.company_id,
-            EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type = ?) AS reem
+            EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type IN (?, ?)) AS reem
         FROM re_lease_renewal_workflows rw JOIN re_leases l ON l.id = rw.lease_id WHERE rw.id = ? LIMIT 1");
-    $st->execute([JARVIS_RN_EVENT, (int)($in['workflow_id'] ?? 0)]);
+    $st->execute([JARVIS_RN_EVENT, JARVIS_RN_TAKEOVER, (int)($in['workflow_id'] ?? 0)]);
     $wf = $st->fetch(PDO::FETCH_ASSOC);
     if (!$wf) {
         jarvis_rn_fail('no_workflow', 'That renewal is not in saifsys.', 404);
@@ -225,6 +236,82 @@ function jarvis_rn_notice(PDO $conn, int $companyId, int $workflowId, string $ro
         throw new Exception('The renewal notice PDF was not made.');
     }
     return ['name' => basename($rel), 'data' => base64_encode($bytes)];
+}
+
+if ($action === 'takeover') {
+    $lease = jarvis_rn_lease($conn, $in);
+    $companyId = (int)$lease['company_id'];
+    if ((string)$lease['status'] !== 'active') {
+        jarvis_rn_fail('lease_not_active', 'That lease is no longer active in saifsys.', 409);
+    }
+    $st = $conn->prepare("SELECT rw.*,
+            EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type IN (?, ?)) AS reem
+        FROM re_lease_renewal_workflows rw WHERE rw.lease_id = ? ORDER BY rw.id DESC LIMIT 1");
+    $st->execute([JARVIS_RN_EVENT, JARVIS_RN_TAKEOVER, (int)$lease['id']]);
+    $wf = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$wf) {
+        jarvis_rn_fail('no_renewal', 'The staff have no renewal for this lease in saifsys.', 404);
+    }
+    $workflowId = (int)$wf['id'];
+    $was = (string)$wf['status'];
+    // Its rent, cheques and charges as the staff set them: Reem prices every later step from these.
+    $terms = static fn(array $w, string $status): array => [
+        'workflow_id' => (int)$w['id'],
+        'status' => $status,
+        'proposed_rent' => round((float)$w['proposed_rent'], 2),
+        'cheques' => (int)($w['number_of_cheques'] ?: 4),
+        'fees' => [
+            'admin' => round((float)$w['admin_fees'], 2),
+            'chiller' => round((float)$w['chiller_charges'], 2),
+            'parking' => !empty($w['additional_parking_enabled']) ? round((float)$w['additional_parking_fee'], 2) : 0.0,
+            'small_store' => !empty($w['small_store_enabled']) ? round((float)$w['small_store_fee'], 2) : 0.0,
+            'big_store' => !empty($w['big_store_enabled']) ? round((float)$w['big_store_fee'], 2) : 0.0,
+            'ev' => round((float)($w['ev_charger_fee'] ?? 0), 2),
+            'pest' => round((float)($w['pest_control_fee'] ?? 0), 2),
+        ],
+    ];
+    if ((int)$wf['reem']) {
+        jarvis_api_send(['ok' => true, 'renewal' => $terms($wf, $was) + ['was' => $was, 'already' => true]]);
+    }
+    // Past the talking: the contract is with the tenant, signed, or the lease is made. The staff finish those.
+    if (in_array($was, ['contract_ready', 'signed', 'completed', 'converted'], true)) {
+        jarvis_rn_fail('too_far', "Renewal #$workflowId is already at '" . str_replace('_', ' ', $was) . "' in saifsys. Finish it there.", 409);
+    }
+    if ((int)($wf['new_lease_id'] ?? 0) < 1 || !((float)$wf['proposed_rent'] > 0)) {
+        jarvis_rn_fail('no_draft_lease', "Renewal #$workflowId has no draft lease or rent in saifsys, so there is nothing to carry on from.", 409);
+    }
+    $now = $was;
+    $conn->beginTransaction();
+    try {
+        if ($was === 'rejected') {
+            // Open again, at the talking: that is where it stopped.
+            $conn->prepare("UPDATE re_lease_renewal_workflows SET status = 'negotiation', workflow_step = 'tenant_response' WHERE id = ? AND status = 'rejected'")
+                ->execute([$workflowId]);
+            $now = 'negotiation';
+        }
+        jarvis_rn_log($conn, $workflowId, $companyId, $actorId, JARVIS_RN_TAKEOVER,
+            'Taken over in Reem' . ($was === 'rejected' ? ' and opened again' : '') . ': run from Lease renewals in the Reem app from now on');
+        $conn->commit();
+    } catch (Throwable $e) {
+        if ($conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        jarvis_rn_fail('takeover_failed', $e->getMessage(), 422);
+    }
+    // The tenant was told it was closed: tell them it is open again, where they look.
+    if ($was === 'rejected') {
+        try {
+            require_once $root . '/includes/tenant_notifications.php';
+            tenant_notification_create($conn, [
+                'company_id' => $companyId, 'lease_id' => (int)$lease['id'], 'type' => 'renewal_status',
+                'entity_type' => 'renewal', 'entity_id' => $workflowId,
+                'title' => 'Renewal open again', 'body' => 'Your lease renewal is open again. We will be in touch about it shortly.',
+            ]);
+        } catch (Throwable $e) {
+            error_log('jarvis renewal takeover notification: ' . $e->getMessage());
+        }
+    }
+    jarvis_api_send(['ok' => true, 'renewal' => $terms($wf, $now) + ['was' => $was]]);
 }
 
 if ($action === 'quote' || $action === 'start') {
@@ -397,6 +484,22 @@ if ($action === 'note') {
         $conn->prepare("UPDATE re_lease_renewal_workflows SET negotiation_notes = ? WHERE id = ?")->execute([mb_substr($notes, -60000), $workflowId]);
     }
     jarvis_rn_log($conn, $workflowId, $companyId, $actorId, 'reem_email', $message);
+    // A renewal Reem took over: its tenant may be reading the portal, not the inbox, so what
+    // Reem emails them is also a message there.
+    if ($text !== '' && !empty($in['to_tenant']) && jarvis_rn_has_event($conn, $workflowId, JARVIS_RN_TAKEOVER)) {
+        try {
+            require_once $root . '/includes/renewal_negotiation_thread.php';
+            renewal_negotiation_insert_admin_message($conn, $workflowId, $companyId, mb_substr($text, 0, 8000), $actorId, null);
+            require_once $root . '/includes/tenant_notifications.php';
+            tenant_notification_create($conn, [
+                'company_id' => $companyId, 'lease_id' => (int)$wf['lease_id'], 'type' => 'renewal_status',
+                'entity_type' => 'renewal', 'entity_id' => $workflowId,
+                'title' => 'New message about your renewal', 'body' => 'Management sent you a message about your lease renewal.',
+            ]);
+        } catch (Throwable $e) {
+            error_log('jarvis renewal portal message: ' . $e->getMessage());
+        }
+    }
     jarvis_api_send(['ok' => true]);
 }
 

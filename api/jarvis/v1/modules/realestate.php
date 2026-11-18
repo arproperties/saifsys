@@ -28,6 +28,13 @@
  *        from/to it gives all of them; with them, only those that ended between the two.
  *        Same fields as renewals_due, plus the move-out date and saifsys's last workflow.
  *
+ *   ?module=realestate&action=renewal_history&lease_id=N
+ *        what the staff did on a lease's renewal in saifsys, newest renewal first: its status,
+ *        who started it, who sent the notice, who rejected it, the rents, what the tenant
+ *        answered, the staff's notes, the messages with the tenant and the log of every step
+ *        with the name of who did it. Reem shows it when a person taps a renewal the staff
+ *        ran themselves, so nobody has to open saifsys to learn why it stopped.
+ *
  *   ?module=realestate&action=buildings_3d
  *        every active building with how many floors and units saifsys has for it: the
  *        list Reem's 3D Buildings screen picks from.
@@ -200,6 +207,102 @@ if ($action === 'renewals_expired') {
             'ejari' => (string)($r['ejari_registration_number'] ?? ''),
             'saifsys_last' => $r['saifsys_last'] !== null ? (string)$r['saifsys_last'] : null,
         ], $st->fetchAll(PDO::FETCH_ASSOC)),
+    ]);
+}
+
+if ($action === 'renewal_history') {
+    $leaseId = (int)($_GET['lease_id'] ?? 0);
+    if ($leaseId <= 0) {
+        jarvis_api_error('bad_request', 'lease_id is required.', 400);
+    }
+    $name = static fn(string $a): string => "COALESCE(NULLIF(TRIM($a.fullname), ''), $a.username)";
+
+    $st = $conn->prepare("
+        SELECT rw.*,
+               {$name('uc')} AS created_by_name, {$name('ua')} AS assigned_to_name,
+               {$name('un')} AS notice_sent_by_name, {$name('ur')} AS rejected_by_name,
+               {$name('up')} AS approved_by_name, {$name('uv')} AS converted_by_name
+        FROM re_lease_renewal_workflows rw
+        LEFT JOIN user uc ON uc.id = rw.created_by
+        LEFT JOIN user ua ON ua.id = rw.assigned_to
+        LEFT JOIN user un ON un.id = rw.notice_sent_by
+        LEFT JOIN user ur ON ur.id = rw.rejected_by
+        LEFT JOIN user up ON up.id = rw.approved_by
+        LEFT JOIN user uv ON uv.id = rw.converted_by
+        WHERE rw.lease_id = ?
+        ORDER BY rw.id DESC LIMIT 5
+    ");
+    $st->execute([$leaseId]);
+    $workflows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+    // The log and the messages live in tables added later; a server without them still answers.
+    $rows = static function (string $sql, int $workflowId) use ($conn): array {
+        try {
+            $q = $conn->prepare($sql);
+            $q->execute([$workflowId]);
+            return $q->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            return [];
+        }
+    };
+    $str = static fn($v): ?string => $v !== null && trim((string)$v) !== '' ? trim((string)$v) : null;
+    $num = static fn($v): ?float => $v !== null ? round((float)$v, 2) : null;
+
+    jarvis_api_send([
+        'ok' => true,
+        'lease_id' => $leaseId,
+        'renewals' => array_map(static function (array $w) use ($rows, $name, $str, $num): array {
+            $id = (int)$w['id'];
+            $events = $rows("
+                SELECT e.id, e.event_type, e.message, e.created_at, UNIX_TIMESTAMP(e.created_at) AS ts, e.tenant_portal_user_id, {$name('u')} AS by_name
+                FROM re_renewal_portal_events e LEFT JOIN user u ON u.id = e.legacy_user_id
+                WHERE e.workflow_id = ? ORDER BY e.created_at, e.id LIMIT 300", $id);
+            $messages = $rows("
+                SELECT m.id, m.author_role, m.body, m.created_at, UNIX_TIMESTAMP(m.created_at) AS ts, {$name('u')} AS by_name
+                FROM re_renewal_negotiation_messages m LEFT JOIN user u ON u.id = m.admin_user_id
+                WHERE m.workflow_id = ? ORDER BY m.created_at, m.id LIMIT 200", $id);
+            return [
+                'workflow_id' => $id,
+                'status' => (string)$w['status'],
+                'started_at' => $str($w['created_at'] ?? null),
+                'started_by' => $str($w['created_by_name'] ?? null),
+                'assigned_to' => $str($w['assigned_to_name'] ?? null),
+                'notice_sent_at' => $str($w['notice_sent_at'] ?? null),
+                'notice_sent_by' => $str($w['notice_sent_by_name'] ?? null),
+                'rejected_by' => $str($w['rejected_by_name'] ?? null),
+                'approved_by' => $str($w['approved_by_name'] ?? null),
+                'converted_by' => $str($w['converted_by_name'] ?? null),
+                'updated_at' => $str($w['updated_at'] ?? null),
+                'current_rent' => $num($w['current_rent'] ?? null),
+                'proposed_rent' => $num($w['proposed_rent'] ?? null),
+                'cheques' => isset($w['number_of_cheques']) ? (int)$w['number_of_cheques'] : null,
+                // What the tenant chose on the notice: accept, negotiate or reject.
+                'tenant_decision' => $str($w['tenant_portal_decision'] ?? null),
+                'tenant_decision_at' => $str($w['tenant_portal_decision_at'] ?? ($w['tenant_response_date'] ?? null)),
+                'tenant_opened_at' => $str($w['tenant_first_viewed_at'] ?? null),
+                'tenant_response' => $str($w['tenant_response'] ?? null),
+                'staff_notes' => $str($w['negotiation_notes'] ?? null),
+                'messages' => array_map(static fn($m) => [
+                    'from' => $m['author_role'] === 'tenant' ? 'tenant' : 'staff',
+                    'by' => $m['author_role'] === 'tenant' ? null : $str($m['by_name']),
+                    'id' => (int)$m['id'],
+                    'text' => (string)$m['body'],
+                    'at' => (string)$m['created_at'],
+                    'ts' => (int)$m['ts'],
+                ], $messages),
+                'events' => array_map(static fn($e) => [
+                    'type' => (string)$e['event_type'],
+                    'text' => (string)($e['message'] ?? ''),
+                    // A step with a portal user on it is the tenant's own; the others are staff.
+                    'by' => $e['tenant_portal_user_id'] !== null ? 'Tenant' : $str($e['by_name']),
+                    'tenant' => $e['tenant_portal_user_id'] !== null,
+                    'id' => (int)$e['id'],
+                    'at' => (string)$e['created_at'],
+                    // The moment itself, whatever clock the database keeps: Reem files each step under it.
+                    'ts' => (int)$e['ts'],
+                ], $events),
+            ];
+        }, $workflows),
     ]);
 }
 

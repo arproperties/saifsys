@@ -46,6 +46,11 @@ body.dark-mode .cx-tab.is-active { color:var(--accent); border-bottom-color:var(
 .cx-kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(210px, 100%), 1fr)); gap:14px; margin-bottom:22px; }
 .cx-kpi { background:var(--cx-card); border:1px solid var(--cx-line); border-radius:12px; padding:16px 18px;
           box-shadow:0 1px 2px rgba(16,24,40,.05); display:flex; gap:14px; align-items:flex-start; }
+.cx-kpi[data-cx-card] { cursor:pointer; transition:border-color .15s, box-shadow .15s; }
+.cx-kpi[data-cx-card]:hover { border-color:var(--cx-muted); }
+.cx-kpi[data-cx-card]:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.cx-kpi.is-selected { border-color:var(--primary); box-shadow:0 0 0 2px var(--primary); }
+body.dark-mode .cx-kpi.is-selected { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); }
 .cx-kpi-icon { width:40px; height:40px; border-radius:10px; display:grid; place-items:center; font-size:1.15rem; flex:none; }
 .cx-kpi-label { font-size:.85rem; color:var(--cx-muted); font-weight:600; }
 .cx-kpi-value { font-size:1.9rem; font-weight:700; line-height:1.1; margin-top:2px; font-variant-numeric:tabular-nums; }

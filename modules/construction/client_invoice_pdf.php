@@ -80,6 +80,9 @@ if ($subtotal <= 0) {
     $subtotal = max(0, (float)$invoice['total_amount'] - (float)$invoice['vat_amount']);
 }
 $vat = (float)$invoice['vat_amount'];
+// Invoices store the VAT amount only, so the rate is derived from it (e.g. 400 / 8,000 = 5%).
+$vatRate = $subtotal > 0 ? round($vat / $subtotal * 100, 2) : 0.0;
+$vatRateLabel = rtrim(rtrim(number_format($vatRate, 2, '.', ''), '0'), '.') . '%';
 $total = (float)$invoice['total_amount'];
 $paid = (float)$invoice['paid_amount'];
 $balance = max(0, $total - $paid);
@@ -162,7 +165,7 @@ ob_start();
         <div class="col">
             <table>
                 <tr><td>Subtotal</td><td class="right"><?= h($currency) ?> <?= number_format($subtotal, 2) ?></td></tr>
-                <tr><td>VAT</td><td class="right"><?= h($currency) ?> <?= number_format($vat, 2) ?></td></tr>
+                <tr><td>VAT (<?= h($vatRateLabel) ?>)</td><td class="right"><?= h($currency) ?> <?= number_format($vat, 2) ?></td></tr>
                 <tr class="total-row"><td>Total</td><td class="right"><?= h($currency) ?> <?= number_format($total, 2) ?></td></tr>
                 <tr><td>Paid</td><td class="right"><?= h($currency) ?> <?= number_format($paid, 2) ?></td></tr>
                 <tr><td>Balance</td><td class="right"><?= h($currency) ?> <?= number_format($balance, 2) ?></td></tr>
