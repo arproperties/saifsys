@@ -82,6 +82,15 @@ $basePath = dirname(__DIR__, 2);
 $eligibleStatuses = ['notice_sent', 'pending_response', 'negotiation', 'contract_ready'];
 $statusPlaceholders = implode(',', array_fill(0, count($eligibleStatuses), '?'));
 
+// Staff can pause follow-ups per workflow (migrations/renewal_followups_pause.sql).
+$pausedCol = $conn->query("
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 're_lease_renewal_workflows'
+      AND COLUMN_NAME = 'followups_paused_at'
+")->fetchColumn();
+$pausedSql = $pausedCol ? 'AND rw.followups_paused_at IS NULL' : '';
+
 $sql = "
     SELECT rw.id AS workflow_id,
            rw.status AS workflow_status,
@@ -109,6 +118,7 @@ $sql = "
     WHERE rw.notice_sent_at IS NOT NULL
       AND rw.notice_sent_at <= DATE_SUB(NOW(), INTERVAL 7 DAY)
       AND rw.status IN ($statusPlaceholders)
+      $pausedSql
       AND NOT EXISTS (
           SELECT 1
           FROM re_email_logs el
@@ -120,7 +130,7 @@ $sql = "
       -- A renewal run from Reem (Jarvis) is chased by Reem, by email on its own thread.
       AND NOT EXISTS (
           SELECT 1 FROM re_renewal_portal_events ev
-          WHERE ev.workflow_id = rw.id AND ev.event_type = 'reem_started'
+          WHERE ev.workflow_id = rw.id AND ev.event_type IN ('reem_started', 'reem_takeover')
       )
     ORDER BY rw.notice_sent_at ASC, rw.id ASC
 ";

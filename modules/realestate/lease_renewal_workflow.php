@@ -138,7 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // A lease Reem (Jarvis) is already renewing with the tenant by email is left to Reem.
         $reemOpen = $conn->prepare("SELECT rw.id FROM re_lease_renewal_workflows rw
             WHERE rw.lease_id = ? AND rw.status NOT IN ('rejected', 'converted')
-              AND EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type = 'reem_started')
+              AND EXISTS (SELECT 1 FROM re_renewal_portal_events e WHERE e.workflow_id = rw.id AND e.event_type IN ('reem_started', 'reem_takeover'))
             LIMIT 1");
         $reemOpen->execute([(int)$leaseId]);
         if ($reemOpen->fetchColumn()) {
@@ -769,6 +769,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                             $color = $renewalStatusColors[$wfStatus] ?? 'secondary';
                                             ?>
                                             <span class="badge bg-<?= $color ?>"><?= h($renewalStatusLabels[$wfStatus] ?? ucfirst(str_replace('_', ' ', $wfStatus))) ?></span>
+                                            <?php if (!empty($wf['followups_paused_at']) && !in_array($wfStatus, ['converted', 'rejected', 'completed', 'cancelled'], true)): ?>
+                                                <br><span class="badge bg-light text-secondary border mt-1" title="Daily follow-up emails paused"><i class="bi bi-pause-circle"></i> Reminders paused</span>
+                                            <?php endif; ?>
                                         </td>
                                         <td><?= date('Y-m-d', strtotime($wf['initiated_date'])) ?></td>
                                         <td data-sort-value="<?= h($wf['assigned_to_name'] ?? '') ?>"><?= h($wf['assigned_to_name'] ?? '-') ?></td>

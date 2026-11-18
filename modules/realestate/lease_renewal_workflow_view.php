@@ -393,7 +393,7 @@ $emailHistory = $emailHistoryStmt->fetchAll(PDO::FETCH_ASSOC);
 // tenant and moves this workflow along itself, so a change made here would not reach it.
 $runByReem = false;
 try {
-    $rbr = $conn->prepare("SELECT 1 FROM re_renewal_portal_events WHERE workflow_id = ? AND event_type = 'reem_started' LIMIT 1");
+    $rbr = $conn->prepare("SELECT 1 FROM re_renewal_portal_events WHERE workflow_id = ? AND event_type IN ('reem_started', 'reem_takeover') LIMIT 1");
     $rbr->execute([$workflowId]);
     $runByReem = (bool)$rbr->fetchColumn();
 } catch (Throwable $e) {
@@ -1145,6 +1145,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $runByReem) {
             } catch (Throwable $e) {
                 error_log('renewal_reject audit: ' . $e->getMessage());
             }
+        } elseif ($action === 'pause_followups' || $action === 'resume_followups') {
+            if (!array_key_exists('followups_paused_at', $workflow)) {
+                throw new Exception('Pausing follow-ups is not set up yet. Run migrations/renewal_followups_pause.sql first.');
+            }
+            $uid = current_user_id();
+            $pause = $action === 'pause_followups';
+            if ($pause) {
+                $stmt = $conn->prepare("
+                    UPDATE re_lease_renewal_workflows
+                    SET followups_paused_at = NOW(), followups_paused_by = ?
+                    WHERE id = ? AND followups_paused_at IS NULL
+                ");
+                $stmt->execute([$uid, $workflowId]);
+            } else {
+                $stmt = $conn->prepare("
+                    UPDATE re_lease_renewal_workflows
+                    SET followups_paused_at = NULL, followups_paused_by = NULL
+                    WHERE id = ? AND followups_paused_at IS NOT NULL
+                ");
+                $stmt->execute([$workflowId]);
+            }
+            if ($stmt->rowCount() > 0) {
+                renewal_wf_log_admin_event(
+                    $conn,
+                    $workflowId,
+                    $currentCompanyId,
+                    $uid,
+                    $pause ? 'admin_pause_followups' : 'admin_resume_followups',
+                    $pause ? 'Daily follow-up emails paused by admin.' : 'Daily follow-up emails resumed by admin.'
+                );
+            }
+            $success = $pause
+                ? 'Follow-up emails paused. The tenant will not get daily reminders for this renewal.'
+                : 'Follow-up emails resumed. Daily reminders start again from the next run.';
         } elseif ($action === 'post_negotiation_reply') {
             $body = trim((string)($_POST['negotiation_reply'] ?? ''));
             if (strlen($body) < 2) {
@@ -2376,7 +2410,47 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <i class="bi bi-x-circle"></i> Reject
                         </button>
                     </form>
+
+                    <?php
+                    $followupsPausable = !$runByReem
+                        && array_key_exists('followups_paused_at', $workflow)
+                        && !in_array(lease_renewal_view_rw_status($workflow), ['converted', 'rejected', 'completed', 'cancelled'], true);
+                    $followupsPaused = !empty($workflow['followups_paused_at']);
+                    ?>
+                    <?php if ($followupsPausable): ?>
+                    <form method="POST" action="lease_renewal_workflow_view.php?id=<?= (int)$workflowId ?>" class="m-0 renewal-action-form"
+                        data-loading-text="Saving...">
+                        <?php csrf_field(); ?>
+                        <input type="hidden" name="action" value="<?= $followupsPaused ? 'resume_followups' : 'pause_followups' ?>">
+                        <?php if ($followupsPaused): ?>
+                            <button type="submit" class="btn btn-outline-success">
+                                <i class="bi bi-play-circle"></i> Resume Follow-up Emails
+                            </button>
+                        <?php else: ?>
+                            <button type="submit" class="btn btn-outline-secondary">
+                                <i class="bi bi-pause-circle"></i> Pause Follow-up Emails
+                            </button>
+                        <?php endif; ?>
+                    </form>
+                    <?php endif; ?>
                 </div>
+
+                <?php if ($followupsPaused): ?>
+                    <?php
+                    $pausedByName = '';
+                    if (!empty($workflow['followups_paused_by'])) {
+                        $pb = $conn->prepare("SELECT COALESCE(NULLIF(fullname, ''), username) FROM user WHERE id = ?");
+                        $pb->execute([(int)$workflow['followups_paused_by']]);
+                        $pausedByName = (string)($pb->fetchColumn() ?: '');
+                    }
+                    ?>
+                    <div class="alert alert-secondary py-2 mb-3">
+                        <i class="bi bi-pause-circle"></i>
+                        Daily follow-up emails are paused for this renewal
+                        since <?= h(date('Y-m-d H:i', strtotime((string)$workflow['followups_paused_at']))) ?><?= $pausedByName !== '' ? ' by ' . h($pausedByName) : '' ?>.
+                        The rest of the renewal works as normal.
+                    </div>
+                <?php endif; ?>
 
                 <hr>
 
