@@ -181,7 +181,10 @@ if ($documentTypeFilter !== 'all') {
     }
 }
 
-if ($statusFilter !== 'all') {
+if ($statusFilter === 'expired') {
+    // Same rule as the Expired card: past its date and not replaced by a newer copy.
+    $where[] = "d.expiry_date IS NOT NULL AND d.expiry_date < CURDATE() AND " . re_doc_watched_sql('d');
+} elseif ($statusFilter !== 'all') {
     $where[] = "d.status = ?";
     $params[] = $statusFilter;
 }
@@ -374,7 +377,9 @@ try {
         $simpleWhere = ["d.company_id = ?"];
         $simpleParams = [$currentCompanyId];
         
-        if ($statusFilter !== 'all') {
+        if ($statusFilter === 'expired') {
+            $simpleWhere[] = "d.expiry_date IS NOT NULL AND d.expiry_date < CURDATE() AND " . re_doc_watched_sql('d');
+        } elseif ($statusFilter !== 'all') {
             $simpleWhere[] = "d.status = ?";
             $simpleParams[] = $statusFilter;
         }
@@ -438,6 +443,13 @@ try {
         $documents = [];
     }
 }
+
+// Mark copies that a newer document has replaced, so they are not shown as expired.
+$docWatchReasons = re_doc_watch_reasons($conn, (int)$currentCompanyId, array_column($documents, 'id'));
+foreach ($documents as &$docRow) {
+    $docRow['watch_reason'] = $docWatchReasons[(int)$docRow['id']] ?? null;
+}
+unset($docRow);
 
 // Get document types for filter
 $documentTypes = $conn->prepare("
@@ -703,7 +715,15 @@ if ($isLegalLayout) {
                                         <?php endforeach; ?>
                                     </p>
                                 <?php endif; ?>
-                                <?php if ($doc['expiry_date']): ?>
+                                <?php if ($doc['expiry_date'] && in_array($doc['watch_reason'] ?? null, ['replaced', 'lease_closed'], true)): ?>
+                                    <p class="mb-2">
+                                        <small class="text-muted">
+                                            <i class="bi bi-calendar"></i>
+                                            Expires: <?= date('M d, Y', strtotime($doc['expiry_date'])) ?>
+                                            <span class="badge bg-secondary ms-1"><?= $doc['watch_reason'] === 'replaced' ? 'Replaced by newer copy' : 'Lease closed' ?></span>
+                                        </small>
+                                    </p>
+                                <?php elseif ($doc['expiry_date']): ?>
                                     <p class="mb-2">
                                         <small class="text-<?= 
                                             $doc['days_until_expiry'] < 0 ? 'danger' : 

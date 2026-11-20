@@ -72,7 +72,8 @@ $missingDocuments->execute([$currentCompanyId]);
 $missingDocuments = $missingDocuments->fetchAll(PDO::FETCH_ASSOC);
 $missingRequired = count(array_filter($missingDocuments, static function ($m) { return (int)$m['is_required'] === 1; }));
 
-// Unit legal status
+// Unit legal status: recalculate from the documents first so the count is never stale.
+re_refresh_unit_compliance_statuses($conn, (int)$currentCompanyId);
 $unitLegalStatus = $conn->prepare("
     SELECT
         uls.*,

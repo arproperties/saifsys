@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../includes/branding.php';
 require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/csrf.php';
+require_once __DIR__ . '/includes/compliance_helper.php';
 
 require_login();
 require_module_access($conn, MODULE_REALESTATE);
@@ -37,6 +38,8 @@ $unit = $conn->prepare("
         l.status as lease_status,
         t.first_name,
         t.last_name,
+        t.tenant_type,
+        t.company_name,
         t.email as tenant_email,
         t.phone as tenant_phone
     FROM re_units u
@@ -53,67 +56,15 @@ if (!$unit) {
     exit;
 }
 
-// Get or create legal status
-$legalStatus = $conn->prepare("
-    SELECT * FROM re_unit_legal_status
-    WHERE unit_id = ? AND company_id = ?
-");
+// Status and score are always worked out from the documents (shared watch rule),
+// so a renewed document never leaves the old copy counting as expired.
+$evaluation = update_unit_compliance_status($conn, $currentCompanyId, $unitId)['evaluation'];
+$documents = $evaluation['documents'];
+$missingDocs = $evaluation['missing'];
+
+$legalStatus = $conn->prepare("SELECT * FROM re_unit_legal_status WHERE unit_id = ? AND company_id = ?");
 $legalStatus->execute([$unitId, $currentCompanyId]);
 $legalStatus = $legalStatus->fetch(PDO::FETCH_ASSOC);
-
-if (!$legalStatus) {
-    // Create default status
-    $conn->prepare("
-        INSERT INTO re_unit_legal_status
-        (company_id, unit_id, legal_status, compliance_score)
-        VALUES (?, ?, 'pending_review', NULL)
-    ")->execute([$currentCompanyId, $unitId]);
-    
-    $legalStatus = $conn->prepare("
-        SELECT * FROM re_unit_legal_status
-        WHERE unit_id = ? AND company_id = ?
-    ");
-    $legalStatus->execute([$unitId, $currentCompanyId]);
-    $legalStatus = $legalStatus->fetch(PDO::FETCH_ASSOC);
-}
-
-// Get related documents
-$documents = $conn->prepare("
-    SELECT 
-        d.*,
-        dt.document_type_name,
-        dt.is_required,
-        DATEDIFF(d.expiry_date, CURDATE()) as days_until_expiry
-    FROM re_documents d
-    LEFT JOIN re_document_types dt ON dt.id = d.document_type_id
-    WHERE d.company_id = ?
-    AND (
-        (d.related_type = 'lease' AND d.related_id = ?)
-        OR (d.related_type = 'tenant' AND d.related_id = ?)
-        OR (d.related_type = 'unit' AND d.related_id = ?)
-    )
-    AND d.status = 'active'
-    ORDER BY dt.is_required DESC, d.expiry_date ASC
-");
-$documents->execute([$currentCompanyId, $unit['lease_id'], $unit['lease_id'] ? $unit['lease_id'] : 0, $unitId]);
-$documents = $documents->fetchAll(PDO::FETCH_ASSOC);
-
-// Get missing documents
-$missingDocs = $conn->prepare("
-    SELECT 
-        md.*,
-        dt.document_type_name,
-        dt.is_required
-    FROM re_missing_documents md
-    JOIN re_document_types dt ON dt.id = md.document_type_id
-    WHERE md.company_id = ?
-    AND md.related_type = 'unit'
-    AND md.related_id = ?
-    AND md.status IN ('missing', 'pending_upload')
-    ORDER BY dt.is_required DESC
-");
-$missingDocs->execute([$currentCompanyId, $unitId]);
-$missingDocs = $missingDocs->fetchAll(PDO::FETCH_ASSOC);
 
 // Get Ejari record if lease exists
 $ejari = null;
@@ -133,64 +84,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
     if ($action === 'update_status') {
-        $legalStatusValue = $_POST['legal_status'] ?? 'pending_review';
-        $complianceScore = !empty($_POST['compliance_score']) ? (int)$_POST['compliance_score'] : null;
-        $reviewNotes = $_POST['review_notes'] ?? '';
-        $nextReviewDate = $_POST['next_review_date'] ?? null;
-        
-        // Calculate compliance score if not provided
-        if ($complianceScore === null) {
-            $totalDocs = count($documents);
-            $requiredDocs = count(array_filter($documents, function($d) { return $d['is_required'] ?? false; }));
-            $expiredDocs = count(array_filter($documents, function($d) { 
-                return $d['expiry_date'] && strtotime($d['expiry_date']) < time(); 
-            }));
-            $missingRequired = count(array_filter($missingDocs, function($d) { return $d['is_required'] ?? false; }));
-            
-            if ($totalDocs > 0) {
-                $complianceScore = max(0, min(100, 
-                    100 - ($expiredDocs * 20) - ($missingRequired * 30)
-                ));
-            } else {
-                $complianceScore = 50; // Default if no documents
-            }
+        // Only the review details are saved by hand; status and score are automatic.
+        $reviewNotes = trim((string)($_POST['review_notes'] ?? ''));
+        $nextReviewDate = trim((string)($_POST['next_review_date'] ?? ''));
+        if ($nextReviewDate !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $nextReviewDate)) {
+            $nextReviewDate = '';
         }
-        
+
         $stmt = $conn->prepare("
             UPDATE re_unit_legal_status
-            SET legal_status = ?,
-                compliance_score = ?,
-                last_review_date = CURDATE(),
+            SET last_review_date = CURDATE(),
                 next_review_date = ?,
                 review_notes = ?,
                 reviewed_by = ?
             WHERE id = ? AND company_id = ?
         ");
         $stmt->execute([
-            $legalStatusValue, $complianceScore, $nextReviewDate,
+            $nextReviewDate !== '' ? $nextReviewDate : null,
             $reviewNotes, $currentUserId, $legalStatus['id'], $currentCompanyId
         ]);
-        
-        $_SESSION['success'] = 'Legal status updated successfully.';
+
+        $_SESSION['success'] = 'Review saved.';
         header('Location: compliance_unit_status.php?unit_id=' . $unitId);
         exit;
     }
 }
 
-// Calculate current compliance metrics
-$totalDocuments = count($documents);
-$requiredDocuments = count(array_filter($documents, function($d) { return $d['is_required'] ?? false; }));
-$expiredDocuments = count(array_filter($documents, function($d) { 
-    return $d['expiry_date'] && strtotime($d['expiry_date']) < time(); 
-}));
-$expiringSoon = count(array_filter($documents, function($d) { 
-    return $d['expiry_date'] && 
-           strtotime($d['expiry_date']) > time() && 
-           strtotime($d['expiry_date']) <= strtotime('+30 days'); 
-}));
-$missingRequired = count(array_filter($missingDocs, function($d) { return $d['is_required'] ?? false; }));
+// Metrics (replaced copies are shown but never counted)
+$expiredDocuments = $evaluation['expired'];
+$expiringSoon = $evaluation['expiring'];
+$missingRequired = $evaluation['missing_required'];
+$tenantName = ($unit['tenant_type'] ?? '') === 'company' && trim((string)($unit['company_name'] ?? '')) !== ''
+    ? trim((string)$unit['company_name'])
+    : trim(($unit['first_name'] ?? '') . ' ' . ($unit['last_name'] ?? ''));
 
-function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+if (!function_exists('h')) {
+    function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+}
 
 // Set page title and include layout
 $pageTitle = 'Unit Legal Status';
@@ -255,31 +185,21 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                 <!-- Update Legal Status -->
                 <div class="card mb-4">
                     <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-pencil"></i> Update Legal Status</h5>
+                        <h5 class="mb-0"><i class="bi bi-pencil"></i> Review</h5>
                     </div>
                     <div class="card-body">
                         <form method="POST">
                             <?= csrf_field() ?>
                             <input type="hidden" name="action" value="update_status">
                             
-                            <div class="row mb-3">
-                                <div class="col-md-6">
-                                    <label class="form-label">Legal Status *</label>
-                                    <select name="legal_status" class="form-select" required>
-                                        <option value="compliant" <?= $legalStatus['legal_status'] === 'compliant' ? 'selected' : '' ?>>Compliant</option>
-                                        <option value="non_compliant" <?= $legalStatus['legal_status'] === 'non_compliant' ? 'selected' : '' ?>>Non-Compliant</option>
-                                        <option value="pending_review" <?= $legalStatus['legal_status'] === 'pending_review' ? 'selected' : '' ?>>Pending Review</option>
-                                        <option value="at_risk" <?= $legalStatus['legal_status'] === 'at_risk' ? 'selected' : '' ?>>At Risk</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="form-label">Compliance Score (0-100)</label>
-                                    <input type="number" name="compliance_score" class="form-control" 
-                                           value="<?= $legalStatus['compliance_score'] ?? '' ?>" min="0" max="100">
-                                    <small class="form-text text-muted">Leave empty to auto-calculate</small>
-                                </div>
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle me-1"></i>
+                                Legal status and score update automatically from the documents:
+                                each expired document &minus;20, each missing required document &minus;30.
+                                Below 50 is <strong>Non-compliant</strong>, otherwise <strong>At risk</strong> while anything is expired or missing.
+                                A renewed copy replaces the old one, so uploading the renewal clears it.
                             </div>
-                            
+
                             <div class="mb-3">
                                 <label class="form-label">Next Review Date</label>
                                 <input type="date" name="next_review_date" class="form-control" 
@@ -292,7 +212,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             </div>
                             
                             <button type="submit" class="btn btn-primary">
-                                <i class="bi bi-save"></i> Update Status
+                                <i class="bi bi-save"></i> Save review
                             </button>
                         </form>
                     </div>
@@ -319,10 +239,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     </thead>
                                     <tbody>
                                         <?php foreach ($documents as $doc): ?>
-                                            <tr class="<?= 
-                                                $doc['expiry_date'] && strtotime($doc['expiry_date']) < time() ? 'table-danger' : 
-                                                ($doc['days_until_expiry'] !== null && $doc['days_until_expiry'] <= 30 ? 'table-warning' : '') 
-                                            ?>">
+                                            <tr class="<?= $doc['is_replaced'] ? 'text-muted' : ($doc['is_expired'] ? 'table-danger' : ($doc['is_expiring'] ? 'table-warning' : '')) ?>">
                                                 <td>
                                                     <strong><?= h($doc['document_name'] ?: $doc['file_name']) ?></strong>
                                                     <?php if ($doc['is_required']): ?>
@@ -332,19 +249,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                                 <td><?= h($doc['document_type_name'] ?: '-') ?></td>
                                                 <td>
                                                     <?= $doc['expiry_date'] ? date('M d, Y', strtotime($doc['expiry_date'])) : 'No expiry' ?>
-                                                    <?php if ($doc['days_until_expiry'] !== null): ?>
-                                                        <br><small class="text-<?= 
-                                                            $doc['days_until_expiry'] < 0 ? 'danger' : 
-                                                            ($doc['days_until_expiry'] <= 30 ? 'warning' : 'muted') 
-                                                        ?>">
-                                                            <?= $doc['days_until_expiry'] < 0 ? abs($doc['days_until_expiry']) . ' days expired' : $doc['days_until_expiry'] . ' days left' ?>
+                                                    <?php if ($doc['days_until_expiry'] !== null && !$doc['is_replaced']): $dl = (int)$doc['days_until_expiry']; ?>
+                                                        <br><small class="text-<?= $dl < 0 ? 'danger' : ($dl <= 30 ? 'warning' : 'muted') ?>">
+                                                            <?= $dl < 0 ? abs($dl) . ' days expired' : $dl . ' days left' ?>
                                                         </small>
                                                     <?php endif; ?>
                                                 </td>
                                                 <td>
-                                                    <?php if ($doc['expiry_date'] && strtotime($doc['expiry_date']) < time()): ?>
+                                                    <?php if ($doc['is_replaced']): ?>
+                                                        <span class="badge bg-secondary" title="A newer copy of this document is on file">Replaced by newer copy</span>
+                                                    <?php elseif ($doc['is_expired']): ?>
                                                         <span class="badge bg-danger">Expired</span>
-                                                    <?php elseif ($doc['days_until_expiry'] !== null && $doc['days_until_expiry'] <= 30): ?>
+                                                    <?php elseif ($doc['is_expiring']): ?>
                                                         <span class="badge bg-warning">Expiring Soon</span>
                                                     <?php else: ?>
                                                         <span class="badge bg-success">Valid</span>
@@ -419,7 +335,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <p><strong>Lease:</strong><br>
                                 <a href="lease_view.php?id=<?= $unit['lease_id'] ?>"><?= h($unit['lease_number']) ?></a>
                             </p>
-                            <p><strong>Tenant:</strong><br><?= h($unit['first_name'] . ' ' . $unit['last_name']) ?></p>
+                            <p><strong>Tenant:</strong><br><?= h($tenantName ?: '—') ?></p>
                         <?php endif; ?>
                     </div>
                 </div>
