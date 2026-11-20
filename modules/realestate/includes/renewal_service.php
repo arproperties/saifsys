@@ -193,6 +193,11 @@ if (!function_exists('re_renewal_create')) {
         // Admin fees: admin input wins, otherwise keep existing
         $oldAdmin = !empty($oldLease['admin_fees']) ? (float)$oldLease['admin_fees'] : 0.0;
         $adminFeesFinal = $adminFees !== null ? (float)$adminFees : $oldAdmin;
+        // Reem's renewals may waive the fee: an admin fee of 0 above means "keep the old one",
+        // so a waived fee comes as its own flag. Only Reem's door sends it.
+        if (!empty($in['admin_waived'])) {
+            $adminFeesFinal = 0.0;
+        }
 
         if (!$additionalParkingEnabled) {
             $additionalParkingFee = 0.0;
@@ -924,6 +929,71 @@ if (!function_exists('re_renewal_convert')) {
             'start_date' => $newStartDate,
             'message' => $message,
         ];
+    }
+}
+
+if (!function_exists('re_renewal_set_charges')) {
+    /**
+     * New admin and chiller fees (and the rent and cheques with them) on a renewal not yet
+     * converted, as the renewal page's "Save renewal amounts" does: the workflow and its draft
+     * lease both get the fees, then re_renewal_set_rent() works the VAT and totals out again.
+     * A fee left null stays as it is; the chiller only on a building whose notice shows it.
+     * All of it or nothing.
+     *
+     * @return array{proposed_rent:float,grand_total:float,number_of_cheques:int,admin:float,chiller:float}
+     */
+    function re_renewal_set_charges(PDO $conn, int $companyId, int $userId, int $workflowId, ?float $admin, ?float $chiller, float $rent, int $cheques, string $note = ''): array
+    {
+        $st = $conn->prepare("SELECT * FROM re_lease_renewal_workflows WHERE id = ? LIMIT 1");
+        $st->execute([$workflowId]);
+        $wf = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$wf) {
+            throw new Exception('Renewal workflow not found.');
+        }
+        if (!renewal_wf_can_save_renewal_amounts((string)$wf['status'])) {
+            throw new Exception("The renewal is {$wf['status']}: its charges can no longer change.");
+        }
+        if (($admin !== null && $admin < 0) || ($chiller !== null && $chiller < 0)) {
+            throw new Exception('A fee cannot be below 0.');
+        }
+        $newLeaseId = (int)($wf['new_lease_id'] ?? 0);
+        if ($newLeaseId < 1) {
+            throw new Exception('This renewal has no draft lease, so its charges cannot change.');
+        }
+        $adminNow = $admin !== null ? round($admin, 2) : round((float)$wf['admin_fees'], 2);
+        $chillerNow = (int)$wf['show_chiller_row'] === 1
+            ? ($chiller !== null ? round($chiller, 2) : round((float)$wf['chiller_charges'], 2))
+            : 0.0;
+
+        $own = !$conn->inTransaction();
+        if ($own) {
+            $conn->beginTransaction();
+        }
+        try {
+            $conn->prepare("UPDATE re_lease_renewal_workflows SET admin_fees = ?, chiller_charges = ? WHERE id = ?")
+                ->execute([$adminNow, $chillerNow, $workflowId]);
+            $up = $conn->prepare("UPDATE re_leases SET admin_fees = ?, chiller_fees = ? WHERE id = ? AND company_id = ? AND status = 'draft'");
+            $up->execute([$adminNow, $chillerNow, $newLeaseId, $companyId]);
+            if ($up->rowCount() === 0) {
+                // Same figures already there count as done; a lease no longer draft does not.
+                $chk = $conn->prepare("SELECT 1 FROM re_leases WHERE id = ? AND company_id = ? AND status = 'draft'");
+                $chk->execute([$newLeaseId, $companyId]);
+                if (!$chk->fetchColumn()) {
+                    throw new Exception('The renewal lease is no longer a draft, so its charges cannot change.');
+                }
+            }
+            $done = re_renewal_set_rent($conn, $companyId, $userId, $workflowId, $rent, $cheques,
+                $note !== '' ? $note : 'Charges changed');
+            if ($own) {
+                $conn->commit();
+            }
+        } catch (Throwable $e) {
+            if ($own && $conn->inTransaction()) {
+                $conn->rollBack();
+            }
+            throw $e;
+        }
+        return $done + ['admin' => $adminNow, 'chiller' => $chillerNow];
     }
 }
 
