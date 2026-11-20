@@ -97,6 +97,22 @@ function re_lease_linked_renewal_workflow(PDO $conn, int $companyId, int $leaseI
     return $workflow ?: null;
 }
 
+/**
+ * Draft renewal lease whose renewal workflow was rejected: the renewal will not
+ * happen, so the draft never replaces the lease it was made from (move-out is
+ * done on the old lease) and it can never be activated.
+ */
+function re_lease_renewal_rejected(PDO $conn, int $leaseId): bool
+{
+    static $cache = [];
+    if (!array_key_exists($leaseId, $cache)) {
+        $st = $conn->prepare("SELECT status FROM re_lease_renewal_workflows WHERE new_lease_id = ? ORDER BY id DESC LIMIT 1");
+        $st->execute([$leaseId]);
+        $cache[$leaseId] = $st->fetchColumn() === 'rejected';
+    }
+    return $cache[$leaseId];
+}
+
 function re_lease_soft_delete(PDO $conn, int $companyId, int $leaseId, int $userId, string $reason = ''): array
 {
     if (!re_lease_column_exists($conn, 'deleted_at')) {
@@ -403,6 +419,9 @@ function re_lease_change_status_guarded(PDO $conn, int $companyId, int $leaseId,
         throw new RuntimeException('Status change from "' . ($lease['status'] ?? '') . '" to "' . $newStatus . '" is not allowed.');
     }
 
+    if ($newStatus === 'active' && ($lease['status'] ?? '') === 'draft' && re_lease_renewal_rejected($conn, $leaseId)) {
+        throw new RuntimeException('This renewal was rejected, so its draft lease cannot be activated. Start a new renewal or a new lease instead.');
+    }
     if (!empty($lease['is_renewal_lease']) && $newStatus === 'active') {
         $workflow = re_lease_linked_renewal_workflow($conn, $companyId, $leaseId);
         if ($workflow) {

@@ -179,8 +179,11 @@ function re_move_in_add_block_reason(PDO $conn, int $companyId, int $leaseId): ?
         return 'This lease was renewed by lease ' . ($newer['lease_number'] ?: ('#' . $newer['id']))
             . '. The move-in of this tenancy is recorded from that lease (Mark as Moved In), not here.';
     }
+    if (re_lease_is_draft_renewal($lease) && re_lease_renewal_rejected($conn, $leaseId)) {
+        return 'This renewal was rejected. Its draft lease cannot be activated or moved into; do the move-out on the original lease.';
+    }
     if (re_lease_is_draft_renewal($lease)) {
-        return 'This lease is a renewal that is still a draft. A renewal does not need a new move-in: activate it, then use Mark as Moved In on it if the tenancy has none yet.';
+        return'This lease is a renewal that is still a draft. A renewal does not need a new move-in: activate it, then use Mark as Moved In on it if the tenancy has none yet.';
     }
     if ($first = re_move_in_first_lease($conn, $companyId, $leaseId)) {
         return 'This lease renews the tenancy that started with lease ' . ($first['lease_number'] ?: ('#' . $first['id']))
@@ -234,8 +237,12 @@ function re_move_out_superseded_by(PDO $conn, int $companyId, int $leaseId): ?ar
             }
             continue;
         }
+        // A rejected renewal never replaces this lease: move-out stays on this one
+        if (re_lease_renewal_rejected($conn, (int)$later['id'])) {
+            continue;
+        }
         // Draft renewal: follow its renewal link back into this tenancy
-        $p = (int)($later['parent_lease_id'] ?? 0);
+        $p =(int)($later['parent_lease_id'] ?? 0);
         for ($i = 0; $p > 0 && $i < 20; $i++) {
             if ($p === $leaseId || $headOf($p) === $head) {
                 return $later;
