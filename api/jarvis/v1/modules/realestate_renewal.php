@@ -24,6 +24,10 @@
  *            Body: as for quote.
  *   rent     a new rent on the open workflow (a counter-offer, the RERA index rent, or the
  *            rent agreed). Body: workflow_id, rent, cheques, note.
+ *   charges  new admin and chiller fees with the rent, on the workflow and its draft lease.
+ *            Body: workflow_id, rent, cheques, admin_fees, chiller_charges (null keeps it), note.
+ *            Returns the grand total, for Reem to check against what the tenant was shown.
+ *            (admin_fees 0 in quote/start is waived too.)
  *   status   the workflow moved on: negotiation, accepted or rejected.
  *            Body: workflow_id, status, note.
  *   contract the tenancy contract PDF of the renewal's draft lease (Contract Templates), the
@@ -160,8 +164,9 @@ function jarvis_rn_fees(array $lease, array $in): array
     $oldParking = !empty($lease['has_additional_parking']) ? (float)$lease['additional_parking_fee'] : 0.0;
     $oldStore = !empty($lease['has_additional_store']) ? (float)$lease['additional_store_fee'] : 0.0;
     return [
-        // re_renewal_create() reads an admin fee of 0 as "keep the old one".
-        'admin' => $admin !== null && $admin > 0 ? $admin : (float)$lease['admin_fees'],
+        // Left out: the old lease's. 0: waived (sent to re_renewal_create() as admin_waived,
+        // which on its own reads 0 as "keep the old one").
+        'admin' => $admin !== null ? $admin : (float)$lease['admin_fees'],
         'chiller' => $shows ? ($chiller ?? (float)$lease['chiller_fees']) : 0.0,
         'chiller_shown' => $shows,
         'parking' => $parking ?? $oldParking,
@@ -182,6 +187,7 @@ function jarvis_rn_terms(array $lease, float $rent, int $cheques, array $in): ar
         'proposed_rent' => $rent,
         'number_of_cheques' => $cheques,
         'admin_fees' => $fees['admin'],
+        'admin_waived' => $fees['admin'] == 0.0,
         'chiller_charges' => $fees['chiller'],
         'additional_parking_enabled' => $fees['parking'] > 0,
         'additional_parking_fee' => $fees['parking'],
@@ -383,6 +389,21 @@ if ($action === 'rent') {
         jarvis_rn_fail('rent_failed', $e->getMessage(), 422);
     }
     jarvis_rn_log($conn, $workflowId, $companyId, $actorId, 'reem_rent', "Rent now AED $rent a year, $cheques cheques" . ($note !== '' ? ": $note" : ''));
+    jarvis_api_send(['ok' => true, 'renewal' => ['workflow_id' => $workflowId] + $done]);
+}
+
+if ($action === 'charges') {
+    // New admin and chiller fees with the rent: the tenant agreed to other charges than offered.
+    [$rent, $cheques] = jarvis_rn_rent($in);
+    $admin = jarvis_rn_amount($in, 'admin_fees');
+    $chiller = jarvis_rn_amount($in, 'chiller_charges');
+    try {
+        $done = re_renewal_set_charges($conn, $companyId, $actorId, $workflowId, $admin, $chiller, $rent, $cheques, $note);
+    } catch (Throwable $e) {
+        jarvis_rn_fail('charges_failed', $e->getMessage(), 422);
+    }
+    jarvis_rn_log($conn, $workflowId, $companyId, $actorId, 'reem_charges',
+        "Charges now: admin fee AED {$done['admin']}, chiller AED {$done['chiller']}; rent AED $rent a year, $cheques cheques" . ($note !== '' ? ": $note" : ''));
     jarvis_api_send(['ok' => true, 'renewal' => ['workflow_id' => $workflowId] + $done]);
 }
 
