@@ -32,6 +32,8 @@
  *            Body: workflow_id, status, note.
  *   contract the tenancy contract PDF of the renewal's draft lease (Contract Templates), the
  *            one the staff's tenants sign. Body: workflow_id.
+ *   contract_preview  the same contract as it would be at this rent and these fees, for a
+ *            test email: set, printed, then undone, so nothing is kept. Body: as for charges.
  *   note     a line on the workflow's log for an email out or in (Body: workflow_id, message),
  *            with the email itself added to its negotiation notes (text). With to_tenant on a
  *            renewal Reem took over, the text is also a message to the tenant in the portal.
@@ -492,6 +494,42 @@ if ($action === 'contract') {
         jarvis_rn_fail('contract_failed', $e->getMessage(), 422);
     }
     jarvis_api_send(['ok' => true, 'contract' => ['name' => basename((string)$rel), 'data' => base64_encode($bytes)]]);
+}
+
+if ($action === 'contract_preview') {
+    // The contract as it would be at this rent and these fees, for a test email: the figures
+    // are set, the PDF made, then all of it undone. Nothing is kept but the bytes sent back.
+    $newLeaseId = (int)($wf['new_lease_id'] ?? 0);
+    if ($newLeaseId < 1) {
+        jarvis_rn_fail('no_draft_lease', 'This renewal has no draft lease in saifsys.', 409);
+    }
+    [$rent, $cheques] = jarvis_rn_rent($in);
+    $admin = jarvis_rn_amount($in, 'admin_fees');
+    $chiller = jarvis_rn_amount($in, 'chiller_charges');
+    require_once $root . '/modules/realestate/includes/contract_pdf_generator.php';
+    $file = null;
+    $conn->beginTransaction();
+    try {
+        $done = re_renewal_set_charges($conn, $companyId, $actorId, $workflowId, $admin, $chiller, $rent, $cheques, 'Preview for a test email');
+        $rel = (new ContractPDFGenerator($conn, $companyId))->generateFromLease($newLeaseId);
+        $file = $root . '/' . ltrim((string)$rel, '/');
+        $bytes = @file_get_contents($file);
+        if ($bytes === false || $bytes === '') {
+            throw new Exception('The contract PDF was not made.');
+        }
+    } catch (Throwable $e) {
+        if ($conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        if ($file && is_file($file)) {
+            @unlink($file);
+        }
+        jarvis_rn_fail('contract_preview_failed', $e->getMessage(), 422);
+    }
+    $conn->rollBack();
+    @unlink($file);
+    jarvis_api_send(['ok' => true, 'grand_total' => $done['grand_total'],
+        'contract' => ['name' => basename((string)$rel), 'data' => base64_encode($bytes)]]);
 }
 
 if ($action === 'note') {
