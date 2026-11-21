@@ -130,6 +130,14 @@ if (!function_exists('ars_shell_nav_items')) {
                 'visible' => true,
             ];
             $items[] = [
+                'id' => 'rental-contract',
+                'label' => 'Rental Contract',
+                'icon' => 'file-text',
+                'href' => 'rental_contract.php',
+                'active' => $is(['rental_contract.php']),
+                'visible' => true,
+            ];
+            $items[] = [
                 'id' => 'bulk-email',
                 'label' => 'Bulk Email',
                 'icon' => 'mail',
