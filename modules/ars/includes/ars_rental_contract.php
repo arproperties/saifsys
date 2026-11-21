@@ -17,6 +17,7 @@ const ARC_LANDLORD_DEFAULT = 'Ain Al Reem Real Estate L.L.C.';
 /** Contract fields typed on the page (column => label). */
 const ARC_FIELDS = [
     'lease_no' => 'Lease ID',
+    'hide_lease_id' => 'Hide Lease ID',
     'contract_date' => 'Date',
     'landlord_name' => 'Landlord Name',
     'tenant_name' => 'Tenant',
@@ -29,6 +30,7 @@ const ARC_FIELDS = [
     'start_date' => 'Period: From',
     'end_date' => 'Period: To',
     'unit_no' => 'Unit No',
+    'unit_type' => 'Unit Type',
     'rent' => 'Rent (AED)',
     'terms_of_payment' => 'Terms of Payment',
     'security_deposit' => 'Security Deposit (AED)',
@@ -49,6 +51,7 @@ if (!function_exists('arc_ensure_tables')) {
               `booking_id` INT(11) DEFAULT NULL,
               `letterhead_id` INT(11) DEFAULT NULL,
               `lease_no` VARCHAR(100) DEFAULT NULL,
+              `hide_lease_id` VARCHAR(1) DEFAULT NULL,
               `contract_date` DATE DEFAULT NULL,
               `landlord_name` VARCHAR(255) DEFAULT NULL,
               `tenant_name` VARCHAR(255) DEFAULT NULL,
@@ -61,6 +64,7 @@ if (!function_exists('arc_ensure_tables')) {
               `start_date` DATE DEFAULT NULL,
               `end_date` DATE DEFAULT NULL,
               `unit_no` VARCHAR(100) DEFAULT NULL,
+              `unit_type` VARCHAR(100) DEFAULT NULL,
               `rent` DECIMAL(12,2) DEFAULT NULL,
               `terms_of_payment` VARCHAR(255) DEFAULT NULL,
               `security_deposit` DECIMAL(12,2) DEFAULT NULL,
@@ -81,6 +85,15 @@ if (!function_exists('arc_ensure_tables')) {
               KEY `idx_booking` (`booking_id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ");
+        // Existing installs: the table was created before unit_type existed.
+        $hasUnitType = $conn->query("SHOW COLUMNS FROM `ars_rental_contracts` LIKE 'unit_type'")->fetch(PDO::FETCH_ASSOC);
+        if (!$hasUnitType) {
+            $conn->exec("ALTER TABLE `ars_rental_contracts` ADD COLUMN `unit_type` VARCHAR(100) DEFAULT NULL AFTER `unit_no`");
+        }
+        $hasHideLease = $conn->query("SHOW COLUMNS FROM `ars_rental_contracts` LIKE 'hide_lease_id'")->fetch(PDO::FETCH_ASSOC);
+        if (!$hasHideLease) {
+            $conn->exec("ALTER TABLE `ars_rental_contracts` ADD COLUMN `hide_lease_id` VARCHAR(1) DEFAULT NULL AFTER `lease_no`");
+        }
         $done = true;
     }
 
@@ -442,6 +455,7 @@ if (!function_exists('arc_ensure_tables')) {
             '{{START_DATE}}' => $date('start_date'),
             '{{END_DATE}}' => $date('end_date'),
             '{{UNIT_NO}}' => $text('unit_no'),
+            '{{UNIT_TYPE}}' => $text('unit_type'),
             '{{RENT}}' => $money('rent'),
             '{{RENT_WORDS_EN}}' => $words('rent', 'en'),
             '{{RENT_WORDS_AR}}' => $words('rent', 'ar'),
@@ -449,6 +463,10 @@ if (!function_exists('arc_ensure_tables')) {
             '{{DEPOSIT}}' => $money('security_deposit'),
             '{{DEPOSIT_WORDS_EN}}' => $words('security_deposit', 'en'),
         ];
+        // Lease ID hidden: drop the whole "Lease ID:" line from the contract header.
+        if ($val('hide_lease_id') === '1') {
+            $html = str_replace('Lease ID: {{LEASE_ID}}', '', $html);
+        }
         return str_replace(array_keys($replacements), array_values($replacements), $html);
     }
 

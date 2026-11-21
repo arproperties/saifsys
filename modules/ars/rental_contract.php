@@ -20,7 +20,7 @@ $self = 'rental_contract.php';
 $error = '';
 $success = '';
 $messages = ['Draft saved.', 'Contract confirmed as final. PDF generated.', 'Draft deleted.', 'Contract cancelled.',
-    'Letterhead added.', 'Letterhead updated.', 'Letterhead deleted.'];
+    'Letterhead added.', 'Letterhead updated.', 'Letterhead deleted.', 'Contract draft created from the reservation.'];
 
 $action = $_POST['action'] ?? $_GET['action'] ?? '';
 
@@ -82,6 +82,39 @@ if ($action === 'download') {
         exit;
     }
     $error = 'PDF file not found.';
+}
+
+// "Create Rental Contract" on a reservation: save a draft filled from it, then open that draft.
+// A reservation that already has a draft opens that draft, so no second copy is made.
+if ($action === 'create_from_booking') {
+    $bookingId = (int)($_GET['booking_id'] ?? 0);
+    try {
+        arc_ensure_tables($conn);
+        $vals = $bookingId ? arc_values_from_booking($conn, $arsCompanyId, $bookingId) : null;
+        if (!$vals) {
+            throw new RuntimeException('Reservation not found.');
+        }
+        $existing = $conn->prepare("SELECT id FROM ars_rental_contracts WHERE company_id = ? AND booking_id = ? AND status = 'draft' ORDER BY id DESC LIMIT 1");
+        $existing->execute([$arsCompanyId, $bookingId]);
+        $draftId = (int)$existing->fetchColumn();
+        if ($draftId) {
+            header('Location: ' . $self . '?edit=' . $draftId);
+            exit;
+        }
+        $data = arc_input(array_merge($vals, [
+            'booking_id' => $bookingId,
+            'contract_date' => date('Y-m-d'),
+            'landlord_name' => ARC_LANDLORD_DEFAULT,
+            'contract_type' => 'Short-Term',
+            'terms_of_payment' => 'Single advance payment',
+            'hide_lease_id' => '1',
+        ]));
+        $newId = arc_save_contract($conn, $arsCompanyId, null, $data, $userId);
+        header('Location: ' . $self . '?edit=' . $newId . '&msg=' . urlencode('Contract draft created from the reservation.'));
+        exit;
+    } catch (Throwable $e) {
+        $error = $e->getMessage();
+    }
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -150,8 +183,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($action, ['save', 'confirm
     $form['landlord_name'] = ARC_LANDLORD_DEFAULT;
     $form['contract_type'] = 'Short-Term';
     $form['terms_of_payment'] = 'Single advance payment';
+    $form['hide_lease_id'] = '1';
     $form['booking_id'] = null;
     $form['letterhead_id'] = null;
+    // Opened from a reservation (booking_view.php): fill the tenant and stay details from it.
+    $fromBooking = (int)($_GET['booking_id'] ?? 0);
+    $fromValues = $fromBooking ? arc_values_from_booking($conn, $arsCompanyId, $fromBooking) : null;
+    if ($fromValues) {
+        $form = array_merge($form, $fromValues);
+        $form['booking_id'] = $fromBooking;
+    }
 }
 $letterheads = arc_letterheads($conn, $arsCompanyId);
 $selectedLetterhead = arc_letterhead($conn, $arsCompanyId, (int)($form['letterhead_id'] ?? 0) ?: null);
@@ -223,6 +264,12 @@ ars_shell_begin([
 
                     <div class="row g-2">
                         <?= $input('lease_no', 'Lease ID') ?>
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input arc-field" type="checkbox" name="hide_lease_id" value="1" id="hideLeaseId" <?= $fv('hide_lease_id') === '1' ? 'checked' : '' ?>>
+                                <label class="form-check-label small" for="hideLeaseId">Hide Lease ID on the contract</label>
+                            </div>
+                        </div>
                         <?= $input('contract_date', 'Date', 'date') ?>
                         <?= $input('landlord_name', 'Landlord Name', 'text', 'col-12', 'maxlength="255"') ?>
 
@@ -242,6 +289,7 @@ ars_shell_begin([
                         <?= $input('start_date', 'Period: From', 'date') ?>
                         <?= $input('end_date', 'Period: To', 'date') ?>
                         <?= $input('unit_no', 'Unit No', 'text', 'col-6', 'maxlength="100"') ?>
+                        <?= $input('unit_type', 'Unit Type', 'text', 'col-6', 'maxlength="100"') ?>
                         <?= $input('rent', 'Rent (AED)', 'number', 'col-6', 'step="0.01" min="0"') ?>
                         <?= $input('terms_of_payment', 'Terms of Payment', 'text', 'col-6', 'maxlength="255"') ?>
                         <?= $input('security_deposit', 'Security Deposit (AED)', 'number', 'col-6', 'step="0.01" min="0"') ?>
@@ -517,7 +565,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function refreshPreview() {
         var params = new URLSearchParams();
-        form.querySelectorAll('.arc-field').forEach(function (el) { params.set(el.name, el.value); });
+        form.querySelectorAll('.arc-field').forEach(function (el) {
+            if (el.type === 'checkbox') { params.set(el.name, el.checked ? el.value : ''); }
+            else { params.set(el.name, el.value); }
+        });
         params.set('action', 'preview');
         frame.src = '<?= $self ?>?' + params.toString();
     }
