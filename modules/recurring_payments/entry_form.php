@@ -161,6 +161,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         <label class="form-label fw-semibold">Title</label>
         <input type="text" name="title" class="form-control form-control-lg" maxlength="<?= RPAY_TITLE_MAX ?>"
                value="<?= h($form['title']) ?>" placeholder="e.g. Washing machine rent" required <?= $entry ? '' : 'autofocus' ?>>
+        <?php if (!$entry): ?><div class="form-text">Filled in from the income head. Change it if needed.</div><?php endif; ?>
       </div>
 
       <div class="col-md-6">
@@ -329,7 +330,15 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       roomHint.textContent = room.value ? 'Its payments go to ' + room.options[room.selectedIndex].textContent + '.' : 'Its payments go to the room in the unit or title.';
     }
   }
+  // A new entry's title follows the income head, until the title is typed by hand (cleared: it follows again).
+  var titleAuto = <?= $entry ? 'false' : 'true' ?> && title.value.trim() === '';
+  title.addEventListener('input', function () { titleAuto = title.value.trim() === ''; });
+  function titleFromHead() {
+    if (!titleAuto) { return; }
+    title.value = newHead.value.trim() !== '' ? newHead.value.trim() : (head.selectedIndex > 0 ? head.options[head.selectedIndex].textContent.trim() : '');
+  }
   function fromHead() {
+    titleFromHead();
     if (touched.group) { return; }
     var g = '';
     if (newHead.value.trim() !== '') { g = suggest(newHead.value); }
@@ -342,6 +351,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
   [head, newHead].forEach(function (el) { el.addEventListener('input', fromHead); el.addEventListener('change', fromHead); });
   if (window.jQuery) { jQuery(head).on('change', fromHead); }
   [unit, title].forEach(function (el) { el.addEventListener('input', rooms); });
+  titleFromHead(); // a head already picked (Add entry from a group) fills the title at once
   rooms();
 })();
 </script>

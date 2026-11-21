@@ -18,9 +18,13 @@ $code = rpay_boot($conn);
 
 $rpayBase = get_application_web_root() . '/modules/recurring_payments';
 $selfUrl = $rpayBase . '/entries.php';
-// One income head only (an id, or "none" for no head); kept after Pause, Create now and the rest.
-$headFilter = is_string($_GET['head'] ?? null) ? $_GET['head'] : '';
-$listUrl = $selfUrl . ($headFilter !== '' ? '?head=' . urlencode($headFilter) : '');
+// Search and filters; all kept after Pause, Create now and the rest.
+$getStr = fn($k) => is_string($_GET[$k] ?? null) ? trim($_GET[$k]) : '';
+$headFilter = $getStr('head');      // an income head id, or "none" for no head
+$q = $getStr('q');                  // title, unit, building, head or notes
+$dateFilter = $getStr('date');      // a start date (YYYY-MM-DD) from the entry form
+$filterParams = array_filter(['q' => $q, 'date' => $dateFilter, 'head' => $headFilter], fn($v) => $v !== '');
+$listUrl = $selfUrl . ($filterParams ? '?' . http_build_query($filterParams) : '');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -56,13 +60,24 @@ try {
 } catch (BinvError $e) {
     rpay_stop($e);
 }
-$entries = $data['entries'] ?? [];
+$allEntries = $data['entries'] ?? [];
 
-if ($headFilter !== '') {
-    $entries = array_values(array_filter($entries, function ($e) use ($headFilter) {
-        return $headFilter === 'none' ? empty($e['head']) : (string)($e['head']['id'] ?? '') === $headFilter;
-    }));
-}
+$entries = array_values(array_filter($allEntries, function ($e) use ($headFilter, $q, $dateFilter) {
+    $headId = (int)($e['head']['id'] ?? 0);
+    if ($headFilter !== '' && ($headFilter === 'none' ? $headId !== 0 : (string)$headId !== $headFilter)) {
+        return false;
+    }
+    if ($dateFilter !== '' && rpay_start_date((string)($e['first_month'] ?? ''), (int)($e['day'] ?? 1)) !== $dateFilter) {
+        return false;
+    }
+    if ($q !== '') {
+        $hay = implode(' ', [$e['title'] ?? '', $e['unit'] ?? '', $e['building']['name'] ?? '', $e['head']['name'] ?? '', $e['notes'] ?? '']);
+        if (mb_stripos($hay, $q) === false) {
+            return false;
+        }
+    }
+    return true;
+}));
 
 // Notes kept in saifsys, per entry.
 $noteMap = rpay_entry_notes($conn, array_map(function ($e) { return (int)$e['id']; }, $entries));
@@ -85,6 +100,17 @@ require __DIR__ . '/includes/rpay_layout_header.php';
   <div class="card-body">
     <form method="get" class="row g-2 align-items-end" action="<?= h($selfUrl) ?>">
       <div class="col-12 col-md-4">
+        <label class="form-label small fw-semibold mb-1">Search</label>
+        <div class="input-group">
+          <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+          <input type="search" name="q" class="form-control" value="<?= h($q) ?>" placeholder="Title, unit, building, head">
+        </div>
+      </div>
+      <div class="col-6 col-md-2">
+        <label class="form-label small fw-semibold mb-1">Show date</label>
+        <input type="date" name="date" class="form-control" value="<?= h($dateFilter) ?>" onchange="this.form.submit()">
+      </div>
+      <div class="col-6 col-md-3">
         <label class="form-label small fw-semibold mb-1">Income head</label>
         <select name="head" class="form-select" data-search onchange="this.form.submit()">
           <option value="">All</option>
@@ -94,16 +120,18 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           <option value="none"<?= $headFilter === 'none' ? ' selected' : '' ?>>No income head</option>
         </select>
       </div>
-      <div class="col-6 col-md-2">
-        <button class="btn btn-light border w-100"><i class="bi bi-funnel"></i> Show</button>
+      <div class="col-12 col-md-2 d-flex gap-2">
+        <button class="btn btn-light border flex-fill"><i class="bi bi-funnel"></i> Show</button>
+        <?php if ($filterParams): ?>
+          <a class="btn btn-link text-decoration-none px-1" href="<?= h($selfUrl) ?>">Clear</a>
+        <?php endif; ?>
       </div>
-      <?php if ($headFilter !== ''): ?>
-        <div class="col-12 col-md-6 d-flex flex-wrap align-items-center gap-3 pb-2">
-          <span class="text-muted small"><?= count($entries) ?> entr<?= count($entries) === 1 ? 'y' : 'ies' ?></span>
-          <a class="small text-decoration-none" href="<?= h($rpayBase) ?>/index.php?head=<?= h(urlencode($headFilter)) ?>">See payments</a>
-          <a class="small text-decoration-none" href="<?= h($selfUrl) ?>">Show all entries</a>
-        </div>
-      <?php endif; ?>
+      <div class="col-12 d-flex flex-wrap align-items-center gap-3 small">
+        <span class="text-muted"><?= count($entries) ?> of <?= count($allEntries) ?> entr<?= count($allEntries) === 1 ? 'y' : 'ies' ?></span>
+        <?php if ($headFilter !== ''): ?>
+          <a class="text-decoration-none" href="<?= h($rpayBase) ?>/index.php?head=<?= h(urlencode($headFilter)) ?>">See payments</a>
+        <?php endif; ?>
+      </div>
     </form>
   </div>
 </div>
@@ -112,11 +140,11 @@ require __DIR__ . '/includes/rpay_layout_header.php';
   <div class="table-responsive">
     <table class="table rpay-table align-middle">
       <thead>
-        <tr><th>Title</th><th>Building</th><th>Income head</th><th>Shop / unit</th><th class="text-end">Amount</th><th>Created on</th><th>Status</th><th></th></tr>
+        <tr><th>Title</th><th>Building</th><th>Income head</th><th>Shop / unit</th><th class="text-end">Amount</th><th>Start date</th><th>Status</th><th></th></tr>
       </thead>
       <tbody>
         <?php if (!$entries): ?>
-          <tr><td colspan="8" class="text-muted text-center py-5"><?= $headFilter !== '' ? 'No entries under this income head.' : 'No entries yet. Add the first one.' ?></td></tr>
+          <tr><td colspan="8" class="text-muted text-center py-5"><?= $filterParams ? 'No entries match the search or filters.' : 'No entries yet. Add the first one.' ?></td></tr>
         <?php endif; ?>
         <?php foreach ($entries as $e): ?>
           <?php $active = !empty($e['active']); $auto = !empty($e['auto_create']); ?>
@@ -136,11 +164,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             <td><?= h($e['unit'] ?? '') ?></td>
             <td class="num text-end fw-semibold"><?= h(rpay_money($e['amount'] ?? 0)) ?></td>
             <td>
-              <?php if ($auto): ?>
-                <?= h(rpay_day_label((int)($e['day'] ?? 1))) ?> of each month
-              <?php else: ?>
-                <span class="text-muted">By hand</span>
-              <?php endif; ?>
+              <?= h(rpay_date(rpay_start_date((string)($e['first_month'] ?? ''), (int)($e['day'] ?? 1)))) ?>
             </td>
             <td><span class="badge text-bg-<?= $active ? 'success' : 'secondary' ?>"><?= $active ? 'Active' : 'Paused' ?></span></td>
             <td class="text-end text-nowrap">

@@ -35,6 +35,7 @@ $linkTo = function (int $id) use ($rpayBase, $filters) {
 const RPAY_HISTORY_MONTHS = 12; // the entry's other months: this many back at most
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    rpay_too_big($selfUrl);
     csrf_verify();
     if (rpay_handle_note_post($conn, $code)) {
         // a note added or deleted (saifsys's own table)
@@ -45,6 +46,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             binv_flash('The receipt is deleted. That amount is owed again.');
         } catch (BinvError $e) {
             binv_flash($e->getMessage(), 'danger');
+        }
+    } elseif (($_POST['action'] ?? '') === 'add_file') {
+        // One more file for a receipt: Reem keeps every file of it.
+        if (!isset($_FILES['file']) || (int)($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            binv_flash('Choose a file first.', 'warning');
+        } else {
+            $error = rpay_send_file($code, '/receipts/' . (int)($_POST['receipt'] ?? 0) . '/files', $_FILES['file']);
+            binv_flash($error ?? 'File added.', $error ? 'danger' : 'success');
         }
     } else {
         $_POST['due'] = $dueId; // this page's own payment
@@ -183,6 +192,14 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             <?php if (!empty($r['attachment'])): ?>
               <a class="btn btn-sm btn-light border" target="_blank" rel="noopener" title="File" href="<?= h(rpay_file_url($rpayBase, 'receipt', (int)$r['id'])) ?>"><i class="bi bi-paperclip"></i></a>
             <?php endif; ?>
+            <form method="post" action="<?= h($selfUrl) ?>" enctype="multipart/form-data" class="m-0">
+              <?php csrf_field(); ?>
+              <input type="hidden" name="action" value="add_file">
+              <input type="hidden" name="receipt" value="<?= (int)$r['id'] ?>">
+              <label class="btn btn-sm btn-light border mb-0" title="Add another file to this receipt"><i class="bi bi-plus-lg"></i>
+                <input type="file" name="file" class="d-none" accept="image/jpeg,image/png,image/webp,application/pdf" onchange="this.form.submit()">
+              </label>
+            </form>
             <form method="post" action="<?= h($selfUrl) ?>" class="m-0" onsubmit="return confirm('Delete this receipt of <?= h(rpay_money($r['amount'] ?? 0)) ?>? Its money comes out of its account, its file is deleted, and the amount is owed again.');">
               <?php csrf_field(); ?>
               <input type="hidden" name="action" value="delete_receipt">
