@@ -56,6 +56,7 @@ $dues = $data['dues'] ?? [];
 $totals = $data['totals'] ?? [];
 $status = $filters['status'] ?? '';
 $payUrl = $rpayBase . '/pay.php?' . ($filters ? http_build_query($filters) . '&' : '') . 'due=';
+$editUrl = $rpayBase . '/due_edit.php?' . ($filters ? http_build_query($filters) . '&' : '') . 'due=';
 
 $pageTitle = 'Payments';
 require __DIR__ . '/includes/rpay_layout_header.php';
@@ -188,6 +189,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
               <?php else: ?>
                 <a href="<?= h($payUrl . (int)$d['id']) ?>" class="btn btn-sm btn-success"><i class="bi bi-check-lg"></i> Mark paid</a>
               <?php endif; ?>
+              <a href="<?= h($editUrl . (int)$d['id']) ?>" class="btn btn-sm btn-light border" title="Edit date, amount or attachment, or delete"><i class="bi bi-pencil"></i> Edit</a>
             </td>
           </tr>
         <?php endforeach; ?>
