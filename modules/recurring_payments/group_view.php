@@ -361,19 +361,28 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       $headTotals[$k]['left'] += (float)($d['left'] ?? 0);
   }
 ?>
-<div class="rp-pay-grid">
+<?php $modePicks = rpay_entry_mode_picks($conn); ?>
+<div class="d-flex justify-content-end mb-2 no-print">
+  <button type="button" class="btn btn-sm btn-light border" onclick="window.print()"><i class="bi bi-file-earmark-pdf"></i> Download PDF</button>
+</div>
+<div id="rpPrint">
+<table class="table table-sm table-bordered align-middle rp-sheet" style="--bs-border-color:#c9ced6;display:table;width:100%">
+  <thead class="text-dark"><tr><?php if ($showFor): ?><th>Paid for</th><?php endif; ?><th>Title</th><th>Due on</th><th>Paid in</th><th class="text-end">Amount</th><th>Status</th><th>Received</th><th>Mode of payment</th><th class="no-print">Actions</th></tr></thead>
+  <tbody>
   <?php foreach ($shown as $d): ?>
     <?php if ($headOf($d) !== $lastMonth): $lastMonth = $headOf($d); $ht = $headTotals[$lastMonth]; ?>
+      <tr class="<?= empty($group['has_rooms']) ? 'rp-headrow' : 'table-light' ?>"><td colspan="<?= $showFor ? 9 : 8 ?>" class="<?= empty($group['has_rooms']) ? 'text-center' : '' ?>">
       <?php if (!empty($group['has_rooms'])): ?>
-        <div class="rp-month d-flex flex-wrap align-items-baseline gap-2">
-          <span><?= h($headLabel($lastMonth)) ?></span>
+        <div class="d-flex flex-wrap align-items-baseline gap-2">
+          <span class="fw-bold"><?= h($headLabel($lastMonth)) ?></span>
           <span class="small fw-normal text-muted"><?= $ht['n'] ?> <?= $ht['n'] === 1 ? 'payment' : 'payments' ?></span>
           <span class="small fw-semibold text-success ms-auto"><?= h(rpay_money($ht['got'])) ?> received</span>
           <?php if ($ht['left'] > 0): ?><span class="small fw-semibold text-warning-emphasis">· <?= h(rpay_money($ht['left'])) ?> to come</span><?php endif; ?>
         </div>
       <?php else: ?>
-        <div class="rp-month"><?= h($headLabel($lastMonth)) ?></div>
+        <span class="fw-bold">Received on <?= h($headLabel($lastMonth)) ?></span>
       <?php endif; ?>
+      </td></tr>
     <?php endif; ?>
     <?php
       $paid = ($d['status'] ?? '') === 'paid';
@@ -381,38 +390,48 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       $per = rpay_group_period($d, $group['period_rule'], $saved);
       $openUrl = $rpayBase . '/due_detail.php?' . http_build_query($listFilters + ['due' => (int)$d['id']]);
     ?>
-    <div class="rp-pay <?= $paid ? 'rp-paid' : ($partly ? 'rp-partly' : 'rp-pending') ?>">
+    <tr class="<?= $paid ? 'rp-paid' : ($partly ? 'rp-partly' : 'rp-pending') ?>">
       <?php if ($showFor): ?>
-        <div class="rp-for">
-          <?php if ($per): ?>
-            <div class="fw-bold lh-sm"><?= h($per['title']) ?></div>
-            <?php if ($per['range'] !== ''): ?><div class="tiny text-muted"><?= h($per['range']) ?></div><?php endif; ?>
-          <?php endif; ?>
-        </div>
+      <td class="text-center">
+        <?php if ($per): ?>
+          <div class="fw-bold"><?= h($per['title']) ?></div>
+        <?php else: ?>
+          <span class="text-muted">—</span>
+        <?php endif; ?>
+      </td>
       <?php endif; ?>
-      <div class="rp-what">
+      <td>
         <a class="fw-semibold text-decoration-none text-body" href="<?= h($openUrl) ?>"><?= h($d['title'] ?? '') ?></a>
         <div class="tiny text-muted"><?= h(implode(' · ', array_filter([$d['building']['name'] ?? '', $d['unit'] ?? '']))) ?></div>
-      </div>
-      <div class="rp-due">
-        <div class="rp-date rp-date-due"><i class="bi bi-calendar-event"></i> Due on <b><?= h(rpay_date($d['due_date'] ?? '')) ?></b></div>
-        <?php if (($paid || $partly) && !empty($d['paid_on'])): ?>
-          <div class="rp-date rp-date-got mt-1"><i class="bi bi-check2"></i> Paid on <b><?= h(rpay_date($d['paid_on'])) ?></b></div>
-        <?php else: ?>
-          <div class="tiny text-warning-emphasis fw-semibold mt-1">Not paid yet</div>
-        <?php endif; ?>
-<?php if ($alert = rpay_due_alert($d['due_date'] ?? null, !$paid)): ?><div class="mt-1"><?= rpay_due_bell($alert) ?></div><?php endif; ?>
-      </div>
-      <div class="rp-amt fw-bold"><?= h(rpay_money($d['amount'] ?? 0)) ?></div>
-      <div class="rp-st">
+      </td>
+      <td class="text-nowrap">
+        <div class="rp-date rp-date-due"><i class="bi bi-calendar-event"></i> <?= h(rpay_date($d['due_date'] ?? '')) ?></div>
+        <?php if ($alert = rpay_due_alert($d['due_date'] ?? null, !$paid)): ?><div class="mt-1"><?= rpay_due_bell($alert) ?></div><?php endif; ?>
+      </td>
+      <?php if (($paid || $partly) && !empty($d['paid_on'])): ?>
+        <td class="text-center text-nowrap rp-recv">
+          <div class="fw-semibold"><?= h(rpay_date($d['paid_on'])) ?></div>
+        </td>
+      <?php else: ?>
+        <td class="text-center text-nowrap">
+          <span class="tiny text-warning-emphasis fw-semibold">Not paid yet</span>
+        </td>
+      <?php endif; ?>
+      <td class="text-end fw-bold text-nowrap"><?= h(rpay_money($d['amount'] ?? 0)) ?></td>
+      <td>
         <span class="badge text-bg-<?= $paid ? 'success' : ($partly ? 'info' : 'warning') ?>"><?= $paid ? 'Paid' : ($partly ? 'Partly paid' : 'Pending') ?></span>
+      </td>
+      <td>
         <?php if ($paid || $partly): ?>
-          <div class="tiny text-success fw-semibold"><?= h(rpay_money($d['received'] ?? 0)) ?> received</div>
+          <div class="text-success fw-semibold text-nowrap"><?= h(rpay_money($d['received'] ?? 0)) ?></div>
           <?php if (!empty($d['account']['name'])): ?><div class="tiny text-muted"><?= h($d['account']['name']) ?></div><?php endif; ?>
           <?php if ($partly): ?><div class="tiny text-warning-emphasis fw-semibold"><?= h(rpay_money($d['left'] ?? 0)) ?> to come</div><?php endif; ?>
+        <?php else: ?>
+          <span class="text-muted">—</span>
         <?php endif; ?>
-      </div>
-      <div class="rp-act">
+      </td>
+      <td class="text-center"><?= h(RPAY_PAYMENT_MODES[rpay_entry_mode($modePicks, (int)($d['entry_id'] ?? 0), rpay_mode_text($d))]) ?></td>
+      <td class="text-nowrap no-print">
         <?php if ($paid): ?>
           <a href="<?= h($payUrl . (int)$d['id']) ?>" class="btn btn-sm btn-light border">Receipts</a>
         <?php elseif ($partly): ?>
@@ -421,15 +440,29 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           <a href="<?= h($payUrl . (int)$d['id']) ?>" class="btn btn-sm btn-success"><i class="bi bi-check-lg"></i> Mark paid</a>
         <?php endif; ?>
         <a href="<?= h($openUrl) ?>" class="btn btn-sm btn-light border" title="Open"><i class="bi bi-box-arrow-up-right"></i></a>
-      </div>
-    </div>
+      </td>
+    </tr>
   <?php endforeach; ?>
+  </tbody>
+</table>
 </div>
 
 <?php if ($month === '' && $pages > 1): ?>  <div class="d-flex justify-content-between align-items-center mt-3">    <div><?php if ($pageNo > 0): ?><a class="btn btn-light border" href="<?= h($self(['page' => $pageNo - 1])) ?>"><i class="bi bi-chevron-left"></i> Newer months</a><?php endif; ?></div>    <span class="small text-muted">Page <?= $pageNo + 1 ?> of <?= $pages ?></span>    <div><?php if ($pageNo < $pages - 1): ?><a class="btn btn-light border" href="<?= h($self(['page' => $pageNo + 1])) ?>">Older months <i class="bi bi-chevron-right"></i></a><?php endif; ?></div>  </div><?php endif; ?>
 <?php endif; /* the payments list */ ?>
 <style>
 .rp-pay-grid{ display:flex; flex-direction:column; gap:8px; }
+.rp-sheet tr.rp-paid td{ background:#eaf7ee; } .rp-sheet tr.rp-paid td:first-child{ box-shadow:inset 4px 0 0 #2e9e5b; }
+.rp-sheet tr.rp-partly td{ background:#e8f3fc; } .rp-sheet tr.rp-partly td:first-child{ box-shadow:inset 4px 0 0 #2f80c4; }
+.rp-sheet tr.rp-pending td{ background:#fff8e1; } .rp-sheet tr.rp-pending td:first-child{ box-shadow:inset 4px 0 0 #e0a800; }
+.rp-sheet td.rp-recv{ background:#d8f2e1; color:#0f5132; font-weight:600; }
+.rp-sheet tr.rp-headrow td{ background:#dbeafe; color:#1e3a8a; font-weight:700; }
+@media print {
+  body * { visibility: hidden !important; }
+  #rpPrint, #rpPrint * { visibility: visible !important; }
+  #rpPrint { position: absolute; left: 0; top: 0; width: 100%; }
+  .no-print { display: none !important; }
+  .rp-sheet td, .rp-sheet th { border: 1px solid #666 !important; }
+}
 .rp-alert{ display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:999px; font-size:.75rem; font-weight:700; white-space:nowrap; }
 .rp-alert-overdue{ background:#fde2e4; color:#b02a37; border:1px solid #f5b5bb; }
 .rp-alert-soon{ background:#fff3cd; color:#8a5300; border:1px solid #ffe08a; }

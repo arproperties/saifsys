@@ -11,6 +11,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
+require_once __DIR__ . '/../../includes/table_sort.php';
 require_once __DIR__ . '/includes/rpay_helper.php';
 
 require_login(get_application_web_root() . '/login');
@@ -22,8 +23,11 @@ $selfUrl = $rpayBase . '/entries.php';
 $getStr = fn($k) => is_string($_GET[$k] ?? null) ? trim($_GET[$k]) : '';
 $headFilter = $getStr('head');      // an income head id, or "none" for no head
 $q = $getStr('q');                  // title, unit, building, head or notes
-$dateFilter = $getStr('date');      // a start date (YYYY-MM-DD) from the entry form
-$filterParams = array_filter(['q' => $q, 'date' => $dateFilter, 'head' => $headFilter], fn($v) => $v !== '');
+$modeFilter = isset(RPAY_PAYMENT_MODES[$getStr('mode')]) ? $getStr('mode') : ''; // cash, card or cheque ('' = all)
+// The start month (YYYY-MM): the current month when the page is opened; "all" (or '') = every month.
+$monthPick = isset($_GET['month']) ? $getStr('month') : date('Y-m');
+$monthFilter = preg_match('/^\d{4}-\d{2}$/', $monthPick) ? $monthPick : '';
+$filterParams = array_filter(['q' => $q, 'month' => $monthFilter !== '' ? $monthFilter : 'all', 'mode' => $modeFilter, 'head' => $headFilter], fn($v) => $v !== '');
 $listUrl = $selfUrl . ($filterParams ? '?' . http_build_query($filterParams) : '');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -62,12 +66,17 @@ try {
 }
 $allEntries = $data['entries'] ?? [];
 
-$entries = array_values(array_filter($allEntries, function ($e) use ($headFilter, $q, $dateFilter) {
+$modePicks = rpay_entry_mode_picks($conn);
+$savedPicks = rpay_entry_saved_picks($conn);
+$entries = array_values(array_filter($allEntries, function ($e) use ($headFilter, $q, $modeFilter, $monthFilter, $modePicks) {
     $headId = (int)($e['head']['id'] ?? 0);
     if ($headFilter !== '' && ($headFilter === 'none' ? $headId !== 0 : (string)$headId !== $headFilter)) {
         return false;
     }
-    if ($dateFilter !== '' && rpay_start_date((string)($e['first_month'] ?? ''), (int)($e['day'] ?? 1)) !== $dateFilter) {
+    if ($monthFilter !== '' && (string)($e['first_month'] ?? '') !== $monthFilter) {
+        return false;
+    }
+    if ($modeFilter !== '' && rpay_entry_mode($modePicks, (int)$e['id'], rpay_mode_text($e)) !== $modeFilter) {
         return false;
     }
     if ($q !== '') {
@@ -107,8 +116,25 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         </div>
       </div>
       <div class="col-6 col-md-2">
-        <label class="form-label small fw-semibold mb-1">Show date</label>
-        <input type="date" name="date" class="form-control" value="<?= h($dateFilter) ?>" onchange="this.form.submit()">
+        <label class="form-label small fw-semibold mb-1">Month</label>
+        <select name="month" class="form-select" onchange="this.form.submit()">
+          <option value="all"<?= $monthFilter === '' ? ' selected' : '' ?>>All months</option>
+          <?php
+            $monthChoices = array_unique(array_filter(array_merge([date('Y-m')], array_map(function ($e) { return (string)($e['first_month'] ?? ''); }, $allEntries))));
+            rsort($monthChoices);
+            foreach ($monthChoices as $mc): ?>
+            <option value="<?= h($mc) ?>"<?= $monthFilter === $mc ? ' selected' : '' ?>><?= h(rpay_month_label($mc)) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-6 col-md-2">
+        <label class="form-label small fw-semibold mb-1">Mode of payment</label>
+        <select name="mode" class="form-select" onchange="this.form.submit()">
+          <option value="">All</option>
+          <?php foreach (RPAY_PAYMENT_MODES as $mk => $ml): ?>
+            <option value="<?= h($mk) ?>"<?= $modeFilter === $mk ? ' selected' : '' ?>><?= h($ml) ?></option>
+          <?php endforeach; ?>
+        </select>
       </div>
       <div class="col-6 col-md-3">
         <label class="form-label small fw-semibold mb-1">Income head</label>
@@ -138,19 +164,31 @@ require __DIR__ . '/includes/rpay_layout_header.php';
 
 <div class="card card-round">
   <div class="table-responsive">
-    <table class="table rpay-table align-middle">
+    <?= table_sort_assets() ?>
+    <table class="table rpay-table align-middle" data-sortable>
       <thead>
-        <tr><th>Title</th><th>Building</th><th>Income head</th><th>Shop / unit</th><th class="text-end">Amount</th><th>Start date</th><th>Status</th><th></th></tr>
+        <tr><th data-sort="date">Created on</th><th>Title</th><th>Building</th><th>Income head</th><th>Shop / unit</th><th class="text-end" data-sort="number">Amount</th><th data-sort="date">Start date</th><th>Mode of payment</th><th>Status</th><th data-sort="none"></th></tr>
       </thead>
       <tbody>
         <?php if (!$entries): ?>
-          <tr><td colspan="8" class="text-muted text-center py-5"><?= $filterParams ? 'No entries match the search or filters.' : 'No entries yet. Add the first one.' ?></td></tr>
+          <tr data-no-sort><td colspan="9" class="text-muted text-center py-5"><?= $filterParams ? 'No entries match the search or filters.' : 'No entries yet. Add the first one.' ?></td></tr>
         <?php endif; ?>
         <?php foreach ($entries as $e): ?>
           <?php $active = !empty($e['active']); $auto = !empty($e['auto_create']); ?>
           <tr>
+            <?php
+              // The date the entry was made in Reem (its created_at, in ms); until Reem sends it, the date saifsys saved it.
+              $madeMs = (int)($e['created_at'] ?? 0);
+              $savedAt = $madeMs > 0
+                  ? (new DateTime('@' . intdiv($madeMs, 1000)))->setTimezone(new DateTimeZone('Asia/Dubai'))->format('Y-m-d')
+                  : (string)($savedPicks[(int)$e['id']] ?? '');
+            ?>
+            <td class="text-nowrap" data-sort-value="<?= h($savedAt) ?>"><?= $savedAt !== '' ? h(rpay_date(substr($savedAt, 0, 10))) : '<span class="text-muted">—</span>' ?></td>
             <td>
               <a class="fw-semibold text-decoration-none" href="<?= h($rpayBase) ?>/entry_form.php?id=<?= (int)$e['id'] ?>"><?= h($e['title'] ?? '') ?></a>
+              <?php if (!empty($e['created_by_system'])): ?>
+                <i class="bi bi-exclamation-triangle-fill text-warning ms-1" title="Created by the system, not by a person."></i>
+              <?php endif; ?>
               <?php if (!empty($e['notes'])): ?><div class="small text-muted"><?= h($e['notes']) ?></div><?php endif; ?>
             </td>
             <td><?= h($e['building']['name'] ?? '') ?></td>
@@ -162,12 +200,15 @@ require __DIR__ . '/includes/rpay_layout_header.php';
               <?php endif; ?>
             </td>
             <td><?= h($e['unit'] ?? '') ?></td>
-            <td class="num text-end fw-semibold"><?= h(rpay_money($e['amount'] ?? 0)) ?></td>
-            <td>
-              <?= h(rpay_date(rpay_start_date((string)($e['first_month'] ?? ''), (int)($e['day'] ?? 1)))) ?>
+            <td class="num text-end fw-semibold" data-sort-value="<?= h((string)(float)($e['amount'] ?? 0)) ?>"><?= h(rpay_money($e['amount'] ?? 0)) ?></td>
+            <?php $startYmd = rpay_start_date((string)($e['first_month'] ?? ''), (int)($e['day'] ?? 1)); ?>
+            <td data-sort-value="<?= h((string)$startYmd) ?>">
+              <?= h(rpay_date($startYmd)) ?>
             </td>
+            <td><?= h(RPAY_PAYMENT_MODES[rpay_entry_mode($modePicks, (int)$e['id'], rpay_mode_text($e))]) ?></td>
             <td><span class="badge text-bg-<?= $active ? 'success' : 'secondary' ?>"><?= $active ? 'Active' : 'Paused' ?></span></td>
             <td class="text-end text-nowrap">
+              <a class="btn btn-sm btn-light border" href="<?= h($rpayBase) ?>/entry_form.php?id=<?= (int)$e['id'] ?>" title="Edit this entry"><i class="bi bi-pencil-square"></i> Edit</a>
               <?php $nc = count($noteMap[(int)$e['id']] ?? []); ?>
               <button type="button" class="btn btn-sm btn-light border" data-bs-toggle="collapse" data-bs-target="#rpNotes<?= (int)$e['id'] ?>" title="Notes">
                 <i class="bi bi-journal-text"></i> Notes<?= $nc ? ' <span class="badge text-bg-secondary">' . $nc . '</span>' : '' ?>
@@ -198,8 +239,8 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             </td>
           </tr>
           <!-- The entry's notes, opened right under it -->
-          <tr class="collapse<?= (int)($_GET['notes'] ?? 0) === (int)$e['id'] ? ' show' : '' ?>" id="rpNotes<?= (int)$e['id'] ?>">
-            <td colspan="8" class="bg-body-tertiary">
+          <tr data-sort-follow class="collapse<?= (int)($_GET['notes'] ?? 0) === (int)$e['id'] ? ' show' : '' ?>" id="rpNotes<?= (int)$e['id'] ?>">
+            <td colspan="9" class="bg-body-tertiary">
               <div style="max-width:640px">
                 <?php
                   $notesEntry = $e;

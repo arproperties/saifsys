@@ -82,6 +82,9 @@ $rpayFlash = binv_take_flash();
     .rpay-table > tbody > tr:first-child > td{ border-top:0; }
     .rpay-table > tbody > tr:hover{ background:rgba(0,0,0,.018); }
     .rpay-table .num{ font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .rpay-table > thead > tr > th, .rpay-table > tbody > tr > td{ border-left:1px solid #d5dbe3; border-right:1px solid #d5dbe3; }
+    .rpay-table > thead > tr > th{ font-weight:700; background:#e9eef5; }    body.dark-mode .rpay-table > thead > tr > th{ background:#1e293b; }
+    body.dark-mode .rpay-table > thead > tr > th, body.dark-mode .rpay-table > tbody > tr > td{ border-left-color:rgba(255,255,255,.1); border-right-color:rgba(255,255,255,.1); }
     .rpay-total{ font-size:1.5rem; font-weight:700; font-variant-numeric:tabular-nums; }
     body.dark-mode .rpay-table > thead > tr > th{ color:#94a3b8; border-bottom-color:#334155; }
     body.dark-mode .rpay-table > tbody > tr > td{ border-top-color:rgba(255,255,255,.07); }

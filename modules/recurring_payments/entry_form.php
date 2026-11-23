@@ -64,6 +64,21 @@ $form = [
     'first_month' => $entry['first_month'] ?? ($data['month'] ?? date('Y-m')),
     'notes' => $entry['notes'] ?? '',
 ];
+// The mode of payment (saifsys's own): cash unless one was picked for this entry.
+$form['mode'] = $entry ? rpay_entry_mode(rpay_entry_mode_picks($conn), (int)$entry['id'], rpay_mode_text($entry)) : 'cash';
+// The created date: the one Reem keeps (its created_at, when it sends it), else the day saifsys first saved it.
+$dubai = new DateTimeZone('Asia/Dubai');
+$madeMs = (int)($entry['created_at'] ?? 0);
+$savedPick = $entry ? (string)(rpay_entry_saved_picks($conn)[(int)$entry['id']] ?? '') : '';
+// Locked once the system has the date (Reem's, or the day it was first saved, or a new entry). An old entry with none can be given one, once.
+$form['created_locked'] = !$entry || $madeMs > 0 || $savedPick !== '';
+if ($madeMs > 0) {
+    $form['created'] = (new DateTime('@' . intdiv($madeMs, 1000)))->setTimezone($dubai)->format('Y-m-d');
+} elseif ($savedPick !== '') {
+    $form['created'] = substr($savedPick, 0, 10);
+} else {
+    $form['created'] = (new DateTime('now', $dubai))->format('Y-m-d');
+}
 // The group of the income head and the room of the entry (saifsys's own): shown filled in,
 // changed if needed. The group belongs to the income head (every entry with that head);
 // the room belongs to this entry.
@@ -103,6 +118,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $form['auto_create'] = !empty($_POST['auto_create']);
     $form['group_id'] = is_string($_POST['group_id'] ?? null) ? $_POST['group_id'] : '';
     $form['room_id'] = is_string($_POST['room_id'] ?? null) ? $_POST['room_id'] : '';
+    $form['mode'] = is_string($_POST['mode'] ?? null) && isset(RPAY_PAYMENT_MODES[$_POST['mode']]) ? $_POST['mode'] : 'cash';
+    $form['created'] = is_string($_POST['created'] ?? null) ? $_POST['created'] : '';
     // A start date left as it was keeps the entry's own day: one made for the 31st and
     // shown as 28 February must not quietly become the 28th.
     $start = DateTime::createFromFormat('!Y-m-d', $form['start_date']);
@@ -116,9 +133,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new BinvError('Pick the start date');
         }
         $reemForm = $form;
-        unset($reemForm['group_id'], $reemForm['room_id']); // saifsys's own, not Reem's
+        unset($reemForm['group_id'], $reemForm['room_id'], $reemForm['mode'], $reemForm['created'], $reemForm['created_locked']); // saifsys's own, not Reem's
         $saved = rpay_reem($code, $entry ? 'PUT' : 'POST', '/entries' . ($entry ? '/' . $id : ''), $reemForm);
         $kept = $saveLocal((int)($saved['id'] ?? 0), (int)($saved['head']['id'] ?? 0), $form['group_id'], $form['room_id']);
+        rpay_set_entry_mode($conn, (int)($saved['id'] ?? 0), $form['mode'], (int)current_user_id());
+        rpay_record_entry_saved($conn, (int)($saved['id'] ?? 0), (int)current_user_id());
+        // An old entry with no created date yet can be given one, once. After that, editing never changes it.
+        $dateOk = DateTime::createFromFormat('!Y-m-d', $form['created']);
+        if ($entry && !$form['created_locked'] && $dateOk && $dateOk->format('Y-m-d') === $form['created']) {
+            rpay_set_entry_saved_date($conn, (int)($saved['id'] ?? 0), $form['created'], (int)current_user_id());
+        }
         binv_flash('"' . $saved['title'] . '" ' . ($entry ? 'saved.' : 'added.') . ($kept !== '' ? ' ' . $kept : ''));
         header('Location: ' . $backUrl);
         exit;
@@ -246,6 +270,21 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         <div class="form-text">The first payment is on this date, then on the same day every month. An old date is fine: the payments since then are created at once.</div>
       </div>
 
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">Mode of payment</label>
+        <select name="mode" class="form-select" data-no-search>
+          <?php foreach (RPAY_PAYMENT_MODES as $mk => $ml): ?>
+            <option value="<?= h($mk) ?>"<?= $form['mode'] === $mk ? ' selected' : '' ?>><?= h($ml) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">Created on</label>
+        <input type="date" name="created" class="form-control" value="<?= h($form['created']) ?>"<?= $form['created_locked'] ? ' disabled' : '' ?>>
+        <div class="form-text"><?= $form['created_locked'] ? 'The date the entry was created. It does not change when the entry is edited.' : 'No date is recorded for this entry yet. Pick the day it was created, once.' ?></div>
+      </div>
+
       <div class="col-md-6 d-flex align-items-center">
         <div class="form-check form-switch mt-md-3">
           <input class="form-check-input" type="checkbox" role="switch" name="auto_create" value="1" id="rpayAuto"<?= $form['auto_create'] ? ' checked' : '' ?>>
@@ -272,6 +311,32 @@ require __DIR__ . '/includes/rpay_layout_header.php';
     </form>
   </div>
 </div>
+
+<?php if ($entry): ?>
+  <div class="card card-round mt-4 border-danger-subtle" style="max-width:640px">
+    <div class="card-body">
+      <div class="fw-semibold text-danger mb-1">Delete this entry</div>
+      <?php if ((int)($entry['payments'] ?? 0) === 0): ?>
+        <div class="small text-muted mb-2">For an entry put in by mistake. Its payments are removed with it. This cannot be undone.</div>
+        <form method="post" action="<?= h($rpayBase) ?>/entries.php" onsubmit="return confirm('Delete this entry? This cannot be undone.');">
+          <?php csrf_field(); ?>
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="entry" value="<?= (int)$entry['id'] ?>">
+          <button class="btn btn-outline-danger"><i class="bi bi-trash"></i> Delete entry</button>
+        </form>
+      <?php else: ?>
+        <?php $nPay = (int)$entry['payments']; ?>
+        <div class="small text-muted mb-2">This entry has <?= $nPay ?> payment<?= $nPay === 1 ? '' : 's' ?>. Deleting it also deletes all of them, with their receipts and files. Pausing it keeps them.</div>
+        <form method="post" action="<?= h($rpayBase) ?>/entries.php" onsubmit="return confirm('Delete this entry AND its <?= $nPay ?> payment<?= $nPay === 1 ? '' : 's' ?>? All receipts and files of those payments are deleted too. This cannot be undone.');">
+          <?php csrf_field(); ?>
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="entry" value="<?= (int)$entry['id'] ?>">
+          <button class="btn btn-outline-danger"><i class="bi bi-trash"></i> Delete entry and its payments</button>
+        </form>
+      <?php endif; ?>
+    </div>
+  </div>
+<?php endif; ?>
 
 <?php
   // For the Group / Room boxes: each head's group, and the words that point a new head to a group.

@@ -38,6 +38,59 @@ if ($rpayUi === 'rows'):
     <button type="button" class="btn btn-sm btn-light border rp-move-cancel">Cancel</button>
   </div>
 </form>
+<?php if (($rowsStyle ?? '') === 'table'):
+  // The bedspace number, from the title ("Bedspace # 04 - ..."); a payment for the whole room has none.
+  $bedOf = function (string $t): string { return preg_match('/bed\s*space\s*#?\s*0*(\d{1,2})/i', $t, $m) ? 'Bed ' . str_pad($m[1], 2, '0', STR_PAD_LEFT) : '—'; };
+?>
+<?php $modePicks = rpay_entry_mode_picks($conn); ?>
+<div class="d-flex justify-content-end mb-2 no-print">
+  <button type="button" class="btn btn-sm btn-light border" onclick="window.print()"><i class="bi bi-file-earmark-pdf"></i> Download PDF</button>
+</div>
+<div id="rpPrint">
+<table class="table table-sm table-bordered align-middle rp-sheet rp-pay-grid" style="--bs-border-color:#c9ced6;display:table;width:100%" data-move="<?= $mv ?>">
+  <thead class="text-dark"><tr><th style="width:28px"></th><th>Title</th><th>Bedspace</th><th>Due date</th><th>Paid on</th><th class="text-end">Amount</th><th>Received</th><th>Mode of payment</th><th>Status</th><th class="no-print">Actions</th></tr></thead>
+  <tbody>
+  <?php $lastHk = null; foreach ($rowsList as $d):
+    // A heading row for each month (the payment's due month), like the group page.
+    $hk = substr((string)($d['due_date'] ?? ''), 0, 7);
+    if ($hk !== $lastHk): $lastHk = $hk; ?>
+    <tr class="rp-headrow"><td colspan="10" class="text-center fw-bold">Received on <?= h(rpay_month_label($hk)) ?></td></tr>
+    <?php endif;
+    $paid = ($d['status'] ?? '') === 'paid';
+    $partly = !$paid && (float)($d['received'] ?? 0) > 0;
+    $openUrl = $rpayBase . '/due_detail.php?' . http_build_query(['grp' => $grp, 'due' => (int)$d['id']]);
+    $payUrl = $rpayBase . '/pay.php?' . http_build_query(['grp' => $grp, 'due' => (int)$d['id']]); ?>
+    <tr class="<?= $paid ? 'rp-paid' : ($partly ? 'rp-partly' : 'rp-pending') ?>">
+      <td><input type="checkbox" class="form-check-input rp-move-tick d-none" name="due_ids[]" value="<?= (int)$d['id'] ?>" form="<?= $mv ?>" title="Tick to move"></td>
+      <td>
+        <a class="fw-semibold text-decoration-none text-body" href="<?= h($openUrl) ?>"><?= h($d['title'] ?? '') ?></a>
+        <div class="tiny text-muted"><?= h(implode(' · ', array_filter([$d['building']['name'] ?? '', $d['unit'] ?? '']))) ?><?= !empty($d['moved']) ? ' · <span class="text-primary">moved here</span>' : '' ?></div>
+      </td>
+      <td class="text-nowrap"><?= h($bedOf((string)($d['title'] ?? ''))) ?></td>
+      <td class="text-nowrap"><?= h(rpay_date($d['due_date'] ?? '')) ?></td>
+      <td class="text-nowrap"><?= ($paid || $partly) && !empty($d['paid_on']) ? h(rpay_date($d['paid_on'])) : '<span class="text-warning-emphasis fw-semibold">Not paid yet</span>' ?></td>
+      <td class="text-end fw-bold text-nowrap"><?= h(rpay_money($d['amount'] ?? 0)) ?></td>
+      <td>
+        <?php if ($paid || $partly): ?>
+          <div class="text-success fw-semibold text-nowrap"><?= h(rpay_money($d['received'] ?? 0)) ?></div>
+          <?php if (!empty($d['account']['name'])): ?><div class="tiny text-muted"><?= h($d['account']['name']) ?></div><?php endif; ?>
+          <?php if ($partly): ?><div class="tiny text-warning-emphasis fw-semibold"><?= h(rpay_money($d['left'] ?? 0)) ?> to come</div><?php endif; ?>
+        <?php else: ?>
+          <span class="text-muted">—</span>
+        <?php endif; ?>
+      </td>
+      <td class="text-center"><?= h(RPAY_PAYMENT_MODES[rpay_entry_mode($modePicks, (int)($d['entry_id'] ?? 0), rpay_mode_text($d))]) ?></td>
+      <td><span class="badge text-bg-<?= $paid ? 'success' : ($partly ? 'info' : 'warning') ?>"><?= $paid ? 'Paid' : ($partly ? 'Partly paid' : 'Pending') ?></span></td>
+      <td class="text-nowrap no-print">
+        <a href="<?= h($payUrl) ?>" class="btn btn-sm <?= $paid ? 'btn-light border' : 'btn-success' ?>"><?= $paid ? 'Receipts' : ($partly ? 'Add' : 'Mark paid') ?></a>
+        <a href="<?= h($openUrl) ?>" class="btn btn-sm btn-light border" title="Open"><i class="bi bi-box-arrow-up-right"></i></a>
+      </td>
+    </tr>
+  <?php endforeach; ?>
+  </tbody>
+</table>
+</div>
+<?php else: ?>
 <div class="rp-pay-grid" data-move="<?= $mv ?>">
   <?php foreach ($rowsList as $d):
     $paid = ($d['status'] ?? '') === 'paid';
@@ -75,6 +128,7 @@ if ($rpayUi === 'rows'):
     </div>
   <?php endforeach; ?>
 </div>
+<?php endif; ?>
 <script>
 // "Move payments": shows a tick box on each payment and the bar to pick the room; Cancel hides them.
 (function () {
@@ -109,6 +163,17 @@ if ($rpayUi === 'rows'):
 .rp-pay .rp-st{ width:230px; flex-shrink:0; }
 .rp-pay .rp-act{ display:flex; gap:6px; flex-shrink:0; }
 .rp-pay .tiny{ font-size:.78rem; }
+.rp-sheet tr.rp-paid td{ background:#eaf7ee; } .rp-sheet tr.rp-paid td:first-child{ box-shadow:inset 4px 0 0 #2e9e5b; }
+.rp-sheet tr.rp-partly td{ background:#e8f3fc; } .rp-sheet tr.rp-partly td:first-child{ box-shadow:inset 4px 0 0 #2f80c4; }
+.rp-sheet tr.rp-pending td{ background:#fff8e1; } .rp-sheet tr.rp-pending td:first-child{ box-shadow:inset 4px 0 0 #e0a800; }
+.rp-sheet tbody tr:not(.rp-headrow) td{ border-color:#c9ced6 !important; }
+.rp-sheet tr.rp-headrow td{ background:#dbeafe; color:#1e3a8a; font-weight:700; border-left:0 !important; border-right:0 !important; }
+@media print {
+  body * { visibility: hidden !important; }
+  #rpPrint, #rpPrint * { visibility: visible !important; }
+  #rpPrint { position: absolute; left: 0; top: 0; width: 100%; }
+  .no-print { display: none !important; }
+}
 .rp-date{ display:inline-block; padding:1px 8px; border-radius:6px; font-size:.78rem; font-weight:600; background:#fff; border:1px solid #d6dbe2; color:#334155; white-space:nowrap; }
 .rp-date-due{ background:#e8eefc; border-color:#c7d4f5; color:#1e3a8a; }
 .rp-date-got{ background:#d8f2e1; border-color:#a9dcbc; color:#0f5132; }

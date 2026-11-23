@@ -98,6 +98,14 @@ try {
 } catch (BinvError $e) {
     rpay_stop($e);
 }
+// The "to" names of the transfers: a payment received into one of these accounts is outlined in orange.
+try {
+    $transferTo = array_values(array_unique(array_filter(array_map(function ($t) {
+        return mb_strtolower(trim((string)($t['to']['name'] ?? '')));
+    }, rpay_reem($code, 'GET', '/transfers')['transfers'] ?? []))));
+} catch (BinvError $e) {
+    $transferTo = [];
+}
 // A new income head goes to the group its name points to (no match: Other), and says so once.
 try {
     $placed = rpay_auto_group_new_heads($conn, rpay_live_heads($conn, $data['heads'] ?? []));
@@ -426,8 +434,9 @@ body.dark-mode .rp-head{ background:#0f172a; border-color:#475569; }
         <?php endif; ?>
         <?php foreach ($dues as $d): ?>
           <?php $paid = ($d['status'] ?? '') === 'paid'; $partly = !$paid && (float)($d['received'] ?? 0) > 0; ?>
-          <tr class="rpay-row" data-due="<?= (int)$d['id'] ?>" title="Double-click for details">
-            <td class="fw-semibold"><?= h($d['title'] ?? '') ?></td>
+          <?php $movedTo = !empty($d['account']['name']) && in_array(mb_strtolower(trim((string)$d['account']['name'])), $transferTo, true); ?>
+          <tr class="rpay-row<?= $movedTo ? ' rp-moved-to' : '' ?>" data-due="<?= (int)$d['id'] ?>" title="Double-click for details">
+            <td class="fw-semibold"><?= h($d['title'] ?? '') ?><?php if ($movedTo): ?> <i class="bi bi-check-circle-fill" style="color:#15803d;font-size:1.1em" title="Transferred to <?= h($d['account']['name']) ?>"></i><?php endif; ?></td>
             <td><?= h($d['building']['name'] ?? '') ?></td>
             <td><?= h($d['head']['name'] ?? '') ?></td>
             <td>

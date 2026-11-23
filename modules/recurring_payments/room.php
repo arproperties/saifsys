@@ -123,13 +123,24 @@ try {
 }
 // From a room card's Received / To be paid: only the paid, or only the ones still to come.
 $st = in_array($_GET['st'] ?? '', ['paid', 'pending'], true) ? $_GET['st'] : '';
-if ($st !== '' && is_array($history)) {
-    $history = array_values(array_filter($history, function ($d) use ($st) { return $st === 'paid' ? (float)($d['received'] ?? 0) > 0 : ($d['status'] ?? '') !== 'paid'; }));
+// The history filters: a month (YYYY-MM) and a search in the title or unit. All of the room's payments are shown, no pages.
+$mFilter = preg_match('/^\d{4}-\d{2}$/', (string)($_GET['m'] ?? '')) ? (string)$_GET['m'] : '';
+$qFilter = trim((string)($_GET['q'] ?? ''));
+$histAll = is_array($history) ? count($history) : 0;
+if (is_array($history)) {
+    $history = array_values(array_filter($history, function ($d) use ($st, $mFilter, $qFilter) {
+        if ($st !== '' && ($st === 'paid' ? (float)($d['received'] ?? 0) <= 0 : ($d['status'] ?? '') === 'paid')) {
+            return false;
+        }
+        if ($mFilter !== '' && (string)($d['month'] ?? '') !== $mFilter) {
+            return false;
+        }
+        return $qFilter === '' || mb_stripos((string)($d['title'] ?? '') . ' ' . (string)($d['unit'] ?? ''), $qFilter) !== false;
+    }));
 }
-$hp = max(0, (int)($_GET['hp'] ?? 0));
-$hPages = $history ? (int)ceil(count($history) / RPAY_ROOM_HISTORY_PAGE) : 1;
-$hp = min($hp, max(0, $hPages - 1));
-$hShown = $history ? array_slice($history, $hp * RPAY_ROOM_HISTORY_PAGE, RPAY_ROOM_HISTORY_PAGE) : [];
+$histKeep = http_build_query(array_filter(['m' => $mFilter, 'q' => $qFilter], fn($v) => $v !== ''));
+$histBase = $selfUrl . '&tab=history' . ($histKeep !== '' ? '&' . $histKeep : '');
+$hShown = $history ?? [];
 
 $pageTitle = $room['name'];
 require __DIR__ . '/includes/rpay_layout_header.php';
@@ -221,7 +232,10 @@ require __DIR__ . '/includes/rpay_layout_header.php';
   <?php endforeach; ?>
 </div>
 
-<div class="rb-list" id="rbList">
+<div class="table-responsive">
+<table class="table table-sm table-bordered align-middle rb-table" id="rbList" style="--bs-border-color:#c9ced6">
+  <thead class="text-dark"><tr><th>Bed</th><th>Occupant</th><th>Details</th><th>Status</th><th></th></tr></thead>
+  <tbody>
   <?php foreach ($beds as $b):
     $occ = $b['status'] === 'occupied';
     $type = (string)($b['occupant_type'] ?? '');
@@ -229,18 +243,25 @@ require __DIR__ . '/includes/rpay_layout_header.php';
     $empNm = $type === 'staff' && $b['employee_id'] ? (string)($empName[(int)$b['employee_id']] ?? '') : '';
     $name = $type === 'staff' ? $empNm : ($type === 'outsider' ? (string)$b['occupant'] : '');
     $alert = $occ && $type === 'outsider' ? rpay_due_alert($b['due_date'] ?? null, true) : null; ?>
-    <button type="button" class="rb-row <?= $occ ? 'rb-occ' : 'rb-vac' ?>" data-bed="<?= (int)$b['id'] ?>"
-            data-tags="<?= $occ ? 'occupied' : 'vacant' ?> <?= h($type) ?>">
-      <span class="rb-no"><?= h($b['bed_no']) ?></span>
-      <span class="rb-av <?= !$occ ? 'rb-av-empty' : ($name === '' ? 'rb-av-none' : ($type === 'staff' ? 'rb-av-staff' : 'rb-av-out')) ?>"><?= $occ && $name !== '' && $initials($name) !== '' ? h($initials($name)) : '<i class="bi ' . ($occ ? 'bi-person' : 'bi-door-open') . '"></i>' ?></span>
-      <span class="rb-main">
+    <tr class="rb-row <?= $occ ? 'rb-occ' : 'rb-vac' ?>" data-bed="<?= (int)$b['id'] ?>"
+        data-tags="<?= $occ ? 'occupied' : 'vacant' ?> <?= h($type) ?>" style="cursor:pointer">
+      <td><span class="rb-no"><?= h($b['bed_no']) ?></span></td>
+      <td>
+        <span class="d-inline-flex align-items-center gap-2">
+          <span class="rb-av <?= !$occ ? 'rb-av-empty' : ($name === '' ? 'rb-av-none' : ($type === 'staff' ? 'rb-av-staff' : 'rb-av-out')) ?>"><?= $occ && $name !== '' && $initials($name) !== '' ? h($initials($name)) : '<i class="bi ' . ($occ ? 'bi-person' : 'bi-door-open') . '"></i>' ?></span>
+          <?php if (!$occ): ?>
+            <span class="rb-name text-muted">Vacant</span>
+          <?php else: ?>
+            <span class="rb-name"><?= $name !== '' ? h($name) : '<span class="text-danger">' . ($type === 'staff' ? 'Pick the employee' : ($type === 'outsider' ? 'Add the name' : 'Add details')) . '</span>' ?></span>
+            <?php if ($allowsStaff && $type): ?><span class="rb-tag"><?= $type === 'staff' ? 'Staff' : 'Outsider' ?></span><?php endif; ?>
+          <?php endif; ?>
+        </span>
+      </td>
+      <td>
         <?php if (!$occ): ?>
-          <span class="rb-name text-muted">Vacant</span>
           <span class="rb-meta text-primary"><i class="bi bi-plus-lg"></i> Add details</span>
         <?php else: ?>
-          <span class="rb-name"><?= $name !== '' ? h($name) : '<span class="text-danger">' . ($type === 'staff' ? 'Pick the employee' : ($type === 'outsider' ? 'Add the name' : 'Add details')) . '</span>' ?></span>
           <span class="rb-meta">
-            <?php if ($allowsStaff && $type): ?><span class="rb-tag"><?= $type === 'staff' ? 'Staff' : 'Outsider' ?></span><?php endif; ?>
             <?php if ($type === 'staff'): ?>
               <?= h($companies[(int)$b['company_id']] ?? 'No company yet') ?>
             <?php elseif ($type === 'outsider'): ?>
@@ -249,17 +270,32 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             <?php endif; ?>
           </span>
         <?php endif; ?>
-        <?php if ($b['note']): ?><span class="rb-note"><?= h($b['note']) ?></span><?php endif; ?>
-      </span>
-      <span class="rb-end">
+        <?php if ($b['note']): ?><div class="rb-note"><?= h($b['note']) ?></div><?php endif; ?>
+      </td>
+      <td class="text-nowrap">
         <?= $alert ? rpay_due_bell($alert) : '' ?>
         <span class="badge rounded-pill <?= $occ ? 'text-bg-success' : 'text-bg-warning' ?>"><?= $occ ? 'Occupied' : 'Vacant' ?></span>
-        <i class="bi bi-chevron-right text-muted"></i>
-      </span>
-    </button>
+      </td>
+      <td class="text-center"><i class="bi bi-chevron-right text-muted"></i></td>
+    </tr>
   <?php endforeach; ?>
-  <div class="text-muted text-center py-4 d-none" id="rbNone">Nothing here.</div>
+  </tbody>
+</table>
 </div>
+<div class="text-muted text-center py-4 d-none" id="rbNone">Nothing here.</div>
+<style>
+.rb-table tr.rb-row{ display:table-row; border:0; border-radius:0; box-shadow:none; transform:none; padding:0; background:transparent; width:auto; }
+.rb-table tr.rb-row::before{ display:none; }
+.rb-table, .rb-table th, .rb-table td{ border:1px solid #94a3b8 !important; }
+.rb-table tr.rb-row td{ vertical-align:middle; padding:.7rem .75rem; }
+.rb-table thead th{ font-size:.78rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:#0f172a; background:#e2e8f0; padding:.6rem .75rem; }
+.rb-table tr.rb-row td:first-child .rb-no{ font-weight:700; font-size:1rem; color:#0f172a; }
+.rb-table tr.rb-occ td:first-child{ box-shadow:inset 4px 0 0 #2e9e5b; }
+.rb-table tr.rb-vac td:first-child{ box-shadow:inset 4px 0 0 #e0a800; }
+.rb-table tr.rb-vac td{ background:#fffbeb; }
+.rb-table tr.rb-row:hover td{ background:#f1f5f9; }
+.rb-table tr.rb-on td{ background:#eef4ff; }
+</style>
 
 <!-- The side panel: opened from a bed; the list stays usable behind it -->
 <aside class="offcanvas offcanvas-end rb-panel" tabindex="-1" id="rbPanel" data-bs-backdrop="false" data-bs-scroll="true" aria-labelledby="rbTitle">
@@ -333,10 +369,31 @@ require __DIR__ . '/includes/rpay_layout_header.php';
   <form method="post" action="<?= h($selfUrl) ?>" id="rpr<?= $bid ?>" onsubmit="return confirm('Take bed <?= h($b['bed_no']) ?> out of this room?');"><?php csrf_field(); ?><input type="hidden" name="action" value="remove_bed"><input type="hidden" name="bed_id" value="<?= $bid ?>"></form>
 <?php endforeach; ?>
 <?php else: /* Payment history */ ?>
+  <form method="get" action="<?= h($rpayBase) ?>/room.php" class="row g-2 align-items-end mb-2">
+    <input type="hidden" name="id" value="<?= (int)$roomId ?>">
+    <input type="hidden" name="grp" value="<?= (int)$grp ?>">
+    <input type="hidden" name="tab" value="history">
+    <?php if ($st !== ''): ?><input type="hidden" name="st" value="<?= h($st) ?>"><?php endif; ?>
+    <div class="col-6 col-md-3">
+      <label class="form-label small fw-semibold mb-1">Month</label>
+      <input type="month" name="m" class="form-control" value="<?= h($mFilter) ?>" onchange="this.form.submit()">
+    </div>
+    <div class="col-12 col-md-4">
+      <label class="form-label small fw-semibold mb-1">Search</label>
+      <input type="search" name="q" class="form-control" value="<?= h($qFilter) ?>" placeholder="Title or unit">
+    </div>
+    <div class="col-12 col-md-3 d-flex gap-2">
+      <button class="btn btn-light border flex-fill"><i class="bi bi-funnel"></i> Show</button>
+      <?php if ($mFilter !== '' || $qFilter !== ''): ?>
+        <a class="btn btn-link text-decoration-none px-1" href="<?= h($selfUrl . '&tab=history' . ($st !== '' ? '&st=' . $st : '')) ?>">Clear</a>
+      <?php endif; ?>
+    </div>
+  </form>
   <div class="d-flex flex-wrap gap-2 mb-2">
-    <a class="btn btn-sm <?= $st === '' ? 'btn-primary' : 'btn-light border' ?>" href="<?= h($selfUrl . '&tab=history') ?>">All</a>
-    <a class="btn btn-sm <?= $st === 'paid' ? 'btn-primary' : 'btn-light border' ?>" href="<?= h($selfUrl . '&tab=history&st=paid') ?>">Received</a>
-    <a class="btn btn-sm <?= $st === 'pending' ? 'btn-primary' : 'btn-light border' ?>" href="<?= h($selfUrl . '&tab=history&st=pending') ?>">To be paid</a>
+    <a class="btn btn-sm <?= $st === '' ? 'btn-primary' : 'btn-light border' ?>" href="<?= h($histBase) ?>">All</a>
+    <a class="btn btn-sm <?= $st === 'paid' ? 'btn-primary' : 'btn-light border' ?>" href="<?= h($histBase . '&st=paid') ?>">Received</a>
+    <a class="btn btn-sm <?= $st === 'pending' ? 'btn-primary' : 'btn-light border' ?>" href="<?= h($histBase . '&st=pending') ?>">To be paid</a>
+    <span class="small text-muted align-self-center ms-1"><?= count($hShown) ?> of <?= $histAll ?> payments</span>
   </div>
   <?php if ($history === null): ?>
     <div class="card card-round"><div class="card-body text-muted">The payments could not be read just now.</div></div>
@@ -349,15 +406,9 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       $hereRoom = $roomId;
       $movePostUrl = $selfUrl;
       $rpayUi = 'rows';
+      $rowsStyle = 'table';
       require __DIR__ . '/includes/rpay_ui.php';
     ?>
-    <?php if ($hPages > 1): ?>
-      <nav class="d-flex justify-content-center gap-1 mt-3">
-        <?php for ($i = 0; $i < $hPages; $i++): ?>
-          <a class="btn btn-sm <?= $i === $hp ? 'btn-primary' : 'btn-light border' ?>" href="<?= h($selfUrl . '&tab=history' . ($st !== '' ? '&st=' . $st : '') . '&hp=' . $i) ?>"><?= $i + 1 ?></a>
-        <?php endfor; ?>
-      </nav>
-    <?php endif; ?>
   <?php endif; ?>
 <?php endif; /* the tabs */ ?>
 

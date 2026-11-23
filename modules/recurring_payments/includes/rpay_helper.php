@@ -1039,3 +1039,85 @@ function rpay_day_label(int $day): string
     $suffix = ($day % 100 >= 11 && $day % 100 <= 13) ? 'th' : (['th', 'st', 'nd', 'rd'][$day % 10] ?? 'th');
     return $day . $suffix;
 }
+
+// ---------- mode of payment (saifsys's own: migrations/rpay_entry_modes.sql) ----------
+
+/** The modes of payment an entry can have: key => label. */
+const RPAY_PAYMENT_MODES = ['cash' => 'Cash', 'card' => 'Card', 'cheque' => 'Cheque', 'transfer' => 'Bank transfer'];
+
+/** The mode of payment kept per entry: entry id => mode. No table yet: none (every entry is cash). */
+function rpay_entry_mode_picks(PDO $conn): array
+{
+    try {
+        return $conn->query('SELECT entry_id, payment_mode FROM rpay_entry_modes')->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
+    } catch (PDOException $e) {
+        return [];
+    }
+}
+
+/** An entry's mode of payment: cash unless one was picked. */
+function rpay_entry_mode(array $picks, int $entryId, string $title = ''): string
+{
+    if (isset($picks[$entryId]) && isset(RPAY_PAYMENT_MODES[(string)$picks[$entryId]])) {
+        return (string)$picks[$entryId];
+    }
+    return rpay_guess_mode($title); // no mode picked yet: worked out from the title
+}
+
+/** The words a mode is guessed from: an entry's (or a payment's) title and notes. */
+function rpay_mode_text(array $row): string
+{
+    return trim((string)($row['title'] ?? '') . ' ' . (string)($row['notes'] ?? ''));
+}
+
+/** The mode of payment a title says: "Bank", "Transfer" or "ENBD" = bank transfer; cheque; card; otherwise cash. */
+function rpay_guess_mode(string $title): string
+{
+    $t = strtolower($title);
+    if (strpos($t, 'cheque') !== false) {
+        return 'cheque';
+    }
+    if (strpos($t, 'bank') !== false || strpos($t, 'transfer') !== false || strpos($t, 'enbd') !== false) {
+        return 'transfer';
+    }
+    if (preg_match('/\bcard\b/', $t)) {
+        return 'card';
+    }
+    return 'cash';
+}
+
+/** Keep an entry's mode of payment. Anything not cash, card or cheque is saved as cash. */
+function rpay_set_entry_mode(PDO $conn, int $entryId, string $mode, int $userId): void
+{
+    $mode = isset(RPAY_PAYMENT_MODES[$mode]) ? $mode : 'cash';
+    $conn->prepare('INSERT INTO rpay_entry_modes (entry_id, payment_mode, set_by) VALUES (?, ?, ?)
+        ON DUPLICATE KEY UPDATE payment_mode = VALUES(payment_mode), set_by = VALUES(set_by)')
+        ->execute([$entryId, $mode, $userId ?: null]);
+}
+
+// ---------- when an entry was first saved (saifsys's own: migrations/rpay_entry_saved.sql) ----------
+
+/** When each entry was first saved here: entry id => 'Y-m-d H:i:s'. No table yet: none. */
+function rpay_entry_saved_picks(PDO $conn): array
+{
+    try {
+        return $conn->query('SELECT entry_id, saved_at FROM rpay_entry_saved')->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
+    } catch (PDOException $e) {
+        return [];
+    }
+}
+
+/** Remember the first time an entry was saved; a later save does not change it. */
+function rpay_record_entry_saved(PDO $conn, int $entryId, int $userId): void
+{
+    $conn->prepare('INSERT IGNORE INTO rpay_entry_saved (entry_id, saved_at, saved_by) VALUES (?, NOW(), ?)')
+        ->execute([$entryId, $userId ?: null]);
+}
+
+/** Set the day an entry was created, picked by hand (used when Reem has no date for it). */
+function rpay_set_entry_saved_date(PDO $conn, int $entryId, string $ymd, int $userId): void
+{
+    $conn->prepare('INSERT INTO rpay_entry_saved (entry_id, saved_at, saved_by) VALUES (?, ?, ?)
+        ON DUPLICATE KEY UPDATE saved_at = VALUES(saved_at), saved_by = VALUES(saved_by)')
+        ->execute([$entryId, $ymd . ' 00:00:00', $userId ?: null]);
+}

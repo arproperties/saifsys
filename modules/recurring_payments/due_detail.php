@@ -55,6 +55,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = rpay_send_file($code, '/receipts/' . (int)($_POST['receipt'] ?? 0) . '/files', $_FILES['file']);
             binv_flash($error ?? 'File added.', $error ? 'danger' : 'success');
         }
+    } elseif (($_POST['action'] ?? '') === 'delete_file') {
+        // A receipt's extra file added by mistake: only that file goes, the receipt stays.
+        try {
+            rpay_reem($code, 'DELETE', '/receipt-files/' . (int)($_POST['file'] ?? 0));
+            binv_flash('The file is deleted.');
+        } catch (BinvError $e) {
+            binv_flash($e->getMessage(), 'danger');
+        }
     } else {
         $_POST['due'] = $dueId; // this page's own payment
         rpay_handle_period_post($conn, $code);
@@ -190,8 +198,19 @@ require __DIR__ . '/includes/rpay_layout_header.php';
               <div class="small text-muted"><?= h($r['account']['name'] ?? '') ?></div>
             </div>
             <?php if (!empty($r['attachment'])): ?>
-              <a class="btn btn-sm btn-light border" target="_blank" rel="noopener" title="File" href="<?= h(rpay_file_url($rpayBase, 'receipt', (int)$r['id'])) ?>"><i class="bi bi-paperclip"></i></a>
+              <a class="btn btn-sm btn-light border" target="_blank" rel="noopener" title="File 1" href="<?= h(rpay_file_url($rpayBase, 'receipt', (int)$r['id'])) ?>"><i class="bi bi-paperclip"></i><?= !empty($r['files']) ? ' 1' : '' ?></a>
             <?php endif; ?>
+            <?php foreach (($r['files'] ?? []) as $n => $f): ?>
+              <span class="btn-group btn-group-sm">
+                <a class="btn btn-light border" target="_blank" rel="noopener" title="File <?= $n + 2 ?>" href="<?= h(rpay_file_url($rpayBase, 'receipt_file', (int)$f['id'])) ?>"><i class="bi bi-paperclip"></i> <?= $n + 2 ?></a>
+                <form method="post" action="<?= h($selfUrl) ?>" class="m-0 d-inline" onsubmit="return confirm('Delete file <?= $n + 2 ?> of this receipt? The receipt stays.');">
+                  <?php csrf_field(); ?>
+                  <input type="hidden" name="action" value="delete_file">
+                  <input type="hidden" name="file" value="<?= (int)$f['id'] ?>">
+                  <button class="btn btn-sm btn-light border text-danger" title="Delete file <?= $n + 2 ?>"><i class="bi bi-x-lg"></i></button>
+                </form>
+              </span>
+            <?php endforeach; ?>
             <form method="post" action="<?= h($selfUrl) ?>" enctype="multipart/form-data" class="m-0">
               <?php csrf_field(); ?>
               <input type="hidden" name="action" value="add_file">
