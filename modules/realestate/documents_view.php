@@ -12,6 +12,7 @@ require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/../../includes/csrf.php';
 require_once __DIR__ . '/../legal/includes/legal_helper.php';
+require_once __DIR__ . '/includes/document_watch_helper.php';
 
 require_login();
 if (!legal_can_manage($conn)) {
@@ -57,6 +58,8 @@ if (!$document) {
     header('Location: documents.php');
     exit;
 }
+// Replaced by a newer copy / lease closed: not shown as expired.
+$document['watch_reason'] = re_doc_watch_reasons($conn, (int)$currentCompanyId, [(int)$document['id']])[(int)$document['id']] ?? null;
 
 // Log view
 $conn->prepare("
@@ -192,6 +195,10 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                         <div class="row mb-3">
                             <div class="col-md-6">
                                 <strong>Expiry Date:</strong><br>
+                                <?php if (in_array($document['watch_reason'], ['replaced', 'lease_closed'], true)): ?>
+                                <span class="text-muted"><?= date('M d, Y', strtotime($document['expiry_date'])) ?></span>
+                                <span class="badge bg-secondary ms-1"><?= $document['watch_reason'] === 'replaced' ? 'Replaced by newer copy' : 'Lease closed' ?></span>
+                                <?php else: ?>
                                 <span class="text-<?= 
                                     $document['days_until_expiry'] < 0 ? 'danger' : 
                                     ($document['days_until_expiry'] <= 30 ? 'warning' : 'muted') 
@@ -201,6 +208,7 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                         (<?= $document['days_until_expiry'] < 0 ? abs($document['days_until_expiry']) . ' days expired' : $document['days_until_expiry'] . ' days left' ?>)
                                     <?php endif; ?>
                                 </span>
+                                <?php endif; ?>
                             </div>
                         </div>
                         <?php endif; ?>

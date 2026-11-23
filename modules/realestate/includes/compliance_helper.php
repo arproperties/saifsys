@@ -221,87 +221,201 @@ if (!function_exists('check_and_send_document_expiry_alerts')) {
     }
 }
 
-if (!function_exists('update_unit_compliance_status')) {
+if (!function_exists('re_unit_compliance_evaluate_many')) {
     /**
-     * Update unit compliance status based on documents
-     * 
-     * @param PDO $conn Database connection
-     * @param int $companyId Company ID
-     * @param int $unitId Unit ID
-     * @return array Result
+     * Work out compliance for several units from their documents, using the shared
+     * watch rule (document_watch_helper.php), so a renewed Ejari / visa / ID never
+     * leaves the old copy counting as expired. This is the ONLY place the unit score
+     * and status are worked out; re_unit_compliance_evaluate() is the one-unit form.
+     *
+     * Documents of a unit: its own, every lease on it, and the current tenant's own
+     * documents. Papers of closed old leases drop out through the watch rule.
+     * Score: 100 - 20 per expired - 30 per missing required. Anything expired or
+     * missing -> below 50 non_compliant, else at_risk. Nothing wrong -> compliant.
+     *
+     * @param int[] $unitIds
+     * @return array<int, array> keyed by unit id
      */
-    function update_unit_compliance_status(PDO $conn, int $companyId, int $unitId): array {
-        // Get all documents for unit
-        $documents = $conn->prepare("
-            SELECT 
-                d.*,
-                dt.is_required
+    function re_unit_compliance_evaluate_many(PDO $conn, int $companyId, array $unitIds): array {
+        $unitIds = array_values(array_unique(array_filter(array_map('intval', $unitIds))));
+        if (!$unitIds) {
+            return [];
+        }
+        $in = implode(',', $unitIds); // ints only
+
+        // Current (active) lease of each unit: latest start wins.
+        $active = [];
+        $st = $conn->prepare("SELECT id, unit_id, tenant_id FROM re_leases
+                              WHERE company_id = ? AND unit_id IN ({$in}) AND status = 'active' AND deleted_at IS NULL
+                              ORDER BY start_date DESC, id DESC");
+        $st->execute([$companyId]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $l) {
+            $active[(int)$l['unit_id']] = $active[(int)$l['unit_id']] ?? $l;
+        }
+        $leaseUnit = [];
+        $st = $conn->prepare("SELECT id, unit_id FROM re_leases WHERE company_id = ? AND unit_id IN ({$in})");
+        $st->execute([$companyId]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $l) {
+            $leaseUnit[(int)$l['id']] = (int)$l['unit_id'];
+        }
+        $tenantUnits = [];
+        foreach ($active as $uid => $l) {
+            $tenantUnits[(int)$l['tenant_id']][] = $uid;
+        }
+
+        $out = [];
+        foreach ($unitIds as $uid) {
+            $out[$uid] = ['documents' => [], 'missing' => [], 'active_lease' => $active[$uid] ?? null];
+        }
+
+        $leaseIds = array_keys($leaseUnit);
+        $tenantIds = array_keys($tenantUnits);
+        $st = $conn->prepare("
+            SELECT d.*, dt.document_type_name, dt.is_required,
+                   DATEDIFF(d.expiry_date, CURDATE()) AS days_until_expiry,
+                   " . re_doc_unwatched_reason_sql('d') . " AS watch_reason
             FROM re_documents d
             LEFT JOIN re_document_types dt ON dt.id = d.document_type_id
             WHERE d.company_id = ?
-            AND (
-                (d.related_type = 'unit' AND d.related_id = ?)
-                OR (d.related_type = 'lease' AND d.related_id IN (SELECT id FROM re_leases WHERE unit_id = ?))
-            )
-            AND d.status = 'active'
-            AND (d.expiry_date IS NULL OR " . re_doc_watched_sql('d') . ")
+              AND d.status = 'active'
+              AND (   (d.related_type = 'unit'   AND d.related_id IN ({$in}))
+                   OR (d.related_type = 'lease'  AND d.related_id IN (" . ($leaseIds ? implode(',', $leaseIds) : '0') . "))
+                   OR (d.related_type = 'tenant' AND d.related_id IN (" . ($tenantIds ? implode(',', array_map('intval', $tenantIds)) : '0') . ")))
+            ORDER BY d.expiry_date IS NULL, d.expiry_date ASC, d.id ASC
         ");
-        $documents->execute([$companyId, $unitId, $unitId]);
-        $documents = $documents->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Get missing documents
-        $missingDocs = $conn->prepare("
-            SELECT COUNT(*) as count
-            FROM re_missing_documents
-            WHERE company_id = ? AND related_type = 'unit' AND related_id = ? 
-            AND status IN ('missing', 'pending_upload') AND is_required = 1
-        ");
-        $missingDocs->execute([$companyId, $unitId]);
-        $missingRequired = (int)$missingDocs->fetchColumn();
-        
-        // Calculate compliance score
-        $totalDocs = count($documents);
-        $expiredDocs = count(array_filter($documents, function($d) { 
-            return $d['expiry_date'] && strtotime($d['expiry_date']) < strtotime('today'); 
-        }));
-        
-        $complianceScore = max(0, min(100, 
-            100 - ($expiredDocs * 20) - ($missingRequired * 30)
-        ));
-        
-        // Determine legal status
-        $legalStatus = 'compliant';
-        if ($missingRequired > 0 || $expiredDocs > 0) {
-            $legalStatus = $complianceScore < 50 ? 'non_compliant' : 'at_risk';
+        $st->execute([$companyId]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $d) {
+            $reason = $d['watch_reason'];
+            if ($reason === 'lease_closed') {
+                continue; // a closed old lease's papers are history, not this unit's paperwork
+            }
+            $d['is_watched'] = ($reason === null);
+            $d['is_replaced'] = ($reason === 'replaced');
+            $days = $d['days_until_expiry'] !== null ? (int)$d['days_until_expiry'] : null;
+            $d['is_expired'] = $d['is_watched'] && $days !== null && $days < 0;
+            $d['is_expiring'] = $d['is_watched'] && $days !== null && $days >= 0 && $days <= 30;
+
+            $rid = (int)$d['related_id'];
+            if ($d['related_type'] === 'unit') {
+                $targets = [$rid];
+            } elseif ($d['related_type'] === 'lease') {
+                $targets = isset($leaseUnit[$rid]) ? [$leaseUnit[$rid]] : [];
+            } else {
+                $targets = $tenantUnits[$rid] ?? [];
+            }
+            foreach ($targets as $uid) {
+                if (isset($out[$uid])) {
+                    $out[$uid]['documents'][] = $d;
+                }
+            }
         }
-        
-        // Update or insert
-        $check = $conn->prepare("SELECT id FROM re_unit_legal_status WHERE unit_id = ? AND company_id = ?");
+
+        $activeLeaseUnit = [];
+        foreach ($active as $uid => $l) {
+            $activeLeaseUnit[(int)$l['id']] = $uid;
+        }
+        $st = $conn->prepare("
+            SELECT md.*, dt.document_type_name
+            FROM re_missing_documents md
+            JOIN re_document_types dt ON dt.id = md.document_type_id
+            WHERE md.company_id = ?
+              AND md.status IN ('missing', 'pending_upload')
+              AND (   (md.related_type = 'unit'  AND md.related_id IN ({$in}))
+                   OR (md.related_type = 'lease' AND md.related_id IN (" . ($activeLeaseUnit ? implode(',', array_keys($activeLeaseUnit)) : '0') . ")))
+            ORDER BY md.is_required DESC, dt.document_type_name
+        ");
+        $st->execute([$companyId]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $m) {
+            $uid = $m['related_type'] === 'unit' ? (int)$m['related_id'] : ($activeLeaseUnit[(int)$m['related_id']] ?? 0);
+            if (isset($out[$uid])) {
+                $out[$uid]['missing'][] = $m;
+            }
+        }
+
+        foreach ($out as $uid => &$ev) {
+            $activeLeaseId = $ev['active_lease'] ? (int)$ev['active_lease']['id'] : 0;
+            // Current lease's papers first, then by expiry.
+            usort($ev['documents'], static function ($a, $b) use ($activeLeaseId) {
+                $ac = ($a['related_type'] === 'lease' && (int)$a['related_id'] === $activeLeaseId) ? 0 : 1;
+                $bc = ($b['related_type'] === 'lease' && (int)$b['related_id'] === $activeLeaseId) ? 0 : 1;
+                if ($ac !== $bc) return $ac <=> $bc;
+                $ae = $a['expiry_date'] ?? '9999-12-31';
+                $be = $b['expiry_date'] ?? '9999-12-31';
+                return $ae <=> $be ?: ((int)$a['id'] <=> (int)$b['id']);
+            });
+            $ev['expired'] = count(array_filter($ev['documents'], static function ($d) { return $d['is_expired']; }));
+            $ev['expiring'] = count(array_filter($ev['documents'], static function ($d) { return $d['is_expiring']; }));
+            $ev['missing_required'] = count(array_filter($ev['missing'], static function ($m) { return (int)$m['is_required'] === 1; }));
+            $ev['score'] = max(0, min(100, 100 - ($ev['expired'] * 20) - ($ev['missing_required'] * 30)));
+            $ev['legal_status'] = ($ev['expired'] > 0 || $ev['missing_required'] > 0)
+                ? ($ev['score'] < 50 ? 'non_compliant' : 'at_risk')
+                : 'compliant';
+        }
+        unset($ev);
+        return $out;
+    }
+}
+
+if (!function_exists('re_unit_compliance_evaluate')) {
+    /** One unit's compliance (see re_unit_compliance_evaluate_many). */
+    function re_unit_compliance_evaluate(PDO $conn, int $companyId, int $unitId): array {
+        return re_unit_compliance_evaluate_many($conn, $companyId, [$unitId])[$unitId];
+    }
+}
+
+if (!function_exists('re_unit_compliance_save')) {
+    /** Store an evaluation in re_unit_legal_status; review notes / dates are left as they are. */
+    function re_unit_compliance_save(PDO $conn, int $companyId, int $unitId, array $ev): void {
+        $check = $conn->prepare("SELECT id, legal_status, compliance_score FROM re_unit_legal_status WHERE unit_id = ? AND company_id = ?");
         $check->execute([$unitId, $companyId]);
-        $existing = $check->fetch();
-        
-        if ($existing) {
-            $stmt = $conn->prepare("
-                UPDATE re_unit_legal_status
-                SET legal_status = ?,
-                    compliance_score = ?
-                WHERE id = ?
-            ");
-            $stmt->execute([$legalStatus, $complianceScore, $existing['id']]);
+        $row = $check->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            if ($row['legal_status'] !== $ev['legal_status'] || (string)$row['compliance_score'] !== (string)$ev['score']) {
+                $conn->prepare("UPDATE re_unit_legal_status SET legal_status = ?, compliance_score = ? WHERE id = ?")
+                     ->execute([$ev['legal_status'], $ev['score'], (int)$row['id']]);
+            }
         } else {
-            $stmt = $conn->prepare("
-                INSERT INTO re_unit_legal_status
-                (company_id, unit_id, legal_status, compliance_score)
-                VALUES (?, ?, ?, ?)
-            ");
-            $stmt->execute([$companyId, $unitId, $legalStatus, $complianceScore]);
+            $conn->prepare("INSERT INTO re_unit_legal_status (company_id, unit_id, legal_status, compliance_score) VALUES (?, ?, ?, ?)")
+                 ->execute([$companyId, $unitId, $ev['legal_status'], $ev['score']]);
         }
-        
+    }
+}
+
+if (!function_exists('update_unit_compliance_status')) {
+    /** Recalculate and save one unit's legal status + score. */
+    function update_unit_compliance_status(PDO $conn, int $companyId, int $unitId): array {
+        $ev = re_unit_compliance_evaluate($conn, $companyId, $unitId);
+        re_unit_compliance_save($conn, $companyId, $unitId, $ev);
         return [
             'success' => true,
-            'legal_status' => $legalStatus,
-            'compliance_score' => $complianceScore
+            'legal_status' => $ev['legal_status'],
+            'compliance_score' => $ev['score'],
+            'evaluation' => $ev,
         ];
+    }
+}
+
+if (!function_exists('re_refresh_unit_compliance_statuses')) {
+    /**
+     * Recalculate the given units (default: every unit that already has a legal
+     * status row) in one pass. Keeps the dashboard count and list current.
+     * @param int[]|null $unitIds
+     * @return int units recalculated
+     */
+    function re_refresh_unit_compliance_statuses(PDO $conn, int $companyId, ?array $unitIds = null): int {
+        if ($unitIds === null) {
+            $st = $conn->prepare("SELECT unit_id FROM re_unit_legal_status WHERE company_id = ?");
+            $st->execute([$companyId]);
+            $unitIds = $st->fetchAll(PDO::FETCH_COLUMN);
+        }
+        $n = 0;
+        foreach (array_chunk(array_map('intval', $unitIds), 300) as $chunk) {
+            foreach (re_unit_compliance_evaluate_many($conn, $companyId, $chunk) as $uid => $ev) {
+                re_unit_compliance_save($conn, $companyId, (int)$uid, $ev);
+                $n++;
+            }
+        }
+        return $n;
     }
 }
 

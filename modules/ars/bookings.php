@@ -293,7 +293,12 @@ ars_shell_begin([
             <?php if ($view === 'outstanding'): ?>
             <td class="text-right ars-tabular font-semibold whitespace-nowrap text-ars-danger" data-sort-value="<?= h((string)$bal) ?>"><?= formatArsAmount($bal) ?></td>
             <?php endif; ?>
-            <td data-sort-value="<?= h(ucfirst(str_replace('_', ' ', (string)$b['status']))) ?>"><?= ars_ui_status_badge('booking', $b['status']) ?></td>
+            <td data-sort-value="<?= h(ucfirst(str_replace('_', ' ', (string)$b['status']))) ?>">
+              <?= ars_ui_status_badge('booking', $b['status']) ?>
+              <?php if ($b['status'] !== 'cancelled'): ?>
+                <div class="mt-2"><a href="rental_contract.php?action=create_from_booking&amp;booking_id=<?= (int)$b['id'] ?>" class="btn btn-sm" style="background:#c4b5fd;color:#4c1d95;border:none;padding:.3rem .75rem;white-space:nowrap;font-weight:600;" title="Create a rental contract draft from this reservation" onclick="event.stopPropagation()"><i class="bi bi-file-earmark-text me-1"></i>Create Rental Contract</a></div>
+              <?php endif; ?>
+            </td>
           </tr>
         <?php endforeach; ?>
       </tbody>

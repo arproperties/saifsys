@@ -12,6 +12,8 @@ require_once __DIR__ . '/../../../includes/module_access.php';
 require_once __DIR__ . '/../../../includes/rbac_department.php';
 require_once __DIR__ . '/../includes/receipt_allocation_engine.php';
 require_once __DIR__ . '/../includes/invoice_engine.php';
+require_once __DIR__ . '/../includes/credit_to_deposit_helper.php';
+require_once __DIR__ . '/../includes/penalty_invoice_helper.php';
 
 require_login();
 if (!has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_FINANCIAL, $conn)) {
@@ -388,6 +390,84 @@ require_once __DIR__ . '/../includes/re_layout_header.php';
             After confirm, credit is auto-applied only when it fully clears an open invoice
             (never chips leftover fils into a rent/fee month). Any remainder stays as tenant credit.
             Receipt amount, cheque status, and bank reconciliation stay unchanged.
+        </div>
+    <?php endif; ?>
+
+    <?php
+        $canFinance = has_department_access(MODULE_REALESTATE, DEPT_REALESTATE_FINANCIAL, $conn);
+        $ctdState = re_ctd_state($conn, $companyId, $leaseId);
+        $unbilledFees = re_penalty_unbilled_for_lease($conn, $companyId, $leaseId);
+    ?>
+    <?php if ($canFinance && (!empty($ctdState['available']) || !empty($ctdState['moves']))): ?>
+        <div class="card card-round mb-3 border-warning">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-shield-check"></i> Security deposit paid from tenant credit</h6>
+            </div>
+            <div class="card-body">
+                <?php if (!empty($ctdState['available'])): ?>
+                    <p class="small mb-2">
+                        Security deposit still open: <strong>AED <?= p4_money($ctdState['deposit_open']) ?></strong>.
+                        If the tenant already paid it inside a receipt that went to tenant credit, move it here.
+                        No new receipt and no bank entry: the receipt is re-split (Dr 2410 tenant credit, Cr 2200 deposit liability).
+                    </p>
+                    <?php foreach ($ctdState['receipts'] as $rc): ?>
+                        <?php $suggest = min((float)$rc['unused'], (float)$ctdState['deposit_open'], (float)$ctdState['credit_balance']); ?>
+                        <form method="post" action="credit_to_deposit.php" class="row g-2 align-items-center mb-2"
+                              onsubmit="return confirm('Move this amount from tenant credit to the security deposit?');">
+                            <?php csrf_field(); ?>
+                            <input type="hidden" name="action" value="apply">
+                            <input type="hidden" name="lease_id" value="<?= (int)$leaseId ?>">
+                            <input type="hidden" name="payment_id" value="<?= (int)$rc['id'] ?>">
+                            <div class="col-md-6 small">
+                                <a href="../payment_view.php?id=<?= (int)$rc['id'] ?>"><?= h($rc['receipt_number'] ?: ('#' . $rc['id'])) ?></a>
+                                (<?= h($rc['payment_date']) ?>, AED <?= p4_money($rc['amount']) ?>) - unused credit AED <?= p4_money($rc['unused']) ?>
+                            </div>
+                            <div class="col-md-3">
+                                <input type="number" step="0.01" min="0.01" max="<?= h(number_format($suggest, 2, '.', '')) ?>"
+                                       name="amount" class="form-control form-control-sm text-end" value="<?= h(number_format($suggest, 2, '.', '')) ?>">
+                            </div>
+                            <div class="col-md-3">
+                                <button type="submit" class="btn btn-sm btn-warning w-100">Apply to deposit</button>
+                            </div>
+                        </form>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                <?php foreach ($ctdState['moves'] as $mv): ?>
+                    <form method="post" action="credit_to_deposit.php" class="d-flex justify-content-between align-items-center small border-top pt-2 mt-2"
+                          onsubmit="return confirm('Undo this move? The amount goes back to tenant credit.');">
+                        <?php csrf_field(); ?>
+                        <input type="hidden" name="action" value="undo">
+                        <input type="hidden" name="lease_id" value="<?= (int)$leaseId ?>">
+                        <input type="hidden" name="allocation_id" value="<?= (int)$mv['id'] ?>">
+                        <span>Moved AED <?= p4_money($mv['amount_allocated']) ?> from <?= h($mv['receipt_number']) ?> to the deposit on <?= h(substr((string)$mv['created_at'], 0, 10)) ?></span>
+                        <button type="submit" class="btn btn-sm btn-outline-secondary">Undo</button>
+                    </form>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($canFinance && $unbilledFees): ?>
+        <div class="card card-round mb-3 border-danger">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-exclamation-triangle"></i> Fees not billed yet</h6>
+            </div>
+            <div class="card-body">
+                <p class="small mb-2">
+                    These bounce / late fees are on the lease but have no invoice, so they cannot be allocated.
+                    Waive any fee that should not be charged first (Lease &rarr; Services &amp; Penalties), then bill the rest and allocate the receipt to their invoices.
+                </p>
+                <ul class="small mb-2">
+                    <?php foreach ($unbilledFees as $fee): ?>
+                        <li><?= h($fee['item_name']) ?> - due <?= h($fee['due_date']) ?> - <strong>AED <?= p4_money($fee['total_amount']) ?></strong></li>
+                    <?php endforeach; ?>
+                </ul>
+                <form method="post" action="penalty_bill.php" onsubmit="return confirm('Make invoices for all fees listed?');">
+                    <?php csrf_field(); ?>
+                    <input type="hidden" name="lease_id" value="<?= (int)$leaseId ?>">
+                    <button type="submit" class="btn btn-sm btn-danger">Bill <?= count($unbilledFees) === 1 ? 'this fee' : 'these ' . count($unbilledFees) . ' fees' ?></button>
+                </form>
+            </div>
         </div>
     <?php endif; ?>
 

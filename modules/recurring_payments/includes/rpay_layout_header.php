@@ -109,7 +109,7 @@ if (is_file($asWidget)) { require $asWidget; }
     <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
 
     <div class="nav-sect mt-3">Recurrent Income</div>
-      <a href="<?= h($rpayBase) ?>/index.php" class="slink <?= in_array($currentPage, ['index.php', 'pay.php'], true) ? 'active' : '' ?>">
+      <a href="<?= h($rpayBase) ?>/index.php" class="slink <?= in_array($currentPage, ['index.php', 'pay.php', 'due_edit.php'], true) ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Payments</span>
       </a>
       <a href="<?= h($rpayBase) ?>/entries.php" class="slink <?= in_array($currentPage, ['entries.php', 'entry_form.php'], true) ? 'active' : '' ?>">

@@ -193,7 +193,21 @@ if (!function_exists('create_penalty_billing_item')) {
                 $penaltyRule['id'],
                 $installmentId
             ]);
-            return $conn->lastInsertId();
+            $billingItemId = (int)$conn->lastInsertId();
+
+            // Invoice Mode: bill the fee right away so Receipt Allocation can collect it.
+            // Never let this stop the fee itself from being saved.
+            try {
+                require_once __DIR__ . '/penalty_invoice_helper.php';
+                $payable = re_penalty_make_payable($conn, $companyId, $leaseId, $billingItemId, function_exists('current_user_id') ? current_user_id() : null);
+                if (empty($payable['success'])) {
+                    error_log('Penalty #' . $billingItemId . ' saved but not invoiced: ' . ($payable['error'] ?? ''));
+                }
+            } catch (Throwable $e) {
+                error_log('Penalty #' . $billingItemId . ' saved but not invoiced: ' . $e->getMessage());
+            }
+
+            return $billingItemId;
         } catch (Exception $e) {
             error_log("Error creating penalty billing item: " . $e->getMessage());
             return null;

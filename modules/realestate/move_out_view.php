@@ -687,7 +687,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['action'])) {
                         throw new RuntimeException('The signed form could not be saved.');
                     }
                     $conn->prepare("INSERT INTO re_move_out_photos (company_id, move_out_id, file_type, photo_path, photo_description, uploaded_by) VALUES (?, ?, 'inspection_report', ?, ?, ?)")
-                        ->execute([$currentCompanyId, $moveOutId, $pdfRel, mb_substr('Signed digitally by ' . $signer, 0, 255), $currentUserId]);
+                        ->execute([$currentCompanyId, $moveOutId, $pdfRel, mb_substr((($_POST['sig_source'] ?? '') === 'upload' ? 'Signature uploaded for ' : 'Signed digitally by ') . $signer, 0, 255), $currentUserId]);
                     $response = ['success' => true, 'message' => 'Signed by ' . $signer . '. The signed report is saved.'];
                 } catch (Throwable $e) {
                     $response = ['success' => false, 'message' => $e->getMessage()];
@@ -1544,14 +1544,21 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <?php endif; ?>
                         <?php else:
                             $mokEditable = !$moKeysDone && !$mokClosed; ?>
-                            <p class="rm-cell-sub mb-2">
-                                <?php if ($mokSource && array_filter($mokKeys, fn($k) => $k['issued_qty'] !== null)): ?>
+                            <?php $mokHasIssued = (bool)array_filter($mokKeys, fn($k) => $k['issued_qty'] !== null); ?>
+                            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                            <p class="rm-cell-sub mb-0">
+                                <?php if ($mokSource && $mokHasIssued): ?>
                                     <i class="bi bi-box-arrow-in-right"></i> Handed over at move-in<?= !empty($mokSource['move_in_date']) ? ' on ' . date('M d, Y', strtotime($mokSource['move_in_date'])) : '' ?>
                                     (<a href="move_in_view.php?id=<?= (int)$mokSource['id'] ?>" target="_blank">Move-In #<?= (int)$mokSource['id'] ?></a><?= $mokSource['carried'] ? ', lease ' . h($mokSource['lease_number']) . ' — renewed since' : '' ?>).
                                 <?php else: ?>
-                                    <i class="bi bi-info-circle"></i> No keys were recorded at move-in. Enter what the tenant hands back.
+                                    <i class="bi bi-info-circle"></i> No keys were recorded at move-in. Enter what the tenant hands back (0 if none).
                                 <?php endif; ?>
                             </p>
+                            <?php if ($mokEditable && $mokHasIssued): ?>
+                                <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none" onclick="moKeysAllReturned()"
+                                        title="Fill every empty Returned box with the quantity issued at move-in"><i class="bi bi-check2-all"></i> Fill all as issued</button>
+                            <?php endif; ?>
+                            </div>
                             <form id="moKeysForm">
                                 <div class="table-responsive">
                                     <table class="table table-sm align-middle rm-table-stack mb-2">
@@ -1590,23 +1597,23 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     </table>
                                 </div>
                                 <?php if ($mokEditable): ?>
-                                    <div class="d-flex flex-wrap gap-2 mb-2">
-                                        <button type="button" class="btn btn-sm btn-outline-success" onclick="moKeysAllReturned()"><i class="bi bi-check2-all"></i> All returned as issued</button>
-                                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="moKeysSubmit('keys_save', this)"><i class="bi bi-save"></i> Save</button>
+                                    <div class="d-flex gap-2 mb-3">
+                                        <input type="text" id="moKeyNewLabel" class="form-control form-control-sm" maxlength="100" placeholder="Another key or card not in the list? e.g. Mailbox Key"
+                                               onkeydown="if (event.key === 'Enter') { event.preventDefault(); moKeysAdd(this.nextElementSibling); }">
+                                        <button class="btn btn-sm btn-outline-secondary text-nowrap" type="button" onclick="moKeysAdd(this)"><i class="bi bi-plus"></i> Add row</button>
                                     </div>
                                     <div class="form-check mb-2" id="moKeysAckWrap" <?= $mokSum['missing'] ? '' : 'hidden' ?>>
                                         <input class="form-check-input" type="checkbox" name="ack_missing" value="1" id="moKeysAck">
                                         <label class="form-check-label" for="moKeysAck"><b>Acknowledge partial return</b><span id="moKeysAckOut"><?= $mokSum['missing'] ? ': ' . h(rmok_missing_text($mokSum['missing'])) . ' outstanding' : '' ?></span></label>
                                     </div>
-                                    <button type="button" class="btn btn-success" onclick="moKeysSubmit('keys_confirm', this)"><i class="bi bi-check-circle"></i> Confirm Key Return</button>
+                                    <div class="d-flex flex-wrap align-items-center gap-2 border-top pt-3">
+                                        <span class="rm-cell-sub me-auto"><i class="bi bi-info-circle"></i> Confirm when the tenant has handed the keys over. This completes the step and locks the list.</span>
+                                        <button type="button" class="btn btn-sm btn-link text-muted text-decoration-none" onclick="moKeysSubmit('keys_save', this)"
+                                                title="Keep what is entered and finish later"><i class="bi bi-save"></i> Save &amp; finish later</button>
+                                        <button type="button" class="btn btn-success" onclick="moKeysSubmit('keys_confirm', this)"><i class="bi bi-check-circle"></i> Confirm Key Return</button>
+                                    </div>
                                 <?php endif; ?>
                             </form>
-                            <?php if ($mokEditable): ?>
-                                <form class="d-flex gap-2 mt-3" onsubmit="event.preventDefault(); postAction({action: 'keys_add', key_label: this.key_label.value}, 'Could not add');">
-                                    <input type="text" name="key_label" class="form-control form-control-sm" maxlength="100" placeholder="Add a key or access card, e.g. Mailbox Key" required>
-                                    <button class="btn btn-sm btn-outline-primary text-nowrap" type="submit"><i class="bi bi-plus"></i> Add</button>
-                                </form>
-                            <?php endif; ?>
                             <?php if ($mokSum['missing'] && !$mokClosed): ?>
                                 <div class="alert alert-danger py-2 mt-3 mb-0 d-flex flex-wrap align-items-center gap-2">
                                     <span><i class="bi bi-exclamation-triangle"></i> Missing: <strong><?= h(rmok_missing_text($mokSum['missing'])) ?></strong></span>
@@ -1901,9 +1908,9 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                             <div id="moSignedUpload" class="<?= $moSigReady ? 'collapse' : '' ?>">
                                 <form id="moSignedForm" class="d-flex flex-wrap gap-2 mt-2">
                                     <input type="file" name="file" class="form-control form-control-sm" accept=".pdf,.jpg,.jpeg,.png,.webp" required>
-                                    <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap"><i class="bi bi-upload"></i> Upload scan</button>
+                                    <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap"><i class="bi bi-upload"></i> Upload signed document</button>
                                 </form>
-                                <div class="form-text">PDF or a photo/scan of the paper-signed report, up to 10MB.</div>
+                                <div class="form-text">The whole report signed on paper: PDF or a photo/scan, up to 10MB. It is kept as the signed copy as is.</div>
                             </div>
                         <?php };
                         ?>
@@ -1939,9 +1946,10 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                         <div class="rmf-sub">Signature</div>
                                         <div class="rmf-row">
                                             <?php if ($moSigReady): ?>
-                                                <button type="button" class="btn btn-sm btn-outline-success" onclick="moSign(this)"><i class="bi bi-pen"></i> Sign again</button>
+                                                <button type="button" class="btn btn-sm btn-outline-success" onclick="moSign('draw')" title="The tenant signs on screen"><i class="bi bi-pen"></i> Sign again</button>
+                                                <button type="button" class="btn btn-sm btn-outline-success" onclick="moSign('upload')" title="Upload an image of the tenant's signature; it is placed in the Tenant signature box of the report"><i class="bi bi-image"></i> Upload signature</button>
                                             <?php endif; ?>
-                                            <a class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" href="#moSignedUpload" role="button"><i class="bi bi-upload"></i> Upload paper scan</a>
+                                            <a class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" href="#moSignedUpload" role="button" title="The whole report, signed on paper and scanned"><i class="bi bi-file-earmark-arrow-up"></i> Upload signed document</a>
                                         </div>
                                         <?php $moUpload(); ?>
                                     <?php endif; ?>
@@ -1982,11 +1990,12 @@ require_once __DIR__ . '/includes/re_layout_header.php';
                                     <?php if (!$photosLocked && $moSignedOk): ?>
                                         <div class="rmf-row">
                                             <?php if ($moSigReady): ?>
-                                                <button type="button" class="btn btn-success" onclick="moSign(this)"><i class="bi bi-pen"></i> Digital Sign</button>
+                                                <button type="button" class="btn btn-success" onclick="moSign('draw')"><i class="bi bi-pen"></i> Digital Sign</button>
+                                                <button type="button" class="btn btn-outline-success" onclick="moSign('upload')" title="Upload an image of the tenant's signature; it is placed in the Tenant signature box of the report"><i class="bi bi-image"></i> Upload signature</button>
                                             <?php else: ?>
                                                 <span class="rm-cell-sub">Run <code>migrations/re_tenant_signatures.sql</code> to sign digitally.</span>
                                             <?php endif; ?>
-                                            <a class="rmf-link" data-bs-toggle="collapse" href="#moSignedUpload" role="button"><i class="bi bi-upload"></i> Signed on paper? Upload the scan</a>
+                                            <a class="rmf-link" data-bs-toggle="collapse" href="#moSignedUpload" role="button"><i class="bi bi-file-earmark-arrow-up"></i> Signed on paper? Upload signed document</a>
                                         </div>
                                         <?php $moUpload(); ?>
                                         <div class="form-text">Signing completes this step.</div>
@@ -2486,6 +2495,18 @@ require_once __DIR__ . '/includes/re_layout_header.php';
             if (btn) btn.disabled = true;
             postAction(fd, 'Could not save the key return').finally(() => { if (btn) btn.disabled = false; });
         }
+        // Add a row: save the quantities typed so far first, the page reloads after the add
+        function moKeysAdd(btn) {
+            const inp = document.getElementById('moKeyNewLabel');
+            const label = inp.value.trim();
+            if (!label) { inp.focus(); return; }
+            const fd = new FormData(document.getElementById('moKeysForm'));
+            fd.append('action', 'keys_save');
+            btn.disabled = true;
+            postAction(fd, 'Could not save the key return', () => {
+                postAction({ action: 'keys_add', key_label: label }, 'Could not add').finally(() => { btn.disabled = false; });
+            }).finally(() => { btn.disabled = false; });
+        }
         // Fill every empty "Returned" with what was issued
         function moKeysAllReturned() {
             document.querySelectorAll('#moKeysForm input[name^="returned["]').forEach(inp => {
@@ -2523,14 +2544,17 @@ require_once __DIR__ . '/includes/re_layout_header.php';
         }
 
         // Digital Sign (Form 1): the tenant signs in the pop-up; the signed report is generated and saved
-        function moSign() {
+        // mode: 'draw' (sign on screen) or 'upload' (image of the signature) - both go into the Tenant signature box
+        function moSign(mode) {
             reSigOpen({
-                title: 'Tenant signature · Move-Out Inspection Report',
+                mode: mode === 'upload' ? 'upload' : 'draw',
+                title: (mode === 'upload' ? 'Upload tenant signature' : 'Tenant signature') + ' · Move-Out Inspection Report',
                 name: <?= json_encode(trim($moveOut['first_name'] . ' ' . $moveOut['last_name'])) ?>,
-                onSave: (dataUrl, name, btn) => {
+                onSave: (dataUrl, name, btn, how) => {
                     const fd = new FormData();
                     fd.append('action', 'sign_report');
                     fd.append('signature', dataUrl);
+                    fd.append('sig_source', how === 'upload' ? 'upload' : 'draw');
                     fd.append('signer_name', name);
                     fd.append('include_photos', document.getElementById('moFormPhotos')?.checked ? 1 : 0);
                     fd.append('include_meters', document.getElementById('moFormMeters')?.checked ? 1 : 0);
