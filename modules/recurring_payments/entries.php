@@ -190,7 +190,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
               // The date the entry was made in Reem (its created_at, in ms); until Reem sends it, the date saifsys saved it.
               $madeMs = (int)($e['created_at'] ?? 0);
               $savedAt = $madeMs > 0
-                  ? (new DateTime('@' . intdiv($madeMs, 1000)))->setTimezone(new DateTimeZone('Asia/Dubai'))->format('Y-m-d')
+                  ? rpay_reem_date($madeMs)
                   : (string)($savedPicks[(int)$e['id']] ?? '');
             ?>
             <td class="text-nowrap" data-sort-value="<?= h($savedAt) ?>"><?= $savedAt !== '' ? h(rpay_date(substr($savedAt, 0, 10))) : '<span class="text-muted">—</span>' ?></td>
