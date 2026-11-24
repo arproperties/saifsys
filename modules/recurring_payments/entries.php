@@ -49,8 +49,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $due = rpay_reem($code, 'POST', '/entries/' . $id . '/dues', $date !== '' ? ['date' => $date] : null);
             binv_flash('Payment for ' . rpay_month_label((string)($due['month'] ?? '')) . ' created for "' . ($due['title'] ?? '') . '".');
         } elseif ($action === 'delete') {
-            rpay_reem($code, 'DELETE', '/entries/' . $id);
-            binv_flash('Entry deleted.');
+            // With payments only when the form says so in so many words: Reem then deletes them too.
+            $withPayments = ($_POST['with_payments'] ?? '') === '1';
+            rpay_reem($code, 'DELETE', '/entries/' . $id . ($withPayments ? '?with_payments=1' : ''));
+            // The entry's own rows kept in saifsys go with it (ids are never used again, so this is tidying only).
+            foreach (['rpay_entry_modes', 'rpay_entry_saved', 'rpay_entry_rooms', 'rpay_entry_notes'] as $tbl) {
+                try {
+                    $conn->prepare('DELETE FROM ' . $tbl . ' WHERE entry_id = ?')->execute([$id]);
+                } catch (PDOException $pe) {
+                    // a table not there yet: nothing to tidy
+                }
+            }
+            binv_flash($withPayments ? 'Entry deleted, with its payments, receipts and files.' : 'Entry deleted.');
         }
     } catch (BinvError $e) {
         binv_flash($e->getMessage(), 'danger');

@@ -331,6 +331,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           <?php csrf_field(); ?>
           <input type="hidden" name="action" value="delete">
           <input type="hidden" name="entry" value="<?= (int)$entry['id'] ?>">
+          <input type="hidden" name="with_payments" value="1">
           <button class="btn btn-outline-danger"><i class="bi bi-trash"></i> Delete entry and its payments</button>
         </form>
       <?php endif; ?>
