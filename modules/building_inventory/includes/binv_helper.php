@@ -81,6 +81,10 @@ function binv_reem(string $code, string $method, string $path = '', ?array $json
     if (!binv_reem_configured()) {
         throw new BinvError('Building Inventory is not connected to Reem yet: REEM_URL and REEM_DOOR_KEY are missing from config.php.', 503);
     }
+    // A copy that only looks (local pointed at live Reem): reads go, every change stops here.
+    if (defined('REEM_READ_ONLY') && REEM_READ_ONLY && strtoupper($method) !== 'GET') {
+        throw new BinvError('Read only: this copy of saifsys only looks at Reem. Nothing was saved.', 403);
+    }
     $headers = ['X-Saifsys-Key: ' . REEM_DOOR_KEY, 'X-Saifsys-Employee: ' . $code, 'Accept: application/json'];
     $ch = curl_init(rtrim(REEM_URL, '/') . $base . $path);
     curl_setopt_array($ch, [

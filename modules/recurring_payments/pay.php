@@ -22,7 +22,7 @@ $code = rpay_boot($conn);
 $rpayBase = get_application_web_root() . '/modules/recurring_payments';
 $dueId = (int)($_GET['due'] ?? 0);
 $filters = [];
-foreach (['month', 'building', 'head', 'unit', 'status'] as $k) {
+foreach (['month', 'building', 'head', 'unit', 'status', 'grp'] as $k) {
     if (is_string($_GET[$k] ?? null) && $_GET[$k] !== '') {
         $filters[$k] = $_GET[$k];
     }
@@ -41,7 +41,7 @@ try {
 }
 $due = $data['due'];
 $receipts = $data['receipts'] ?? [];
-$accounts = $data['accounts'] ?? [];
+$accounts = rpay_visible_accounts($conn, $data['accounts'] ?? []); // accounts hidden in saifsys are not offered
 $left = (float)($due['left'] ?? 0);
 $received = (float)($due['received'] ?? 0);
 $picked = '';

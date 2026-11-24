@@ -7,6 +7,7 @@
  *   file.php?kind=due&id=12
  *   file.php?kind=receipt&id=7
  *   file.php?kind=transfer&id=3
+ *   file.php?kind=receipt_file&id=5   (a receipt's second, third ... file)
  */
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start();
@@ -20,7 +21,7 @@ require_login(get_application_web_root() . '/login');
 $code = rpay_boot($conn);
 
 $id = (int)($_GET['id'] ?? 0);
-$of = ['transfer' => '/transfers/', 'receipt' => '/receipts/'][$_GET['kind'] ?? ''] ?? '/dues/';
+$of = ['transfer' => '/transfers/', 'receipt' => '/receipts/', 'receipt_file' => '/receipt-files/'][$_GET['kind'] ?? ''] ?? '/dues/';
 
 try {
     [$bytes, $type] = binv_reem($code, 'GET', $of . $id . '/attachment', null, null, true, 30, RPAY_REEM_PATH);

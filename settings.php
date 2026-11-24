@@ -2776,8 +2776,8 @@ require __DIR__ . '/includes/admin/admin_layout_header.php';
         'Operations (shared — cleaning & maintenance)' => [
             DEPT_OPERATIONS_SUPERVISOR => 'Operations (jobs, materials)'
         ],
-        'Recurring Payments (accountants)' => [
-            DEPT_RECURRING_PAYMENTS => 'Recurring Payments'
+        'Recurrent Income (accountants)' => [
+            DEPT_RECURRING_PAYMENTS => 'Recurrent Income'
         ],
         'Shared' => [
             DEPT_HR => 'HR (Shared across modules)'

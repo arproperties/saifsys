@@ -257,7 +257,7 @@ function get_module_display_name(string $module): string {
         MODULE_LEGAL => 'Legal Department',
         MODULE_OPERATIONS => 'Operations',
         MODULE_BUILDING_INVENTORY => 'Building Inventory',
-        MODULE_RECURRING_PAYMENTS => 'Recurring Payments'
+        MODULE_RECURRING_PAYMENTS => 'Recurrent Income'
     ];
     return $names[$module] ?? ucfirst($module);
 }

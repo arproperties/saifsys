@@ -191,9 +191,9 @@ if (is_file($asWidget)) { require $asWidget; }
     <div class="collapse-btn" id="sbToggle" title="Collapse/Expand"><i class="bi bi-chevron-left"></i></div>
 
     <?php if ($ltConfidential): ?>
-    <div class="nav-sect mt-3">Recurring Payments</div>
+    <div class="nav-sect mt-3">Recurrent Income</div>
       <a href="<?= h($appBase) ?>/modules/recurring_payments/index.php" class="slink">
-        <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Recurring Payments</span>
+        <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Recurrent Income</span>
       </a>
     <div class="nav-sect"><i class="bi bi-lock-fill me-1"></i>Confidential</div>
       <a href="<?= h($ltBase) ?>/investments.php" class="slink <?= $currentPage !== 'investment_form.php' ? 'active' : '' ?>">
@@ -203,9 +203,9 @@ if (is_file($asWidget)) { require $asWidget; }
         <span class="sicon"><i class="bi bi-plus-circle"></i></span><span class="slabel">New investment</span>
       </a>
     <?php else: ?>
-    <div class="nav-sect mt-3">Recurring Payments</div>
+    <div class="nav-sect mt-3">Recurrent Income</div>
       <a href="<?= h($appBase) ?>/modules/recurring_payments/index.php" class="slink">
-        <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Recurring Payments</span>
+        <span class="sicon"><i class="bi bi-cash-coin"></i></span><span class="slabel">Recurrent Income</span>
       </a>
 
     <div class="nav-sect">Loan Tracker</div>
