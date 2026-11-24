@@ -73,7 +73,7 @@ $savedPick = $entry ? (string)(rpay_entry_saved_picks($conn)[(int)$entry['id']] 
 // Locked once the system has the date (Reem's, or the day it was first saved, or a new entry). An old entry with none can be given one, once.
 $form['created_locked'] = !$entry || $madeMs > 0 || $savedPick !== '';
 if ($madeMs > 0) {
-    $form['created'] = (new DateTime('@' . intdiv($madeMs, 1000)))->setTimezone($dubai)->format('Y-m-d');
+    $form['created'] = rpay_reem_date($madeMs);
 } elseif ($savedPick !== '') {
     $form['created'] = substr($savedPick, 0, 10);
 } else {

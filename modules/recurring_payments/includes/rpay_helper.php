@@ -1121,3 +1121,19 @@ function rpay_set_entry_saved_date(PDO $conn, int $entryId, string $ymd, int $us
         ON DUPLICATE KEY UPDATE saved_at = VALUES(saved_at), saved_by = VALUES(saved_by)')
         ->execute([$entryId, $ymd . ' 00:00:00', $userId ?: null]);
 }
+
+/**
+ * Reem's created_at (unix seconds, as Reem keeps every time) as a Dubai date 'Y-m-d', or '' when there is none.
+ * A value in milliseconds is read too, so a Reem that ever sends those still gives the right day.
+ */
+function rpay_reem_date($stamp): string
+{
+    $n = (int)$stamp;
+    if ($n <= 0) {
+        return '';
+    }
+    if ($n > 100000000000) { // milliseconds
+        $n = intdiv($n, 1000);
+    }
+    return (new DateTime('@' . $n))->setTimezone(new DateTimeZone('Asia/Dubai'))->format('Y-m-d');
+}
