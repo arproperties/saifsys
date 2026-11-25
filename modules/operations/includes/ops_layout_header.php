@@ -271,6 +271,9 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($opsBase) ?>/staff_bills.php" class="slink <?= $currentPage === 'staff_bills.php' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-receipt"></i></span><span class="slabel">Staff Bills</span>
       </a>
+      <a href="<?= h($opsBase) ?>/store_camera.php" class="slink <?= $currentPage === 'store_camera.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-camera-video"></i></span><span class="slabel">Store Camera</span>
+      </a>
       <?php endif; ?>
 
     <div class="nav-sect">Other</div>
