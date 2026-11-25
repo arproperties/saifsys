@@ -286,7 +286,15 @@ require __DIR__ . '/includes/ops_layout_header.php';
           <?php endif; ?>
         </form>
       </div>
-      <?php if ($reemRep): ?>
+      <?php if ($reemRep):
+        // A snapshot of the report: its own kept copy, else (until the day's pictures go) the original.
+        $repKept = $reemRep['kept'] ?? [];
+        $repPic = function (string $name, ?string $orig) use ($repKept, $reemRep, $opsBase, $camId, $day) {
+            if (in_array($name, $repKept, true)) {
+                return $opsBase . '/store_camera_file.php?report=' . (int)$camId . '&day=' . rawurlencode($day) . '&pic=' . $name;
+            }
+            return $orig !== null && empty($reemRep['pictures_deleted']) ? $opsBase . '/store_camera_file.php?' . $orig : null;
+        }; ?>
         <div class="card-body pb-2">
           <?php if (isset($reemRep['movements'])): $sh = (int)($reemRep['stock_handled'] ?? 0); ?>
             <div class="d-flex flex-wrap gap-2 mb-2">
@@ -319,13 +327,19 @@ require __DIR__ . '/includes/ops_layout_header.php';
             <?php
               $changed = array_values(array_filter($reemRep['stock'], function ($sk) { return $sk['end'] !== $sk['start']; }));
               $rpics = $reemRep['pics'] ?? [];
-              if ($changed && empty($reemRep['pictures_deleted']) && (!empty($rpics['start']) || !empty($rpics['end']))): ?>
+              $psrcs = [];
+              foreach (['start', 'end'] as $side) {
+                  if (!empty($rpics[$side]) && ($u = $repPic($side, $rpics[$side]['src']))) {
+                      $psrcs[$side] = $u;
+                  }
+              }
+              if ($psrcs): ?>
               <div class="row g-3 mt-1">
-                <?php foreach (['start' => 'Start of day', 'end' => 'End of day'] as $side => $sideName): if (empty($rpics[$side])) { continue; } ?>
+                <?php foreach (['start' => 'Start of day', 'end' => 'End of day'] as $side => $sideName): if (empty($psrcs[$side])) { continue; } ?>
                   <div class="col-md-6">
                     <div class="small fw-semibold mb-1"><?= $sideName ?> <span class="text-muted fw-normal">(<?= h($rpics[$side]['at']) ?>)</span></div>
                     <div class="position-relative">
-                      <?php $psrc = $opsBase . '/store_camera_file.php?' . $rpics[$side]['src']; ?>
+                      <?php $psrc = $psrcs[$side]; ?>
                       <a href="<?= h($psrc) ?>" target="_blank" rel="noopener"><img src="<?= h($psrc) ?>" class="img-fluid rounded border d-block w-100" alt="<?= $sideName ?>" loading="lazy"
                         onerror="this.closest('.col-md-6').innerHTML='<div class=&quot;small text-muted&quot;><?= $sideName ?>: the picture is no longer kept.</div>';"></a>
                       <?php foreach ($changed as $sk): foreach ($sk[$side . '_boxes'] ?? [] as $b): ?>
@@ -337,22 +351,44 @@ require __DIR__ . '/includes/ops_layout_header.php';
                   </div>
                 <?php endforeach; ?>
               </div>
-              <div class="small text-muted mt-1">Red boxes: the items whose count changed during the day.</div>
+              <?php if ($changed): ?><div class="small text-muted mt-1">Red boxes: the items whose count changed during the day.</div><?php endif; ?>
             <?php endif; ?>
           </div>
         <?php endif; ?>
         <div class="table-responsive">
           <table class="table sc-table mb-0">
-            <?php $repPics = empty($reemRep['pictures_deleted']); ?>
+            <?php
+              $rowPics = $rowMore = [];
+              foreach (($reemRep['rows'] ?? []) as $i => $rr) {
+                  if (!empty($rr['event']) && ($u = $repPic('e' . (int)$rr['event'], 'id=' . (int)$rr['event']))) {
+                      $rowPics[$i] = $u;
+                  }
+                  // The extra small snapshots kept round a stock change.
+                  foreach (($rr['more'] ?? []) as $m) {
+                      if ($u = $repPic((string)$m['pic'], null)) {
+                          $rowMore[$i][] = ['src' => $u, 'at' => (string)$m['at']];
+                      }
+                  }
+              }
+              $repPics = $rowPics || $rowMore; ?>
             <thead><tr><th>Time</th><th>What happened</th><th>Stock</th><?= $repPics ? '<th>Snapshot</th>' : '' ?></tr></thead>
             <tbody>
-              <?php foreach ($reemRep['rows'] ?? array_map(function ($p) { return ['time' => '', 'what' => (string)$p]; }, $reemRep['points'] ?? []) as $rr): ?>
+              <?php foreach ($reemRep['rows'] ?? array_map(function ($p) { return ['time' => '', 'what' => (string)$p]; }, $reemRep['points'] ?? []) as $ri => $rr): ?>
                 <tr>
                   <td class="sc-time"><?= h($rr['time']) ?></td>
                   <td><?= h($rr['what']) ?></td>
                   <td class="small<?= ($rr['stock'] ?? '') !== '' && strpos((string)$rr['stock'], '→') !== false ? ' fw-semibold text-danger' : ' text-muted' ?>"><?= h((string)($rr['stock'] ?? '')) ?></td>
-                  <?php if ($repPics): ?><td><?php if (!empty($rr['event'])): $esrc = $opsBase . '/store_camera_file.php?id=' . (int)$rr['event']; ?>
+                  <?php if ($repPics): ?><td><?php if (!empty($rowPics[$ri])): $esrc = $rowPics[$ri]; ?>
                     <a href="<?= h($esrc) ?>" target="_blank" rel="noopener"><img class="sc-thumb" src="<?= h($esrc) ?>" alt="Snapshot <?= h($rr['time']) ?>" loading="lazy"></a>
+                  <?php endif; ?>
+                  <?php if (!empty($rowMore[$ri])): ?>
+                    <div class="d-flex flex-wrap gap-1 mt-1">
+                      <?php foreach ($rowMore[$ri] as $m): ?>
+                        <a href="<?= h($m['src']) ?>" target="_blank" rel="noopener" title="<?= h($m['at']) ?>" class="text-decoration-none text-center small text-muted">
+                          <img src="<?= h($m['src']) ?>" alt="Snapshot <?= h($m['at']) ?>" loading="lazy" class="rounded border d-block" style="width:64px;height:48px;object-fit:cover"><?= h($m['at']) ?>
+                        </a>
+                      <?php endforeach; ?>
+                    </div>
                   <?php endif; ?></td><?php endif; ?>
                 </tr>
               <?php endforeach; ?>

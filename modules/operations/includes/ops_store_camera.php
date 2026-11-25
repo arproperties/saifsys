@@ -812,10 +812,108 @@ function sc_reem_report_make(PDO $conn, array $cam, string $day, int $userId): a
     if (!is_dir(dirname($f))) {
         @mkdir(dirname($f), 0775, true);
     }
+    // The report keeps its own snapshots (small copies): the start and end pictures and each row's movement.
+    $movePath = array_column($log['moves'], 'path', 'event');
+    $want = ['start' => ['path' => $log['first']['path'] ?? $log['reference'], 'w' => 960], 'end' => ['path' => $log['photo'], 'w' => 960]];
+    $extras = 0;
+    foreach ($out['rows'] as &$row) {
+        if (empty($row['event']) || !isset($movePath[$row['event']])) {
+            continue;
+        }
+        $want['e' . (int)$row['event']] = ['path' => $movePath[$row['event']], 'w' => 960];
+        // Stock changed here: one more small snapshot, the nearest other movement within 10 minutes, to see who it was.
+        $row['more'] = [];
+        foreach (sc_pictures_near($conn, (int)$cam['id'], (int)$row['event'], 10, 1) as $n) {
+            if ($extras >= SC_REPORT_EXTRAS) {
+                break;
+            }
+            if (!isset($want[$n['name']])) {
+                $want[$n['name']] = ['path' => $n['path'], 'w' => 640];
+                $extras++;
+            }
+            $row['more'][] = ['pic' => $n['name'], 'at' => $n['at']];
+        }
+    }
+    unset($row);
+    $out['kept'] = sc_report_keep_pictures((int)$cam['id'], $day, $want);
     if (file_put_contents($f, json_encode($out, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)) && $over) {
         sc_drop_pictures_before($conn, (int)$cam['id'], $end);
     }
     return $out;
+}
+
+/** Where a report's own snapshots are kept: a folder beside the report, one small JPEG per picture (start, end, e{event id}). */
+function sc_report_pic_dir(int $cameraId, string $day): string {
+    return sc_abs('uploads/store_camera_events/reports/' . $cameraId . '/' . $day);
+}
+
+/** A report's snapshot, as kept, or null. $name is start, end or e{event id}. */
+function sc_report_pic_path(int $cameraId, string $day, string $name): ?string {
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day) || !preg_match('/^(start|end|e\d{1,10})$/', $name)) {
+        return null;
+    }
+    $f = sc_report_pic_dir($cameraId, $day) . '/' . $name . '.jpg';
+    return is_file($f) ? $f : null;
+}
+
+/** At most this many extra snapshots (round the stock changes) go with one report. */
+const SC_REPORT_EXTRAS = 12;
+
+/**
+ * The other movements' snapshots within $minutes of a movement (the person is most likely in one), nearest first,
+ * at most $limit: [['name' => e{id}, 'path', 'at' => 'H:i']].
+ */
+function sc_pictures_near(PDO $conn, int $cameraId, int $eventId, int $minutes, int $limit): array {
+    $st = $conn->prepare('SELECT started_at FROM store_camera_events WHERE id = ? AND camera_id = ?');
+    $st->execute([$eventId, $cameraId]);
+    $t = $st->fetchColumn();
+    if (!$t) {
+        return [];
+    }
+    $from = date('Y-m-d H:i:s', strtotime((string)$t) - $minutes * 60);
+    $to = date('Y-m-d H:i:s', strtotime((string)$t) + $minutes * 60);
+    $st = $conn->prepare("SELECT CONCAT('e', id) AS name, started_at AS at, snapshot FROM store_camera_events WHERE camera_id = ? AND id <> ?
+            AND started_at BETWEEN ? AND ? AND snapshot IS NOT NULL AND snapshot <> ''
+        ORDER BY ABS(TIMESTAMPDIFF(SECOND, ?, started_at)) LIMIT 20");
+    $st->execute([$cameraId, $eventId, $from, $to, $t]);
+    $out = [];
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $p) {
+        if (count($out) < $limit && is_file(sc_abs((string)$p['snapshot']))) {
+            $out[] = ['name' => $p['name'], 'path' => sc_abs((string)$p['snapshot']), 'at' => substr((string)$p['at'], 11, 5), 'sort' => (string)$p['at']];
+        }
+    }
+    usort($out, function ($a, $b) { return strcmp($a['sort'], $b['sort']); }); // shown in time order
+    return $out;
+}
+
+/** Small copies of the pictures a report shows: name => ['path', 'w' => width] (960 px about 70 KB, 640 px about 35 KB). Returns the names kept. */
+function sc_report_keep_pictures(int $cameraId, string $day, array $want): array {
+    $dir = sc_report_pic_dir($cameraId, $day);
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        return [];
+    }
+    foreach (glob($dir . '/*.jpg') ?: [] as $old) {
+        @unlink($old); // the report made again keeps only its new pictures
+    }
+    $kept = [];
+    foreach ($want as $name => $pic) {
+        $src = $pic['path'] ?? null;
+        $size = $src && is_file($src) ? @getimagesize($src) : false;
+        $im = $size ? @imagecreatefromjpeg($src) : false;
+        if (!$im) {
+            continue;
+        }
+        $w = min((int)($pic['w'] ?? 960), $size[0]);
+        $h = (int)round($size[1] * $w / $size[0]);
+        $out = imagecreatetruecolor($w, $h);
+        imagecopyresampled($out, $im, 0, 0, 0, 0, $w, $h, $size[0], $size[1]);
+        imagedestroy($im);
+        if (imagejpeg($out, $dir . '/' . $name . '.jpg', 62)) {
+            $kept[] = (string)$name;
+        }
+        imagedestroy($out);
+    }
+    return $kept;
 }
 
 /**

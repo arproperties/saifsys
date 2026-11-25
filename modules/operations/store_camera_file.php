@@ -63,7 +63,10 @@ if (isset($_GET['overlay']) && sc_ready($conn) && sc_checks_ready($conn)) {
 }
 
 $path = null;
-if (sc_ready($conn)) {
+if (isset($_GET['report'])) {
+    // ?report=CAMERA&day=Y-m-d&pic=start|end|e{event}: a snapshot kept with a daily report.
+    $path = sc_report_pic_path((int)$_GET['report'], (string)($_GET['day'] ?? ''), (string)($_GET['pic'] ?? ''));
+} elseif (sc_ready($conn)) {
     // ?count=ID: the picture an item count was made from; ?photo=ID: a kept past picture; ?id=ID: an event's snapshot.
     if (isset($_GET['photo']) && sc_photos_ready($conn)) {
         $st = $conn->prepare('SELECT path FROM store_camera_photos WHERE id = ?');
