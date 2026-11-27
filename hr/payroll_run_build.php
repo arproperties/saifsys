@@ -355,7 +355,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
   $conn->beginTransaction();
   try{
     if (!$emps) {
-      throw new RuntimeException('No employees found for this company and payroll type.');
+      throw new RuntimeException($settledOut
+        ? 'Nothing to save: everyone in this run has a completed final settlement, so there is nobody to pay.'
+        : 'No employees found for this company and payroll type.');
     }
 
     // Save draft and post use the same persisted payroll_items rows.

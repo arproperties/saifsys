@@ -45,7 +45,12 @@ if ($paidReady && $sheet && !empty($sheet['completed_at']) && $_SERVER['REQUEST_
             @unlink($abs);
         }
     }
-    $conn->prepare("UPDATE employees SET final_settlement_status = 'not_started' WHERE id = ? AND final_settlement_status = 'completed'")->execute([$employeeId]);
+    // Back to Not started only when no other completed sheet is left for this employee.
+    $stLeft = $conn->prepare("SELECT COUNT(*) FROM hr_final_settlements WHERE employee_id = ? AND completed_at IS NOT NULL");
+    $stLeft->execute([$employeeId]);
+    if (!(int)$stLeft->fetchColumn()) {
+        $conn->prepare("UPDATE employees SET final_settlement_status = 'not_started' WHERE id = ? AND final_settlement_status = 'completed'")->execute([$employeeId]);
+    }
     AuditService::log([
         'action' => 'hr_final_settlement_delete',
         'object_type' => 'hr_final_settlement',
