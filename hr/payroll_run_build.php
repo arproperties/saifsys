@@ -13,6 +13,7 @@ require_once __DIR__ . '/includes/hr_loans.php';
 require_once __DIR__ . '/includes/hr_wps_guards.php';
 require_once __DIR__ . '/includes/hr_payroll_cashback.php';
 require_once __DIR__ . '/includes/hr_employee_bills.php';
+require_once __DIR__ . '/includes/hr_final_settlement.php';
 require_role(['Owner','Admin','HR'], $conn);
 
 $run_id = (int)($_GET['id'] ?? $_POST['run_id'] ?? $_POST['id'] ?? 0);
@@ -65,6 +66,29 @@ $emps = $conn->prepare("
 ");
 $emps->execute(array_merge([$companyId, $payrollType, $to], hr_employee_current_statuses(), [$from]));
 $emps = $emps->fetchAll(PDO::FETCH_ASSOC);
+
+// Final settlement completed: that person is paid through the settlement, so a run that can
+// still be edited does not pay them (a finalized run keeps what it paid). They stay in the
+// table as a marked row with no amounts. Someone who joined again after the settlement is back in.
+$settledOut = [];
+if ($canEditRun && $emps && hr_fs_table_ready($conn) && hr_fs_paid_ready($conn)) {
+  $stSettled = $conn->query("
+    SELECT s.employee_id, MAX(s.completed_at) AS completed_at
+    FROM hr_final_settlements s
+    INNER JOIN employees e ON e.id = s.employee_id
+    WHERE s.completed_at IS NOT NULL
+      AND (e.date_joined IS NULL OR e.date_joined = '0000-00-00' OR e.date_joined <= DATE(s.completed_at))
+    GROUP BY s.employee_id
+  ");
+  $settledAt = $stSettled->fetchAll(PDO::FETCH_KEY_PAIR);
+  foreach ($emps as $i => $employeeRow) {
+    if (isset($settledAt[$employeeRow['id']])) {
+      $settledOut[] = ['code' => $employeeRow['employee_code'], 'name' => $employeeRow['full_name'], 'on' => date('j M Y', strtotime($settledAt[$employeeRow['id']]))];
+      unset($emps[$i]);
+    }
+  }
+  $emps = array_values($emps);
+}
 
 /* ---------------- Schedule expectations + attendance absences ---------------- */
 $scheduleByEmp = [];
@@ -331,7 +355,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && $canEditRun){
   $conn->beginTransaction();
   try{
     if (!$emps) {
-      throw new RuntimeException('No employees found for this company and payroll type.');
+      throw new RuntimeException($settledOut
+        ? 'Nothing to save: everyone in this run has a completed final settlement, so there is nobody to pay.'
+        : 'No employees found for this company and payroll type.');
     }
 
     // Save draft and post use the same persisted payroll_items rows.
@@ -1028,6 +1054,20 @@ echo hr_ui_page_header(
               </tr>
             <?php endif; ?>
             </tbody>
+            <?php if ($settledOut): /* in tfoot, so the totals script never reads these rows */ ?>
+            <tfoot>
+              <?php foreach ($settledOut as $so): ?>
+              <tr class="table-light text-muted">
+                <td class="col-sticky-code"><?= htmlspecialchars($so['code']) ?></td>
+                <td class="col-sticky-name"><div class="emp-name" title="<?= htmlspecialchars($so['name']) ?>"><?= htmlspecialchars($so['name']) ?></div></td>
+                <td colspan="<?= $cashbackReady ? 13 : 11 ?>">
+                  <span class="badge text-bg-success">Final settlement done</span>
+                  <span class="small ms-1">completed <?= htmlspecialchars($so['on']) ?> · not paid in this run</span>
+                </td>
+              </tr>
+              <?php endforeach; ?>
+            </tfoot>
+            <?php endif; ?>
           </table>
         </div>
 

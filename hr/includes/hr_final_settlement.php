@@ -121,6 +121,7 @@ function hr_fs_load(PDO $conn, int $id): ?array
     $r['header'] = json_decode((string)$r['header_json'], true) ?: [];
     $r['due'] = json_decode((string)$r['due_json'], true) ?: [];
     $r['deductions'] = json_decode((string)$r['deduction_json'], true) ?: [];
+    $r['files'] = json_decode((string)($r['files_json'] ?? ''), true) ?: [];
     return $r;
 }
 
@@ -153,6 +154,93 @@ function hr_fs_company(PDO $conn, int $companyId): array
         // company_settings missing: name only
     }
     return $out;
+}
+
+// ---------------------------------------------------------------- final settlement paid (added 2026-11-25)
+// Amount paid, date received (paid_date) and the attached documents, saved with the sheet.
+// Files go in uploads/hr_final_settlement/{employee id}/, served only by final_settlement_file.php.
+
+function hr_fs_paid_ready(PDO $conn): bool
+{
+    static $ok = null;
+    if ($ok === null) {
+        try {
+            $ok = (bool)$conn->query("SHOW COLUMNS FROM hr_final_settlements LIKE 'completed_at'")->fetchColumn();
+        } catch (Throwable $e) {
+            $ok = false;
+        }
+    }
+    return $ok;
+}
+
+const HR_FS_MAX_FILES = 10;      // per sheet
+const HR_FS_MAX_BYTES = 10485760; // 10 MB per file
+
+/** Folder for an employee's settlement documents. Not served directly: final_settlement_file.php serves them. */
+function hr_fs_upload_dir(int $employeeId): string
+{
+    $base = dirname(__DIR__, 2) . '/uploads/hr_final_settlement';
+    if (!is_dir($base)) {
+        @mkdir($base, 0775, true);
+    }
+    if (!file_exists($base . '/.htaccess')) {
+        @file_put_contents($base . '/.htaccess', "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n");
+    }
+    $dir = $base . '/' . $employeeId;
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    return $dir;
+}
+
+/**
+ * Save the files posted under $field (multiple). Returns the new relative paths.
+ * Checks every file first, so a bad one saves none.
+ */
+function hr_fs_save_files(string $field, int $employeeId, int $room): array
+{
+    $f = $_FILES[$field] ?? null;
+    if (!$f || !is_array($f['name'])) {
+        return [];
+    }
+    $picked = [];
+    foreach ($f['name'] as $i => $name) {
+        if ((int)$f['error'][$i] === UPLOAD_ERR_NO_FILE || $name === '') {
+            continue;
+        }
+        if ((int)$f['error'][$i] !== UPLOAD_ERR_OK) {
+            throw new RuntimeException('"' . $name . '" did not upload (too big?).');
+        }
+        $ext = strtolower(pathinfo((string)$name, PATHINFO_EXTENSION));
+        if (!in_array($ext, ['pdf', 'jpg', 'jpeg', 'png', 'webp'], true)) {
+            throw new RuntimeException('"' . $name . '": only PDF or an image (JPG, PNG, WEBP).');
+        }
+        if ((int)$f['size'][$i] > HR_FS_MAX_BYTES) {
+            throw new RuntimeException('"' . $name . '" is over 10 MB.');
+        }
+        $picked[] = [$f['tmp_name'][$i], $ext];
+    }
+    if (count($picked) > $room) {
+        throw new RuntimeException('At most ' . HR_FS_MAX_FILES . ' files per sheet.');
+    }
+    $dir = hr_fs_upload_dir($employeeId);
+    $out = [];
+    foreach ($picked as [$tmp, $ext]) {
+        $fname = 'fsp_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+        if (!move_uploaded_file($tmp, $dir . '/' . $fname)) {
+            throw new RuntimeException('Upload failed.');
+        }
+        $out[] = 'uploads/hr_final_settlement/' . $employeeId . '/' . $fname;
+    }
+    return $out;
+}
+
+/** Absolute path of a stored file, only when it is inside uploads/hr_final_settlement. */
+function hr_fs_file_abs(string $rel): ?string
+{
+    $base = realpath(dirname(__DIR__, 2) . '/uploads/hr_final_settlement');
+    $abs = realpath(dirname(__DIR__, 2) . '/' . ltrim($rel, '/'));
+    return ($base && $abs && strpos($abs, $base . DIRECTORY_SEPARATOR) === 0 && is_file($abs)) ? $abs : null;
 }
 
 /** Letterhead PDF for a company, if we have one (only Heroes Zone so far). */
