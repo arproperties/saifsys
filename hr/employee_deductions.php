@@ -67,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
     $prev->execute([$id]);
     $prevRow = $prev->fetch(PDO::FETCH_ASSOC);
     $conn->prepare("DELETE FROM employee_deductions WHERE id=?")->execute([$id]);
-    hr_adj_delete_file($prevRow['attachment_path'] ?? null); // the attachment added on the employee page, if any
+    hr_adj_delete_files($prevRow['attachments_json'] ?? null); // the attachments added on the employee page, if any
     $_SESSION['ok'] = "Deduction #{$id} deleted.";
     if ($prevRow) {
       $empLabel = trim(($prevRow['full_name'] ?? '') . ' (' . ($prevRow['employee_code'] ?? '') . ')');
