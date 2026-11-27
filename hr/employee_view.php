@@ -23,6 +23,7 @@ require_once __DIR__ . '/includes/hr_upload_guard.php';
 require_once __DIR__ . '/includes/hr_required_docs.php';
 require_once __DIR__ . '/includes/hr_shift_templates.php';
 require_once __DIR__ . '/includes/hr_comp_off.php';
+require_once __DIR__ . '/includes/hr_adjust_attachment.php';
 
 $roles = current_user_roles($conn);
 $isWorkerSelfService = Guard::isWorker($roles);
@@ -94,7 +95,7 @@ if ($workerReadOnly && $_SERVER['REQUEST_METHOD'] === 'POST') {
         'add_bill_item', 'edit_bill_item', 'del_bill_item',
         'add_bonus', 'edit_bonus', 'del_bonus',
         'add_cash_adv', 'del_cash_adv', 'approve_cash_adv', 'reject_cash_adv',
-        'add_deduction', 'del_deduction',
+        'add_deduction', 'del_deduction', 'attach_adj',
         'add_history', 'del_history', 'add_note', 'del_note',
         'add_training', 'del_training', 'update_training_status',
         'doc_action', 'delete_doc_id', 'leave_change_status', 'save_schedule', 'copy_schedule', 'shift_template_save', 'shift_template_delete',
@@ -1540,12 +1541,17 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_bonus'])) {
         $_SESSION['bonus_err'] = 'Enter a description for the bonus.';
     } else {
         try {
+            // Optional attachment: checked first, so a refused file adds no bonus.
+            $bonusFile = hr_adj_ready($conn, 'bonus') ? hr_adj_save_file('bonus_file', 'bonus', (int)$emp['id']) : null;
             $stmt = $conn->prepare("
                 INSERT INTO employee_bonuses (employee_id, bonus_date, amount, description, created_by)
                 VALUES (?,?,?,?,?)
             ");
             $stmt->execute([(int)$emp['id'], date('Y-m-d'), $bonusAmount, mb_substr($bonusDesc, 0, 500), (int)($_SESSION['user']['id'] ?? 0) ?: null]);
             $bonusId = (int)$conn->lastInsertId();
+            if ($bonusFile) {
+                $conn->prepare("UPDATE employee_bonuses SET attachment_path = ? WHERE id = ?")->execute([$bonusFile, $bonusId]);
+            }
             $_SESSION['bonus_msg'] = 'Bonus added.';
             audit_bridge_hr_ops(
                 'bonus_created',
@@ -1564,7 +1570,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_bonus'])) {
             );
         } catch (Throwable $e) {
             error_log('add_bonus failed: ' . $e->getMessage());
-            $_SESSION['bonus_err'] = 'Could not save the bonus. Please try again.';
+            $_SESSION['bonus_err'] = ($e instanceof RuntimeException && !($e instanceof PDOException))
+                ? $e->getMessage()
+                : 'Could not save the bonus. Please try again.';
         }
     }
     header('Location: employee_view.php?id=' . urlencode($employee_id) . '#tab-bonus');
@@ -1633,6 +1641,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && (isset($_POST['edit_bonus']) || isset
                 }
                 throw $e;
             }
+            hr_adj_delete_file($prevBonusRow['attachment_path'] ?? null);
             $_SESSION['bonus_msg'] = 'Paid bonus deleted. Payroll run #' . $paidRunId . ' reduced by ' . number_format($paidAmount, 2)
                 . ' and reversing journal #' . $reversalJournalId . ' posted.';
             audit_bridge_hr_ops(
@@ -1655,6 +1664,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && (isset($_POST['edit_bonus']) || isset
             );
         } elseif ($isBonusDelete) {
             $conn->prepare("DELETE FROM employee_bonuses WHERE id=? AND employee_id=?")->execute([$bonusId, (int)$emp['id']]);
+            hr_adj_delete_file($prevBonusRow['attachment_path'] ?? null);
             $_SESSION['bonus_msg'] = 'Bonus deleted.';
             audit_bridge_hr_ops(
                 'bonus_deleted',
@@ -1681,8 +1691,14 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && (isset($_POST['edit_bonus']) || isset
                 $_SESSION['bonus_err'] = 'Enter a description for the bonus.';
             } else {
                 $bonusDesc = mb_substr($bonusDesc, 0, 500);
+                // Optional new attachment: replaces the one already there.
+                $bonusFile = hr_adj_ready($conn, 'bonus') ? hr_adj_save_file('bonus_file', 'bonus', (int)$emp['id']) : null;
                 $conn->prepare("UPDATE employee_bonuses SET amount=?, description=? WHERE id=? AND employee_id=?")
                      ->execute([$bonusAmount, $bonusDesc, $bonusId, (int)$emp['id']]);
+                if ($bonusFile) {
+                    $conn->prepare("UPDATE employee_bonuses SET attachment_path = ? WHERE id = ? AND employee_id = ?")->execute([$bonusFile, $bonusId, (int)$emp['id']]);
+                    hr_adj_delete_file($prevBonusRow['attachment_path'] ?? null);
+                }
                 $_SESSION['bonus_msg'] = 'Bonus updated.';
                 audit_bridge_hr_ops(
                     'bonus_updated',
@@ -1721,6 +1737,16 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_deduction'])) {
   $amount  = (float)($_POST['amount'] ?? 0);
   $dtype   = $_POST['dtype'] ?? 'other'; // enum: fine, charge_duty, uniform, other
   $notes   = trim($_POST['notes'] ?? '');
+  // Optional attachment: checked first, so a refused file adds no deduction.
+  $dedFile = null;
+  if ($amount > 0 && $canManageLoans && hr_adj_ready($conn, 'deduction')) {
+    try {
+      $dedFile = hr_adj_save_file('ded_file', 'deduction', (int)$emp['id']);
+    } catch (RuntimeException $e) {
+      $ded_msg = 'Deduction not added. ' . $e->getMessage();
+      $amount = 0;
+    }
+  }
   if ($amount > 0) {
     $hasRem = false;
     try {
@@ -1743,6 +1769,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_deduction'])) {
       $stmt->execute([$emp['id'],$tx_date,$amount,$dtype,$notes ?: null,(int)($_SESSION['user']['id'] ?? 0)]);
     }
     $dedId = (int)$conn->lastInsertId();
+    if ($dedFile) {
+      $conn->prepare("UPDATE employee_deductions SET attachment_path = ? WHERE id = ?")->execute([$dedFile, $dedId]);
+    }
     $ded_msg = 'Deduction added.';
     audit_bridge_hr_ops(
       'deduction_created',
@@ -1762,6 +1791,12 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_deduction'])) {
       isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
     );
   }
+  // Reload the page, so refreshing it afterwards cannot add the same deduction again.
+  if ($ded_msg !== '') {
+    $_SESSION['deduction_msg'] = $ded_msg;
+  }
+  header('Location: employee_view.php?id=' . urlencode($employee_id) . '#tab-deduct');
+  exit;
 }
 
 // DEL deduction
@@ -1784,6 +1819,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['del_deduction'])) {
   $prevDedRow = $prevDed->fetch(PDO::FETCH_ASSOC);
   $stmt = $conn->prepare("DELETE FROM employee_deductions WHERE id=? AND employee_id=?");
   $stmt->execute([$delDedId, $emp['id']]);
+  hr_adj_delete_file($prevDedRow['attachment_path'] ?? null);
   $ded_msg = 'Deduction removed.';
   if ($prevDedRow) {
     audit_bridge_hr_ops(
@@ -1803,6 +1839,57 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['del_deduction'])) {
       isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
     );
   }
+}
+
+// ATTACH a file to a bonus or deduction that is already there (replaces the one it has)
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['attach_adj'])) {
+    csrf_verify();
+    if (!$canManageLoans) {
+        http_response_code(403);
+        die('Access denied. Only Owner, Admin, or HR can attach a file.');
+    }
+    $adjKind = $_POST['attach_adj'] === 'bonus' ? 'bonus' : 'deduction';
+    $adjMsgKey = $adjKind === 'bonus' ? 'bonus_msg' : 'deduction_msg';
+    $adjId = (int)($_POST['adj_id'] ?? 0);
+    try {
+        if (!hr_adj_ready($conn, $adjKind)) {
+            throw new RuntimeException('Attachments are not set up yet.');
+        }
+        $adjTable = hr_adj_table($adjKind);
+        $adjRow = $conn->prepare("SELECT id, attachment_path FROM {$adjTable} WHERE id = ? AND employee_id = ? LIMIT 1");
+        $adjRow->execute([$adjId, (int)$emp['id']]);
+        $adjRow = $adjRow->fetch(PDO::FETCH_ASSOC);
+        if (!$adjRow) {
+            throw new RuntimeException('That entry was not found.');
+        }
+        $adjFile = hr_adj_save_file('adj_file', $adjKind, (int)$emp['id']);
+        if (!$adjFile) {
+            throw new RuntimeException('Choose a file to attach.');
+        }
+        $conn->prepare("UPDATE {$adjTable} SET attachment_path = ? WHERE id = ? AND employee_id = ?")->execute([$adjFile, $adjId, (int)$emp['id']]);
+        hr_adj_delete_file($adjRow['attachment_path']);
+        $_SESSION[$adjMsgKey] = 'Attachment saved.';
+        audit_bridge_hr_ops(
+            $adjKind . '_attachment',
+            $adjTable,
+            $adjId,
+            ($adjRow['attachment_path'] ? 'Replaced' : 'Added') . ' attachment on ' . $adjKind . ' for ' . ($emp['full_name'] ?? $emp['employee_code']),
+            isset($emp['company_id']) ? (int)$emp['company_id'] : null,
+            ['employee_id' => (int)$emp['id']],
+            ucfirst($adjKind) . ' #' . $adjId,
+            isset($_SESSION['user']['id']) ? (int)$_SESSION['user']['id'] : null
+        );
+    } catch (Throwable $e) {
+        error_log('attach_adj failed: ' . $e->getMessage());
+        $adjErr = ($e instanceof RuntimeException && !($e instanceof PDOException)) ? $e->getMessage() : 'Could not save the attachment. Please try again.';
+        if ($adjKind === 'bonus') {
+            $_SESSION['bonus_err'] = $adjErr;
+        } else {
+            $_SESSION['deduction_msg'] = 'Attachment not saved. ' . $adjErr;
+        }
+    }
+    header('Location: employee_view.php?id=' . urlencode($employee_id) . ($adjKind === 'bonus' ? '#tab-bonus' : '#tab-deduct'));
+    exit;
 }
 
 // Lists
@@ -1888,6 +1975,7 @@ $bonusTotal = 0.0;
 try {
   $bq = $conn->prepare("
     SELECT b.id, b.bonus_date, b.amount, b.description, b.paid_run_id,
+           " . (hr_adj_ready($conn, 'bonus') ? 'b.attachment_path' : 'NULL AS attachment_path') . ",
            COALESCE(pr.payroll_type, 'wps') AS paid_run_type,
            COALESCE(NULLIF(u.fullname,''), u.username) AS added_by
     FROM employee_bonuses b
@@ -6439,17 +6527,23 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                 <?php if($bonus_err): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($bonus_err) ?></div><?php endif; ?>
 
                                 <?php if ($canManageLoans): ?>
-                                <form method="post" class="row g-2 mb-3">
+                                <form method="post" enctype="multipart/form-data" class="row g-2 mb-3">
                                   <?php csrf_field(); ?>
                                   <input type="hidden" name="add_bonus" value="1">
                                   <div class="col-md-3">
                                     <label class="form-label">Amount <span class="text-danger">*</span></label>
                                     <input type="number" name="bonus_amount" step="0.01" min="0.01" class="form-control" required>
                                   </div>
-                                  <div class="col-md-9">
+                                  <div class="col-md-<?= hr_adj_ready($conn, 'bonus') ? 5 : 9 ?>">
                                     <label class="form-label">Description <span class="text-danger">*</span></label>
                                     <input type="text" name="bonus_description" maxlength="500" class="form-control" required>
                                   </div>
+                                  <?php if (hr_adj_ready($conn, 'bonus')): ?>
+                                  <div class="col-md-4">
+                                    <label class="form-label">Upload attachment <span class="text-muted">(optional)</span></label>
+                                    <input type="file" name="bonus_file" accept=".pdf,.jpg,.jpeg,.png,.webp" class="form-control">
+                                  </div>
+                                  <?php endif; ?>
                                   <div class="col-12">
                                     <button class="btn btn-primary">Add Bonus</button>
                                     <button type="button" class="btn btn-outline-secondary ms-1" data-bs-toggle="modal" data-bs-target="#bonusHistoryModal"><i class="bi bi-clock-history"></i> History</button>
@@ -6464,6 +6558,9 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <th style="width:110px;">Date</th>
                                         <th style="width:130px;">Amount</th>
                                         <th>Description</th>
+                                        <?php if ($canManageLoans && hr_adj_ready($conn, 'bonus')): ?>
+                                        <th style="width:160px;">Attachment</th>
+                                        <?php endif; ?>
                                         <th style="width:200px;">Added by</th>
                                         <?php if ($canManageLoans): ?>
                                         <th style="width:210px;" class="text-end">Actions</th>
@@ -6472,12 +6569,28 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     </thead>
                                     <tbody>
                                       <?php if (!$bonusRows): ?>
-                                      <tr><td colspan="<?= $canManageLoans ? 5 : 4 ?>" class="text-center text-muted py-4">No bonuses yet.</td></tr>
+                                      <tr><td colspan="<?= $canManageLoans ? (hr_adj_ready($conn, 'bonus') ? 6 : 5) : 4 ?>" class="text-center text-muted py-4">No bonuses yet.</td></tr>
                                       <?php else: foreach ($bonusRows as $bonusRow): ?>
                                       <tr>
                                         <td><?= htmlspecialchars((string)$bonusRow['bonus_date']) ?></td>
                                         <td><?= number_format((float)$bonusRow['amount'],2) ?></td>
                                         <td><?= htmlspecialchars((string)$bonusRow['description']) ?></td>
+                                        <?php if ($canManageLoans && hr_adj_ready($conn, 'bonus')): ?>
+                                        <td class="text-nowrap">
+                                          <?php if (!empty($bonusRow['attachment_path'])): ?>
+                                          <a class="btn btn-sm btn-outline-primary" href="adjustment_file.php?type=bonus&amp;id=<?= (int)$bonusRow['id'] ?>" target="_blank" rel="noopener"><i class="bi bi-paperclip"></i> View</a>
+                                          <?php endif; ?>
+                                          <form method="post" enctype="multipart/form-data" class="d-inline m-0">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="attach_adj" value="bonus">
+                                            <input type="hidden" name="adj_id" value="<?= (int)$bonusRow['id'] ?>">
+                                            <label class="btn btn-sm btn-outline-secondary mb-0" title="<?= empty($bonusRow['attachment_path']) ? 'Attach a PDF or image (up to 10 MB)' : 'Replace the attachment' ?>">
+                                              <i class="bi bi-upload"></i><?= empty($bonusRow['attachment_path']) ? ' Attach' : '' ?>
+                                              <input type="file" name="adj_file" accept=".pdf,.jpg,.jpeg,.png,.webp" hidden onchange="if (this.files.length) this.form.submit()">
+                                            </label>
+                                          </form>
+                                        </td>
+                                        <?php endif; ?>
                                         <td>
                                           <?= htmlspecialchars((string)($bonusRow['added_by'] ?? '—')) ?>
                                           <?php $bonusUpd = $bonusUpdatedBy[(int)$bonusRow['id']] ?? null; if ($bonusUpd && $bonusUpd['by'] !== ''): ?>
@@ -6859,10 +6972,10 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                   </div>
                                 </div>
 
-                                <?php if($ded_msg): ?><div class="alert alert-success py-2"><?= htmlspecialchars($ded_msg) ?></div><?php endif; ?>
+                                <?php if($ded_msg): ?><div class="alert <?= preg_match('/not added|not saved|cannot be/', $ded_msg) ? 'alert-warning' : 'alert-success' ?> py-2"><?= htmlspecialchars($ded_msg) ?></div><?php endif; ?>
 
                                 <?php if (!$workerReadOnly): ?>
-                                <form method="post" class="row g-2 mb-3">
+                                <form method="post" enctype="multipart/form-data" class="row g-2 mb-3">
                           <?php csrf_field(); ?>
                                   <input type="hidden" name="add_deduction" value="1">
                                   <div class="col-md-3">
@@ -6886,6 +6999,12 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     <label class="form-label">Notes</label>
                                     <input type="text" name="notes" class="form-control" placeholder="Optional">
                                   </div>
+                                  <?php if ($canManageLoans && hr_adj_ready($conn, 'deduction')): ?>
+                                  <div class="col-md-4">
+                                    <label class="form-label">Upload attachment <span class="text-muted">(optional)</span></label>
+                                    <input type="file" name="ded_file" accept=".pdf,.jpg,.jpeg,.png,.webp" class="form-control">
+                                  </div>
+                                  <?php endif; ?>
                                   <div class="col-12">
                                     <button class="btn btn-primary">Add</button>
                                   </div>
@@ -6903,12 +7022,15 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <th style="width:100px;">Remaining</th>
                                         <th style="width:120px;">Type</th>
                                         <th>Notes</th>
+                                        <?php if ($canManageLoans && hr_adj_ready($conn, 'deduction')): ?>
+                                        <th style="width:160px;">Attachment</th>
+                                        <?php endif; ?>
                                         <th style="width:200px;" class="text-end">Actions</th>
                                       </tr>
                                     </thead>
                                     <tbody>
                                     <?php if(!$dedRows): ?>
-                                      <tr><td colspan="6" class="text-center text-muted py-3">No entries.</td></tr>
+                                      <tr><td colspan="<?= ($canManageLoans && hr_adj_ready($conn, 'deduction')) ? 7 : 6 ?>" class="text-center text-muted py-3">No entries.</td></tr>
                                     <?php else: foreach($dedRows as $r):
                                       $dedRem = isset($r['remaining_balance']) ? (float)$r['remaining_balance'] : (float)$r['amount'];
                                       if (($r['settle_status'] ?? '') === 'settled') $dedRem = 0;
@@ -6919,6 +7041,22 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <td><?= number_format($dedRem, 2) ?></td>
                                         <td><span class="badge <?= ($r['dtype'] ?? '') === 'bill_excess' ? 'bg-warning text-dark' : 'bg-secondary' ?>"><?= htmlspecialchars(str_replace('_', ' ', (string)$r['dtype'])) ?></span></td>
                                         <td><?= htmlspecialchars($r['notes'] ?? '') ?></td>
+                                        <?php if ($canManageLoans && hr_adj_ready($conn, 'deduction')): ?>
+                                        <td class="text-nowrap">
+                                          <?php if (!empty($r['attachment_path'])): ?>
+                                          <a class="btn btn-sm btn-outline-primary" href="adjustment_file.php?type=deduction&amp;id=<?= (int)$r['id'] ?>" target="_blank" rel="noopener"><i class="bi bi-paperclip"></i> View</a>
+                                          <?php endif; ?>
+                                          <form method="post" enctype="multipart/form-data" class="d-inline m-0">
+                                            <?php csrf_field(); ?>
+                                            <input type="hidden" name="attach_adj" value="deduction">
+                                            <input type="hidden" name="adj_id" value="<?= (int)$r['id'] ?>">
+                                            <label class="btn btn-sm btn-outline-secondary mb-0" title="<?= empty($r['attachment_path']) ? 'Attach a PDF or image (up to 10 MB)' : 'Replace the attachment' ?>">
+                                              <i class="bi bi-upload"></i><?= empty($r['attachment_path']) ? ' Attach' : '' ?>
+                                              <input type="file" name="adj_file" accept=".pdf,.jpg,.jpeg,.png,.webp" hidden onchange="if (this.files.length) this.form.submit()">
+                                            </label>
+                                          </form>
+                                        </td>
+                                        <?php endif; ?>
                                         <td class="text-end">
                                           <?php if (!$workerReadOnly && $dedRem > 0.005): ?>
                                             <form method="post" action="loan_settle_cash.php" class="d-inline-flex gap-1 align-items-center me-1">
@@ -8134,7 +8272,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
 <?php if ($canManageLoans): ?>
 <div class="modal fade" id="bonusEditModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
-    <form method="post" class="modal-content">
+    <form method="post" enctype="multipart/form-data" class="modal-content">
       <?php csrf_field(); ?>
       <input type="hidden" name="edit_bonus" id="bonusEditId" value="">
       <div class="modal-header">
@@ -8150,6 +8288,13 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
           <label class="form-label">Description <span class="text-danger">*</span></label>
           <input type="text" name="bonus_description" id="bonusEditDescription" maxlength="500" class="form-control" required>
         </div>
+        <?php if (hr_adj_ready($conn, 'bonus')): ?>
+        <div class="mt-3">
+          <label class="form-label">Upload attachment <span class="text-muted">(optional)</span></label>
+          <input type="file" name="bonus_file" accept=".pdf,.jpg,.jpeg,.png,.webp" class="form-control">
+          <div class="form-text">Choosing a file replaces the attachment already on this bonus.</div>
+        </div>
+        <?php endif; ?>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
