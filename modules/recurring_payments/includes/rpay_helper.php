@@ -132,6 +132,51 @@ function rpay_send_file(string $code, string $path, ?array $file): ?string
     }
 }
 
+/**
+ * The files of an upload box that takes several (name="files[]"), each as its own
+ * single-file array, the way rpay_send_file() wants it. Empty boxes are left out.
+ */
+function rpay_upload_list(?array $files): array
+{
+    if (!$files || !isset($files['name'])) {
+        return [];
+    }
+    if (!is_array($files['name'])) {
+        return (int)($files['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE ? [] : [$files];
+    }
+    $out = [];
+    foreach ($files['name'] as $i => $name) {
+        if ((int)($files['error'][$i] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            continue;
+        }
+        $out[] = ['name' => $name, 'type' => $files['type'][$i] ?? '', 'tmp_name' => $files['tmp_name'][$i] ?? '',
+                  'error' => $files['error'][$i] ?? UPLOAD_ERR_NO_FILE, 'size' => $files['size'][$i] ?? 0];
+    }
+    return $out;
+}
+
+/**
+ * Keep several files with one receipt. Reem gives a receipt one attachment of its own and
+ * any number of further files: the first file here becomes its own when it has none yet
+ * ($hasOwn false), every other one is added beside it. Nothing is replaced.
+ * Returns [how many were kept, what was said about each one that was not].
+ */
+function rpay_send_receipt_files(string $code, int $receiptId, bool $hasOwn, array $files): array
+{
+    $kept = 0;
+    $errors = [];
+    foreach ($files as $file) {
+        $error = rpay_send_file($code, '/receipts/' . $receiptId . ($hasOwn ? '/files' : '/attachment'), $file);
+        if ($error === null) {
+            $kept++;
+            $hasOwn = true;
+        } else {
+            $errors[] = (string)($file['name'] ?? 'File') . ': ' . $error;
+        }
+    }
+    return [$kept, $errors];
+}
+
 /** The link that shows the file of a paid line ('due') or of a transfer. */
 function rpay_file_url(string $rpayBase, string $kind, int $id): string
 {

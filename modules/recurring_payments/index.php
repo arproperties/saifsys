@@ -29,8 +29,36 @@ foreach (['month', 'building', 'head', 'unit', 'status', 'grp'] as $k) { // grp:
 }
 $selfUrl = $rpayBase . '/index.php' . ($filters ? '?' . http_build_query($filters) : '');
 
+rpay_too_big($selfUrl); // files are added from this page ("Add attachments")
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
+    if (($_POST['action'] ?? '') === 'attach') {
+        // More files for a payment that has money in. Reem keeps files with a receipt, so they
+        // go to the payment's latest receipt: its own attachment if it has none, the rest beside it.
+        $dueId = (int)($_POST['due'] ?? 0);
+        $files = rpay_upload_list($_FILES['files'] ?? null);
+        try {
+            if (!$files) {
+                binv_flash('Choose at least one file first.', 'warning');
+            } else {
+                $one = rpay_reem($code, 'GET', '/dues/' . $dueId);
+                $receipts = $one['receipts'] ?? [];
+                $last = $receipts ? end($receipts) : null;
+                if (!$last) {
+                    binv_flash('"' . ($one['due']['title'] ?? 'This payment') . '" has no money received yet. Mark it paid first; the attachments go with the receipt.', 'warning');
+                } else {
+                    [$kept, $notKept] = rpay_send_receipt_files($code, (int)$last['id'], !empty($last['attachment']), $files);
+                    $said = $kept . ' attachment' . ($kept === 1 ? '' : 's') . ' added to "' . ($one['due']['title'] ?? 'the payment') . '".';
+                    binv_flash($notKept ? $said . ' Not kept: ' . implode(' ', $notKept) : $said, $notKept ? 'warning' : 'success');
+                }
+            }
+        } catch (BinvError $e) {
+            binv_flash($e->getMessage(), 'danger');
+        }
+        header('Location: ' . $selfUrl);
+        exit;
+    }
     if (($_POST['action'] ?? '') === 'save_groups') {
         // Which income head is in which group: saifsys's own (rpay_head_group_members); Reem is only read.
         try {
@@ -466,6 +494,8 @@ body.dark-mode .rp-head{ background:#0f172a; border-color:#475569; }
             </td>
             <td class="text-end text-nowrap">
               <?php if ($paid || $partly): ?>
+                <button type="button" class="btn btn-sm btn-light border" data-bs-toggle="modal" data-bs-target="#rpAttachModal"
+                        data-due="<?= (int)$d['id'] ?>" data-title="<?= h($d['title'] ?? '') ?>" title="Add attachments to this payment"><i class="bi bi-paperclip"></i><i class="bi bi-plus"></i></button>
                 <a href="<?= h($payUrl . (int)$d['id']) ?>" class="btn btn-sm <?= $paid ? 'btn-light border' : 'btn-success' ?>"><?= $paid ? 'Receipts' : '<i class="bi bi-plus-lg"></i> Add payment' ?></a>
                 <form method="post" action="<?= h($selfUrl) ?>" class="d-inline" onsubmit="return confirm('Set this back to pending? Every receipt on it is deleted, with its file, and the money comes out of its account.');">
                   <?php csrf_field(); ?>
@@ -486,6 +516,37 @@ body.dark-mode .rp-head{ background:#0f172a; border-color:#475569; }
 <?php if ($dues): ?><p class="small text-muted mt-2 mb-0"><i class="bi bi-info-circle"></i> Double-click a payment to open it.</p><?php endif; ?>
 
 <style>.rpay-row{ cursor:pointer; user-select:none; }</style>
+
+<?php // "Add attachments" on a paid or partly paid row: several files at once, kept with the payment's receipt. ?>
+<div class="modal fade" id="rpAttachModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form method="post" action="<?= h($selfUrl) ?>" enctype="multipart/form-data" class="modal-content">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="action" value="attach">
+      <input type="hidden" name="due" id="rpAttachDue" value="">
+      <div class="modal-header">
+        <h5 class="modal-title">Add attachments<span class="d-block small text-muted fw-normal" id="rpAttachTitle"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <input type="file" name="files[]" id="rpAttachFiles" class="form-control" multiple required accept="image/jpeg,image/png,image/webp,application/pdf">
+        <div class="form-text">Choose one or several files. Pictures or PDFs, 8 MB each at most. They are added to what is already there; nothing is replaced.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-light border" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-success"><i class="bi bi-paperclip"></i> Add attachments</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+document.getElementById('rpAttachModal').addEventListener('show.bs.modal', function (e) {
+  var b = e.relatedTarget;
+  document.getElementById('rpAttachDue').value = b.getAttribute('data-due') || '';
+  document.getElementById('rpAttachTitle').textContent = b.getAttribute('data-title') || '';
+  document.getElementById('rpAttachFiles').value = '';
+});
+</script>
 
 <?php require __DIR__ . '/../building_inventory/includes/binv_layout_footer.php'; ?>
 <script>

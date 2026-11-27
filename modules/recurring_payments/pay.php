@@ -70,10 +70,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $said = ($saved['status'] ?? '') === 'paid'
             ? '"' . $due['title'] . '" is paid in full.'
             : rpay_money($saved['received'] ?? 0) . ' of "' . $due['title'] . '" received. ' . rpay_money($saved['left'] ?? 0) . ' is still to come.';
-        // The file comes second, and its failure is said out loud: the money is received either way.
-        $fileError = rpay_send_file($code, '/receipts/' . (int)($saved['receipt_id'] ?? 0) . '/attachment', $_FILES['attachment'] ?? null);
-        if ($fileError !== null) {
-            binv_flash($said . ' But its attachment was not kept: ' . $fileError, 'warning');
+        // The files come second (any number of them), and a failure is said out loud: the money is received either way.
+        [, $notKept] = rpay_send_receipt_files($code, (int)($saved['receipt_id'] ?? 0), false, rpay_upload_list($_FILES['attachment'] ?? null));
+        if ($notKept) {
+            binv_flash($said . ' But not every attachment was kept: ' . implode(' ', $notKept), 'warning');
         } else {
             binv_flash($said);
         }
@@ -126,8 +126,11 @@ require __DIR__ . '/includes/rpay_layout_header.php';
                 <td class="num text-end fw-semibold"><?= h(rpay_money($r['amount'] ?? 0)) ?></td>
                 <td class="text-end text-nowrap">
                   <?php if (!empty($r['attachment'])): ?>
-                    <a target="_blank" rel="noopener" title="Attachment" href="<?= h(rpay_file_url($rpayBase, 'receipt', (int)$r['id'])) ?>"><i class="bi bi-paperclip"></i></a>
+                    <a target="_blank" rel="noopener" title="Attachment 1" href="<?= h(rpay_file_url($rpayBase, 'receipt', (int)$r['id'])) ?>"><i class="bi bi-paperclip"></i></a>
                   <?php endif; ?>
+                  <?php foreach (($r['files'] ?? []) as $n => $rf): // the receipt's further files ?>
+                    <a target="_blank" rel="noopener" title="Attachment <?= $n + 2 ?>" href="<?= h(rpay_file_url($rpayBase, 'receipt_file', (int)$rf['id'])) ?>"><i class="bi bi-paperclip"></i></a>
+                  <?php endforeach; ?>
                   <form method="post" action="<?= h($selfUrl) ?>" class="d-inline" onsubmit="return confirm('Delete this receipt? Its money comes out of its account, and its file is deleted.');">
                     <?php csrf_field(); ?>
                     <input type="hidden" name="action" value="delete">
@@ -162,8 +165,9 @@ require __DIR__ . '/includes/rpay_layout_header.php';
 
         <div class="col-md-4">
           <label class="form-label fw-semibold">Amount received</label>
-          <input type="number" name="amount" class="form-control" value="<?= h($amount) ?>" min="0.01" max="<?= h(number_format($left, 2, '.', '')) ?>" step="0.01" required>
-          <div class="form-text">Less than <?= h(rpay_money($left)) ?> for a part payment.</div>
+          <input type="number" name="amount" id="rpPayAmount" class="form-control" value="<?= h($amount) ?>" min="0.01" max="<?= h(number_format($left, 2, '.', '')) ?>" step="0.01" required>
+          <?php // Says what the typed amount means: the whole of what is left, or a part of it (rpPayHint script below). ?>
+          <div class="form-text" id="rpPayHint" data-left="<?= h(number_format($left, 2, '.', '')) ?>">Less than <?= h(rpay_money($left)) ?> for a part payment.</div>
         </div>
 
         <div class="col-md-8">
@@ -182,16 +186,42 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         </div>
 
         <div class="col-md-8">
-          <label class="form-label fw-semibold">Attachment <span class="text-muted fw-normal small">(optional)</span></label>
-          <input type="file" name="attachment" class="form-control" accept="image/jpeg,image/png,image/webp,application/pdf">
-          <div class="form-text">A picture or a PDF, 8 MB at most.</div>
+          <label class="form-label fw-semibold">Attachments <span class="text-muted fw-normal small">(optional)</span></label>
+          <input type="file" name="attachment[]" class="form-control" multiple accept="image/jpeg,image/png,image/webp,application/pdf">
+          <div class="form-text">One or several files. Pictures or PDFs, 8 MB each at most.</div>
         </div>
 
         <div class="col-12 d-flex gap-2">
-          <button class="btn btn-lg btn-success"><i class="bi bi-check-lg"></i> Save payment</button>
+          <button class="btn btn-lg btn-success" id="rpPaySave"><i class="bi bi-check-lg"></i> <span id="rpPaySaveText">Save payment</span></button>
           <a href="<?= h($backUrl) ?>" class="btn btn-lg btn-light">Cancel</a>
         </div>
       </form>
+      <script>
+      // Full payment or partially paid: said under the amount as it is typed, and on the Save button.
+      (function () {
+        var amount = document.getElementById('rpPayAmount');
+        var hint = document.getElementById('rpPayHint');
+        var saveText = document.getElementById('rpPaySaveText');
+        if (!amount || !hint || !saveText) { return; }
+        var left = parseFloat(hint.getAttribute('data-left')) || 0;
+        var money = function (n) { return 'AED ' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+        function show() {
+          var typed = parseFloat(amount.value);
+          if (!(typed > 0) || typed > left + 0.005) {
+            hint.textContent = 'Type up to ' + money(left) + '.';
+            saveText.textContent = 'Save payment';
+          } else if (typed < left - 0.005) {
+            hint.innerHTML = '<span class="badge" style="background:#d1fae5;color:#065f46;border:1px solid #6ee7b7;">Partially paid</span> ' + money(left - typed) + ' will still be left.';
+            saveText.textContent = 'Save as partially paid';
+          } else {
+            hint.innerHTML = '<span class="badge text-bg-success">Full payment</span> Nothing will be left.';
+            saveText.textContent = 'Save payment';
+          }
+        }
+        amount.addEventListener('input', show);
+        show();
+      })();
+      </script>
     <?php endif; ?>
   </div>
 </div>
