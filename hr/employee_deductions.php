@@ -5,6 +5,7 @@
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_connect.php';
 require_once __DIR__ . '/../includes/audit_bridge.php';
+require_once __DIR__ . '/includes/hr_adjust_attachment.php';
 require_role(['Owner','Admin','HR'], $conn);
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
 
@@ -66,6 +67,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
     $prev->execute([$id]);
     $prevRow = $prev->fetch(PDO::FETCH_ASSOC);
     $conn->prepare("DELETE FROM employee_deductions WHERE id=?")->execute([$id]);
+    hr_adj_delete_files($prevRow['attachments_json'] ?? null); // the attachments added on the employee page, if any
     $_SESSION['ok'] = "Deduction #{$id} deleted.";
     if ($prevRow) {
       $empLabel = trim(($prevRow['full_name'] ?? '') . ' (' . ($prevRow['employee_code'] ?? '') . ')');
