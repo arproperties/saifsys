@@ -1133,6 +1133,17 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_cash_adv'])) {
         }
     }
     
+  // Optional attachments: checked first, so a refused file adds no loan.
+  $loanFiles = []; // stored on disk but not yet saved on a row
+  if ($amount > 0 && hr_adj_ready($conn, 'loan')) {
+    try {
+      $loanFiles = hr_adj_save_files('loan_files', 'loan', (int)$emp['id'], HR_ADJ_MAX_FILES);
+    } catch (RuntimeException $e) {
+      $cash_err = 'Loan not added. ' . $e->getMessage();
+      $amount = 0;
+    }
+  }
+
   if ($amount > 0) {
     $stmt = $conn->prepare("
       INSERT INTO cash_advances (employee_id, tx_date, amount, description, status, created_by)
@@ -1140,6 +1151,16 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['add_cash_adv'])) {
     ");
     $stmt->execute([$emp['id'], $tx_date, $amount, $desc ?: null, $status, (int)($_SESSION['user']['id'] ?? 0)]);
     $newLoanId = (int)$conn->lastInsertId();
+    if ($loanFiles) {
+      try {
+        $conn->prepare("UPDATE cash_advances SET attachments_json = ? WHERE id = ?")->execute([json_encode($loanFiles), $newLoanId]);
+      } catch (Throwable $e) {
+        // The loan itself is saved; only its files were not, so they go and HR is told.
+        hr_adj_delete_files($loanFiles);
+        error_log('loan attachments not saved: ' . $e->getMessage());
+        $cash_err = 'The loan was added, but its attachments could not be saved. Attach them again from the loan register.';
+      }
+    }
     if ($status === 'open') {
       hr_loan_initialize_schedule($conn, $newLoanId, $amount, max(1, (int)($_POST['installment_count'] ?? 1)), $tx_date);
     }
@@ -1178,6 +1199,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['del_cash_adv'])) {
   $prevLoanRow = $prevLoan->fetch(PDO::FETCH_ASSOC);
   $stmt = $conn->prepare("DELETE FROM cash_advances WHERE id=? AND employee_id=?");
   $stmt->execute([$delLoanId, $emp['id']]);
+  hr_adj_delete_files($prevLoanRow['attachments_json'] ?? null);
   $cash_msg = 'Cash advance removed.';
   if ($prevLoanRow) {
     audit_bridge_hr_ops(
@@ -1842,7 +1864,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['del_deduction'])) {
   }
 }
 
-// ATTACH more files to a bonus or deduction that is already there, or REMOVE one of its files
+// ATTACH more files to a bonus, deduction or loan that is already there, or REMOVE one of its files
 if ($_SERVER['REQUEST_METHOD']==='POST' && (isset($_POST['attach_adj']) || isset($_POST['remove_adj']))) {
     csrf_verify();
     if (!$canManageLoans) {
@@ -1850,7 +1872,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && (isset($_POST['attach_adj']) || isset
         die('Access denied. Only Owner, Admin, or HR can change attachments.');
     }
     $adjRemove = isset($_POST['remove_adj']);
-    $adjKind = ($adjRemove ? $_POST['remove_adj'] : $_POST['attach_adj']) === 'bonus' ? 'bonus' : 'deduction';
+    $adjKind = (string)($adjRemove ? $_POST['remove_adj'] : $_POST['attach_adj']);
+    $adjKind = in_array($adjKind, ['bonus', 'loan'], true) ? $adjKind : 'deduction';
     $adjId = (int)($_POST['adj_id'] ?? 0);
     try {
         if (!hr_adj_ready($conn, $adjKind)) {
@@ -1887,7 +1910,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && (isset($_POST['attach_adj']) || isset
         $conn->prepare("UPDATE {$adjTable} SET attachments_json = ? WHERE id = ? AND employee_id = ?")
              ->execute([$adjFiles ? json_encode($adjFiles) : null, $adjId, (int)$emp['id']]);
         hr_adj_delete_files($adjGone);
-        $_SESSION[$adjKind === 'bonus' ? 'bonus_msg' : 'deduction_msg'] = $adjDone;
+        $_SESSION[['bonus' => 'bonus_msg', 'loan' => 'cash_advance_msg'][$adjKind] ?? 'deduction_msg'] = $adjDone;
         audit_bridge_hr_ops(
             $adjKind . '_attachment',
             $adjTable,
@@ -1903,11 +1926,13 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && (isset($_POST['attach_adj']) || isset
         $adjErr = ($e instanceof RuntimeException && !($e instanceof PDOException)) ? $e->getMessage() : 'Could not save the change. Please try again.';
         if ($adjKind === 'bonus') {
             $_SESSION['bonus_err'] = $adjErr;
+        } elseif ($adjKind === 'loan') {
+            $_SESSION['cash_advance_err'] = $adjErr;
         } else {
             $_SESSION['deduction_msg'] = 'Attachment not saved. ' . $adjErr;
         }
     }
-    header('Location: employee_view.php?id=' . urlencode($employee_id) . ($adjKind === 'bonus' ? '#tab-bonus' : '#tab-deduct'));
+    header('Location: employee_view.php?id=' . urlencode($employee_id) . (['bonus' => '#tab-bonus', 'loan' => '#tab-cashadv'][$adjKind] ?? '#tab-deduct'));
     exit;
 }
 
@@ -6245,7 +6270,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                 <div class="small text-muted">Creates an open balance recoverable by payroll or cash repayment. Available to Owner, Admin, and HR.</div>
                               </div>
                               <div class="card-body">
-                                <form method="post" class="row g-3 align-items-end">
+                                <form method="post" enctype="multipart/form-data" class="row g-3 align-items-end">
                                   <?php csrf_field(); ?>
                                   <input type="hidden" name="add_cash_adv" value="1">
                                   <input type="hidden" name="status" value="open">
@@ -6265,6 +6290,12 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     <label class="form-label">Reason / description</label>
                                     <input type="text" name="description" class="form-control" placeholder="Optional note for HR">
                                   </div>
+                                  <?php if (hr_adj_ready($conn, 'loan')): ?>
+                                  <div class="col-md-4">
+                                    <label class="form-label">Upload attachments <span class="text-muted">(optional)</span></label>
+                                    <input type="file" name="loan_files[]" multiple accept=".pdf,.jpg,.jpeg,.png,.webp" class="form-control">
+                                  </div>
+                                  <?php endif; ?>
                                   <div class="col-md-2">
                                     <button class="btn btn-primary w-100">Issue loan</button>
                                   </div>
@@ -6295,6 +6326,10 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                         <th class="text-end">Issued</th>
                                         <th class="text-end">Outstanding</th>
                                         <th>Description</th>
+                                        <?php $loanAttachCol = $canManageLoans && hr_adj_ready($conn, 'loan'); ?>
+                                        <?php if ($loanAttachCol): ?>
+                                        <th style="min-width:170px;">Attachments</th>
+                                        <?php endif; ?>
                                         <th>Request</th>
                                         <th>Status</th>
                                         <th class="text-end" style="min-width:210px;">Recover / actions</th>
@@ -6302,7 +6337,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                     </thead>
                                     <tbody>
                                     <?php if(!$cashRows): ?>
-                                      <tr><td colspan="7" class="text-center text-muted py-4">No loans or advances yet.</td></tr>
+                                      <tr><td colspan="<?= $loanAttachCol ? 8 : 7 ?>" class="text-center text-muted py-4">No loans or advances yet.</td></tr>
                                     <?php else: foreach($cashRows as $r):
                                       $requestStatus = $r['request_status'] ?? null;
                                       $isPending = $requestStatus === 'pending';
@@ -6328,6 +6363,36 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                                           <span class="<?= $remaining > 0.005 ? 'remaining-strong' : 'remaining-zero' ?>"><?= number_format($remaining, 2) ?></span>
                                         </td>
                                         <td><?= htmlspecialchars($r['description'] ?? '') ?: '<span class="text-muted">—</span>' ?></td>
+                                        <?php if ($loanAttachCol): ?>
+                                        <td>
+                                          <?php $adjList = hr_adj_files($r['attachments_json'] ?? null); ?>
+                                          <div class="adj-files">
+                                            <?php foreach ($adjList as $adjN => $adjRel): $adjPdf = strtolower(pathinfo($adjRel, PATHINFO_EXTENSION)) === 'pdf'; ?>
+                                            <span class="adj-chip">
+                                              <a href="adjustment_file.php?type=loan&amp;id=<?= (int)$r['id'] ?>&amp;n=<?= (int)$adjN ?>" target="_blank" rel="noopener" title="Open"><i class="bi <?= $adjPdf ? 'bi-file-earmark-pdf text-danger' : 'bi-file-earmark-image text-primary' ?>"></i> <?= $adjPdf ? 'PDF' : 'Image' ?> <?= (int)$adjN + 1 ?></a>
+                                              <button type="submit" form="adjRm-loan-<?= (int)$r['id'] ?>-<?= (int)$adjN ?>" class="adj-x" title="Remove this file" aria-label="Remove this file">&times;</button>
+                                            </span>
+                                            <form method="post" id="adjRm-loan-<?= (int)$r['id'] ?>-<?= (int)$adjN ?>" class="d-none" onsubmit="return confirm('Remove this file?')">
+                                              <?php csrf_field(); ?>
+                                              <input type="hidden" name="remove_adj" value="loan">
+                                              <input type="hidden" name="adj_id" value="<?= (int)$r['id'] ?>">
+                                              <input type="hidden" name="adj_n" value="<?= (int)$adjN ?>">
+                                            </form>
+                                            <?php endforeach; ?>
+                                            <?php if (count($adjList) < HR_ADJ_MAX_FILES): ?>
+                                            <form method="post" enctype="multipart/form-data" class="m-0">
+                                              <?php csrf_field(); ?>
+                                              <input type="hidden" name="attach_adj" value="loan">
+                                              <input type="hidden" name="adj_id" value="<?= (int)$r['id'] ?>">
+                                              <label class="adj-add" title="PDF or image, up to 10 MB each. You can pick several.">
+                                                <i class="bi bi-plus-lg"></i> <?= $adjList ? 'Add' : 'Attach file' ?>
+                                                <input type="file" name="adj_files[]" multiple accept=".pdf,.jpg,.jpeg,.png,.webp" hidden onchange="if (this.files.length) this.form.submit()">
+                                              </label>
+                                            </form>
+                                            <?php endif; ?>
+                                          </div>
+                                        </td>
+                                        <?php endif; ?>
                                         <td>
                                           <?php if ($isPending): ?>
                                             <span class="badge text-bg-warning">Pending</span>
@@ -6532,7 +6597,7 @@ require_once __DIR__ . '/includes/hr_layout_header.php';
                           </div>
 
                           <style>
-                          /* Attachments on a bonus / deduction row: one small chip per file, and an add chip. */
+                          /* Attachments on a bonus / deduction / loan row: one small chip per file, and an add chip. */
                           .adj-files { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; }
                           .adj-chip { display: inline-flex; align-items: center; gap: .15rem; padding: .12rem .2rem .12rem .55rem;
                             border: 1px solid #d9dee6; border-radius: 999px; background: #f8fafc; font-size: .8rem; line-height: 1.5; white-space: nowrap; }

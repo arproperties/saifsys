@@ -1,21 +1,23 @@
 <?php
 /**
- * Optional attachments on an employee bonus or deduction (added 2026-11-27).
+ * Optional attachments on an employee bonus, deduction or loan / advance (added 2026-11-27,
+ * loans 2026-11-28).
  *
  * Several files per row, kept as a JSON list in attachments_json on
- * employee_bonuses / employee_deductions. Files go in
+ * employee_bonuses / employee_deductions / cash_advances. Files go in
  * uploads/hr_bonus_deduction/{employee id}/ and are served only by
  * hr/adjustment_file.php (the folder itself is closed to direct links).
- * Needs migrations/hr_bonus_deduction_attachment.sql; until it is run, nothing changes.
+ * Needs migrations/hr_bonus_deduction_attachment.sql (bonuses, deductions) and
+ * migrations/hr_loan_attachment.sql (loans); until one is run, nothing changes for its kind.
  */
 
-const HR_ADJ_MAX_FILES = 10;       // per bonus / deduction
+const HR_ADJ_MAX_FILES = 10;       // per bonus / deduction / loan
 const HR_ADJ_MAX_BYTES = 10485760; // 10 MB per file
 
 /** $kind => table. */
 function hr_adj_table(string $kind): ?string
 {
-    return ['bonus' => 'employee_bonuses', 'deduction' => 'employee_deductions'][$kind] ?? null;
+    return ['bonus' => 'employee_bonuses', 'deduction' => 'employee_deductions', 'loan' => 'cash_advances'][$kind] ?? null;
 }
 
 /** True when the attachments column is there for that kind ('bonus' or 'deduction'). */
@@ -94,7 +96,7 @@ function hr_adj_save_files(string $field, string $kind, int $employeeId, int $ro
     }
     $out = [];
     foreach ($picked as [$tmp, $ext]) {
-        $fname = ($kind === 'bonus' ? 'bonus_' : 'ded_') . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+        $fname = (['bonus' => 'bonus_', 'loan' => 'loan_'][$kind] ?? 'ded_') . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
         if (!move_uploaded_file($tmp, $dir . '/' . $fname)) {
             hr_adj_delete_files($out); // remove the ones already stored in this save
             throw new RuntimeException('The attachment could not be saved.');

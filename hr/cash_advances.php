@@ -7,6 +7,7 @@ require_once __DIR__ . '/../includes/AuditService.php';
 require_once __DIR__ . '/includes/hr_company_scope.php';
 require_once __DIR__ . '/includes/hr_employee_lifecycle.php';
 require_once __DIR__ . '/includes/hr_loans.php';
+require_once __DIR__ . '/includes/hr_adjust_attachment.php'; // files attached to a loan go with it
 require_role(['Owner', 'Admin', 'HR'], $conn);
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start();
@@ -191,6 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } catch (Throwable $ignored) {
             }
             $conn->prepare('DELETE FROM cash_advances WHERE id = ?')->execute([$id]);
+            hr_adj_delete_files($loan['attachments_json'] ?? null); // the attachments added on the employee page, if any
             $_SESSION['ok'] = "Advance #{$id} deleted.";
         } else {
             $_SESSION['err'] = 'Loan not found.';
