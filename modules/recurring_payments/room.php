@@ -95,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     // From the group page's Details box: back there, with this room's box open again.
     $back = (string)($_POST['back'] ?? '');
-    header('Location: ' . ($back !== '' && strpos($back, $rpayBase . '/group_view.php') === 0 ? $back : $selfUrl));
+    header('Location: ' . ($back !== '' && strpos($back, $rpayBase . '/group_view.php') === 0 ? $back : $selfUrl . '&tab=details'));
     exit;
 }
 
@@ -114,7 +114,7 @@ try {
 }
 
 // The two tabs: Details (the beds) and Payment history (this room's payments, 10 a page).
-$tab = ($_GET['tab'] ?? '') === 'history' ? 'history' : 'details';
+$tab = ($_GET['tab'] ?? '') === 'details' ? 'details' : 'history'; // the payments come first
 const RPAY_ROOM_HISTORY_PAGE = 10;
 try {
     $history = rpay_rooms_payments($conn, $code, [$roomId => $room])[$roomId] ?? [];
@@ -196,8 +196,8 @@ require __DIR__ . '/includes/rpay_layout_header.php';
 </div>
 
 <ul class="nav nav-tabs mb-3">
-  <li class="nav-item"><a class="nav-link<?= $tab === 'details' ? ' active' : '' ?>" href="<?= h($selfUrl) ?>"><i class="bi bi-door-open"></i> Details</a></li>
   <li class="nav-item"><a class="nav-link<?= $tab === 'history' ? ' active' : '' ?>" href="<?= h($selfUrl . '&tab=history') ?>"><i class="bi bi-clock-history"></i> Payment history<?= is_array($history) ? ' <span class="badge text-bg-light border">' . count($history) . '</span>' : '' ?></a></li>
+  <li class="nav-item"><a class="nav-link<?= $tab === 'details' ? ' active' : '' ?>" href="<?= h($selfUrl . '&tab=details') ?>"><i class="bi bi-door-open"></i> Tenant details</a></li>
 </ul>
 <?php if ($tab === 'details'): ?>
 <?php if (!$beds): ?>
