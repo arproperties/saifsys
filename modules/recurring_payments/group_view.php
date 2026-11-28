@@ -44,10 +44,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'move_
     exit;
 }
 
-// The period of a room card's last payment, typed or removed (saifsys's own table).
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', ['save_period', 'reset_period'], true) && !empty($group['has_rooms'])) {
+// A tenant's start and end date, changed from the pencil on a room card (saifsys's own table).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_tenant_dates' && !empty($group['has_rooms'])) {
     csrf_verify();
-    rpay_handle_period_post($conn, $code);
+    try {
+        if (!rpay_bed_dates_ready($conn)) {
+            throw new BinvError('The start and end dates cannot be kept yet.', 503);
+        }
+        [$stayFrom, $stayTo] = rpay_bed_dates_in($_POST['start_date'] ?? '', $_POST['end_date'] ?? '');
+        // Only a tenant in one of this group's rooms (a room made before rooms had a group belongs to every group).
+        $stillThere = $conn->prepare("SELECT 1 FROM rpay_room_beds b JOIN rpay_rooms r ON r.id = b.room_id
+            WHERE b.id = ? AND b.status = 'occupied' AND (r.group_id = ? OR r.group_id IS NULL)");
+        $stillThere->execute([(int)($_POST['bed'] ?? 0), $gid]);
+        if (!$stillThere->fetchColumn()) {
+            throw new BinvError('That tenant could not be found.', 404);
+        }
+        $conn->prepare('UPDATE rpay_room_beds SET start_date = ?, end_date = ?, updated_by = ? WHERE id = ?')
+            ->execute([$stayFrom, $stayTo, (int)current_user_id() ?: null, (int)($_POST['bed'] ?? 0)]);
+        binv_flash('Start and end date saved.');
+    } catch (BinvError $e) {
+        binv_flash($e->getMessage(), 'danger');
+    } catch (PDOException $e) {
+        error_log('recurrent income: tenant dates not saved: ' . $e->getMessage());
+        binv_flash('The dates could not be saved.', 'danger');
+    }
     header('Location: ' . $rpayBase . '/group_view.php?' . http_build_query(['grp' => $gid] + $filters));
     exit;
 }
@@ -256,36 +276,40 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         $roomPays = [];
     }
     $openRoom = (int)($_GET['room'] ?? 0);
-    // Each room's last payment (the newest with money in it), and the period it is for.
+    // Each room's last payment (the newest with money in it).
     $lastPaidOf = [];
     foreach ($rooms as $r) {
         foreach ($roomPays[$r['id']] ?? [] as $x) {
             if ((float)($x['received'] ?? 0) > 0) { $lastPaidOf[$r['id']] = $x; break; }
         }
     }
-    $cardSaved = rpay_saved_periods($conn, array_map(function ($x) { return (int)$x['id']; }, $lastPaidOf));
-    $entryById = array_column($entryData['entries'] ?? [], null, 'id');
+    $stayOn = rpay_bed_dates_ready($conn); // tenants have a start and end date
   ?>
   <div class="rp-room-grid mb-3">
     <?php foreach ($rooms as $r): $pct = $r['beds'] ? round($r['occupied'] / $r['beds'] * 100) : 0;
       $pl = $roomPays[$r['id']] ?? [];
       $rGot = array_sum(array_column($pl, 'received'));
       $rLeft = array_sum(array_column($pl, 'left'));
-      // The bell: unpaid payments due soon or past due, and outsiders whose rent is due soon.
+      // The bell: unpaid payments due soon or past due, outsiders whose rent is due soon, and tenants whose stay ends soon or has ended.
       $rBell = count(array_filter($pl, function ($d) { return (bool)rpay_due_alert($d['due_date'] ?? null, ($d['status'] ?? '') !== 'paid'); }));
+      $tenants = []; // the outsiders living here
       foreach (rpay_room_beds($conn, (int)$r['id']) as $bb) {
-          if ($bb['status'] === 'occupied' && $bb['occupant_type'] === 'outsider' && rpay_due_alert($bb['due_date'] ?? null, true)) { $rBell++; }
-      } ?>
+          if ($bb['status'] !== 'occupied' || $bb['occupant_type'] !== 'outsider') { continue; }
+          $tenants[] = $bb;
+          if (rpay_due_alert($bb['due_date'] ?? null, true)) { $rBell++; }
+          if (rpay_due_alert($bb['end_date'] ?? null, true)) { $rBell++; }
+      }
+      // One tenant (a partition, or a room let to one person): their dates go on the card.
+      $tenant = $stayOn && count($tenants) === 1 ? $tenants[0] : null; ?>
       <?php $roomUrl = $rpayBase . '/room.php?' . http_build_query(['id' => $r['id'], 'grp' => $gid]); ?>
       <a class="rp-room text-decoration-none" href="<?= h($roomUrl) ?>" title="Open <?= h($r['name']) ?>">
         <div class="d-flex justify-content-between align-items-start gap-1">
-          <span class="fw-bold fs-5"><?= h($r['name']) ?><?php if ($rBell): ?> <span class="rp-bell-count" title="<?= $rBell ?> due soon or past due"><i class="bi bi-bell-fill"></i> <?= $rBell ?></span><?php endif; ?></span>
+          <span class="fw-bold fs-5"><?= h($r['name']) ?><?php if ($rBell): ?> <span class="rp-bell-count" title="<?= $rBell ?> due soon, past due, or a stay ending"><i class="bi bi-bell-fill"></i> <?= $rBell ?></span><?php endif; ?></span>
           <?php if ($r['note']): ?><span class="badge text-bg-light border"><?= h($r['note']) ?></span><?php endif; ?>
         </div>
         <?php if (empty($filters['building'])): ?><div class="tiny text-muted"><?= h($bNames[$r['building_id']] ?? '') ?></div><?php endif; ?>
         <?php
           $lastPaid = $lastPaidOf[$r['id']] ?? null;
-          $lastPer = $lastPaid ? rpay_line_period($lastPaid, $entryById[(int)($lastPaid['entry_id'] ?? 0)] ?? null, $cardSaved) : null;
         ?>
         <?php if ($r['beds']): ?>
           <div class="progress mt-2 mb-1" style="height:6px"><div class="progress-bar bg-success" style="width:<?= $pct ?>%"></div></div>
@@ -299,10 +323,10 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           <dt>Received</dt><dd class="text-success"><span class="rp-sublink" data-href="<?= h($roomUrl . '&tab=history&st=paid') ?>" title="Show the paid payments"><?= h(rpay_money($rGot)) ?></span></dd>
           <dt>To be paid</dt><dd class="<?= $rLeft > 0 ? 'text-warning-emphasis' : '' ?>"><span class="rp-sublink" data-href="<?= h($roomUrl . '&tab=history&st=pending') ?>" title="Show the payments still to come"><?= h(rpay_money($rLeft)) ?></span></dd>
           <dt>Last payment</dt><dd><?= $lastPaid ? h(rpay_money($lastPaid['received'])) . '<div class="tiny text-muted fw-normal">' . h(rpay_date($lastPaid['paid_on'] ?? '')) . '</div>' : '—' ?></dd>
-          <?php if ($lastPaid): $pencil = function (string $focus) use ($lastPaid, $lastPer, $r) { ?><span class="rp-period-edit ms-1" role="button" title="Change the start and end date" data-focus="<?= $focus ?>" data-due="<?= (int)$lastPaid['id'] ?>" data-room="<?= h($r['name']) ?>" data-from="<?= h($lastPer['from']) ?>" data-to="<?= h($lastPer['to']) ?>" data-typed="<?= $lastPer['edited'] ? '1' : '0' ?>"><i class="bi bi-pencil"></i></span><?php }; ?>
-            <dt>Start date</dt><dd><?= $lastPer['from'] !== '' ? h(rpay_date($lastPer['from'])) : '—' ?> <?php $pencil('from'); ?></dd>
-            <dt>End date</dt><dd><?= $lastPer['to'] !== '' ? h(rpay_date($lastPer['to'])) : '—' ?>
- <?php $pencil('to'); ?></dd>
+          <?php if ($tenant): $pencil = function (string $focus) use ($tenant, $r) { ?><span class="rp-stay-edit ms-1" role="button" title="Change the tenant's start and end date" data-focus="<?= $focus ?>" data-bed="<?= (int)$tenant['id'] ?>" data-who="<?= h(trim($r['name'] . ' · ' . (string)($tenant['occupant'] ?? ''), ' ·')) ?>" data-from="<?= h((string)($tenant['start_date'] ?? '')) ?>" data-to="<?= h((string)($tenant['end_date'] ?? '')) ?>"><i class="bi bi-pencil"></i></span><?php };
+            $endAlert = rpay_due_alert($tenant['end_date'] ?? null, true); ?>
+            <dt>Start date</dt><dd><?= !empty($tenant['start_date']) ? h(rpay_date($tenant['start_date'])) : '—' ?> <?php $pencil('from'); ?></dd>
+            <dt>End date</dt><dd class="<?= $endAlert ? ($endAlert['level'] === 'overdue' ? 'text-danger' : 'text-warning-emphasis') : '' ?>"><?= !empty($tenant['end_date']) ? h(rpay_date($tenant['end_date'])) : '—' ?> <?php $pencil('to'); ?></dd>
           <?php endif; ?>
         </dl>
         <span class="btn btn-sm btn-light border w-100 mt-2"><i class="bi bi-card-list"></i> Details</span>
@@ -494,7 +518,7 @@ body.dark-mode .rp-alert-soon{ background:#4a3b0b; color:#ffe2a0; border-color:#
 .rp-room-grid{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
 .rp-sublink{ cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px; }
 .rp-sublink:hover{ text-decoration:underline; }
-.rp-period-edit{ cursor:pointer; color:#64748b; } .rp-period-edit:hover{ color:var(--primary); }
+.rp-stay-edit{ cursor:pointer; color:#64748b; } .rp-stay-edit:hover{ color:var(--primary); }
 .rp-tot-link{ display:block; color:inherit; border-radius:10px; padding:4px 8px; margin:-4px -8px; }
 .rp-tot-link:hover{ background:rgba(0,0,0,.04); }
 .rp-tot-on{ box-shadow:0 0 0 2px var(--primary) inset; }
@@ -571,23 +595,24 @@ body.dark-mode .rh-c8{ background:#163430; border-color:#24544d; } body.dark-mod
 </style>
 
 <?php if (!empty($group['has_rooms'])): ?>
-<!-- The start and end date of a room card's last payment -->
-<div class="modal fade" id="rpPeriodModal" tabindex="-1" aria-hidden="true">
+<!-- A tenant's start and end date, from the pencil on a room card -->
+<div class="modal fade" id="rpStayModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-sm modal-dialog-centered">
     <form method="post" class="modal-content">
       <?php csrf_field(); ?>
-      <input type="hidden" name="due" id="rpPeriodDue">
-      <div class="modal-header py-2"><h6 class="modal-title">Last payment · <span id="rpPeriodRoom"></span></h6><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+      <input type="hidden" name="action" value="save_tenant_dates">
+      <input type="hidden" name="bed" id="rpStayBed">
+      <div class="modal-header py-2"><h6 class="modal-title" id="rpStayWho"></h6><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
       <div class="modal-body">
-        <label class="form-label small text-muted mb-1" for="rpPeriodFrom">Start date</label>
-        <input type="date" name="period_from" id="rpPeriodFrom" class="form-control form-control-sm mb-2" required>
-        <label class="form-label small text-muted mb-1" for="rpPeriodTo">End date</label>
-        <input type="date" name="period_to" id="rpPeriodTo" class="form-control form-control-sm" required>
+        <label class="form-label small text-muted mb-1" for="rpStayFrom">Start date</label>
+        <input type="date" name="start_date" id="rpStayFrom" class="form-control form-control-sm mb-2">
+        <label class="form-label small text-muted mb-1" for="rpStayTo">End date</label>
+        <input type="date" name="end_date" id="rpStayTo" class="form-control form-control-sm">
+        <div class="form-text small">Leave a date empty if it is not known.</div>
       </div>
       <div class="modal-footer py-2">
-        <button class="btn btn-sm btn-link text-danger text-decoration-none me-auto" name="action" value="reset_period" id="rpPeriodReset" formnovalidate title="Go back to the dates worked out from the due date">Reset</button>
         <button type="button" class="btn btn-sm btn-light border" data-bs-dismiss="modal">Cancel</button>
-        <button class="btn btn-sm btn-success" name="action" value="save_period">Save</button>
+        <button class="btn btn-sm btn-success">Save</button>
       </div>
     </form>
   </div>
@@ -595,17 +620,16 @@ body.dark-mode .rh-c8{ background:#163430; border-color:#24544d; } body.dark-mod
 <?php endif; ?>
 <?php require __DIR__ . '/../building_inventory/includes/binv_layout_footer.php'; ?>
 <script>
-// The pencil on a room card: change the start and end date of its last payment (the card itself opens the room).
-document.querySelectorAll('.rp-period-edit').forEach(function (p) {
+// The pencil on a room card: change the tenant's start and end date (the card itself opens the room).
+document.querySelectorAll('.rp-stay-edit').forEach(function (p) {
   p.addEventListener('click', function (ev) {
     ev.preventDefault(); ev.stopPropagation();
-    document.getElementById('rpPeriodDue').value = p.dataset.due;
-    document.getElementById('rpPeriodRoom').textContent = p.dataset.room;
-    document.getElementById('rpPeriodFrom').value = p.dataset.from;
-    document.getElementById('rpPeriodTo').value = p.dataset.to;
-    document.getElementById('rpPeriodReset').style.display = p.dataset.typed === '1' ? '' : 'none';
-    var box = document.getElementById('rpPeriodModal');
-    box.addEventListener('shown.bs.modal', function () { document.getElementById(p.dataset.focus === 'to' ? 'rpPeriodTo' : 'rpPeriodFrom').focus(); }, { once: true });
+    document.getElementById('rpStayBed').value = p.dataset.bed;
+    document.getElementById('rpStayWho').textContent = p.dataset.who;
+    document.getElementById('rpStayFrom').value = p.dataset.from;
+    document.getElementById('rpStayTo').value = p.dataset.to;
+    var box = document.getElementById('rpStayModal');
+    box.addEventListener('shown.bs.modal', function () { document.getElementById(p.dataset.focus === 'to' ? 'rpStayTo' : 'rpStayFrom').focus(); }, { once: true });
     bootstrap.Modal.getOrCreateInstance(box).show();
   });
 });

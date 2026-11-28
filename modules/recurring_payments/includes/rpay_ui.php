@@ -42,19 +42,25 @@ if ($rpayUi === 'rows'):
   // The bedspace number, from the title ("Bedspace # 04 - ..."); a payment for the whole room has none.
   $bedOf = function (string $t): string { return preg_match('/bed\s*space\s*#?\s*0*(\d{1,2})/i', $t, $m) ? 'Bed ' . str_pad($m[1], 2, '0', STR_PAD_LEFT) : '—'; };
 ?>
-<?php $modePicks = rpay_entry_mode_picks($conn); ?>
+<?php $modePicks = rpay_entry_mode_picks($conn);
+  // Each payment's duration: the period typed on the payment's own page, else its tenant's start and end date
+  // ($rowTenants, when the page gives them), else worked out from its due date.
+  $rowSaved = rpay_saved_periods($conn, array_map(function ($d) { return (int)$d['id']; }, $rowsList));
+  $rowEntries = $rowEntries ?? [];
+  $rowTenants = $rowTenants ?? [];
+?>
 <div class="d-flex justify-content-end mb-2 no-print">
   <button type="button" class="btn btn-sm btn-light border" onclick="window.print()"><i class="bi bi-file-earmark-pdf"></i> Download PDF</button>
 </div>
 <div id="rpPrint">
 <table class="table table-sm table-bordered align-middle rp-sheet rp-pay-grid" style="--bs-border-color:#c9ced6;display:table;width:100%" data-move="<?= $mv ?>">
-  <thead class="text-dark"><tr><th style="width:28px"></th><th>Title</th><th>Bedspace</th><th>Due date</th><th>Paid on</th><th class="text-end">Amount</th><th>Received</th><th>Mode of payment</th><th>Status</th><th class="no-print">Actions</th></tr></thead>
+  <thead class="text-dark"><tr><th style="width:28px"></th><th>Title</th><th>Bedspace</th><th>Due date</th><th>Duration</th><th>Paid on</th><th class="text-end">Amount</th><th>Received</th><th>Mode of payment</th><th>Status</th><th class="no-print">Actions</th></tr></thead>
   <tbody>
   <?php $lastHk = null; foreach ($rowsList as $d):
     // A heading row for each month (the payment's due month), like the group page.
     $hk = substr((string)($d['due_date'] ?? ''), 0, 7);
     if ($hk !== $lastHk): $lastHk = $hk; ?>
-    <tr class="rp-headrow"><td colspan="10" class="text-center fw-bold">Received on <?= h(rpay_month_label($hk)) ?></td></tr>
+    <tr class="rp-headrow"><td colspan="11" class="text-center fw-bold">Received on <?= h(rpay_month_label($hk)) ?></td></tr>
     <?php endif;
     $paid = ($d['status'] ?? '') === 'paid';
     $partly = !$paid && (float)($d['received'] ?? 0) > 0;
@@ -68,6 +74,11 @@ if ($rpayUi === 'rows'):
       </td>
       <td class="text-nowrap"><?= h($bedOf((string)($d['title'] ?? ''))) ?></td>
       <td class="text-nowrap"><?= h(rpay_date($d['due_date'] ?? '')) ?></td>
+      <?php $dur = rpay_line_period($d, $rowEntries[(int)($d['entry_id'] ?? 0)] ?? null, $rowSaved);
+        if (!$dur['edited'] && ($tenantOfRow = rpay_payment_tenant($rowTenants, (string)($d['title'] ?? '')))) {
+            $dur = rpay_stay_period($d['due_date'] ?? null, $tenantOfRow['start_date'] ?? null, $tenantOfRow['end_date'] ?? null) ?? $dur;
+        } ?>
+      <td class="text-nowrap"><?php if ($dur['from'] !== '' && $dur['to'] !== ''): ?><?= h(rpay_date($dur['from'])) ?><div class="tiny text-muted">to <?= h(rpay_date($dur['to'])) ?></div><?php else: ?><span class="text-muted">—</span><?php endif; ?></td>
       <td class="text-nowrap"><?= ($paid || $partly) && !empty($d['paid_on']) ? h(rpay_date($d['paid_on'])) : '<span class="text-warning-emphasis fw-semibold">Not paid yet</span>' ?></td>
       <td class="text-end fw-bold text-nowrap"><?= h(rpay_money($d['amount'] ?? 0)) ?></td>
       <td>

@@ -160,11 +160,11 @@ function lt_pdc_alert_mail(array $pdc, string $kind, string $note = ''): array
         'overdue' => 'is overdue (dated ' . lt_date($pdc['cheque_date']) . ', ' . abs($days) . ' day' . (abs($days) === 1 ? '' : 's') . ' ago)',
         default   => $days === 0 ? 'is due today' : 'is due in ' . $days . ' day' . ($days === 1 ? '' : 's') . ' (' . lt_date($pdc['cheque_date']) . ')',
     };
-    $subject = '[PDC] Cheque ' . $pdc['cheque_no'] . ' · ' . $pdc['party_name'] . ' · AED ' . lt_money($pdc['amount']) . ' ' . $what;
+    $subject = '[Company PDC] Cheque ' . $pdc['cheque_no'] . ' · ' . $pdc['party_name'] . ' · AED ' . lt_money($pdc['amount']) . ' ' . $what;
     $url = (isset($_SERVER['HTTP_HOST']) ? ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] : '')
         . (function_exists('get_application_web_root') ? get_application_web_root() : '') . '/modules/loan_tracker/pdc_form.php?id=' . (int)$pdc['id'];
     $row = static fn($k, $v) => '<tr><td style="padding:4px 12px 4px 0;color:#6b7280">' . h($k) . '</td><td style="padding:4px 0"><b>' . h($v) . '</b></td></tr>';
-    $html = '<p>Post dated cheque <b>' . h($pdc['cheque_no']) . '</b> ' . h($what) . '.</p>'
+    $html = '<p>Company PDC: cheque <b>' . h($pdc['cheque_no']) . '</b> ' . h($what) . '.</p>'
         . '<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px">'
         . $row('Type', $dir['long']) . $row($dir['party'], $pdc['party_name']) . $row('Cheque no.', $pdc['cheque_no'])
         . ($pdc['bank'] ? $row('Bank', $pdc['bank']) : '') . $row('Cheque date', lt_date($pdc['cheque_date']))
@@ -172,7 +172,7 @@ function lt_pdc_alert_mail(array $pdc, string $kind, string $note = ''): array
         . ($pdc['purpose'] ? $row('Purpose', $pdc['purpose']) : '') . ($note !== '' ? $row('Note', $note) : '')
         . '</table>'
         . (str_starts_with($url, 'http') ? '<p><a href="' . h($url) . '">Open the cheque</a></p>' : '')
-        . '<p style="color:#6b7280;font-size:12px">You get this because your address is on the Post Dated Cheques alert list, or you added this cheque.</p>';
+        . '<p style="color:#6b7280;font-size:12px">You get this because your address is on the Company PDC alert list, or you added this cheque.</p>';
     return [$subject, $html];
 }
 
@@ -284,11 +284,11 @@ function lt_pdc_digest_mail(array $items): array
     $soon = count($items) - $over;
     $total = array_sum(array_map(static fn($i) => (float)$i['p']['amount'], $items));
     $parts = array_filter([$over ? $over . ' overdue' : '', $soon ? $soon . ' due in the next 7 days' : '']);
-    $subject = '[PDC] ' . implode(', ', $parts) . ' · AED ' . lt_money($total);
+    $subject = '[Company PDC] ' . implode(', ', $parts) . ' · AED ' . lt_money($total);
     $today = strtotime(date('Y-m-d'));
     $th = 'style="text-align:left;padding:6px 10px;background:#1e3a8a;color:#fff;font-size:12px"';
     $td = 'style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:13px"';
-    $html = '<p>Post dated cheques that need attention: <b>' . h(implode(', ', $parts)) . '</b>.</p>'
+    $html = '<p>Company PDC: cheques that need attention: <b>' . h(implode(', ', $parts)) . '</b>.</p>'
         . '<table style="border-collapse:collapse;font-family:Arial,sans-serif">'
         . '<tr><th ' . $th . '>When</th><th ' . $th . '>Cheque date</th><th ' . $th . '>Cheque no.</th><th ' . $th . '>Type</th><th ' . $th . '>Paid to / from</th>'
         . '<th ' . $th . '>Bank</th><th ' . $th . '>Reason</th><th ' . $th . ' align="right">Amount (AED)</th></tr>';
@@ -305,8 +305,8 @@ function lt_pdc_digest_mail(array $items): array
     $html .= '<tr><td colspan="7" style="padding:8px 10px;font-weight:bold;font-size:13px">Total</td><td style="padding:8px 10px;font-weight:bold;font-size:13px" align="right">' . lt_money($total) . '</td></tr></table>';
     $url = (isset($_SERVER['HTTP_HOST']) ? ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] : '')
         . (function_exists('get_application_web_root') ? get_application_web_root() : '') . '/modules/loan_tracker/pdc.php?status=pending&due=7';
-    $html .= (str_starts_with($url, 'http') ? '<p><a href="' . h($url) . '">Open Post Dated Cheques</a></p>' : '')
-        . '<p style="color:#6b7280;font-size:12px">You get this because your address is on the Post Dated Cheques alert list, or you added these cheques. Each cheque is listed once when it gets close, and once more if it becomes overdue.</p>';
+    $html .= (str_starts_with($url, 'http') ? '<p><a href="' . h($url) . '">Open Company PDC</a></p>' : '')
+        . '<p style="color:#6b7280;font-size:12px">You get this because your address is on the Company PDC alert list, or you added these cheques. Each cheque is listed once when it gets close, and once more if it becomes overdue.</p>';
     return [$subject, $html];
 }
 
@@ -327,4 +327,25 @@ function lt_pdc_daily_alerts_after_response(PDO $conn): void
         if (function_exists('fastcgi_finish_request')) { fastcgi_finish_request(); }
         try { lt_pdc_run_due_alerts($conn); } catch (Throwable $e) { error_log('pdc daily alerts: ' . $e->getMessage()); }
     });
+}
+
+/**
+ * The daily check, run from a cron job (the real estate cheque cron calls this each morning).
+ * Marks today as checked, so opening the page later does not run it again; an alert is sent
+ * once whoever runs the check. Never throws. Returns one line for the cron's output.
+ * $dry: work out what would be sent; send, log and mark nothing.
+ */
+function lt_pdc_daily_alerts_from_cron(PDO $conn, bool $dry = false): string
+{
+    try {
+        if (!$dry) {
+            $conn->exec("INSERT IGNORE INTO lt_pdc_alert_runs (run_date) VALUES (CURDATE())");
+        }
+        $res = lt_pdc_run_due_alerts($conn, $dry);
+        $sent = count(array_filter($res, static fn($r) => $r['result'] === 'sent'));
+        return 'Company PDC: ' . ($dry ? count($res) . ' alert(s) would be sent (dry run)' : $sent . ' of ' . count($res) . ' alert(s) emailed') . "\n";
+    } catch (Throwable $e) {
+        error_log('pdc daily alerts (cron): ' . $e->getMessage());
+        return 'Company PDC: not checked - ' . $e->getMessage() . "\n";
+    }
 }

@@ -49,7 +49,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Every bed in one go: vacant, or occupied by staff (employee + company) or an outsider (name + rent).
             $empOk = array_flip(array_map('intval', $conn->query('SELECT id FROM employees')->fetchAll(PDO::FETCH_COLUMN)));
             $coOk = array_flip(array_map('intval', $conn->query('SELECT id FROM companies')->fetchAll(PDO::FETCH_COLUMN)));
-            $up = $conn->prepare('UPDATE rpay_room_beds SET status = ?, occupant_type = ?, employee_id = ?, company_id = ?, occupant = ?, rent = ?, due_date = ?, note = ?, updated_by = ?
+            $datesOn = rpay_bed_dates_ready($conn); // the tenant's start and end date, once their columns are there
+            $up = $conn->prepare('UPDATE rpay_room_beds SET status = ?, occupant_type = ?, employee_id = ?, company_id = ?, occupant = ?, rent = ?, due_date = ?, note = ?, updated_by = ?'
+                . ($datesOn ? ', start_date = ?, end_date = ?' : '') . '
                 WHERE id = ? AND room_id = ?');
             $warn = [];
             foreach ((array)($_POST['bed'] ?? []) as $bid => $b) {
@@ -69,7 +71,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($type === 'outsider' && $rentIn !== '' && $rent === null) {
                     $warn[] = 'a rent that is not a number was left empty';
                 }
-                $up->execute([$status, $type, $emp, $co, $who !== '' ? $who : null, $rent, $dueOn, $note !== '' ? $note : null, $me ?: null, (int)$bid, $roomId]);
+                $stay = [];
+                if ($datesOn) {
+                    try {
+                        $stay = $type === 'outsider' ? rpay_bed_dates_in($b['start_date'] ?? '', $b['end_date'] ?? '') : [null, null];
+                    } catch (BinvError $e) {
+                        $stay = [rpay_bed_dates_in($b['start_date'] ?? '', '')[0], null];
+                        $warn[] = 'an end date before the start date was left empty';
+                    }
+                }
+                $up->execute(array_merge([$status, $type, $emp, $co, $who !== '' ? $who : null, $rent, $dueOn, $note !== '' ? $note : null, $me ?: null], $stay, [(int)$bid, $roomId]));
             }
             binv_flash((count((array)($_POST['bed'] ?? [])) === 1 ? $spaceWord . ' saved.' : $spaceWord . 's saved.') . ($warn ? ' Note: ' . implode('; ', array_unique($warn)) . '.' : ''), $warn ? 'warning' : 'success');
         } elseif ($action === 'add_beds') {
@@ -108,9 +119,12 @@ $empRows = $conn->query("SELECT id, full_name, employee_code, company_id FROM em
 $companies = $conn->query('SELECT id, name FROM companies WHERE is_active = 1 ORDER BY name')->fetchAll(PDO::FETCH_KEY_PAIR);
 $empName = array_column($empRows, 'full_name', 'id');
 try {
-    $bNames = array_column(rpay_reem($code, 'GET', '/entries')['buildings'] ?? [], 'name', 'id');
+    $entryData = rpay_reem($code, 'GET', '/entries');
+    $bNames = array_column($entryData['buildings'] ?? [], 'name', 'id');
+    $rowEntries = array_column($entryData['entries'] ?? [], null, 'id'); // for each payment's duration in the history
 } catch (BinvError $e) {
     $bNames = [];
+    $rowEntries = [];
 }
 
 // The two tabs: Details (the beds) and Payment history (this room's payments, 10 a page).
@@ -222,6 +236,7 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           'occupant' => (string)$b['occupant'], 'note' => (string)$b['note'],
           'rent' => $b['rent'] !== null ? number_format((float)$b['rent'], 2, '.', '') : '',
           'due' => (string)($b['due_date'] ?? ''),
+          'start' => (string)($b['start_date'] ?? ''), 'end' => (string)($b['end_date'] ?? ''),
       ];
   }
   $pills = ['all' => 'All', 'occupied' => 'Occupied', 'vacant' => 'Vacant'] + ($allowsStaff ? ['staff' => 'Staff', 'outsider' => 'Outsider'] : []);
@@ -267,6 +282,9 @@ require __DIR__ . '/includes/rpay_layout_header.php';
             <?php elseif ($type === 'outsider'): ?>
               <?= $b['rent'] !== null ? '<b>' . h(rpay_money($b['rent'])) . '</b> a month' : '<span class="text-danger">Add the rent</span>' ?>
               <?= !empty($b['due_date']) ? ' · due ' . h(rpay_date($b['due_date'])) : '' ?>
+              <?php if (!empty($b['start_date']) || !empty($b['end_date'])): ?>
+                <div><i class="bi bi-calendar-range"></i> <?= !empty($b['start_date']) ? h(rpay_date($b['start_date'])) : '…' ?> – <?= !empty($b['end_date']) ? h(rpay_date($b['end_date'])) : '…' ?></div>
+              <?php endif; ?>
             <?php endif; ?>
           </span>
         <?php endif; ?>
@@ -350,6 +368,18 @@ require __DIR__ . '/includes/rpay_layout_header.php';
               <input type="date" name="due_date" id="rbDue" class="form-control">
             </div>
           </div>
+          <?php if (rpay_bed_dates_ready($conn)): ?>
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label small text-muted mb-1">Start date</label>
+              <input type="date" name="start_date" id="rbStart" class="form-control">
+            </div>
+            <div class="col-6">
+              <label class="form-label small text-muted mb-1">End date</label>
+              <input type="date" name="end_date" id="rbEnd" class="form-control">
+            </div>
+          </div>
+          <?php endif; ?>
         </div>
       </div>
       <label class="form-label small text-muted mb-1">Note <span class="fw-normal">(optional)</span></label>
@@ -405,6 +435,8 @@ require __DIR__ . '/includes/rpay_layout_header.php';
       $moveRooms = array_column(rpay_rooms($conn), 'name', 'id');
       $hereRoom = $roomId;
       $movePostUrl = $selfUrl;
+      // The room's tenants: a payment's Duration is taken from its tenant's start and end date.
+      $rowTenants = array_values(array_filter($beds, function ($b) { return $b['status'] === 'occupied' && $b['occupant_type'] === 'outsider'; }));
       $rpayUi = 'rows';
       $rowsStyle = 'table';
       require __DIR__ . '/includes/rpay_ui.php';
@@ -486,6 +518,10 @@ body.dark-mode .rp-stat{ background:#1e293b; border-color:#334155; }
     document.getElementById('rbName').value = d.occupant;
     document.getElementById('rbRent').value = d.rent;
     document.getElementById('rbDue').value = d.due;
+    if (document.getElementById('rbStart')) {
+      document.getElementById('rbStart').value = d.start;
+      document.getElementById('rbEnd').value = d.end;
+    }
     document.getElementById('rbNote').value = d.note;
     show();
     panel.show();
@@ -499,7 +535,7 @@ body.dark-mode .rp-stat{ background:#1e293b; border-color:#334155; }
 
   // Save: the page takes beds as bed[id][field]; name this bed's fields just before sending.
   form.addEventListener('submit', function () {
-    ['status', 'type', 'employee', 'company', 'occupant', 'rent', 'due_date', 'note'].forEach(function (f) {
+    ['status', 'type', 'employee', 'company', 'occupant', 'rent', 'due_date', 'start_date', 'end_date', 'note'].forEach(function (f) {
       form.querySelectorAll('[name="' + f + '"]').forEach(function (el) { el.name = 'bed[' + current + '][' + f + ']'; });
     });
   });

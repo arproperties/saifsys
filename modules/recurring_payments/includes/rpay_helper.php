@@ -741,6 +741,89 @@ function rpay_room_beds(PDO $conn, int $roomId): array
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
+/** A tenant's start and end date can be kept (migrations/rpay_bed_dates.sql has been run). */
+function rpay_bed_dates_ready(PDO $conn): bool
+{
+    static $ready = null;
+    if ($ready === null) {
+        try {
+            $ready = (bool)$conn->query("SHOW COLUMNS FROM rpay_room_beds LIKE 'start_date'")->fetch();
+        } catch (PDOException $e) {
+            $ready = false;
+        }
+    }
+    return $ready;
+}
+
+/**
+ * A tenant's start and end date as posted, checked: [start or null, end or null] as Y-m-d.
+ * Either may be left empty. Throws BinvError when the end is before the start.
+ */
+function rpay_bed_dates_in($start, $end): array
+{
+    $s = DateTime::createFromFormat('!Y-m-d', (string)$start);
+    $e = DateTime::createFromFormat('!Y-m-d', (string)$end);
+    $s = $s && $s->format('Y-m-d') === (string)$start ? $s : null;
+    $e = $e && $e->format('Y-m-d') === (string)$end ? $e : null;
+    if ($s && $e && $e < $s) {
+        throw new BinvError('The end date cannot be before the start date.', 400);
+    }
+    return [$s ? $s->format('Y-m-d') : null, $e ? $e->format('Y-m-d') : null];
+}
+
+/**
+ * The part of a tenant's stay that a payment due on $due is for: ['from' => Y-m-d, 'to' => Y-m-d],
+ * or null when the payment is outside the stay or a date is missing. The stay is cut into
+ * months from its start day (27 Nov - 26 Dec, 27 Dec - 26 Jan, ...) and the payment gets the
+ * month its due date is in. The last month ends on the stay's end date; an end date on the
+ * same day a month later closes that month too (27 Nov to 27 Dec is one month, not a month and a day).
+ */
+function rpay_stay_period(?string $due, ?string $start, ?string $end): ?array
+{
+    $d = DateTime::createFromFormat('!Y-m-d', (string)$due);
+    $s = DateTime::createFromFormat('!Y-m-d', (string)$start);
+    $e = DateTime::createFromFormat('!Y-m-d', (string)$end);
+    if (!$d || !$s || !$e || $e < $s || $d < $s || $d > $e) {
+        return null;
+    }
+    $day = (int)$s->format('j');
+    $month = DateTime::createFromFormat('!Y-m-d', $s->format('Y-m-01'));
+    $from = clone $s;
+    for ($i = 0; $i < 1200; $i++) {
+        $month->modify('+1 month');
+        $next = DateTime::createFromFormat('!Y-m-d', rpay_start_date($month->format('Y-m'), $day));
+        $last = $e <= $next; // the stay ends in this month (or on the first day of the next)
+        $to = $last ? clone $e : (clone $next)->modify('-1 day');
+        if ($d <= $to) {
+            return ['from' => $from->format('Y-m-d'), 'to' => $to->format('Y-m-d')];
+        }
+        if ($last) {
+            break;
+        }
+        $from = $next;
+    }
+    return null;
+}
+
+/**
+ * The tenant a payment is for, among a room's tenants (rows of rpay_room_beds): the only one
+ * there is, else the one whose bed number is in the payment's title ("Bedspace # 04"). null: not known.
+ */
+function rpay_payment_tenant(array $tenants, string $title): ?array
+{
+    if (count($tenants) === 1) {
+        return reset($tenants);
+    }
+    if ($tenants && preg_match('/(?:bed\s*space|partition)\s*#?\s*0*(\d{1,3})/i', $title, $m)) {
+        foreach ($tenants as $t) {
+            if (ctype_digit(ltrim((string)$t['bed_no'], '0') ?: '0') && (int)$t['bed_no'] === (int)$m[1]) {
+                return $t;
+            }
+        }
+    }
+    return null;
+}
+
 /** Add $count beds to a room, numbered after the last one ("1", "2", ...), all $status. */
 function rpay_add_beds(PDO $conn, int $roomId, int $count, string $status, int $userId): void
 {
