@@ -133,6 +133,9 @@ if (is_file($asWidget)) { require $asWidget; }
       <a href="<?= h($rpayBase) ?>/transfers.php" class="slink <?= $currentPage === 'transfers.php' ? 'active' : '' ?>">
         <span class="sicon"><i class="bi bi-arrow-left-right"></i></span><span class="slabel">Transfers</span>
       </a>
+      <a href="<?= h($rpayBase) ?>/activity.php" class="slink <?= $currentPage === 'activity.php' ? 'active' : '' ?>">
+        <span class="sicon"><i class="bi bi-clock-history"></i></span><span class="slabel">Activity</span>
+      </a>
 
     <?php
     // Loan Tracker lives inside Recurring Payments; its pages are for Owner, Admin and HR only.

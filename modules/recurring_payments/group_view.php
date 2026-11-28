@@ -44,6 +44,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'move_
     exit;
 }
 
+// The period of a room card's last payment, typed or removed (saifsys's own table).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', ['save_period', 'reset_period'], true) && !empty($group['has_rooms'])) {
+    csrf_verify();
+    rpay_handle_period_post($conn, $code);
+    header('Location: ' . $rpayBase . '/group_view.php?' . http_build_query(['grp' => $gid] + $filters));
+    exit;
+}
+
 // A new room (groups with rooms): saifsys's own table; Reem is only asked for the building list.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_room' && !empty($group['has_rooms'])) {
     csrf_verify();
@@ -248,6 +256,15 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         $roomPays = [];
     }
     $openRoom = (int)($_GET['room'] ?? 0);
+    // Each room's last payment (the newest with money in it), and the period it is for.
+    $lastPaidOf = [];
+    foreach ($rooms as $r) {
+        foreach ($roomPays[$r['id']] ?? [] as $x) {
+            if ((float)($x['received'] ?? 0) > 0) { $lastPaidOf[$r['id']] = $x; break; }
+        }
+    }
+    $cardSaved = rpay_saved_periods($conn, array_map(function ($x) { return (int)$x['id']; }, $lastPaidOf));
+    $entryById = array_column($entryData['entries'] ?? [], null, 'id');
   ?>
   <div class="rp-room-grid mb-3">
     <?php foreach ($rooms as $r): $pct = $r['beds'] ? round($r['occupied'] / $r['beds'] * 100) : 0;
@@ -267,10 +284,8 @@ require __DIR__ . '/includes/rpay_layout_header.php';
         </div>
         <?php if (empty($filters['building'])): ?><div class="tiny text-muted"><?= h($bNames[$r['building_id']] ?? '') ?></div><?php endif; ?>
         <?php
-          $lastPaid = null;
-          foreach ($pl as $x) {
-              if ((float)($x['received'] ?? 0) > 0) { $lastPaid = $x; break; }
-          }
+          $lastPaid = $lastPaidOf[$r['id']] ?? null;
+          $lastPer = $lastPaid ? rpay_line_period($lastPaid, $entryById[(int)($lastPaid['entry_id'] ?? 0)] ?? null, $cardSaved) : null;
         ?>
         <?php if ($r['beds']): ?>
           <div class="progress mt-2 mb-1" style="height:6px"><div class="progress-bar bg-success" style="width:<?= $pct ?>%"></div></div>
@@ -284,6 +299,11 @@ require __DIR__ . '/includes/rpay_layout_header.php';
           <dt>Received</dt><dd class="text-success"><span class="rp-sublink" data-href="<?= h($roomUrl . '&tab=history&st=paid') ?>" title="Show the paid payments"><?= h(rpay_money($rGot)) ?></span></dd>
           <dt>To be paid</dt><dd class="<?= $rLeft > 0 ? 'text-warning-emphasis' : '' ?>"><span class="rp-sublink" data-href="<?= h($roomUrl . '&tab=history&st=pending') ?>" title="Show the payments still to come"><?= h(rpay_money($rLeft)) ?></span></dd>
           <dt>Last payment</dt><dd><?= $lastPaid ? h(rpay_money($lastPaid['received'])) . '<div class="tiny text-muted fw-normal">' . h(rpay_date($lastPaid['paid_on'] ?? '')) . '</div>' : '—' ?></dd>
+          <?php if ($lastPaid): $pencil = function (string $focus) use ($lastPaid, $lastPer, $r) { ?><span class="rp-period-edit ms-1" role="button" title="Change the start and end date" data-focus="<?= $focus ?>" data-due="<?= (int)$lastPaid['id'] ?>" data-room="<?= h($r['name']) ?>" data-from="<?= h($lastPer['from']) ?>" data-to="<?= h($lastPer['to']) ?>" data-typed="<?= $lastPer['edited'] ? '1' : '0' ?>"><i class="bi bi-pencil"></i></span><?php }; ?>
+            <dt>Start date</dt><dd><?= $lastPer['from'] !== '' ? h(rpay_date($lastPer['from'])) : '—' ?> <?php $pencil('from'); ?></dd>
+            <dt>End date</dt><dd><?= $lastPer['to'] !== '' ? h(rpay_date($lastPer['to'])) : '—' ?>
+ <?php $pencil('to'); ?></dd>
+          <?php endif; ?>
         </dl>
         <span class="btn btn-sm btn-light border w-100 mt-2"><i class="bi bi-card-list"></i> Details</span>
       </a>
@@ -474,6 +494,7 @@ body.dark-mode .rp-alert-soon{ background:#4a3b0b; color:#ffe2a0; border-color:#
 .rp-room-grid{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
 .rp-sublink{ cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px; }
 .rp-sublink:hover{ text-decoration:underline; }
+.rp-period-edit{ cursor:pointer; color:#64748b; } .rp-period-edit:hover{ color:var(--primary); }
 .rp-tot-link{ display:block; color:inherit; border-radius:10px; padding:4px 8px; margin:-4px -8px; }
 .rp-tot-link:hover{ background:rgba(0,0,0,.04); }
 .rp-tot-on{ box-shadow:0 0 0 2px var(--primary) inset; }
@@ -549,8 +570,45 @@ body.dark-mode .rh-c6{ background:#33301a; border-color:#524d2a; } body.dark-mod
 body.dark-mode .rh-c8{ background:#163430; border-color:#24544d; } body.dark-mode .rh-c9{ background:#3a2419; border-color:#5d3a29; }
 </style>
 
+<?php if (!empty($group['has_rooms'])): ?>
+<!-- The start and end date of a room card's last payment -->
+<div class="modal fade" id="rpPeriodModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-sm modal-dialog-centered">
+    <form method="post" class="modal-content">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="due" id="rpPeriodDue">
+      <div class="modal-header py-2"><h6 class="modal-title">Last payment · <span id="rpPeriodRoom"></span></h6><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+      <div class="modal-body">
+        <label class="form-label small text-muted mb-1" for="rpPeriodFrom">Start date</label>
+        <input type="date" name="period_from" id="rpPeriodFrom" class="form-control form-control-sm mb-2" required>
+        <label class="form-label small text-muted mb-1" for="rpPeriodTo">End date</label>
+        <input type="date" name="period_to" id="rpPeriodTo" class="form-control form-control-sm" required>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-sm btn-link text-danger text-decoration-none me-auto" name="action" value="reset_period" id="rpPeriodReset" formnovalidate title="Go back to the dates worked out from the due date">Reset</button>
+        <button type="button" class="btn btn-sm btn-light border" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-success" name="action" value="save_period">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+<?php endif; ?>
 <?php require __DIR__ . '/../building_inventory/includes/binv_layout_footer.php'; ?>
 <script>
+// The pencil on a room card: change the start and end date of its last payment (the card itself opens the room).
+document.querySelectorAll('.rp-period-edit').forEach(function (p) {
+  p.addEventListener('click', function (ev) {
+    ev.preventDefault(); ev.stopPropagation();
+    document.getElementById('rpPeriodDue').value = p.dataset.due;
+    document.getElementById('rpPeriodRoom').textContent = p.dataset.room;
+    document.getElementById('rpPeriodFrom').value = p.dataset.from;
+    document.getElementById('rpPeriodTo').value = p.dataset.to;
+    document.getElementById('rpPeriodReset').style.display = p.dataset.typed === '1' ? '' : 'none';
+    var box = document.getElementById('rpPeriodModal');
+    box.addEventListener('shown.bs.modal', function () { document.getElementById(p.dataset.focus === 'to' ? 'rpPeriodTo' : 'rpPeriodFrom').focus(); }, { once: true });
+    bootstrap.Modal.getOrCreateInstance(box).show();
+  });
+});
 // A room card's Received / To be paid open that room's payments, paid or pending (the card itself opens the room).
 document.querySelectorAll('.rp-sublink').forEach(function (s) {
   s.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); window.location.href = s.dataset.href; });
