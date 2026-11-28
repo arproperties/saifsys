@@ -1,9 +1,10 @@
 <?php
 /**
- * Post-dated cheques — the list: four numbers, filters, the table, change status, CSV.
+ * Company's post-dated cheques — the list: four numbers, filters, the table, change status, CSV.
  *   pdc.php?dir=issued&status=pending&month=2026-12&q=…
  *   pdc.php?csv=1 (same filters)   pdc.php?file=7 (the cheque's copy)
- * Owner, Admin and HR.
+ * Owner, Admin and HR. The cheques are kept in Reem; this page shows them and passes every
+ * change on (see includes/lt_pdc.php).
  */
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start();
@@ -13,27 +14,26 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/lt_pdc.php';
 
-$companyId = lt_boot($conn);
+$who = lt_pdc_boot($conn);
 $ltBase = get_application_web_root() . '/modules/loan_tracker';
 $dirs = lt_pdc_directions();
 $statuses = lt_pdc_statuses();
-$today = date('Y-m-d');
+$today = lt_pdc_today();
 
-// The cheque's copy
+// The cheque's copy: kept in Reem, passed on from here as the person logged in
 if (isset($_GET['file'])) {
-    $p = lt_pdc_get($conn, (int)$_GET['file'], $companyId);
-    $abs = $p && $p['file_path'] ? lt_doc_abs_path(['source' => 'upload', 'file_path' => $p['file_path']]) : '';
-    $type = $abs !== '' && is_file($abs) ? (new finfo(FILEINFO_MIME_TYPE))->file($abs) : '';
-    if (!isset(LT_FILE_TYPES[$type])) {
+    $copy = lt_pdc_file($who, (int)$_GET['file']);
+    if (!$copy) {
         http_response_code(404);
         exit('Not found');
     }
+    [$bytes, $type] = $copy;
     header('Content-Type: ' . $type);
-    header('Content-Length: ' . filesize($abs));
-    header('Content-Disposition: inline; filename="cheque-' . (int)$p['id'] . '.' . LT_FILE_TYPES[$type] . '"');
+    header('Content-Length: ' . strlen($bytes));
+    header('Content-Disposition: inline; filename="cheque-' . (int)$_GET['file'] . '.' . LT_FILE_TYPES[$type] . '"');
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: private, max-age=600');
-    readfile($abs);
+    echo $bytes;
     exit;
 }
 
@@ -53,28 +53,41 @@ $qs = static function (array $over = []) use ($f): string {
 $self = $ltBase . '/pdc.php' . $qs();
 
 // Email alerts: the list of addresses, and "Check now"
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['do'] ?? '', ['alert_add', 'alert_remove', 'alert_set', 'alert_run'], true)) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['do'] ?? '', ['alert_add', 'alert_remove', 'alert_set', 'alert_run', 'alert_settings'], true)) {
     csrf_verify();
     $do = $_POST['do'];
-    if ($do === 'alert_add') {
-        $added = 0; $bad = [];
-        foreach (preg_split('/[\s,;]+/', (string)($_POST['emails'] ?? ''), -1, PREG_SPLIT_NO_EMPTY) as $e) {
-            if (!filter_var($e, FILTER_VALIDATE_EMAIL) || strlen($e) > 150) { $bad[] = $e; continue; }
-            $ins = $conn->prepare("INSERT IGNORE INTO lt_pdc_alert_recipients (company_id, email, on_due, on_bounce, created_by) VALUES (?,?,?,?,?)");
-            $ins->execute([$companyId, strtolower($e), !empty($_POST['on_due']) ? 1 : 0, !empty($_POST['on_bounce']) ? 1 : 0, current_user_id()]);
-            $added += $ins->rowCount();
+    $rid = (int)($_POST['rid'] ?? 0);
+    try {
+        if ($do === 'alert_settings') {
+            // When the emails go out. Reem checks what was typed and says what is wrong with it.
+            if (!empty($_POST['reset'])) {
+                lt_pdc_reem($who, 'PUT', '/alerts/settings', ['reset' => true]);
+                lt_flash('The alert timings are back to the usual ones.');
+            } else {
+                lt_pdc_reem($who, 'PUT', '/alerts/settings', [
+                    'enabled' => !empty($_POST['enabled']), 'hour' => (string)($_POST['hour'] ?? ''),
+                    'due_days' => (string)($_POST['due_days'] ?? ''), 'overdue_every_days' => (string)($_POST['overdue_every_days'] ?? ''),
+                    'deposited_days' => (string)($_POST['deposited_days'] ?? ''), 'bounce_now' => !empty($_POST['bounce_now'])]);
+                lt_flash('Alert timings saved.');
+            }
+        } elseif ($do === 'alert_add') {
+            $r = lt_pdc_reem($who, 'POST', '/alerts/recipients', ['emails' => (string)($_POST['emails'] ?? ''),
+                'on_due' => !empty($_POST['on_due']), 'on_bounce' => !empty($_POST['on_bounce'])]);
+            $added = (int)($r['added'] ?? 0);
+            $bad = (array)($r['bad'] ?? []);
+            lt_flash($bad ? 'Not an email address: ' . implode(', ', $bad) . ($added ? ' (the others were added).' : '') : ($added ? $added . ' address' . ($added === 1 ? '' : 'es') . ' added to the alerts.' : 'Those addresses are already on the list.'), $bad ? 'warning' : 'success');
+        } elseif ($do === 'alert_remove') {
+            lt_pdc_reem($who, 'DELETE', '/alerts/recipients/' . $rid);
+            lt_flash('Address removed from the alerts.');
+        } elseif ($do === 'alert_set') {
+            lt_pdc_reem($who, 'PUT', '/alerts/recipients/' . $rid, ['what' => ($_POST['what'] ?? '') === 'bounce' ? 'bounce' : 'due', 'on' => !empty($_POST['on'])]);
+        } else {
+            $res = (array)(lt_pdc_reem($who, 'POST', '/alerts/run', [], [], 90)['results'] ?? []);
+            $sent = count(array_filter($res, static fn($r) => ($r['result'] ?? '') === 'sent'));
+            lt_flash($res ? $sent . ' alert' . ($sent === 1 ? '' : 's') . ' emailed' . (count($res) > $sent ? ', ' . (count($res) - $sent) . ' not sent (no address, or email failed)' : '') . '.' : 'Nothing new to send: every reminder that is due has already been emailed.', $res && count($res) > $sent ? 'warning' : 'success');
         }
-        lt_flash($bad ? 'Not an email address: ' . implode(', ', $bad) . ($added ? ' (the others were added).' : '') : ($added ? $added . ' address' . ($added === 1 ? '' : 'es') . ' added to the alerts.' : 'Those addresses are already on the list.'), $bad ? 'warning' : 'success');
-    } elseif ($do === 'alert_remove') {
-        $conn->prepare("DELETE FROM lt_pdc_alert_recipients WHERE id = ? AND company_id = ?")->execute([(int)($_POST['rid'] ?? 0), $companyId]);
-        lt_flash('Address removed from the alerts.');
-    } elseif ($do === 'alert_set') {
-        $col = ($_POST['what'] ?? '') === 'bounce' ? 'on_bounce' : 'on_due';
-        $conn->prepare("UPDATE lt_pdc_alert_recipients SET $col = ? WHERE id = ? AND company_id = ?")->execute([!empty($_POST['on']) ? 1 : 0, (int)($_POST['rid'] ?? 0), $companyId]);
-    } else {
-        $res = lt_pdc_run_due_alerts($conn);
-        $sent = count(array_filter($res, static fn($r) => $r['result'] === 'sent'));
-        lt_flash($res ? $sent . ' alert' . ($sent === 1 ? '' : 's') . ' emailed' . (count($res) > $sent ? ', ' . (count($res) - $sent) . ' not sent (no address, or email failed)' : '') . '.' : 'Nothing new to send: every cheque due within 7 days has already been alerted.');
+    } catch (BinvError $e) {
+        lt_flash($e->getMessage(), 'danger');
     }
     header('Location: ' . $ltBase . '/pdc.php#alerts');
     exit;
@@ -85,103 +98,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['do'] ?? '') === 'status') 
     csrf_verify();
     $back = (string)($_POST['back'] ?? '');
     $back = str_starts_with($back, $ltBase . '/pdc') ? $back : $ltBase . '/pdc.php';
-    $p = lt_pdc_get($conn, (int)($_POST['id'] ?? 0), $companyId);
-    $choice = lt_pdc_parse_status((string)($_POST['to'] ?? ''), (string)($_POST['to_other'] ?? ''));
-    $on = (string)($_POST['on'] ?? '') ?: $today;
-    $note = trim((string)($_POST['note'] ?? ''));
-    if (!$p) {
-        lt_flash('That cheque was not found.', 'warning');
-    } elseif (!$choice) {
-        lt_flash(($_POST['to'] ?? '') === 'other' ? 'Please type the name of the new status.' : 'Please choose the new status.', 'danger');
-    } elseif (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $on) || $on > $today) {
-        lt_flash('Please enter the date of the change (not in the future).', 'danger');
-    } elseif ($choice[0] === $p['status'] && strcasecmp((string)$choice[1], (string)$p['status_other']) === 0) {
-        lt_flash('The cheque is already ' . lt_pdc_label($choice[0], $choice[1]) . '.', 'info');
-    } else {
-        $conn->beginTransaction();
-        $histId = lt_pdc_set_status($conn, $p, $choice[0], $choice[1], $on, $note);
-        $conn->commit();
-        $msg = 'Cheque ' . $p['cheque_no'] . ' is now ' . lt_pdc_label($choice[0], $choice[1]) . '.';
-        if ($choice[0] === 'bounced') {
-            try {
-                $r = lt_pdc_send_alert($conn, lt_pdc_get($conn, (int)$p['id'], $companyId), 'bounced', 'h' . $histId, $note);
-                $msg .= match ($r['result']) {
-                    'sent' => ' Alert emailed to ' . implode(', ', $r['to']) . '.',
-                    'no_recipients' => ' No alert sent: no email addresses are set up.',
-                    'failed' => ' The alert email could not be sent.',
-                    default => '',
-                };
-            } catch (Throwable $e) {
-                error_log('pdc bounce alert: ' . $e->getMessage());
-            }
+    try {
+        $r = lt_pdc_reem($who, 'POST', '/cheques/' . (int)($_POST['id'] ?? 0) . '/status', [
+            'to' => (string)($_POST['to'] ?? ''), 'to_other' => (string)($_POST['to_other'] ?? ''),
+            'on' => (string)($_POST['on'] ?? ''), 'note' => trim((string)($_POST['note'] ?? '')),
+        ]);
+        $msg = 'Cheque ' . ($r['cheque']['cheque_no'] ?? '') . ' is now ' . ($r['cheque']['status_label'] ?? '') . '.';
+        // A bounced cheque is emailed about at once; Reem says how that went.
+        $alert = $r['alert'] ?? null;
+        $owed = false; // the status is saved, but somebody has not been told yet
+        if (is_array($alert)) {
+            $reached = (array)($alert['got'] ?? []);
+            $owed = ($alert['result'] ?? '') === 'failed';
+            $msg .= match ($alert['result'] ?? '') {
+                'sent' => ' Alert emailed to ' . implode(', ', (array)($alert['to'] ?? [])) . '.',
+                'no_recipients' => ' No alert sent: no email addresses are set up.',
+                'failed' => $reached
+                    ? ' The alert email reached ' . implode(', ', $reached) . ' but not everybody. Reem will try the others again.'
+                    : ' The alert email could not be sent just now. Reem will try again within the hour.',
+                default => '',
+            };
         }
-        lt_flash($msg);
+        lt_flash($msg, $owed ? 'warning' : 'success');
+    } catch (BinvError $e) {
+        lt_flash($e->getMessage(), $e->status === 409 ? 'info' : ($e->status === 404 ? 'warning' : 'danger'));
     }
     header('Location: ' . $back);
     exit;
 }
 
-// The rows
-$where = ['p.company_id = ?'];
-$args = [$companyId];
-if ($f['dir'] !== '') { $where[] = 'p.direction = ?'; $args[] = $f['dir']; }
-if (str_starts_with($f['status'], 'custom:')) { $where[] = "p.status = 'other' AND p.status_other = ?"; $args[] = substr($f['status'], 7); }
-elseif ($f['status'] === 'open') { $where[] = "p.status IN ('pending','deposited')"; }
-elseif ($f['status'] !== 'all') { $where[] = 'p.status = ?'; $args[] = $f['status']; }
-if ($f['month'] !== '') { $where[] = "DATE_FORMAT(p.cheque_date, '%Y-%m') = ?"; $args[] = $f['month']; }
-if ($f['due'] === '7') { $where[] = 'p.cheque_date <= ?'; $args[] = date('Y-m-d', strtotime('+7 days')); }
-if ($f['q'] !== '') {
-    $where[] = '(p.party_name LIKE ? OR p.cheque_no LIKE ? OR p.bank LIKE ? OR p.purpose LIKE ? OR p.reference LIKE ? OR p.location LIKE ? OR p.issued_by LIKE ?)';
-    array_push($args, ...array_fill(0, 7, '%' . $f['q'] . '%'));
+// The rows, the four numbers (all pending cheques, whatever the filter) and the Email alerts box
+try {
+    $data = lt_pdc_reem($who, 'GET', '', null, array_filter(['dir' => $f['dir'], 'status' => $f['status'] === 'all' ? '' : $f['status'],
+        'month' => $f['month'], 'q' => $f['q'], 'due' => $f['due']], static fn($v) => $v !== ''));
+    $alerts = isset($_GET['csv']) ? [] : lt_pdc_reem($who, 'GET', '/alerts');
+} catch (BinvError $e) {
+    lt_pdc_stop($e);
 }
-$q = $conn->prepare("SELECT p.* FROM lt_pdc p WHERE " . implode(' AND ', $where) . " ORDER BY p.cheque_date, p.id");
-$q->execute($args);
-$rows = $q->fetchAll(PDO::FETCH_ASSOC);
+$rows = (array)($data['cheques'] ?? []);
+$sum = (array)($data['summary'] ?? []) + ['out_amt' => 0, 'out_n' => 0, 'in_amt' => 0, 'in_n' => 0, 'due_amt' => 0, 'due_n' => 0, 'bounced_amt' => 0, 'bounced_n' => 0];
+$months = (array)($data['months'] ?? []);
+$customs = (array)($data['customs'] ?? []);
+$total = (float)($data['total'] ?? 0);
+$alertRcpt = (array)($alerts['recipients'] ?? []);
+$alertLog = (array)($alerts['log'] ?? []);
+// When the emails go out: this company's own timings, or the usual ones
+$alertSet = (array)($alerts['settings'] ?? []) + (array)($alerts['defaults'] ?? [])
+    + ['enabled' => true, 'hour' => 8, 'due_days' => [7, 3, 1, 0], 'overdue_every_days' => 7, 'deposited_days' => [3, 7, 14], 'bounce_now' => true];
+$alertDue = array_map('intval', (array)$alertSet['due_days']);
+$alertDep = array_map('intval', (array)$alertSet['deposited_days']);
+$alertHour = static fn(int $h): string => date('g:00 A', mktime($h, 0, 0, 1, 1, 2000));
 
 if (isset($_GET['csv'])) {
     header('Content-Type: text/csv; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="post-dated-cheques-' . date('Y-m-d') . '.csv"');
+    header('Content-Disposition: attachment; filename="company-post-dated-cheques-' . date('Y-m-d') . '.csv"');
     header('Cache-Control: private, no-store');
     $out = fopen('php://output', 'w');
     fwrite($out, "\xEF\xBB\xBF");
     fputcsv($out, ['Cheque date', 'Cheque no', 'Issued / received', 'Party', 'Bank', 'Amount (AED)', 'Status', 'Status date', 'Reason', 'Location', 'Reference', 'Issued by', 'Approved by', 'Notes']);
     foreach ($rows as $r) {
-        fputcsv($out, [$r['cheque_date'], $r['cheque_no'], $dirs[$r['direction']]['long'], $r['party_name'], $r['bank'],
-            number_format((float)$r['amount'], 2, '.', ''), lt_pdc_label($r['status'], $r['status_other']), $r['status_date'],
+        fputcsv($out, [$r['cheque_date'], $r['cheque_no'], $dirs[$r['direction']]['long'] ?? $r['direction'], $r['party_name'], $r['bank'],
+            number_format((float)$r['amount'], 2, '.', ''), lt_pdc_label((string)$r['status'], $r['status_other'] ?? null), $r['status_date'],
             $r['purpose'], $r['location'], $r['reference'], $r['issued_by'], $r['approved_by'], $r['notes']]);
     }
     fclose($out);
     exit;
 }
 
-// The four numbers (all pending cheques, whatever the filter)
-$s = $conn->prepare("SELECT
-        COALESCE(SUM(CASE WHEN status = 'pending' AND direction = 'issued' THEN amount END), 0) AS out_amt,
-        COUNT(CASE WHEN status = 'pending' AND direction = 'issued' THEN 1 END) AS out_n,
-        COALESCE(SUM(CASE WHEN status IN ('pending','deposited') AND direction = 'received' THEN amount END), 0) AS in_amt,
-        COUNT(CASE WHEN status IN ('pending','deposited') AND direction = 'received' THEN 1 END) AS in_n,
-        COALESCE(SUM(CASE WHEN status = 'pending' AND cheque_date <= ? THEN amount END), 0) AS due_amt,
-        COUNT(CASE WHEN status = 'pending' AND cheque_date <= ? THEN 1 END) AS due_n,
-        COUNT(CASE WHEN status = 'bounced' THEN 1 END) AS bounced_n,
-        COALESCE(SUM(CASE WHEN status = 'bounced' THEN amount END), 0) AS bounced_amt
-      FROM lt_pdc WHERE company_id = ?");
-$week = date('Y-m-d', strtotime('+7 days'));
-$s->execute([$week, $week, $companyId]);
-$sum = $s->fetch(PDO::FETCH_ASSOC);
-$months = $conn->prepare("SELECT DISTINCT DATE_FORMAT(cheque_date, '%Y-%m') FROM lt_pdc WHERE company_id = ? ORDER BY 1 DESC");
-$months->execute([$companyId]);
-$months = $months->fetchAll(PDO::FETCH_COLUMN);
-$customs = lt_pdc_custom_statuses($conn, $companyId);
-$alertRcpt = $conn->prepare("SELECT * FROM lt_pdc_alert_recipients WHERE company_id = ? ORDER BY email");
-$alertRcpt->execute([$companyId]);
-$alertRcpt = $alertRcpt->fetchAll(PDO::FETCH_ASSOC);
-$alertLog = $conn->prepare("SELECT a.*, p.cheque_no, p.party_name FROM lt_pdc_alert_log a JOIN lt_pdc p ON p.id = a.pdc_id WHERE p.company_id = ? ORDER BY a.id DESC LIMIT 8");
-$alertLog->execute([$companyId]);
-$alertLog = $alertLog->fetchAll(PDO::FETCH_ASSOC);
-lt_pdc_daily_alerts_after_response($conn);
-$total = array_sum(array_map(static fn($r) => (float)$r['amount'], $rows));
-
-$pageTitle = 'Post Dated Cheques';
+$pageTitle = LT_PDC_NAME;
 $pageStyles = '
   .lt-big{ border-radius:14px; padding:1rem 1.2rem; height:100%; display:block; text-decoration:none; transition:transform .15s, box-shadow .15s; }
   a.lt-big:hover{ transform:translateY(-2px); box-shadow:0 6px 16px rgba(0,0,0,.08); }
@@ -201,8 +185,8 @@ require __DIR__ . '/includes/lt_layout_header.php';
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
-    <h1 class="lt-title">Post Dated Cheques</h1>
-    <p class="lt-sub">Cheques we give and cheques we receive, with their status.</p>
+    <h1 class="lt-title"><?= h(LT_PDC_NAME) ?></h1>
+    <p class="lt-sub">The company's own cheques: the ones we give and the ones we receive, with their status.<?= $who['company_name'] !== '' ? ' ' . h($who['company_name']) . '.' : '' ?></p>
   </div>
   <div class="d-flex gap-2">
     <button type="button" class="btn btn-lt-ghost" data-bs-toggle="modal" data-bs-target="#alerts"><i class="bi bi-envelope me-1"></i> Email alerts<?= $alertRcpt ? ' (' . count($alertRcpt) . ')' : '' ?></button>
@@ -220,7 +204,9 @@ require __DIR__ . '/includes/lt_layout_header.php';
       ['f' => ['status' => 'bounced', 'dir' => '', 'month' => '', 'due' => ''], 'bg' => '#fee2e2', 'fg' => '#991b1b', 'label' => 'Bounced', 'amt' => $sum['bounced_amt'], 'n' => $sum['bounced_n'], 'extra' => ''],
   ];
   foreach ($cardDefs as $c):
-      $on = $f['status'] === $c['f']['status'] && $f['dir'] === $c['f']['dir'] && $f['due'] === $c['f']['due'] && $f['month'] === '';
+      // The 7-day card stays lit for as long as that cut is on, also with a type or a search added, so it is never on unseen.
+      $on = $c['f']['due'] !== '' ? $f['due'] === $c['f']['due']
+          : ($f['status'] === $c['f']['status'] && $f['dir'] === $c['f']['dir'] && $f['due'] === '' && $f['month'] === '');
       $href = $on ? $qs(['status' => 'all', 'dir' => '', 'due' => '']) : $qs($c['f']); ?>
     <div class="col-6 col-lg-3"><a class="lt-big <?= $on ? 'on' : '' ?>" href="<?= h($href !== '' ? $href : '?') ?>" style="background:<?= $c['bg'] ?>;color:<?= $c['fg'] ?>" title="<?= $on ? 'Showing these · click to show all' : 'Click to show these cheques' ?>">
       <small><?= h($c['label']) ?></small><b>AED <?= lt_money($c['amt']) ?></b>
@@ -233,6 +219,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
 <div class="card card-round">
   <div class="card-body p-3 border-bottom">
     <form class="row g-2 align-items-end" method="get">
+      <?php if ($f['due'] !== ''): // "due in the next 7 days" stays on while the type or the search is changed; picking a status or a month ends it ?><input type="hidden" name="due" value="<?= h($f['due']) ?>"><?php endif; ?>
       <div class="col-6 col-md-2">
         <label class="form-label small fw-semibold mb-1">Type</label>
         <select class="form-select form-select-sm" name="dir" onchange="this.form.submit()">
@@ -242,7 +229,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
       </div>
       <div class="col-6 col-md-2">
         <label class="form-label small fw-semibold mb-1">Status</label>
-        <select class="form-select form-select-sm" name="status" onchange="this.form.submit()">
+        <select class="form-select form-select-sm" name="status" onchange="if (this.form.due) { this.form.due.value = ''; } this.form.submit()">
           <option value="all" <?= $f['status'] === 'all' ? 'selected' : '' ?>>All</option>
           <option value="open" <?= $f['status'] === 'open' ? 'selected' : '' ?>>Pending or deposited</option>
           <?php foreach ($statuses as $k => $st): ?><option value="<?= h($k) ?>" <?= $f['status'] === $k ? 'selected' : '' ?>><?= h($k === 'other' ? 'Other (all)' : $st['label']) ?></option><?php endforeach; ?>
@@ -251,7 +238,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
       </div>
       <div class="col-6 col-md-2">
         <label class="form-label small fw-semibold mb-1">Cheque month</label>
-        <select class="form-select form-select-sm" name="month" onchange="this.form.submit()">
+        <select class="form-select form-select-sm" name="month" onchange="if (this.form.due) { this.form.due.value = ''; } this.form.submit()">
           <option value="">All months</option>
           <?php foreach ($months as $m): ?><option value="<?= h($m) ?>" <?= $f['month'] === $m ? 'selected' : '' ?>><?= h(date('M Y', strtotime($m . '-01'))) ?></option><?php endforeach; ?>
         </select>
@@ -276,16 +263,16 @@ require __DIR__ . '/includes/lt_layout_header.php';
       <?php if (!$rows): ?>
         <tr><td colspan="8" class="text-center text-muted py-5">No cheques here. <a href="<?= h($ltBase) ?>/pdc_form.php">Add a cheque</a></td></tr>
       <?php endif; ?>
-      <?php foreach ($rows as $r): $w = $r['status'] === 'pending' ? lt_pdc_when($r['cheque_date']) : ['text' => '', 'class' => '']; ?>
+      <?php foreach ($rows as $r): $w = $r['status'] === 'pending' ? lt_pdc_when((string)$r['cheque_date']) : ['text' => '', 'class' => '']; ?>
         <tr>
           <td><?= h(lt_date($r['cheque_date'])) ?><?php if ($w['text'] !== ''): ?><div class="lt-when <?= h($w['class']) ?>"><?= h($w['text']) ?></div><?php endif; ?></td>
           <td class="fw-semibold"><?= h($r['cheque_no']) ?>
-            <?php if ($r['file_path']): ?><a href="<?= h($ltBase) ?>/pdc.php?file=<?= (int)$r['id'] ?>" target="_blank" rel="noopener" title="Cheque copy"><i class="bi bi-paperclip"></i></a><?php endif; ?></td>
-          <td><span class="small"><i class="bi <?= h($dirs[$r['direction']]['icon']) ?> me-1"></i><?= h($dirs[$r['direction']]['label']) ?></span></td>
-          <td><?= h($r['party_name']) ?><?php if ($r['purpose'] || $r['location']): ?><div class="small text-muted"><?= h(implode(' · ', array_filter([$r['purpose'], $r['location'] ? '📍 ' . $r['location'] : '']))) ?></div><?php endif; ?><?php if ($r['issued_by'] || $r['approved_by']): ?><div class="small text-muted"><i class="bi bi-person-check me-1"></i><?= h(implode(' · ', array_filter([$r['issued_by'] ? 'Issued by ' . $r['issued_by'] : '', $r['approved_by'] ? 'Approved by ' . $r['approved_by'] : '']))) ?></div><?php endif; ?></td>
-          <td class="small"><?= h($r['bank'] ?: '—') ?></td>
+            <?php if (!empty($r['attachment'])): ?><a href="<?= h($ltBase) ?>/pdc.php?file=<?= (int)$r['id'] ?>" target="_blank" rel="noopener" title="Cheque copy"><i class="bi bi-paperclip"></i></a><?php endif; ?></td>
+          <td><span class="small"><i class="bi <?= h($dirs[$r['direction']]['icon'] ?? '') ?> me-1"></i><?= h($dirs[$r['direction']]['label'] ?? $r['direction']) ?></span></td>
+          <td><?= h($r['party_name']) ?><?php if (!empty($r['purpose']) || !empty($r['location'])): ?><div class="small text-muted"><?= h(implode(' · ', array_filter([$r['purpose'] ?? '', !empty($r['location']) ? '📍 ' . $r['location'] : '']))) ?></div><?php endif; ?><?php if (!empty($r['issued_by']) || !empty($r['approved_by'])): ?><div class="small text-muted"><i class="bi bi-person-check me-1"></i><?= h(implode(' · ', array_filter([!empty($r['issued_by']) ? 'Issued by ' . $r['issued_by'] : '', !empty($r['approved_by']) ? 'Approved by ' . $r['approved_by'] : '']))) ?></div><?php endif; ?></td>
+          <td class="small"><?= h(($r['bank'] ?? '') ?: '—') ?></td>
           <td class="num fw-semibold"><?= lt_money($r['amount']) ?></td>
-          <td><?= lt_pdc_badge($r['status'], $r['status_other']) ?><?php if ($r['status_date'] && $r['status'] !== 'pending'): ?><div class="small text-muted"><?= h(lt_date($r['status_date'])) ?></div><?php endif; ?></td>
+          <td><?= lt_pdc_badge((string)$r['status'], $r['status_other'] ?? null) ?><?php if (!empty($r['status_date']) && $r['status'] !== 'pending'): ?><div class="small text-muted"><?= h(lt_date($r['status_date'])) ?></div><?php endif; ?></td>
           <td class="text-end text-nowrap">
             <button type="button" class="btn btn-sm btn-lt-ghost" data-bs-toggle="modal" data-bs-target="#stModal"
                     data-id="<?= (int)$r['id'] ?>" data-no="<?= h($r['cheque_no']) ?>" data-status="<?= h($r['status']) ?>"><i class="bi bi-arrow-repeat me-1"></i>Status</button>
@@ -303,13 +290,50 @@ require __DIR__ . '/includes/lt_layout_header.php';
 
 <div class="modal fade" id="alerts" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"><div class="modal-content">
-  <div class="modal-header"><h5 class="modal-title"><i class="bi bi-envelope me-1"></i>Email alerts · overdue / bounced</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+  <div class="modal-header"><h5 class="modal-title"><i class="bi bi-envelope me-1"></i>Email alerts</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
   <div class="modal-body p-4">
   <div class="text-muted small mb-3">
-    An email goes to <b>the person who added the cheque</b> and to the addresses below:
-    when a pending cheque is <b>due within 7 days</b> (once), again if it becomes <b>overdue</b> (once), and when a cheque is set to <b>Bounced</b>.
-    The check runs by itself once a day.
+    Emails go to <b>the person who added the cheque</b> and to the addresses below.
+    <?php if (empty($alertSet['enabled'])): ?><b class="text-danger">The daily email is switched off.</b><?php else: ?>The daily email goes out by itself at <b><?= h($alertHour((int)$alertSet['hour'])) ?></b> (Dubai time).<?php endif; ?>
   </div>
+
+  <form method="post" class="border rounded p-3 mb-3">
+    <?php csrf_field(); ?><input type="hidden" name="do" value="alert_settings">
+    <div class="fw-semibold small mb-2"><i class="bi bi-clock me-1"></i>When emails are sent</div>
+    <div class="row g-3 small">
+      <div class="col-md-6">
+        <div class="form-check form-switch"><input class="form-check-input" type="checkbox" name="enabled" value="1" id="asOn" <?= !empty($alertSet['enabled']) ? 'checked' : '' ?>><label class="form-check-label" for="asOn">Send the daily email</label></div>
+      </div>
+      <div class="col-md-6">
+        <div class="form-check form-switch"><input class="form-check-input" type="checkbox" name="bounce_now" value="1" id="asBounce" <?= !empty($alertSet['bounce_now']) ? 'checked' : '' ?>><label class="form-check-label" for="asBounce">Email at once when a cheque bounces</label></div>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label fw-semibold mb-1" for="asHour">Time of the daily email (Dubai)</label>
+        <select class="form-select form-select-sm" name="hour" id="asHour">
+          <?php for ($hr = 0; $hr < 24; $hr++): ?><option value="<?= $hr ?>" <?= (int)$alertSet['hour'] === $hr ? 'selected' : '' ?>><?= h($alertHour($hr)) ?></option><?php endfor; ?>
+        </select>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label fw-semibold mb-1" for="asDue">Days before the cheque date</label>
+        <input type="text" class="form-control form-control-sm" name="due_days" id="asDue" value="<?= h(implode(', ', $alertDue)) ?>" placeholder="7, 3, 1, 0">
+        <div class="form-text">One reminder on each. 0 = on the cheque date. Empty = none.</div>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label fw-semibold mb-1" for="asOver">Overdue: remind again every (days)</label>
+        <input type="number" min="0" max="90" class="form-control form-control-sm" name="overdue_every_days" id="asOver" value="<?= (int)$alertSet['overdue_every_days'] ?>">
+        <div class="form-text">0 = only once, when it becomes overdue.</div>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label fw-semibold mb-1" for="asDep">Deposited but not cleared: days after the deposit</label>
+        <input type="text" class="form-control form-control-sm" name="deposited_days" id="asDep" value="<?= h(implode(', ', $alertDep)) ?>" placeholder="3, 7, 14">
+        <div class="form-text">One reminder on each. Empty = none.</div>
+      </div>
+    </div>
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-lt btn-sm"><i class="bi bi-check-lg me-1"></i>Save timings</button>
+      <button class="btn btn-lt-ghost btn-sm" name="reset" value="1" onclick="return confirm('Put the timings back to the usual ones (7, 3, 1 and 0 days before; overdue every 7 days; 3, 7 and 14 days after a deposit; 8:00 AM)?');">Back to defaults</button>
+    </div>
+  </form>
   <form method="post" class="row g-2 align-items-end mb-3">
     <?php csrf_field(); ?><input type="hidden" name="do" value="alert_add">
     <div class="col-md-6">
@@ -317,7 +341,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
       <input type="text" class="form-control" id="alertEmails" name="emails" placeholder="name@company.com, other@company.com" required>
     </div>
     <div class="col-md-4 small">
-      <div class="form-check"><input class="form-check-input" type="checkbox" name="on_due" value="1" id="aDue" checked><label class="form-check-label" for="aDue">Due in 7 days / overdue</label></div>
+      <div class="form-check"><input class="form-check-input" type="checkbox" name="on_due" value="1" id="aDue" checked><label class="form-check-label" for="aDue">Due / overdue / not cleared</label></div>
       <div class="form-check"><input class="form-check-input" type="checkbox" name="on_bounce" value="1" id="aBounce" checked><label class="form-check-label" for="aBounce">Bounced</label></div>
     </div>
     <div class="col-md-2"><button class="btn btn-lt w-100"><i class="bi bi-plus-lg me-1"></i>Add</button></div>
@@ -334,8 +358,8 @@ require __DIR__ . '/includes/lt_layout_header.php';
             <?php foreach (['due' => 'on_due', 'bounce' => 'on_bounce'] as $what => $col): ?>
               <td class="text-center">
                 <form method="post" class="m-0"><?php csrf_field(); ?><input type="hidden" name="do" value="alert_set"><input type="hidden" name="rid" value="<?= (int)$a['id'] ?>"><input type="hidden" name="what" value="<?= $what ?>">
-                  <input type="hidden" name="on" value="<?= (int)$a[$col] ? 0 : 1 ?>">
-                  <button class="btn btn-sm <?= (int)$a[$col] ? 'btn-success' : 'btn-outline-secondary' ?> py-0" title="Click to switch"><?= (int)$a[$col] ? '<i class="bi bi-check-lg"></i> On' : 'Off' ?></button>
+                  <input type="hidden" name="on" value="<?= !empty($a[$col]) ? 0 : 1 ?>">
+                  <button class="btn btn-sm <?= !empty($a[$col]) ? 'btn-success' : 'btn-outline-secondary' ?> py-0" title="Click to switch"><?= !empty($a[$col]) ? '<i class="bi bi-check-lg"></i> On' : 'Off' ?></button>
                 </form>
               </td>
             <?php endforeach; ?>
@@ -353,7 +377,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
   <?php endif; ?>
 
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-    <form method="post" class="m-0" onsubmit="return confirm('Email the alerts now for cheques due within 7 days or overdue that have not been alerted yet?');">
+    <form method="post" class="m-0" onsubmit="return confirm('Email now every reminder that is due and has not been sent yet?');">
       <?php csrf_field(); ?><input type="hidden" name="do" value="alert_run">
       <button class="btn btn-lt-ghost btn-sm"><i class="bi bi-send me-1"></i>Check now and send</button>
     </form>
@@ -363,9 +387,9 @@ require __DIR__ . '/includes/lt_layout_header.php';
     <div class="small fw-semibold mt-3 mb-1">Last alerts</div>
     <?php foreach ($alertLog as $l): ?>
       <div class="d-flex flex-wrap gap-2 py-1 border-top small">
-        <span class="text-muted" style="min-width:120px"><?= h(date('d M Y H:i', strtotime($l['created_at']))) ?></span>
-        <span><?= ['due_soon' => 'Due soon', 'overdue' => 'Overdue', 'bounced' => 'Bounced'][$l['kind']] ?> · cheque <?= h($l['cheque_no']) ?> (<?= h($l['party_name']) ?>)</span>
-        <span class="flex-grow-1 text-muted"><?= $l['result'] === 'sent' ? 'to ' . h($l['sent_to']) : ($l['result'] === 'no_recipients' ? 'no address to send to' : 'not sent: ' . h($l['error'] ?? '')) ?></span>
+        <span class="text-muted" style="min-width:120px"><?= h(binv_when($l['at'] ?? 0)) ?></span>
+        <span><?= h(['due_soon' => 'Due soon', 'overdue' => 'Overdue', 'not_cleared' => 'Not cleared', 'bounced' => 'Bounced'][$l['kind']] ?? $l['kind']) ?> · cheque <?= h($l['cheque_no']) ?> (<?= h($l['party_name']) ?>)</span>
+        <span class="flex-grow-1 text-muted"><?= $l['result'] === 'sent' ? 'to ' . h($l['sent_to']) : ($l['result'] === 'no_recipients' ? 'no address to send to' : ($l['result'] === 'sending' ? 'being sent' : ($l['result'] === 'gave_up' ? 'could not be delivered after several tries' . (!empty($l['sent_to']) ? ' (it did reach ' . h($l['sent_to']) . ')' : '') . (($l['error'] ?? '') !== '' ? ': ' . h($l['error']) : '') : (!empty($l['sent_to']) ? 'sent to ' . h($l['sent_to']) . ', not yet to the others' : 'not sent yet') . (($l['error'] ?? '') !== '' ? ': ' . h($l['error']) : '')))) ?></span>
       </div>
     <?php endforeach; ?>
   <?php endif; ?>

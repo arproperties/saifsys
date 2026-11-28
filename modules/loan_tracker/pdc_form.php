@@ -1,7 +1,8 @@
 <?php
 /**
- * Post-dated cheques — add a cheque, or change one (?id=): details, copy of the cheque,
- * its status history, delete. Owner, Admin and HR.
+ * Company's post-dated cheques — add a cheque, or change one (?id=): details, copy of the
+ * cheque, its status history, delete. Owner, Admin and HR. The cheque is kept in Reem; this
+ * page shows it and passes every change on (see includes/lt_pdc.php).
  */
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start();
@@ -11,14 +12,28 @@ require_once __DIR__ . '/../../includes/db_connect.php';
 require_once __DIR__ . '/../../includes/url_helper.php';
 require_once __DIR__ . '/includes/lt_pdc.php';
 
-$companyId = lt_boot($conn);
+$who = lt_pdc_boot($conn);
 $ltBase = get_application_web_root() . '/modules/loan_tracker';
 $dirs = lt_pdc_directions();
 $statuses = lt_pdc_statuses();
 
 $id = (int)($_GET['id'] ?? 0);
-$pdc = $id ? lt_pdc_get($conn, $id, $companyId) : null;
-if ($id && !$pdc) {
+$pdc = null;
+$history = [];
+$customs = [];
+try {
+    if ($id) {
+        $one = lt_pdc_reem($who, 'GET', '/cheques/' . $id);
+        $pdc = (array)$one['cheque'];
+        $history = (array)($one['history'] ?? []);
+        $customs = (array)($one['customs'] ?? []);
+    } else {
+        $customs = (array)(lt_pdc_reem($who, 'GET', '/customs')['customs'] ?? []);
+    }
+} catch (BinvError $e) {
+    if ($e->status !== 404) {
+        lt_pdc_stop($e);
+    }
     lt_flash('That cheque was not found.', 'warning');
     header('Location: ' . $ltBase . '/pdc.php');
     exit;
@@ -29,7 +44,9 @@ $v = [];
 foreach ($fields as $k) {
     $v[$k] = $pdc ? (string)($pdc[$k] ?? '') : '';
 }
-if (!$pdc) {
+if ($pdc) {
+    $v['amount'] = number_format((float)$pdc['amount'], 2, '.', '');
+} else {
     $v['direction'] = isset($dirs[$_GET['dir'] ?? '']) ? $_GET['dir'] : 'issued';
     $v['status'] = 'pending';
     $v['approved_by'] = lt_user_name($conn, current_user_id()); // the person adding it; can be changed
@@ -39,85 +56,35 @@ $errors = [];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     if ($pdc && ($_POST['do'] ?? '') === 'delete') {
-        $conn->prepare("DELETE FROM lt_pdc WHERE id = ? AND company_id = ?")->execute([$id, $companyId]);
-        if ($pdc['file_path']) { @unlink(dirname(__DIR__, 2) . '/' . $pdc['file_path']); @rmdir(lt_upload_root() . '/pdc' . $id); }
-        lt_flash('Cheque ' . $pdc['cheque_no'] . ' (' . $pdc['party_name'] . ') is deleted.');
+        try {
+            lt_pdc_reem($who, 'DELETE', '/cheques/' . $id);
+            lt_flash('Cheque ' . $pdc['cheque_no'] . ' (' . $pdc['party_name'] . ') is deleted.');
+        } catch (BinvError $e) {
+            lt_flash($e->getMessage(), 'danger');
+        }
         header('Location: ' . $ltBase . '/pdc.php');
         exit;
     }
     foreach ($fields as $k) {
         $v[$k] = trim((string)($_POST[$k] ?? ''));
     }
-    if (!isset($dirs[$v['direction']])) { $errors[] = 'Please choose whether we issued or received the cheque.'; }
-    if ($v['party_name'] === '') { $errors[] = 'Please enter who the cheque is ' . ($v['direction'] === 'received' ? 'from' : 'to') . '.'; }
-    if ($v['cheque_no'] === '') { $errors[] = 'Please enter the cheque number.'; }
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $v['cheque_date']) || !checkdate((int)substr($v['cheque_date'], 5, 2), (int)substr($v['cheque_date'], 8, 2), (int)substr($v['cheque_date'], 0, 4))) {
-        $errors[] = 'Please enter the cheque date.';
-    }
-    $amount = is_numeric(str_replace(',', '', $v['amount'])) ? round((float)str_replace(',', '', $v['amount']), 2) : 0.0;
-    if ($amount <= 0) { $errors[] = 'Please enter the amount.'; }
-    $newStatus = ['pending', null];
-    if (!$pdc) {
-        $newStatus = lt_pdc_parse_status($v['status'], (string)($_POST['status_other'] ?? ''));
-        if (!$newStatus) {
-            $errors[] = $v['status'] === 'other' ? 'Please type the name of the status.' : 'Please choose the status.';
-            $newStatus = ['pending', null];
-        }
-    }
     $file = $_FILES['file'] ?? null;
-    if ($e = lt_upload_error($file, 'Cheque copy')) { $errors[] = $e; }
-    // Same cheque twice?
-    if (!$errors) {
-        $dq = $conn->prepare("SELECT id FROM lt_pdc WHERE company_id = ? AND cheque_no = ? AND COALESCE(bank,'') = ? AND direction = ? AND id <> ?");
-        $dq->execute([$companyId, $v['cheque_no'], $v['bank'], $v['direction'], $id]);
-        if ($dq->fetchColumn()) { $errors[] = 'Cheque ' . $v['cheque_no'] . ($v['bank'] !== '' ? ' of ' . $v['bank'] : '') . ' is already in the list.'; }
+    try {
+        // Reem checks the cheque and says everything that is wrong with it in one answer.
+        $send = $v + ['status_other' => (string)($_POST['status_other'] ?? ''), 'company_name' => $who['company_name']];
+        $saved = $pdc
+            ? lt_pdc_reem($who, 'PUT', '/cheques/' . $id, $send)
+            : lt_pdc_reem($who, 'POST', '/cheques', $send);
+        $said = $pdc ? 'Cheque ' . $saved['cheque_no'] . ' saved.' : 'Cheque ' . $saved['cheque_no'] . ' added.';
+        // The copy comes second, and its failure is said out loud: the cheque is saved either way.
+        $fileError = lt_pdc_send_file($who, (int)$saved['id'], $file);
+        lt_flash($fileError !== null ? $said . ' But its copy was not kept: ' . $fileError : $said, $fileError !== null ? 'warning' : 'success');
+        header('Location: ' . $ltBase . '/pdc.php' . ($pdc ? '?status=all' : ''));
+        exit;
+    } catch (BinvError $e) {
+        // Reem says everything that is wrong in one answer, a sentence each: one line per sentence here.
+        $errors = preg_split('/(?<=\.)\s+(?=Please )/', $e->getMessage()) ?: [$e->getMessage()];
     }
-
-    if (!$errors) {
-        $stored = null;
-        try {
-            $conn->beginTransaction();
-            $vals = [$v['direction'], mb_substr($v['party_name'], 0, 200), mb_substr($v['cheque_no'], 0, 50), mb_substr($v['bank'], 0, 120) ?: null,
-                $v['cheque_date'], $amount, mb_substr($v['purpose'], 0, 255) ?: null, mb_substr($v['reference'], 0, 100) ?: null, mb_substr($v['notes'], 0, 1000) ?: null,
-                mb_substr($v['approved_by'], 0, 150) ?: null, mb_substr($v['location'], 0, 150) ?: null, mb_substr($v['issued_by'], 0, 150) ?: null];
-            if ($pdc) {
-                $conn->prepare("UPDATE lt_pdc SET direction = ?, party_name = ?, cheque_no = ?, bank = ?, cheque_date = ?, amount = ?, purpose = ?, reference = ?, notes = ?,
-                                       approved_by = ?, location = ?, issued_by = ?, updated_by = ? WHERE id = ? AND company_id = ?")
-                    ->execute(array_merge($vals, [current_user_id(), $id, $companyId]));
-            } else {
-                $conn->prepare("INSERT INTO lt_pdc (direction, party_name, cheque_no, bank, cheque_date, amount, purpose, reference, notes, approved_by, location, issued_by, status, status_other, status_date, company_id, created_by)
-                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURDATE(),?,?)")
-                    ->execute(array_merge($vals, [$newStatus[0], $newStatus[1], $companyId, current_user_id()]));
-                $id = (int)$conn->lastInsertId();
-                $conn->prepare("INSERT INTO lt_pdc_history (pdc_id, from_status, to_status, to_other, changed_on, note, changed_by) VALUES (?, NULL, ?, ?, CURDATE(), 'Added', ?)")
-                    ->execute([$id, $newStatus[0], $newStatus[1], current_user_id()]);
-            }
-            if (lt_has_upload($file)) {
-                $stored = lt_store_upload($file, 'pdc' . $id);
-                $conn->prepare("UPDATE lt_pdc SET file_path = ?, original_name = ? WHERE id = ?")
-                    ->execute([$stored, mb_substr(basename((string)$file['name']), 0, 255), $id]);
-            }
-            $conn->commit();
-            if ($stored && $pdc && $pdc['file_path']) { @unlink(dirname(__DIR__, 2) . '/' . $pdc['file_path']); }
-            lt_flash($pdc ? 'Cheque ' . $v['cheque_no'] . ' saved.' : 'Cheque ' . $v['cheque_no'] . ' added.');
-            header('Location: ' . $ltBase . '/pdc.php' . ($pdc ? '?status=all' : ''));
-            exit;
-        } catch (Throwable $e) {
-            if ($conn->inTransaction()) { $conn->rollBack(); }
-            if ($stored) { @unlink(dirname(__DIR__, 2) . '/' . $stored); }
-            if (!$pdc) { $id = 0; }
-            error_log('loan_tracker pdc save: ' . $e->getMessage());
-            $errors[] = 'The cheque could not be saved. Please try again.';
-        }
-    }
-}
-
-$history = [];
-if ($pdc) {
-    $q = $conn->prepare("SELECT hst.*, COALESCE(NULLIF(u.fullname,''), u.username) AS by_name
-                           FROM lt_pdc_history hst LEFT JOIN `user` u ON u.id = hst.changed_by WHERE hst.pdc_id = ? ORDER BY hst.changed_on DESC, hst.id DESC");
-    $q->execute([$id]);
-    $history = $q->fetchAll(PDO::FETCH_ASSOC);
 }
 
 $pageTitle = $pdc ? 'Change cheque' : 'Add cheque';
@@ -126,8 +93,8 @@ require __DIR__ . '/includes/lt_layout_header.php';
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4" style="max-width:960px">
   <div>
-    <h1 class="lt-title"><?= $pdc ? 'Change cheque' : 'Add a Post Dated Cheque' ?></h1>
-    <p class="lt-sub"><?= $pdc ? h($pdc['cheque_no'] . ' · ' . $pdc['party_name']) . ' · ' . lt_pdc_badge($pdc['status'], $pdc['status_other']) : 'A cheque we give, or a cheque given to us.' ?></p>
+    <h1 class="lt-title"><?= $pdc ? 'Change cheque' : "Add a Company's Post Dated Cheque" ?></h1>
+    <p class="lt-sub"><?= $pdc ? h($pdc['cheque_no'] . ' · ' . $pdc['party_name']) . ' · ' . lt_pdc_badge((string)$pdc['status'], $pdc['status_other'] ?? null) : 'A cheque the company gives, or a cheque given to the company.' ?></p>
   </div>
 </div>
 
@@ -174,7 +141,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
         <div class="col-md-3">
           <label class="form-label small fw-semibold" for="status">Status</label>
           <select class="form-select" id="status" name="status">
-            <?= lt_pdc_status_options(lt_pdc_custom_statuses($conn, $companyId), str_starts_with($v['status'], 'custom:') ? 'other' : $v['status'], str_starts_with($v['status'], 'custom:') ? substr($v['status'], 7) : null) ?>
+            <?= lt_pdc_status_options($customs, str_starts_with($v['status'], 'custom:') ? 'other' : $v['status'], str_starts_with($v['status'], 'custom:') ? substr($v['status'], 7) : null) ?>
           </select>
           <input type="text" class="form-control mt-2" name="status_other" id="statusOther" maxlength="60" placeholder="Type the status" value="<?= h((string)($_POST['status_other'] ?? '')) ?>" hidden>
         </div>
@@ -202,10 +169,11 @@ require __DIR__ . '/includes/lt_layout_header.php';
       </div>
       <div class="col-md-6">
         <label class="form-label small fw-semibold" for="file">Cheque copy</label>
-        <?php if ($pdc && $pdc['file_path']): ?>
-          <div class="small mb-1"><i class="bi bi-paperclip"></i> <a target="_blank" rel="noopener" href="<?= h($ltBase) ?>/pdc.php?file=<?= $id ?>"><?= h($pdc['original_name'] ?: 'Attached') ?></a> <span class="text-muted">(a new file replaces it)</span></div>
+        <?php if ($pdc && !empty($pdc['attachment'])): ?>
+          <div class="small mb-1"><i class="bi bi-paperclip"></i> <a target="_blank" rel="noopener" href="<?= h($ltBase) ?>/pdc.php?file=<?= $id ?>"><?= h(($pdc['original_name'] ?? '') ?: 'Attached') ?></a> <span class="text-muted">(a new file replaces it)</span></div>
         <?php endif; ?>
         <input type="file" class="form-control" id="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.webp">
+        <div class="form-text">A picture or a PDF, 8 MB at most.</div>
       </div>
       <div class="col-12">
         <label class="form-label small fw-semibold" for="notes">Notes</label>
@@ -227,15 +195,15 @@ require __DIR__ . '/includes/lt_layout_header.php';
     <?php foreach ($history as $hst): ?>
       <div class="d-flex flex-wrap gap-2 align-items-center py-2 border-top small">
         <span class="text-muted" style="min-width:95px"><?= h(lt_date($hst['changed_on'])) ?></span>
-        <span><?= $hst['from_status'] ? lt_pdc_badge($hst['from_status'], $hst['from_other']) . ' <i class="bi bi-arrow-right mx-1"></i> ' : '' ?><?= lt_pdc_badge($hst['to_status'], $hst['to_other']) ?></span>
+        <span><?= !empty($hst['from_status']) ? lt_pdc_badge((string)$hst['from_status'], $hst['from_other'] ?? null) . ' <i class="bi bi-arrow-right mx-1"></i> ' : '' ?><?= lt_pdc_badge((string)$hst['to_status'], $hst['to_other'] ?? null) ?></span>
         <span class="flex-grow-1"><?= h($hst['note'] ?? '') ?></span>
-        <span class="text-muted"><?= h($hst['by_name'] ?: '') ?></span>
+        <span class="text-muted"><?= h(($hst['by'] ?? '') ?: '') ?></span>
       </div>
     <?php endforeach; ?>
     <?php if (!$history): ?><div class="text-muted small">No changes yet.</div><?php endif; ?>
   </div></div>
 
-  <form method="post" style="max-width:960px" onsubmit="return confirm('Delete cheque <?= h(addslashes($pdc['cheque_no'])) ?> (<?= h(addslashes($pdc['party_name'])) ?>)?\n\nIts copy and history are deleted too. This cannot be undone.');">
+  <form method="post" style="max-width:960px" onsubmit="return confirm('Delete cheque <?= h(addslashes($pdc['cheque_no'])) ?> (<?= h(addslashes($pdc['party_name'])) ?>)?\n\nIt is taken off the list, and its copy is deleted.');">
     <?php csrf_field(); ?><input type="hidden" name="do" value="delete">
     <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete this cheque</button>
   </form>
