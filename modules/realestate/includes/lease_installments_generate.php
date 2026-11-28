@@ -6,8 +6,46 @@
 require_once __DIR__ . '/lease_vat_calculator.php';
 require_once __DIR__ . '/lease_installment_schedule.php';
 
+if (!function_exists('re_lease_cheques_in_use')) {
+    /**
+     * True when a receipt is already linked to one of the lease's cheque rows. Those rows must
+     * not be deleted and made again: the receipts would be left pointing at rows that no longer
+     * exist, and the lease page would show the cheques as unpaid (29 receipts on 12 renewal
+     * leases broke this way on 15 Oct 2026, when Approve & Convert ran on leases already running).
+     */
+    function re_lease_cheques_in_use(PDO $conn, int $companyId, int $leaseId): bool {
+        $st = $conn->prepare("
+            SELECT 1 FROM re_post_dated_cheques c
+             WHERE c.lease_id = ? AND c.company_id = ?
+               AND (c.payment_id IS NOT NULL OR c.settlement_payment_id IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM re_payments p WHERE p.cheque_id = c.id))
+             LIMIT 1
+        ");
+        $st->execute([$leaseId, $companyId]);
+        if ($st->fetchColumn()) {
+            return true;
+        }
+        try {
+            $st = $conn->prepare("
+                SELECT 1 FROM re_receipt_cheque_links l
+                  JOIN re_post_dated_cheques c ON c.id = l.cheque_id
+                 WHERE c.lease_id = ? AND c.company_id = ?
+                 LIMIT 1
+            ");
+            $st->execute([$leaseId, $companyId]);
+            return (bool)$st->fetchColumn();
+        } catch (Throwable $e) {
+            return false; // table not present
+        }
+    }
+}
+
 if (!function_exists('generateLeaseInstallmentsForConversion')) {
     function generateLeaseInstallmentsForConversion(PDO $conn, int $companyId, int $leaseId, ?int $createdBy = null): void {
+        // A schedule that already has receipts on it is kept as it is (see re_lease_cheques_in_use).
+        if (re_lease_cheques_in_use($conn, $companyId, $leaseId)) {
+            return;
+        }
         $conn->prepare("DELETE FROM re_lease_cheques WHERE lease_id = ? AND company_id = ?")->execute([$leaseId, $companyId]);
         $conn->prepare("DELETE FROM re_post_dated_cheques WHERE lease_id = ? AND company_id = ?")->execute([$leaseId, $companyId]);
         $conn->prepare("DELETE FROM re_lease_installments WHERE lease_id = ? AND company_id = ?")->execute([$leaseId, $companyId]);

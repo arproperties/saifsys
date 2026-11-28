@@ -391,14 +391,15 @@ function re_payment_allocation_status_badge(
             $used = (float)($usage['used'] ?? 0);
             $remaining = (float)($usage['remaining'] ?? 0);
             if (($usage['usage'] ?? '') === 'used') {
-                $label = 'Overpaid (credit later used)';
+                // Not an overpayment: the receipt came before its invoice and was settled through credit.
+                $label = 'Allocated (via tenant credit)';
                 $class = 'success';
                 $title = sprintf(
                     'This receipt parked AED %.2f as tenant credit; that credit has since been fully applied to later invoices (AR only — receipt unchanged).',
                     $credited
                 );
             } elseif (($usage['usage'] ?? '') === 'partial') {
-                $label = 'Overpaid (credit partly used)';
+                $label = 'Advance (credit partly used)';
                 $class = 'primary';
                 $title = sprintf(
                     'This receipt parked AED %.2f as tenant credit; AED %.2f applied later, AED %.2f still parked.',
@@ -407,6 +408,7 @@ function re_payment_allocation_status_badge(
                     $remaining
                 );
             } else {
+                $label = 'Advance (held as tenant credit)';
                 $title = sprintf(
                     'AED %.2f from this receipt remains as tenant credit until applied to later invoices.',
                     $credited

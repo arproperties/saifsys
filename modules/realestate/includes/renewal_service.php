@@ -676,6 +676,11 @@ if (!function_exists('re_renewal_reem_build')) {
      */
     function re_renewal_reem_build(PDO $conn, int $companyId, int $leaseId, ?int $userId): void
     {
+        // A lease whose cheques already have receipts keeps its schedule and services as they are
+        // (see re_lease_cheques_in_use in lease_installments_generate.php).
+        if (re_lease_cheques_in_use($conn, $companyId, $leaseId)) {
+            return;
+        }
         require_once __DIR__ . '/service_charge_schedule_helper.php';
         $st = $conn->prepare("SELECT * FROM re_lease_renewal_workflows WHERE new_lease_id = ? ORDER BY id DESC LIMIT 1");
         $st->execute([$leaseId]);
