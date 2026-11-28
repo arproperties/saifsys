@@ -223,7 +223,7 @@ if (is_file($asWidget)) { require $asWidget; }
       </a>
     <div class="nav-sect">Cheques</div>
       <a href="<?= h($ltBase) ?>/pdc.php" class="slink <?= in_array($currentPage, ['pdc.php', 'pdc_form.php'], true) ? 'active' : '' ?>">
-        <span class="sicon"><i class="bi bi-credit-card-2-front"></i></span><span class="slabel">Post Dated Cheques</span>
+        <span class="sicon"><i class="bi bi-credit-card-2-front"></i></span><span class="slabel">Company PDC</span>
       </a>
     <?php /* Investments: the menu is shown to everyone; the pages themselves allow only LT_INV_EMPLOYEES. */ ?>
     <div class="nav-sect"><i class="bi bi-lock-fill me-1"></i>Investments</div>

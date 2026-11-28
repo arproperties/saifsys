@@ -181,7 +181,7 @@ $alertLog = $alertLog->fetchAll(PDO::FETCH_ASSOC);
 lt_pdc_daily_alerts_after_response($conn);
 $total = array_sum(array_map(static fn($r) => (float)$r['amount'], $rows));
 
-$pageTitle = 'Post Dated Cheques';
+$pageTitle = 'Company PDC';
 $pageStyles = '
   .lt-big{ border-radius:14px; padding:1rem 1.2rem; height:100%; display:block; text-decoration:none; transition:transform .15s, box-shadow .15s; }
   a.lt-big:hover{ transform:translateY(-2px); box-shadow:0 6px 16px rgba(0,0,0,.08); }
@@ -201,7 +201,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
-    <h1 class="lt-title">Post Dated Cheques</h1>
+    <h1 class="lt-title">Company PDC</h1>
     <p class="lt-sub">Cheques we give and cheques we receive, with their status.</p>
   </div>
   <div class="d-flex gap-2">

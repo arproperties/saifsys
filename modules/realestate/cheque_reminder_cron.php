@@ -210,3 +210,18 @@ if (php_sapi_name() === 'cli') {
     header('Content-Type: text/plain; charset=UTF-8');
     echo htmlspecialchars($out, ENT_QUOTES, 'UTF-8');
 }
+
+// ---------------------------------------------------------------------------------------
+// Company PDC (the company's own post-dated cheques, Recurrent Income > Company PDC) is
+// checked in this same daily run, so its emails do not wait for somebody to open that page.
+// It comes last on purpose: everything above (the tenants' cheque reminders, their log and
+// the lines printed) is finished before this starts, and nothing here can change it.
+// Company PDC has its own tables (lt_pdc...) and its own list of addresses.
+try {
+    require_once __DIR__ . '/../loan_tracker/includes/lt_pdc.php';
+    $pdcLine = lt_pdc_daily_alerts_from_cron($conn);
+} catch (Throwable $e) {
+    error_log('Company PDC alerts from cheque_reminder_cron: ' . $e->getMessage());
+    $pdcLine = "Company PDC: not checked - " . $e->getMessage() . "\n";
+}
+echo php_sapi_name() === 'cli' ? $pdcLine : htmlspecialchars($pdcLine, ENT_QUOTES, 'UTF-8');

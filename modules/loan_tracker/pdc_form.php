@@ -126,7 +126,7 @@ require __DIR__ . '/includes/lt_layout_header.php';
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4" style="max-width:960px">
   <div>
-    <h1 class="lt-title"><?= $pdc ? 'Change cheque' : 'Add a Post Dated Cheque' ?></h1>
+    <h1 class="lt-title"><?= $pdc ? 'Change cheque' : 'Add a Company PDC' ?></h1>
     <p class="lt-sub"><?= $pdc ? h($pdc['cheque_no'] . ' · ' . $pdc['party_name']) . ' · ' . lt_pdc_badge($pdc['status'], $pdc['status_other']) : 'A cheque we give, or a cheque given to us.' ?></p>
   </div>
 </div>
