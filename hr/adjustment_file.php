@@ -1,7 +1,7 @@
 <?php
 /**
- * One attachment of an employee bonus or deduction:
- *   adjustment_file.php?type=bonus&id=ROW&n=0      or  ?type=deduction&id=ROW&n=0
+ * One attachment of an employee bonus, deduction or loan / advance:
+ *   adjustment_file.php?type=bonus&id=ROW&n=0      or  ?type=deduction&id=ROW&n=0  or  ?type=loan&id=ROW&n=0
  *   (n = which attachment of that row, starting at 0)
  * Owner, Admin and HR only.
  */
