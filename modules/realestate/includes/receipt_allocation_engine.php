@@ -20,6 +20,7 @@ require_once __DIR__ . '/receipt_allocation_read_helper.php';
 require_once __DIR__ . '/cheque_lifecycle_helper.php';
 require_once __DIR__ . '/cheque_financial_coverage_helper.php';
 require_once __DIR__ . '/security_deposit_helper.php';
+require_once __DIR__ . '/receipt_duplicate_guard.php';
 
 if (!function_exists('re_receipt_schema_ready')) {
     function re_receipt_schema_ready(PDO $conn): bool
@@ -647,6 +648,8 @@ if (!function_exists('re_receipt_confirm')) {
                     throw new RuntimeException('This cheque is already marked cleared.');
                 }
             }
+
+            re_receipt_assert_not_duplicate($conn, $companyId, $leaseId, (float)$amount, (string)$clearedDate, $reference);
 
             $stmt = $conn->prepare("
                 INSERT INTO re_payments (

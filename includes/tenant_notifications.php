@@ -217,12 +217,21 @@ if (!function_exists('tenant_notifications_generate_due_reminders')) {
         }
         $created = 0;
         try {
+            // Never remind a tenant about money already paid. In Invoice Mode a schedule row stays
+            // 'pending' at face value after the receipt settled it, so the real balance is worked
+            // out first (same as the staff overdue alert). Until 28 Nov 2026 this sent ~500 notices
+            // every other day, 493 of them for rows already paid, and the cap of 500 kept the rows
+            // really owed from being reached.
+            if (!function_exists('re_apply_installment_outstanding')) {
+                require_once __DIR__ . '/../modules/realestate/includes/installment_outstanding.php';
+            }
             $sql = "
-                SELECT i.id AS installment_id, i.lease_id, i.amount, i.installment_date, i.status,
+                SELECT i.id, i.id AS installment_id, i.lease_id, i.amount, i.installment_date, i.status,
                        l.company_id
                 FROM re_lease_installments i
                 INNER JOIN re_leases l ON l.id = i.lease_id
                 WHERE i.status IN ('pending', 'overdue')
+                  AND l.status <> 'draft'
                   AND i.installment_date <= (CURDATE() + INTERVAL ? DAY)
             ";
             $params = [$withinDays];
@@ -230,13 +239,25 @@ if (!function_exists('tenant_notifications_generate_due_reminders')) {
                 $sql .= ' AND l.company_id = ?';
                 $params[] = $companyId;
             }
-            $sql .= ' ORDER BY i.installment_date ASC LIMIT 500';
+            $sql .= ' ORDER BY i.installment_date ASC';
             $st = $conn->prepare($sql);
             $st->execute($params);
+            $byCompany = [];
             foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $byCompany[(int)$row['company_id']][] = $row;
+            }
+            $owed = [];
+            foreach ($byCompany as $cid => $rows) {
+                foreach (re_apply_installment_outstanding($conn, (int)$cid, $rows) as $row) {
+                    $owed[] = $row;
+                }
+            }
+            foreach ($owed as $row) {
+                $row['amount'] = $row['outstanding_balance'] ?? $row['amount'];
                 $due = (string)($row['installment_date'] ?? '');
                 $amount = number_format((float)($row['amount'] ?? 0), 2);
-                $overdue = ((string)($row['status'] ?? '') === 'overdue');
+                // The row status is rarely set to 'overdue', so the date decides.
+                $overdue = ((string)($row['status'] ?? '') === 'overdue') || ($due !== '' && $due < date('Y-m-d'));
                 $id = tenant_notification_create($conn, [
                     'company_id' => (int)$row['company_id'],
                     'lease_id' => (int)$row['lease_id'],
@@ -245,7 +266,7 @@ if (!function_exists('tenant_notifications_generate_due_reminders')) {
                     'entity_id' => (int)$row['installment_id'],
                     'title' => $overdue ? 'Payment overdue' : 'Payment due soon',
                     'body' => ($overdue ? 'An installment of AED ' : 'An installment of AED ')
-                        . $amount . ($overdue ? ' is overdue (due ' : ' is due on ') . $due . ').',
+                        . $amount . ($overdue ? ' is overdue (due ' . $due . ').' : ' is due on ' . $due . '.'),
                     'dedup_window_minutes' => 60 * 24, // once per day per installment
                 ]);
                 if ($id) {

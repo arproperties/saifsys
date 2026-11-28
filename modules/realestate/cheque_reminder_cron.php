@@ -84,6 +84,13 @@ foreach ($companies as $companyId) {
         JOIN re_buildings b ON b.id = u.building_id
         WHERE c.company_id = ?
           AND c.status = 'pending'
+          -- A cheque already paid by its linked receipts is not chased, even when its stored
+          -- status was never moved off 'pending' (the lease page shows it as Paid).
+          AND c.payment_id IS NULL
+          AND c.cheque_amount - 0.02 > (
+                COALESCE((SELECT SUM(p.amount) FROM re_payments p WHERE p.cheque_id = c.id), 0)
+              + COALESCE((SELECT SUM(k.amount_applied) FROM re_receipt_cheque_links k WHERE k.cheque_id = c.id), 0)
+          )
     ");
     $stmt->execute([$companyId]);
     $pending = $stmt->fetchAll(PDO::FETCH_ASSOC);

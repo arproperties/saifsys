@@ -10,6 +10,7 @@ require_once __DIR__ . '/../../includes/branding.php';
 require_once __DIR__ . '/../../includes/company_helper.php';
 require_once __DIR__ . '/../../includes/module_access.php';
 require_once __DIR__ . '/includes/payment_allocation_helper.php';
+require_once __DIR__ . '/includes/receipt_duplicate_guard.php';
 
 require_login();
 require_module_access($conn, MODULE_REALESTATE);
@@ -211,7 +212,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($leaseId && $paymentDate && $amount > 0) {
         try {
             $conn->beginTransaction();
-            
+
+            // Every receipt gets a proper receipt number. Left empty, or filled with bank text
+            // ("BANKNET TRANSFER...", "CASH"), it is given the next REC number, the same series
+            // as Receipt Allocation; text typed there is kept as the reference (or in the notes).
+            $receiptNumberOk = $receiptNumber !== ''
+                && preg_match('/^[A-Za-z0-9][A-Za-z0-9\-\/_.]{0,39}$/', $receiptNumber)
+                && preg_match('/\d/', $receiptNumber);
+            if (!$receiptNumberOk && $receiptNumber !== '') {
+                if ($referenceNumber === '') {
+                    $referenceNumber = $receiptNumber;
+                } else {
+                    $notes = trim($notes . ' ' . $receiptNumber);
+                }
+            }
+
+            re_receipt_assert_not_duplicate($conn, (int)$currentCompanyId, (int)$leaseId, (float)$amount, (string)$paymentDate, $referenceNumber);
+
+            if (!$receiptNumberOk) {
+                if (!function_exists('re_receipt_generate_number')) {
+                    require_once __DIR__ . '/includes/receipt_allocation_engine.php';
+                }
+                $receiptNumber = re_receipt_generate_number($conn, (int)$currentCompanyId);
+            }
+
             if ($useAllocationFlow) {
                 // Multi-allocation flow: one payment, multiple allocations + optional credit apply/overpayment
                 $allocSum = 0.0;

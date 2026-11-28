@@ -82,15 +82,21 @@ foreach ($chequeIds as $cid) {
 }
 $redirect = 'receipt_multi_cheque.php?' . $query;
 
-$result = re_receipt_confirm_multi_cheque(
-    $conn,
-    $companyId,
-    $leaseId,
-    $chequeIds,
-    $data,
-    $allocations,
-    current_user_id()
-);
+try {
+    // The same payment must not be saved twice (receipt_duplicate_guard.php, loaded by the engine).
+    re_receipt_assert_not_duplicate($conn, (int)$companyId, $leaseId, $amount, $data['cleared_date'], $data['reference_number']);
+    $result = re_receipt_confirm_multi_cheque(
+        $conn,
+        $companyId,
+        $leaseId,
+        $chequeIds,
+        $data,
+        $allocations,
+        current_user_id()
+    );
+} catch (RuntimeException $e) {
+    $result = ['success' => false, 'error' => $e->getMessage()];
+}
 
 if (!empty($result['success'])) {
     $creditApply = re_receipt_apply_available_tenant_credit($conn, $companyId, $leaseId, current_user_id());
